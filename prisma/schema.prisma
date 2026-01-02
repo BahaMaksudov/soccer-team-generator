@@ -1,0 +1,41 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+enum Position {
+  GOALKEEPER
+  DEFENDER
+  MIDFIELDER
+  FORWARD
+}
+
+enum Rating {
+  FAIR
+  GOOD
+  VERY_GOOD
+  EXCELLENT
+}
+
+model Player {
+  id        String   @id @default(cuid())
+  firstName String
+  lastName  String
+  position  Position
+  rating    Rating
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model TeamGeneration {
+  id        String   @id @default(cuid())
+  date      DateTime @unique
+  teamsJson String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
