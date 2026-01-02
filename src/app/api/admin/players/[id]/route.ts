@@ -1,13 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 
-// PATCH: update player
-export async function PATCH(
-  req: NextRequest,
-  { params }: { params: { id: string } }
-) {
+type Ctx = { params: Promise<{ id: string }> };
+
+export async function PATCH(req: NextRequest, { params }: Ctx) {
   try {
-    const id = params.id;
+    const { id } = await params;
     const body = await req.json();
 
     const updated = await prisma.player.update({
@@ -30,13 +28,9 @@ export async function PATCH(
   }
 }
 
-// DELETE: delete player
-export async function DELETE(
-  _req: NextRequest,
-  { params }: { params: { id: string } }
-) {
+export async function DELETE(_req: NextRequest, { params }: Ctx) {
   try {
-    const id = params.id;
+    const { id } = await params;
 
     await prisma.player.delete({ where: { id } });
 
