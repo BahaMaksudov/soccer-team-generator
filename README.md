@@ -1,3 +1,4 @@
+
 # Soccer Team Generator (Admin + Public)
 
 ## Requirements covered
@@ -27,3 +28,7 @@
 Home: http://localhost:3000
 Admin: http://localhost:3000/admin
 Login: http://localhost:3000/login
+=======
+# soccer-team-generator
+Soccer Teams
+
