@@ -1,5 +1,7 @@
 import { prisma } from "@/lib/prisma";
 import { positionLabel } from "@/lib/labels";
+import Link from "next/link";
+
 
 function formatDate(d: Date) {
   return d.toLocaleDateString(undefined, { year: "numeric", month: "long", day: "numeric" });
@@ -24,7 +26,7 @@ export default async function PrintPage({ params }: { params: { id: string } }) 
         <button className="px-3 py-2 border rounded-md text-sm" onClick={() => window.print()}>
           Print / Save as PDF
         </button>
-        <a className="text-sm underline" href="/">Back to Home</a>
+        <Link className="text-sm underline" href="/">Back to Home</Link>
       </div>
 
       <div className="flex items-center gap-3">
