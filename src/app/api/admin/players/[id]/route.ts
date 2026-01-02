@@ -1,25 +1,50 @@
+import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { NextResponse } from "next/server";
-import { Position, Rating } from "@prisma/client";
 
-export async function PATCH(req: Request, ctx: { params: { id: string } }) {
-  const body = await req.json();
+// PATCH: update player
+export async function PATCH(
+  req: NextRequest,
+  { params }: { params: { id: string } }
+) {
+  try {
+    const id = params.id;
+    const body = await req.json();
 
-  const updated = await prisma.player.update({
-    where: { id: ctx.params.id },
-    data: {
-      firstName: body.firstName !== undefined ? String(body.firstName).trim() : undefined,
-      lastName: body.lastName !== undefined ? String(body.lastName).trim() : undefined,
-      position: body.position !== undefined ? (body.position as Position) : undefined,
-      rating: body.rating !== undefined ? (body.rating as Rating) : undefined,
-      isActive: body.isActive !== undefined ? Boolean(body.isActive) : undefined,
-    },
-  });
+    const updated = await prisma.player.update({
+      where: { id },
+      data: {
+        firstName: body.firstName,
+        lastName: body.lastName,
+        position: body.position,
+        rating: body.rating,
+        isActive: typeof body.isActive === "boolean" ? body.isActive : undefined,
+      },
+    });
 
-  return NextResponse.json(updated);
+    return NextResponse.json(updated);
+  } catch (e: any) {
+    return NextResponse.json(
+      { error: e?.message ?? "Failed to update player" },
+      { status: 400 }
+    );
+  }
 }
 
-export async function DELETE(_req: Request, ctx: { params: { id: string } }) {
-  await prisma.player.delete({ where: { id: ctx.params.id } });
-  return NextResponse.json({ ok: true });
+// DELETE: delete player
+export async function DELETE(
+  _req: NextRequest,
+  { params }: { params: { id: string } }
+) {
+  try {
+    const id = params.id;
+
+    await prisma.player.delete({ where: { id } });
+
+    return NextResponse.json({ ok: true });
+  } catch (e: any) {
+    return NextResponse.json(
+      { error: e?.message ?? "Failed to delete player" },
+      { status: 400 }
+    );
+  }
 }
