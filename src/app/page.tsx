@@ -1,51 +1,45 @@
 import Link from "next/link";
+import { prisma } from "@/lib/prisma";
 import { positionLabel } from "@/lib/labels";
 
 type Generation = {
   id: string;
-  date: string;
-  updatedAt: string;
-  teams: Array<{
-    teamNumber: number;
-    players: Array<{ id: string; firstName: string; lastName: string; position: string }>;
-  }>;
+  date: Date;
+  updatedAt: Date;
+  teamsJson: string;
 };
 
-function formatDate(d: string) {
-  const dt = new Date(d);
-  return dt.toLocaleDateString(undefined, { year: "numeric", month: "long", day: "numeric" });
+function formatDate(d: Date) {
+  return d.toLocaleDateString(undefined, { year: "numeric", month: "long", day: "numeric" });
 }
 
-// ✅ Use relative URL so it works on Vercel automatically
-async function getBaseUrl() {
-  // Vercel provides this automatically in production
-  if (process.env.VERCEL_URL) return `https://${process.env.VERCEL_URL}`;
+export default async function Home({
+  searchParams,
+}: {
+  searchParams?: { page?: string };
+}) {
+  const page = Math.max(1, Number(searchParams?.page ?? "1"));
+  const pageSize = 4;
 
-  // Local dev fallback
-  return process.env.NEXTAUTH_URL ?? "http://localhost:3000";
-}
+  const total = await prisma.teamGeneration.count();
+  const totalPages = total === 0 ? 0 : Math.ceil(total / pageSize);
 
-async function getGenerations(page: number) {
-  const baseUrl = await getBaseUrl();
-  const url = `${baseUrl}/api/public/team-generations?page=${page}&pageSize=4`;
+  const rows: Generation[] = await prisma.teamGeneration.findMany({
+    orderBy: [{ date: "desc" }, { updatedAt: "desc" }],
+    skip: (page - 1) * pageSize,
+    take: pageSize,
+    select: { id: true, date: true, updatedAt: true, teamsJson: true },
+  });
 
-  const res = await fetch(url, { cache: "no-store" });
-  if (!res.ok) {
-    // Helps debug if DB isn't reachable in prod
-    throw new Error(`Failed to load generations: ${res.status}`);
-  }
-  return res.json() as Promise<{ page: number; totalPages: number; items: Generation[] }>;
-}
-
-
-// ✅ Next 15.5: searchParams is a Promise in PageProps
-type SearchParams = Promise<{ page?: string }>;
-
-export default async function Home({ searchParams }: { searchParams: SearchParams }) {
-  const sp = await searchParams;
-  const page = Math.max(1, Number(sp?.page ?? "1") || 1);
-
-  const data = await getGenerations(page);
+  const items = rows.map((r) => ({
+    id: r.id,
+    date: r.date,
+    updatedAt: r.updatedAt,
+    teams: JSON.parse(r.teamsJson) as Array<{
+      teamNumber: number;
+      players: Array<{ id: string; firstName: string; lastName: string; position: string }>;
+    }>,
+  }));
 
   return (
     <div className="space-y-6">
@@ -54,25 +48,18 @@ export default async function Home({ searchParams }: { searchParams: SearchParam
         <div className="text-sm text-gray-500">Newest dates show on top.</div>
       </div>
 
-      {data.items.length === 0 ? (
+      {items.length === 0 ? (
         <div className="text-gray-600">No teams published yet. (Admin: go to Admin and publish.)</div>
       ) : (
         <div className="space-y-6">
-          {data.items.map((gen) => (
+          {items.map((gen) => (
             <div key={gen.id} className="border rounded-xl overflow-hidden bg-white">
               <div className="p-4 bg-gray-50 border-b flex items-start gap-3">
                 <div className="flex-1">
                   <div className="font-semibold">Teams for {formatDate(gen.date)}</div>
-                  <div className="text-xs text-gray-500">
-                    Last published: {new Date(gen.updatedAt).toLocaleString()}
-                  </div>
+                  <div className="text-xs text-gray-500">Last published: {gen.updatedAt.toLocaleString()}</div>
                 </div>
-
-                <Link
-                  className="px-3 py-2 border rounded-md text-sm bg-white hover:bg-slate-50 transition"
-                  href={`/print/${gen.id}`}
-                  target="_blank"
-                >
+                <Link className="px-3 py-2 border rounded-md text-sm bg-white" href={`/print/${gen.id}`} target="_blank">
                   Print / Save as PDF
                 </Link>
               </div>
@@ -87,7 +74,7 @@ export default async function Home({ searchParams }: { searchParams: SearchParam
                   </thead>
                   <tbody>
                     {gen.teams.map((t) => (
-                      <tr key={t.teamNumber} className="border-t hover:bg-slate-50 transition">
+                      <tr key={t.teamNumber} className="border-t">
                         <td className="p-3 font-semibold">#{t.teamNumber}</td>
                         <td className="p-3">
                           <ul className="list-disc pl-5 space-y-1">
@@ -109,27 +96,13 @@ export default async function Home({ searchParams }: { searchParams: SearchParam
         </div>
       )}
 
-      {data.totalPages > 1 && (
+      {totalPages > 1 && (
         <div className="flex items-center gap-3">
-          <Link
-            className={`px-3 py-2 border rounded-md text-sm hover:bg-slate-50 transition ${
-              page <= 1 ? "pointer-events-none opacity-50" : ""
-            }`}
-            href={`/?page=${page - 1}`}
-          >
+          <Link className={`px-3 py-2 border rounded-md text-sm ${page <= 1 ? "pointer-events-none opacity-50" : ""}`} href={`/?page=${page - 1}`}>
             Prev
           </Link>
-
-          <div className="text-sm text-gray-600">
-            Page {page} of {data.totalPages}
-          </div>
-
-          <Link
-            className={`px-3 py-2 border rounded-md text-sm hover:bg-slate-50 transition ${
-              page >= data.totalPages ? "pointer-events-none opacity-50" : ""
-            }`}
-            href={`/?page=${page + 1}`}
-          >
+          <div className="text-sm text-gray-600">Page {page} of {totalPages}</div>
+          <Link className={`px-3 py-2 border rounded-md text-sm ${page >= totalPages ? "pointer-events-none opacity-50" : ""}`} href={`/?page=${page + 1}`}>
             Next
           </Link>
         </div>
