@@ -7,7 +7,7 @@ export const metadata = {
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
-  const teamName = process.env.TEAM_NAME ?? "Your Team Name";
+  const teamName = process.env.TEAM_NAME ?? "New England Eagles";
 
   return (
     <html lang="en">
