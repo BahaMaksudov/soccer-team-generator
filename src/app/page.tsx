@@ -17,15 +17,26 @@ function formatDate(d: string) {
 }
 
 // ✅ Use relative URL so it works on Vercel automatically
+async function getBaseUrl() {
+  // Vercel provides this automatically in production
+  if (process.env.VERCEL_URL) return `https://${process.env.VERCEL_URL}`;
+
+  // Local dev fallback
+  return process.env.NEXTAUTH_URL ?? "http://localhost:3000";
+}
+
 async function getGenerations(page: number) {
-  const res = await fetch(`/api/public/team-generations?page=${page}&pageSize=4`, {
-    cache: "no-store",
-  });
+  const baseUrl = await getBaseUrl();
+  const url = `${baseUrl}/api/public/team-generations?page=${page}&pageSize=4`;
+
+  const res = await fetch(url, { cache: "no-store" });
   if (!res.ok) {
-    return { page, totalPages: 1, items: [] as Generation[] };
+    // Helps debug if DB isn't reachable in prod
+    throw new Error(`Failed to load generations: ${res.status}`);
   }
   return res.json() as Promise<{ page: number; totalPages: number; items: Generation[] }>;
 }
+
 
 // ✅ Next 15.5: searchParams is a Promise in PageProps
 type SearchParams = Promise<{ page?: string }>;
