@@ -39,3 +39,8 @@ model TeamGeneration {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 }
+model AppSetting {
+  key       String   @id
+  value     String
+  updatedAt DateTime @updatedAt
+}
