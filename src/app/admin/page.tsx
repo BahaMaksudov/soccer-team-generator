@@ -70,11 +70,15 @@ export default function AdminPage() {
 
       const data = await res.json();
       console.log("TEAM NAME GET ok:", data);
+
+      // ✅ THIS is what was missing
+      setTeamName(data.teamName || "");
     } catch (e) {
       console.log("TEAM NAME GET error:", e);
     }
   })();
 }, []);
+
 
   // useEffect(() => {
   //   loadPlayers();
