@@ -55,42 +55,19 @@ export default function AdminPage() {
   }
 
   // ✅ load players + team name once
+  
+
   useEffect(() => {
-  loadPlayers();
+    loadPlayers();
 
-  (async () => {
-    try {
+    (async () => {
       const res = await fetch("/api/admin/settings/team-name", { cache: "no-store" });
-
-      if (!res.ok) {
-        const text = await res.text();
-        console.log("TEAM NAME GET failed:", res.status, text);
-        return;
+      if (res.ok) {
+        const data = await res.json();
+        setTeamName(data.teamName || "");
       }
-
-      const data = await res.json();
-      console.log("TEAM NAME GET ok:", data);
-
-      // ✅ THIS is what was missing
-      setTeamName(data.teamName || "");
-    } catch (e) {
-      console.log("TEAM NAME GET error:", e);
-    }
-  })();
-}, []);
-
-
-  // useEffect(() => {
-  //   loadPlayers();
-
-  //   (async () => {
-  //     const res = await fetch("/api/admin/settings/team-name", { cache: "no-store" });
-  //     if (res.ok) {
-  //       const data = await res.json();
-  //       setTeamName(data.teamName || "");
-  //     }
-  //   })();
-  // }, []);
+    })();
+  }, []);
 
   const selectedIds = useMemo(
     () => Object.entries(selected).filter(([, v]) => v).map(([id]) => id),
