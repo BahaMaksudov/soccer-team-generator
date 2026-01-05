@@ -17,6 +17,7 @@ const positions = ["GOALKEEPER", "DEFENDER", "MIDFIELDER", "FORWARD"] as const;
 const ratings = ["FAIR", "GOOD", "VERY_GOOD", "EXCELLENT"] as const;
 
 export default function AdminPage() {
+  const [teamName, setTeamName] = useState("");
   const [players, setPlayers] = useState<Player[]>([]);
   const [selected, setSelected] = useState<Record<string, boolean>>({});
 
@@ -39,7 +40,7 @@ export default function AdminPage() {
   const [editRating, setEditRating] = useState<Player["rating"]>("GOOD");
 
   // ✅ Step 5 states (MUST be inside component)
-  const [teamName, setTeamName] = useState("");
+  // const [teamName, setTeamName] = useState("");
   const [teamNameSaving, setTeamNameSaving] = useState(false);
 
   async function loadPlayers() {
