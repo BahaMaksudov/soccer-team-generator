@@ -79,6 +79,42 @@ export default function AdminPage() {
     return players.filter((p) => sel.has(p.id) && p.position === "GOALKEEPER" && p.isActive).length;
   }, [players, selectedIds]);
 
+
+    // Active player IDs (only these can be selected) new code start
+  const activeIds = useMemo(
+    () => players.filter((p) => p.isActive).map((p) => p.id),
+    [players]
+  );
+
+  const allActiveSelected = useMemo(() => {
+    if (activeIds.length === 0) return false;
+    const sel = new Set(selectedIds);
+    return activeIds.every((id) => sel.has(id));
+  }, [activeIds, selectedIds]);
+
+  const someActiveSelected = useMemo(() => {
+    if (activeIds.length === 0) return false;
+    const sel = new Set(selectedIds);
+    return activeIds.some((id) => sel.has(id)) && !allActiveSelected;
+  }, [activeIds, selectedIds, allActiveSelected]);
+
+  function toggleSelectAll(checked: boolean) {
+    setSelected((prev) => {
+      const next = { ...prev };
+
+      if (checked) {
+        // select all ACTIVE players
+        for (const id of activeIds) next[id] = true;
+      } else {
+        // unselect all ACTIVE players (leave inactive as-is)
+        for (const id of activeIds) delete next[id];
+      }
+
+      return next;
+    });
+  }
+    // Active player IDs (only these can be selected) new code end
+
   async function addPlayer() {
     setMsg(null);
     if (!firstName.trim() || !lastName.trim()) {
@@ -331,7 +367,23 @@ export default function AdminPage() {
             <table className="w-full text-sm">
               <thead className="bg-gray-50">
                 <tr>
-                  <th className="p-3 text-left w-10">Sel</th>
+                  {/* <th className="p-3 text-left w-10">Sel</th> */}
+                  {/* new code start */}
+                  <th className="p-3 text-left w-14">
+                    <div className="flex items-center gap-2">
+                    <input
+                    type="checkbox"
+                    checked={allActiveSelected}
+      ref={(el) => {
+        if (el) el.indeterminate = someActiveSelected;
+      }}
+      onChange={(e) => toggleSelectAll(e.target.checked)}
+      disabled={activeIds.length === 0}
+      title="Select all active players"
+    />
+    <span className="text-xs text-gray-600">All</span>
+  </div>
+</th>
                   <th className="p-3 text-left">Name</th>
                   <th className="p-3 text-left">Position</th>
                   <th className="p-3 text-left">Rating</th>
