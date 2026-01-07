@@ -27,6 +27,7 @@ model Player {
   lastName  String
   position  Position
   rating    Rating
+  stamina Int @default(3)
   isActive  Boolean  @default(true)
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt

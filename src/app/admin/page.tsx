@@ -259,6 +259,9 @@ export default function AdminPage() {
       <div className="rounded-2xl border bg-white shadow-sm p-5">
         <div className="flex items-center gap-3">
           <h1 className="text-2xl font-semibold">Admin</h1>
+          <Link className="text-sm underline ml-auto" href="/admin/settings">
+ Settings
+</Link>
           <button className="text-sm underline ml-auto" onClick={() => signOut({ callbackUrl: "/" })}>
             Sign out
           </button>
