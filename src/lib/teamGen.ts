@@ -304,7 +304,7 @@ function buildCapacities(playerCount: number, teamCount: number): number[] {
   return Array.from({ length: teamCount }, (_, i) => base + (i < rem ? 1 : 0));
 }
 
-export function generateBalancedTeams(players: Player[], teamCount: number) {
+export function generateBalancedTeams(players: Player[], teamCount: number, format?:6|7|8, weights?: any) {
   if (teamCount < 2) throw new Error("Number of teams must be at least 2.");
   if (players.length < teamCount) throw new Error("Not enough players for that many teams.");
 
