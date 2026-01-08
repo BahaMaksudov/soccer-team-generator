@@ -8,6 +8,13 @@ export async function PATCH(req: NextRequest, { params }: Ctx) {
     const { id } = await params;
     const body = await req.json();
 
+    // ✅ stamina: only update if provided; clamp to 1..5
+    let stamina: number | undefined = undefined;
+    if (body.stamina !== undefined) {
+      const raw = Number(body.stamina);
+      stamina = Number.isFinite(raw) ? Math.min(5, Math.max(1, raw)) : 3;
+    }
+
     const updated = await prisma.player.update({
       where: { id },
       data: {
@@ -15,6 +22,7 @@ export async function PATCH(req: NextRequest, { params }: Ctx) {
         lastName: body.lastName,
         position: body.position,
         rating: body.rating,
+        stamina: typeof body.stamina === "number" ? body.stamina : undefined, // ✅ NEW
         isActive: typeof body.isActive === "boolean" ? body.isActive : undefined,
       },
     });
