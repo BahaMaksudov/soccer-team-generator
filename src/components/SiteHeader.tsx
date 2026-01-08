@@ -140,6 +140,7 @@ export default function SiteHeader() {
 
         <nav className="flex gap-4 text-sm">
           <Link href="/">Home</Link>
+          <Link href="/players">Players</Link>
           <Link href="/admin">Admin</Link>
         </nav>
       </div>
