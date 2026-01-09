@@ -72,6 +72,10 @@ import "./globals.css";
 import SiteHeader from "@/components/SiteHeader";
 import { getTeamName } from "@/lib/settings";
 
+export const dynamic = "force-dynamic";
+export const revalidate = 0;
+
+
 export const metadata = {
   title: "Soccer Team Generator",
   description: "Pickup soccer team generator",

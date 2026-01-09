@@ -62,8 +62,13 @@ async function saveTeamName(req: Request) {
   });
 
   // Helps Next refresh immediately after save (server components/pages)
-  revalidatePath("/");
-  revalidatePath("/admin");
+  // revalidatePath("/");
+  // revalidatePath("/admin");
+
+  revalidatePath("/", "layout");
+  revalidatePath("/admin", "layout");
+  revalidatePath("/players", "layout"); // if you have Players page
+
 
   return NextResponse.json({ ok: true, teamName: nextName });
 }
