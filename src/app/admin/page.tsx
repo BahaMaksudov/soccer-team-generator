@@ -665,59 +665,59 @@
 //           </div>
 //         </div>
 
-//         {previewTeams && (
-//           <div className="border rounded-2xl overflow-hidden bg-white shadow-sm mt-4">
-//             <div className="p-4 bg-gradient-to-r from-slate-50 to-white border-b">
-//               <div className="flex items-start justify-between gap-3">
-//                 <div>
-//                   <div className="font-semibold text-slate-900">Preview (not published yet)</div>
-//                   <div className="text-xs text-slate-500 mt-1">
-//                     Date:{" "}
-//                     <b>
-//                       {new Date(previewDate!).toLocaleDateString(undefined, {
-//                         year: "numeric",
-//                         month: "long",
-//                         day: "numeric",
-//                       })}
-//                     </b>
-//                   </div>
-//                 </div>
+        // {previewTeams && (
+        //   <div className="border rounded-2xl overflow-hidden bg-white shadow-sm mt-4">
+        //     <div className="p-4 bg-gradient-to-r from-slate-50 to-white border-b">
+        //       <div className="flex items-start justify-between gap-3">
+        //         <div>
+        //           <div className="font-semibold text-slate-900">Preview (not published yet)</div>
+        //           <div className="text-xs text-slate-500 mt-1">
+        //             Date:{" "}
+        //             <b>
+        //               {new Date(previewDate!).toLocaleDateString(undefined, {
+        //                 year: "numeric",
+        //                 month: "long",
+        //                 day: "numeric",
+        //               })}
+        //             </b>
+        //           </div>
+        //         </div>
 
-//                 <div className="text-xs text-slate-500">
-//                   Tip: If it looks good, click <b>Publish</b>.
-//                 </div>
-//               </div>
-//             </div>
+        //         <div className="text-xs text-slate-500">
+        //           Tip: If it looks good, click <b>Publish</b>.
+        //         </div>
+        //       </div>
+        //     </div>
 
-//             <div className="overflow-x-auto">
-//               <table className="w-full text-sm">
-//                 <thead className="bg-white sticky top-0">
-//                   <tr className="text-slate-700">
-//                     <th className="text-left p-3 w-28">Team</th>
-//                     <th className="text-left p-3">Players</th>
-//                   </tr>
-//                 </thead>
+        //     <div className="overflow-x-auto">
+        //       <table className="w-full text-sm">
+        //         <thead className="bg-white sticky top-0">
+        //           <tr className="text-slate-700">
+        //             <th className="text-left p-3 w-28">Team</th>
+        //             <th className="text-left p-3">Players</th>
+        //           </tr>
+        //         </thead>
 
-//                 <tbody>
-//                   {previewTeams.map((t: any) => (
-//                     <tr key={t.teamNumber} className="border-t hover:bg-slate-50 transition">
-//                       <td className="p-3 font-semibold text-slate-900">#{t.teamNumber}</td>
-//                       <td className="p-3">
-//                         <ul className="list-disc pl-5 space-y-1">
-//                           {t.players.map((p: any) => (
-//                             <li key={p.id}>
-//                               {p.firstName} {p.lastName} — <span className="text-slate-600">{positionLabel(p.position)}</span>
-//                             </li>
-//                           ))}
-//                         </ul>
-//                       </td>
-//                     </tr>
-//                   ))}
-//                 </tbody>
-//               </table>
-//             </div>
-//           </div>
-//         )}
+        //         <tbody>
+        //           {previewTeams.map((t: any) => (
+        //             <tr key={t.teamNumber} className="border-t hover:bg-slate-50 transition">
+        //               <td className="p-3 font-semibold text-slate-900">#{t.teamNumber}</td>
+        //               <td className="p-3">
+        //                 <ul className="list-disc pl-5 space-y-1">
+        //                   {t.players.map((p: any) => (
+        //                     <li key={p.id}>
+        //                       {p.firstName} {p.lastName} — <span className="text-slate-600">{positionLabel(p.position)}</span>
+        //                     </li>
+        //                   ))}
+        //                 </ul>
+        //               </td>
+        //             </tr>
+        //           ))}
+        //         </tbody>
+        //       </table>
+        //     </div>
+        //   </div>
+        // )}
 //       </div>
 //     </div>
 //   );
@@ -1336,6 +1336,142 @@ export default function AdminPage() {
 
         {/* Generate Teams UI... (unchanged below this point in your file) */}
         {/* Keep the rest of your component as-is */}
+        <div className="border rounded-2xl p-5 space-y-4 bg-white shadow-sm mt-4">
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <div className="font-semibold text-slate-900">Generate Teams (Preview)</div>
+              <div className="text-xs text-slate-500 mt-1">
+                Generate as many times as you want. Publish replaces any teams already published for this date.
+              </div>
+            </div>
+
+            <div
+              className={`text-xs px-2 py-1 rounded-full border ${
+                previewTeams ? "bg-emerald-50 text-emerald-700 border-emerald-200" : "bg-slate-50 text-slate-600 border-slate-200"
+              }`}
+            >
+              {previewTeams ? "Preview ready" : "Not generated"}
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            <div>
+              <label className="block text-sm font-medium text-slate-700 mb-1">Date</label>
+              <input
+                type="date"
+                className="border rounded-lg px-3 py-2 w-full bg-white focus:outline-none focus:ring-2 focus:ring-emerald-200"
+                value={date}
+                onChange={(e) => setDate(e.target.value)}
+              />
+            </div>
+
+            <div>
+              <label className="block text-sm font-medium text-slate-700 mb-1">Number of teams</label>
+              <input
+                type="number"
+                min={2}
+                className="border rounded-lg px-3 py-2 w-full bg-white focus:outline-none focus:ring-2 focus:ring-emerald-200"
+                value={teamCount}
+                onChange={(e) => setTeamCount(Number(e.target.value))}
+              />
+
+              {selectedGKCount < teamCount && (
+                <div className="text-xs text-amber-700 mt-2 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
+                  Note: Only <b>{selectedGKCount}</b> goalkeeper(s) selected for <b>{teamCount}</b> teams. (1 GK per team not possible.)
+                </div>
+              )}
+            </div>
+
+            <div className="flex items-end">
+              <div className="flex gap-2 w-full">
+                <button
+                  className="w-full rounded-lg py-2 font-semibold text-white bg-emerald-600 hover:bg-emerald-700 active:scale-[0.99] transition"
+                  onClick={generate}
+                >
+                  Generate <span className="font-normal opacity-90">(Selected: {selectedIds.length})</span>
+                </button>
+
+                <button
+                  className={`w-full rounded-lg py-2 font-semibold text-white transition ${
+                    previewTeams ? "bg-sky-600 hover:bg-sky-700 active:scale-[0.99]" : "bg-slate-300 cursor-not-allowed"
+                  }`}
+                  onClick={publish}
+                  disabled={!previewTeams}
+                >
+                  Publish
+                </button>
+
+                <button
+                  className={`w-full rounded-lg py-2 font-semibold text-white transition ${
+                    previewTeams ? "bg-rose-600 hover:bg-rose-700 active:scale-[0.99]" : "bg-slate-300 cursor-not-allowed"
+                  }`}
+                  onClick={clearPreview}
+                  disabled={!previewTeams}
+                >
+                  Clear
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>            
+
+        {previewTeams && (
+          <div className="border rounded-2xl overflow-hidden bg-white shadow-sm mt-4">
+            <div className="p-4 bg-gradient-to-r from-slate-50 to-white border-b">
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <div className="font-semibold text-slate-900">Preview (not published yet)</div>
+                  <div className="text-xs text-slate-500 mt-1">
+                    Date:{" "}
+                    <b>
+                      {new Date(previewDate!).toLocaleDateString(undefined, {
+                        year: "numeric",
+                        month: "long",
+                        day: "numeric",
+                      })}
+                    </b>
+                  </div>
+                </div>
+
+                <div className="text-xs text-slate-500">
+                  Tip: If it looks good, click <b>Publish</b>.
+                </div>
+              </div>
+            </div>
+
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead className="bg-white sticky top-0">
+                  <tr className="text-slate-700">
+                    <th className="text-left p-3 w-28">Team</th>
+                    <th className="text-left p-3">Players</th>
+                  </tr>
+                </thead>
+
+                <tbody>
+                  {previewTeams.map((t: any) => (
+                    <tr key={t.teamNumber} className="border-t hover:bg-slate-50 transition">
+                      <td className="p-3 font-semibold text-slate-900">#{t.teamNumber}</td>
+                      <td className="p-3">
+                        <ul className="list-disc pl-5 space-y-1">
+                          {t.players.map((p: any) => (
+                            <li key={p.id}>
+                              {p.firstName} {p.lastName} — <span className="text-slate-600">{positionLabel(p.position)}</span>
+                            </li>
+                          ))}
+                        </ul>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+
+
+
+
       </div>
     </div>
   );
