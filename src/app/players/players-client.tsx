@@ -1,7 +1,8 @@
 // "use client";
 
-// import { useEffect, useMemo, useRef, useState } from "react";
-// import { usePathname, useRouter, useSearchParams } from "next/navigation";
+// import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+// import { createPortal } from "react-dom";
+// import { usePathname, useRouter } from "next/navigation";
 // import { positionLabel } from "@/lib/labels";
 
 // type Position = "GOALKEEPER" | "DEFENDER" | "MIDFIELDER" | "FORWARD";
@@ -61,7 +62,8 @@
 // }
 
 // function impactScore(p: Player): number {
-//   return ratingWeight[p.rating] * 10 + getStamina(p) * 2 + positionWeight(p.position) * 3;
+//   const rw = ratingWeight[p.rating] ?? 2;
+//   return rw * 10 + getStamina(p) * 2 + positionWeight(p.position) * 3;
 // }
 
 // /* ---------------- Debounce ---------------- */
@@ -93,84 +95,208 @@
 //   return v === "asc" ? "asc" : "desc";
 // }
 
+// function readFiltersFromLocation() {
+//   if (typeof window === "undefined") {
+//     return {
+//       status: "ALL" as StatusKey,
+//       pos: "ALL" as PositionKey,
+//       sort: "desc" as "asc" | "desc",
+//       name: "",
+//     };
+//   }
+//   const sp = new URLSearchParams(window.location.search);
+//   return {
+//     status: normalizeStatus(sp.get("status")),
+//     pos: normalizePosition(sp.get("pos")),
+//     sort: normalizeSort(sp.get("sort")),
+//     name: sp.get("name") ?? "",
+//   };
+// }
+
+// /* ---------------- Popover (portal) ---------------- */
+
+// function HeaderPopover({
+//   open,
+//   anchorEl,
+//   title,
+//   onClose,
+//   children,
+// }: {
+//   open: boolean;
+//   anchorEl: HTMLElement | null;
+//   title: string;
+//   onClose: () => void;
+//   children: React.ReactNode;
+// }) {
+//   const [mounted, setMounted] = useState(false);
+//   const popRef = useRef<HTMLDivElement | null>(null);
+//   const [pos, setPos] = useState<{ top: number; left: number; width: number } | null>(null);
+
+//   useEffect(() => setMounted(true), []);
+
+//   useLayoutEffect(() => {
+//     if (!open || !anchorEl) return;
+
+//     const compute = () => {
+//       const r = anchorEl.getBoundingClientRect();
+//       const desiredW = clamp(r.width, 220, 320);
+
+//       // Measure popover
+//       const popH = popRef.current?.offsetHeight ?? 220;
+//       const popW = popRef.current?.offsetWidth ?? desiredW;
+
+//       // Prefer below, flip above if needed
+//       let top = r.bottom + 8;
+//       if (top + popH > window.innerHeight - 8) top = r.top - popH - 8;
+//       top = clamp(top, 8, window.innerHeight - popH - 8);
+
+//       // Align left with header, clamp to viewport
+//       let left = r.left;
+//       left = clamp(left, 8, window.innerWidth - popW - 8);
+
+//       setPos({ top, left, width: popW });
+//     };
+
+//     // 2-frame compute so height is accurate after render
+//     const raf1 = requestAnimationFrame(() => {
+//       const raf2 = requestAnimationFrame(compute);
+//       return () => cancelAnimationFrame(raf2);
+//     });
+
+//     const onResizeOrScroll = () => {
+//       setPos(null);
+//       requestAnimationFrame(compute);
+//     };
+
+//     window.addEventListener("resize", onResizeOrScroll);
+//     window.addEventListener("scroll", onResizeOrScroll, true);
+
+//     return () => {
+//       cancelAnimationFrame(raf1);
+//       window.removeEventListener("resize", onResizeOrScroll);
+//       window.removeEventListener("scroll", onResizeOrScroll, true);
+//     };
+//   }, [open, anchorEl]);
+
+//   // Close on Escape
+//   useEffect(() => {
+//     if (!open) return;
+//     const onKey = (e: KeyboardEvent) => {
+//       if (e.key === "Escape") onClose();
+//     };
+//     window.addEventListener("keydown", onKey);
+//     return () => window.removeEventListener("keydown", onKey);
+//   }, [open, onClose]);
+
+//   if (!mounted || !open) return null;
+
+//   return createPortal(
+//     <div data-popover-root="true">
+//       {/* overlay */}
+//       <button
+//         className="fixed inset-0 z-[60] cursor-default"
+//         onClick={onClose}
+//         aria-label="Close"
+//       />
+//       <div
+//         ref={popRef}
+//         className="fixed z-[70] rounded-xl border bg-white shadow-lg p-3"
+//         style={{
+//           top: pos?.top ?? 80,
+//           left: pos?.left ?? 12,
+//           width: pos?.width ?? 260,
+//           maxHeight: "60vh",
+//           overflow: "auto",
+//         }}
+//         onMouseDown={(e) => e.stopPropagation()}
+//         onClick={(e) => e.stopPropagation()}
+//       >
+//         <div className="text-xs font-semibold text-slate-700 mb-2">{title}</div>
+//         {children}
+//       </div>
+//     </div>,
+//     document.body
+//   );
+// }
+
 // /* ---------------- Page ---------------- */
 
-// export default function PlayersPage() {
+// export default function PlayersClientPage() {
 //   const router = useRouter();
 //   const pathname = usePathname();
-//   const searchParams = useSearchParams();
 
 //   const [players, setPlayers] = useState<Player[]>([]);
 //   const [loading, setLoading] = useState(true);
+//   const [menuPos, setMenuPos] = useState<{ top: number; left: number } | null>(null);
 
-//   // ----- Init filters from URL -----
-//   const [statusFilter, setStatusFilter] = useState<StatusKey>(() => normalizeStatus(searchParams.get("status")));
-//   const [positionFilter, setPositionFilter] = useState<PositionKey>(() => normalizePosition(searchParams.get("pos")));
-//   const [scoreSort, setScoreSort] = useState<"asc" | "desc">(() => normalizeSort(searchParams.get("sort")));
-//   const [nameQuery, setNameQuery] = useState(() => searchParams.get("name") ?? "");
+
+//   // Filters (init safely; then sync from URL once mounted)
+//   const [statusFilter, setStatusFilter] = useState<StatusKey>("ALL");
+//   const [positionFilter, setPositionFilter] = useState<PositionKey>("ALL");
+//   const [scoreSort, setScoreSort] = useState<"asc" | "desc">("desc");
+//   const [nameQuery, setNameQuery] = useState("");
 
 //   // Debounced name used for filtering + URL updates
 //   const debouncedName = useDebouncedValue(nameQuery, 250);
 
-//   // Menus + drawer
+//   // Popovers + drawer
 //   const [openMenu, setOpenMenu] = useState<MenuKey>(null);
 //   const [drawerOpen, setDrawerOpen] = useState(false);
 
-//   const menuRef = useRef<HTMLDivElement | null>(null);
+//   const [anchorEl, setAnchorEl] = useState<HTMLElement | null>(null);
 //   const nameInputRef = useRef<HTMLInputElement | null>(null);
-
-//   // for keyboard navigation inside menu items
-//   const menuItemsRef = useRef<HTMLButtonElement[]>([]);
-//   const [menuFocusIndex, setMenuFocusIndex] = useState(0);
-
-//   // Close dropdown menus on outside click
-//   useEffect(() => {
-//     function close(e: MouseEvent) {
-//       if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
-//         setOpenMenu(null);
-//       }
-//     }
-//     document.addEventListener("mousedown", close);
-//     return () => document.removeEventListener("mousedown", close);
-//   }, []);
 
 //   // Load players
 //   useEffect(() => {
 //     (async () => {
-//       const res = await fetch("/api/public/players", { cache: "no-store" });
-//       const data = await res.json();
-//       setPlayers(data || []);
-//       setLoading(false);
+//       try {
+//         const res = await fetch("/api/public/players", { cache: "no-store" });
+//         const data = await res.json();
+//         setPlayers(Array.isArray(data) ? data : []);
+//       } finally {
+//         setLoading(false);
+//       }
 //     })();
 //   }, []);
 
-//   // Keep state in sync if user navigates with back/forward or shares link
+//   // Read URL filters once on mount
 //   useEffect(() => {
-//     setStatusFilter(normalizeStatus(searchParams.get("status")));
-//     setPositionFilter(normalizePosition(searchParams.get("pos")));
-//     setScoreSort(normalizeSort(searchParams.get("sort")));
-//     setNameQuery(searchParams.get("name") ?? "");
-//     // eslint-disable-next-line react-hooks/exhaustive-deps
-//   }, [searchParams]);
+//     const f = readFiltersFromLocation();
+//     setStatusFilter(f.status);
+//     setPositionFilter(f.pos);
+//     setScoreSort(f.sort);
+//     setNameQuery(f.name);
+//   }, []);
+
+//   // Sync if user uses back/forward
+//   useEffect(() => {
+//     const onPop = () => {
+//       const f = readFiltersFromLocation();
+//       setStatusFilter(f.status);
+//       setPositionFilter(f.pos);
+//       setScoreSort(f.sort);
+//       setNameQuery(f.name);
+//     };
+//     window.addEventListener("popstate", onPop);
+//     return () => window.removeEventListener("popstate", onPop);
+//   }, []);
 
 //   // Push filters into URL (debounced for name)
 //   useEffect(() => {
-//     const params = new URLSearchParams(searchParams.toString());
+//     if (typeof window === "undefined") return;
 
-//     // name
+//     const params = new URLSearchParams(window.location.search);
+
 //     const name = debouncedName.trim();
 //     if (name) params.set("name", name);
 //     else params.delete("name");
 
-//     // position
 //     if (positionFilter !== "ALL") params.set("pos", positionFilter);
 //     else params.delete("pos");
 
-//     // status
 //     if (statusFilter !== "ALL") params.set("status", statusFilter);
 //     else params.delete("status");
 
-//     // sort (persist always, so shared link keeps it)
 //     params.set("sort", scoreSort);
 
 //     const qs = params.toString();
@@ -178,10 +304,8 @@
 //     // eslint-disable-next-line react-hooks/exhaustive-deps
 //   }, [debouncedName, positionFilter, statusFilter, scoreSort]);
 
-//   // Reset menu refs on open
+//   // Focus name input when opening name popover
 //   useEffect(() => {
-//     menuItemsRef.current = [];
-//     setMenuFocusIndex(0);
 //     if (openMenu === "name") {
 //       setTimeout(() => nameInputRef.current?.focus(), 0);
 //     }
@@ -190,67 +314,52 @@
 //   function closeAllOverlays() {
 //     setOpenMenu(null);
 //     setDrawerOpen(false);
+//     setAnchorEl(null);
 //   }
 
-//   function toggleMenu(key: MenuKey) {
-//     setOpenMenu((prev) => (prev === key ? null : key));
-//   }
+// function toggleMenu(key: MenuKey, el?: HTMLElement | null) {
+//   setOpenMenu((prev) => {
+//     const next = prev === key ? null : key;
 
-//   /* ---------------- Keyboard helpers ---------------- */
+//     if (next && el) {
+//       const r = el.getBoundingClientRect();
 
-//   function onHeaderKeyDown(e: React.KeyboardEvent, menu: MenuKey) {
-//     if (e.key === "Enter" || e.key === " ") {
-//       e.preventDefault();
-//       toggleMenu(menu);
-//     }
-//     if (e.key === "Escape") {
-//       e.preventDefault();
-//       setOpenMenu(null);
-//     }
-//     if (e.key === "ArrowDown") {
-//       e.preventDefault();
-//       toggleMenu(menu);
-//       setTimeout(() => {
-//         if (menu === "name") nameInputRef.current?.focus();
-//         else menuItemsRef.current[0]?.focus();
-//       }, 0);
-//     }
-//   }
+//       // default: open under the header cell, aligned left
+//       let top = r.bottom + 8;
+//       let left = r.left;
 
-//   function onMenuKeyDown(e: React.KeyboardEvent) {
-//     if (e.key === "Escape") {
-//       e.preventDefault();
-//       setOpenMenu(null);
-//       return;
+//       // keep within viewport horizontally
+//       const MENU_W = 224; // ~w-56
+//       const padding = 8;
+//       if (left + MENU_W > window.innerWidth - padding) {
+//         left = Math.max(padding, window.innerWidth - MENU_W - padding);
+//       } else {
+//         left = Math.max(padding, left);
+//       }
+
+//       // keep within viewport vertically (open upward if near bottom)
+//       const MENU_H = 220; // enough for your menus
+//       if (top + MENU_H > window.innerHeight - padding) {
+//         top = Math.max(padding, r.top - MENU_H - 8);
+//       }
+
+//       setMenuPos({ top, left });
+//     } else {
+//       setMenuPos(null);
 //     }
-//     if (e.key === "ArrowDown") {
-//       e.preventDefault();
-//       const next = Math.min(menuItemsRef.current.length - 1, menuFocusIndex + 1);
-//       setMenuFocusIndex(next);
-//       menuItemsRef.current[next]?.focus();
-//       return;
-//     }
-//     if (e.key === "ArrowUp") {
-//       e.preventDefault();
-//       const prev = Math.max(0, menuFocusIndex - 1);
-//       setMenuFocusIndex(prev);
-//       menuItemsRef.current[prev]?.focus();
-//       return;
-//     }
-//     if (e.key === "Home") {
-//       e.preventDefault();
-//       setMenuFocusIndex(0);
-//       menuItemsRef.current[0]?.focus();
-//       return;
-//     }
-//     if (e.key === "End") {
-//       e.preventDefault();
-//       const last = Math.max(0, menuItemsRef.current.length - 1);
-//       setMenuFocusIndex(last);
-//       menuItemsRef.current[last]?.focus();
-//       return;
-//     }
-//   }
+
+//     return next;
+//   });
+// }
+
+
+// //   function toggleMenu(key: MenuKey, el?: HTMLElement) {
+// //     setOpenMenu((prev) => {
+// //       const next = prev === key ? null : key;
+// //       return next;
+// //     });
+// //     if (el) setAnchorEl(el);
+// //   }
 
 //   /* ---------------- Filtering + sorting ---------------- */
 
@@ -335,12 +444,10 @@
 //     onClick,
 //     onKeyDown,
 //     children,
-//     alignRight,
 //   }: {
-//     onClick?: () => void;
+//     onClick?: (e: React.MouseEvent) => void;
 //     onKeyDown?: (e: React.KeyboardEvent) => void;
 //     children: React.ReactNode;
-//     alignRight?: boolean;
 //   }) {
 //     return (
 //       <th
@@ -348,50 +455,29 @@
 //         tabIndex={0}
 //         onClick={onClick}
 //         onKeyDown={onKeyDown}
-//         className={`p-3 text-left cursor-pointer select-none relative outline-none focus:ring-2 focus:ring-white/40 ${
-//           alignRight ? "text-right" : ""
-//         }`}
+//         className="p-3 text-left cursor-pointer select-none outline-none focus:ring-2 focus:ring-white/40"
 //       >
 //         {children}
 //       </th>
 //     );
 //   }
 
-//   function Menu({ children }: { children: React.ReactNode }) {
-//     return (
-//       <div
-//         ref={menuRef}
-//         onKeyDown={onMenuKeyDown}
-//         className="absolute right-2 top-full mt-2 w-56 rounded-lg border bg-white shadow-lg z-30 p-2"
-//         onMouseDown={(e) => e.stopPropagation()}
-//       onClick={(e) => e.stopPropagation()}
-//       >
-//         {children}
-//       </div>
-//     );
-//   }
-
-//   function MenuItem({
+//   function OptionButton({
 //     active,
 //     onClick,
 //     children,
-//     index,
 //   }: {
 //     active?: boolean;
 //     onClick: () => void;
 //     children: React.ReactNode;
-//     index: number;
 //   }) {
 //     return (
 //       <button
-//         ref={(el) => {
-//           if (el) menuItemsRef.current[index] = el;
-//         }}
-//         onFocus={() => setMenuFocusIndex(index)}
+//         className={[
+//           "w-full text-left rounded-md px-3 py-2 text-sm transition",
+//           active ? "bg-slate-900 text-white" : "hover:bg-slate-50 text-slate-800",
+//         ].join(" ")}
 //         onClick={onClick}
-//         className={`w-full text-left px-3 py-2 rounded-md text-sm ${
-//           active ? "bg-slate-900 text-white" : "hover:bg-slate-100 text-slate-800"
-//         }`}
 //       >
 //         {children}
 //       </button>
@@ -400,10 +486,9 @@
 
 //   return (
 //     <div className="rounded-2xl border bg-white shadow-sm p-0 overflow-hidden">
-//       {/* ✅ Sticky PAGE header (NOT the table header) */}
+//       {/* Sticky PAGE header */}
 //       <div className="sticky top-0 z-30 bg-white border-b">
 //         <div className="p-5 space-y-3">
-//           {/* Title row */}
 //           <div className="flex items-start justify-between gap-3">
 //             <div>
 //               <h1 className="text-2xl font-semibold">All Players</h1>
@@ -415,7 +500,6 @@
 //             <div className="flex items-center gap-3">
 //               <div className="text-sm text-slate-600">Showing {rows.length} player(s)</div>
 
-//               {/* Copy share link */}
 //               <button
 //                 className="hidden md:inline border rounded-lg px-3 py-2 text-sm hover:bg-slate-50"
 //                 onClick={copyShareLink}
@@ -424,7 +508,6 @@
 //                 Copy link
 //               </button>
 
-//               {/* Mobile Filters button */}
 //               <button
 //                 className="md:hidden border rounded-lg px-3 py-2 text-sm hover:bg-slate-50"
 //                 onClick={() => setDrawerOpen(true)}
@@ -434,7 +517,7 @@
 //             </div>
 //           </div>
 
-//           {/* ✅ Active filter chips */}
+//           {/* Chips */}
 //           <div className="flex flex-wrap items-center gap-2">
 //             {chips.length === 0 ? (
 //               <span className="text-xs text-slate-500">No filters applied</span>
@@ -452,10 +535,7 @@
 //                   </button>
 //                 ))}
 
-//                 <button
-//                   className="text-xs underline text-slate-600 ml-1"
-//                   onClick={clearAllFilters}
-//                 >
+//                 <button className="text-xs underline text-slate-600 ml-1" onClick={clearAllFilters}>
 //                   Clear all
 //                 </button>
 //               </>
@@ -465,7 +545,7 @@
 //       </div>
 
 //       <div className="p-5 space-y-6">
-//         {/* Top 5 cards */}
+//         {/* Top 5 */}
 //         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3">
 //           {top5.map((p) => (
 //             <div key={p.id} className="border rounded-xl p-3 bg-slate-50">
@@ -481,82 +561,33 @@
 //         {/* Table */}
 //         <div className="border rounded-xl overflow-hidden">
 //           <div className="overflow-x-auto">
-//             <table className="w-full text-sm">
-//               {/* ❌ NOT sticky */}
+//             <table className="w-full text-sm min-w-[560px]">
 //               <thead className="bg-slate-900 text-white">
 //                 <tr>
 //                   <HeaderCell
-//                     onClick={() => toggleMenu("name")}
-//                     onKeyDown={(e) => onHeaderKeyDown(e, "name")}
+//                     onClick={(e) => toggleMenu("name", e.currentTarget as HTMLElement)}
+//                     onKeyDown={(e) => {
+//                       if (e.key === "Enter" || e.key === " ") {
+//                         e.preventDefault();
+//                         toggleMenu("name", e.currentTarget as unknown as HTMLElement);
+//                       }
+//                       if (e.key === "Escape") closeAllOverlays();
+//                     }}
 //                   >
-//                     <span className="hidden md:inline">Name ▾</span>
-//                     <span className="md:hidden">Name</span>
-
-//                     {openMenu === "name" && (
-//                       <Menu>
-//                         <div className="px-1 pb-2 text-xs text-slate-500">Filter by name</div>
-//                         <input
-//                           ref={nameInputRef}
-//                           className="w-full border rounded-md px-2 py-1 text-sm text-slate-900"
-//                           placeholder="Search name..."
-//                           value={nameQuery}
-//                           onChange={(e) => setNameQuery(e.target.value)}
-//                         />
-//                         <div className="flex justify-between pt-2">
-//                           <button
-//                             className="text-xs underline text-slate-600"
-//                             onClick={() => setNameQuery("")}
-//                           >
-//                             Clear
-//                           </button>
-//                           <button
-//                             className="text-xs underline text-slate-600"
-//                             onClick={copyShareLink}
-//                             title="Copy shareable link"
-//                           >
-//                             Copy link
-//                           </button>
-//                         </div>
-//                       </Menu>
-//                     )}
+//                     Name ▾
 //                   </HeaderCell>
 
 //                   <HeaderCell
-//                     onClick={() => toggleMenu("position")}
-//                     onKeyDown={(e) => onHeaderKeyDown(e, "position")}
+//                     onClick={(e) => toggleMenu("position", e.currentTarget as HTMLElement)}
+//                     onKeyDown={(e) => {
+//                       if (e.key === "Enter" || e.key === " ") {
+//                         e.preventDefault();
+//                         toggleMenu("position", e.currentTarget as unknown as HTMLElement);
+//                       }
+//                       if (e.key === "Escape") closeAllOverlays();
+//                     }}
 //                   >
-//                     <span className="hidden md:inline">Position ▾</span>
-//                     <span className="md:hidden">Position</span>
-
-//                     {openMenu === "position" && (
-//                       <Menu>
-//                         <div className="px-1 pb-2 text-xs text-slate-500">Filter by position</div>
-//                         <MenuItem
-//                           index={0}
-//                           active={positionFilter === "ALL"}
-//                           onClick={() => {
-//                             setPositionFilter("ALL");
-//                             setOpenMenu(null);
-//                           }}
-//                         >
-//                           All
-//                         </MenuItem>
-
-//                         {POSITIONS.map((p, i) => (
-//                           <MenuItem
-//                             key={p}
-//                             index={i + 1}
-//                             active={positionFilter === p}
-//                             onClick={() => {
-//                               setPositionFilter(p);
-//                               setOpenMenu(null);
-//                             }}
-//                           >
-//                             {positionLabel(p)}
-//                           </MenuItem>
-//                         ))}
-//                       </Menu>
-//                     )}
+//                     Position ▾
 //                   </HeaderCell>
 
 //                   <HeaderCell
@@ -572,30 +603,16 @@
 //                   </HeaderCell>
 
 //                   <HeaderCell
-//                     onClick={() => toggleMenu("status")}
-//                     onKeyDown={(e) => onHeaderKeyDown(e, "status")}
+//                     onClick={(e) => toggleMenu("status", e.currentTarget as HTMLElement)}
+//                     onKeyDown={(e) => {
+//                       if (e.key === "Enter" || e.key === " ") {
+//                         e.preventDefault();
+//                         toggleMenu("status", e.currentTarget as unknown as HTMLElement);
+//                       }
+//                       if (e.key === "Escape") closeAllOverlays();
+//                     }}
 //                   >
-//                     <span className="hidden md:inline">Status ▾</span>
-//                     <span className="md:hidden">Status</span>
-
-//                     {openMenu === "status" && (
-//                       <Menu>
-//                         <div className="px-1 pb-2 text-xs text-slate-500">Filter by status</div>
-//                         {STATUS_OPTIONS.map((s, i) => (
-//                           <MenuItem
-//                             key={s.key}
-//                             index={i}
-//                             active={statusFilter === s.key}
-//                             onClick={() => {
-//                               setStatusFilter(s.key);
-//                               setOpenMenu(null);
-//                             }}
-//                           >
-//                             {s.label}
-//                           </MenuItem>
-//                         ))}
-//                       </Menu>
-//                     )}
+//                     Status ▾
 //                   </HeaderCell>
 //                 </tr>
 //               </thead>
@@ -627,23 +644,106 @@
 //                     </td>
 //                   </tr>
 //                 )}
+
+//                 {loading && (
+//                   <tr>
+//                     <td colSpan={4} className="p-4 text-slate-600">
+//                       Loading...
+//                     </td>
+//                   </tr>
+//                 )}
 //               </tbody>
 //             </table>
 //           </div>
 //         </div>
 //       </div>
 
+//       {/* ---------------- Portal Popovers ---------------- */}
+//       <HeaderPopover
+//         open={openMenu === "name"}
+//         anchorEl={anchorEl}
+//         title="Filter by name"
+//         onClose={() => closeAllOverlays()}
+//       >
+//         <input
+//           ref={nameInputRef}
+//           className="w-full border rounded-md px-3 py-2 text-sm text-slate-900"
+//           placeholder="Type a name..."
+//           value={nameQuery}
+//           onChange={(e) => setNameQuery(e.target.value)}
+//         />
+//         <div className="flex justify-between pt-2">
+//           <button className="text-xs underline text-slate-600" onClick={() => setNameQuery("")}>
+//             Clear
+//           </button>
+//           <button className="text-xs underline text-slate-600" onClick={() => closeAllOverlays()}>
+//             Done
+//           </button>
+//         </div>
+//       </HeaderPopover>
+
+//       <HeaderPopover
+//         open={openMenu === "position"}
+//         anchorEl={anchorEl}
+//         title="Filter by position"
+//         onClose={() => closeAllOverlays()}
+//       >
+//         <div className="space-y-1">
+//           <OptionButton
+//             active={positionFilter === "ALL"}
+//             onClick={() => {
+//               setPositionFilter("ALL");
+//               closeAllOverlays();
+//             }}
+//           >
+//             All
+//           </OptionButton>
+
+//           {POSITIONS.map((pos) => (
+//             <OptionButton
+//               key={pos}
+//               active={positionFilter === pos}
+//               onClick={() => {
+//                 setPositionFilter(pos);
+//                 closeAllOverlays();
+//               }}
+//             >
+//               {positionLabel(pos)}
+//             </OptionButton>
+//           ))}
+//         </div>
+//       </HeaderPopover>
+
+//       <HeaderPopover
+//         open={openMenu === "status"}
+//         anchorEl={anchorEl}
+//         title="Filter by status"
+//         onClose={() => closeAllOverlays()}
+//       >
+//         <div className="space-y-1">
+//           {STATUS_OPTIONS.map((s) => (
+//             <OptionButton
+//               key={s.key}
+//               active={statusFilter === s.key}
+//               onClick={() => {
+//                 setStatusFilter(s.key);
+//                 closeAllOverlays();
+//               }}
+//             >
+//               {s.label}
+//             </OptionButton>
+//           ))}
+//         </div>
+//       </HeaderPopover>
+
 //       {/* ---------------- Mobile Filter Drawer ---------------- */}
 //       {drawerOpen && (
 //         <div className="fixed inset-0 z-40 md:hidden">
-//           {/* overlay */}
 //           <button
 //             className="absolute inset-0 bg-black/40"
 //             onClick={() => setDrawerOpen(false)}
 //             aria-label="Close filters"
 //           />
-
-//           {/* drawer */}
 //           <div className="absolute right-0 top-0 h-full w-[85%] max-w-sm bg-white shadow-xl p-4 overflow-y-auto">
 //             <div className="flex items-center justify-between">
 //               <div className="text-lg font-semibold">Filters</div>
@@ -653,7 +753,6 @@
 //             </div>
 
 //             <div className="mt-4 space-y-4">
-//               {/* Name */}
 //               <div>
 //                 <div className="text-sm font-medium mb-1">Name</div>
 //                 <input
@@ -662,12 +761,9 @@
 //                   value={nameQuery}
 //                   onChange={(e) => setNameQuery(e.target.value)}
 //                 />
-//                 <div className="text-xs text-slate-500 mt-1">
-//                   Debounced search (fast for big lists)
-//                 </div>
+//                 <div className="text-xs text-slate-500 mt-1">Debounced search (fast for big lists)</div>
 //               </div>
 
-//               {/* Position */}
 //               <div>
 //                 <div className="text-sm font-medium mb-1">Position</div>
 //                 <select
@@ -684,7 +780,6 @@
 //                 </select>
 //               </div>
 
-//               {/* Status */}
 //               <div>
 //                 <div className="text-sm font-medium mb-1">Status</div>
 //                 <select
@@ -700,7 +795,6 @@
 //                 </select>
 //               </div>
 
-//               {/* Sort */}
 //               <div>
 //                 <div className="text-sm font-medium mb-1">Sort by score</div>
 //                 <div className="flex gap-2">
@@ -723,28 +817,6 @@
 //                 </div>
 //               </div>
 
-//               {/* Chips preview in drawer */}
-//               <div className="pt-1">
-//                 <div className="text-sm font-medium mb-2">Active filters</div>
-//                 <div className="flex flex-wrap gap-2">
-//                   {chips.length === 0 ? (
-//                     <span className="text-xs text-slate-500">No filters applied</span>
-//                   ) : (
-//                     chips.map((c) => (
-//                       <button
-//                         key={c.key}
-//                         className="inline-flex items-center gap-2 px-3 py-1 rounded-full border bg-slate-50 text-xs hover:bg-slate-100"
-//                         onClick={c.onClear}
-//                       >
-//                         <span className="text-slate-700">{c.label}</span>
-//                         <span className="text-slate-500">✕</span>
-//                       </button>
-//                     ))
-//                   )}
-//                 </div>
-//               </div>
-
-//               {/* Actions */}
 //               <div className="pt-2 flex gap-2">
 //                 <button className="flex-1 border rounded-lg px-3 py-2 text-sm" onClick={clearAllFilters}>
 //                   Reset
@@ -757,8 +829,8 @@
 //                 </button>
 //               </div>
 
-//               <button className="w-full text-xs underline text-slate-500 pt-2" onClick={closeAllOverlays}>
-//                 Close all menus
+//               <button className="w-full text-xs underline text-slate-500 pt-2" onClick={copyShareLink}>
+//                 Copy share link
 //               </button>
 //             </div>
 //           </div>
@@ -767,7 +839,6 @@
 //     </div>
 //   );
 // }
-
 
 "use client";
 
@@ -912,7 +983,6 @@ function HeaderPopover({
       const r = anchorEl.getBoundingClientRect();
       const desiredW = clamp(r.width, 220, 320);
 
-      // Measure popover
       const popH = popRef.current?.offsetHeight ?? 220;
       const popW = popRef.current?.offsetWidth ?? desiredW;
 
@@ -930,8 +1000,7 @@ function HeaderPopover({
 
     // 2-frame compute so height is accurate after render
     const raf1 = requestAnimationFrame(() => {
-      const raf2 = requestAnimationFrame(compute);
-      return () => cancelAnimationFrame(raf2);
+      requestAnimationFrame(compute);
     });
 
     const onResizeOrScroll = () => {
@@ -964,11 +1033,8 @@ function HeaderPopover({
   return createPortal(
     <div data-popover-root="true">
       {/* overlay */}
-      <button
-        className="fixed inset-0 z-[60] cursor-default"
-        onClick={onClose}
-        aria-label="Close"
-      />
+      <button className="fixed inset-0 z-[60] cursor-default" onClick={onClose} aria-label="Close" />
+
       <div
         ref={popRef}
         className="fixed z-[70] rounded-xl border bg-white shadow-lg p-3"
@@ -1012,7 +1078,9 @@ export default function PlayersClientPage() {
   const [openMenu, setOpenMenu] = useState<MenuKey>(null);
   const [drawerOpen, setDrawerOpen] = useState(false);
 
+  // IMPORTANT: anchorEl is what positions the portal popover correctly.
   const [anchorEl, setAnchorEl] = useState<HTMLElement | null>(null);
+
   const nameInputRef = useRef<HTMLInputElement | null>(null);
 
   // Load players
@@ -1080,18 +1148,29 @@ export default function PlayersClientPage() {
     }
   }, [openMenu]);
 
+  // Close popover/drawer on outside click is handled by HeaderPopover overlay.
+  // But we also close if route changes etc. (optional)
   function closeAllOverlays() {
     setOpenMenu(null);
     setDrawerOpen(false);
     setAnchorEl(null);
   }
 
-  function toggleMenu(key: MenuKey, el?: HTMLElement) {
+  /**
+   * FIX: Your dropdown was appearing top-left because HeaderPopover was still
+   * anchored to old/stale anchorEl (or never set), while toggleMenu was only setting menuPos.
+   * We remove menuPos entirely and ALWAYS set anchorEl here.
+   */
+  function toggleMenu(key: MenuKey, el?: HTMLElement | null) {
     setOpenMenu((prev) => {
       const next = prev === key ? null : key;
+      if (next) {
+        setAnchorEl(el ?? null);
+      } else {
+        setAnchorEl(null);
+      }
       return next;
     });
-    if (el) setAnchorEl(el);
   }
 
   /* ---------------- Filtering + sorting ---------------- */
@@ -1178,8 +1257,8 @@ export default function PlayersClientPage() {
     onKeyDown,
     children,
   }: {
-    onClick?: (e: React.MouseEvent) => void;
-    onKeyDown?: (e: React.KeyboardEvent) => void;
+    onClick?: (e: React.MouseEvent<HTMLElement>) => void;
+    onKeyDown?: (e: React.KeyboardEvent<HTMLElement>) => void;
     children: React.ReactNode;
   }) {
     return (
@@ -1225,9 +1304,7 @@ export default function PlayersClientPage() {
           <div className="flex items-start justify-between gap-3">
             <div>
               <h1 className="text-2xl font-semibold">All Players</h1>
-              <p className="text-xs text-slate-600">
-                Score = rating×10 + stamina×2 + positionWeight×3
-              </p>
+              <p className="text-xs text-slate-600">Score = rating×10 + stamina×2 + positionWeight×3</p>
             </div>
 
             <div className="flex items-center gap-3">
@@ -1302,7 +1379,7 @@ export default function PlayersClientPage() {
                     onKeyDown={(e) => {
                       if (e.key === "Enter" || e.key === " ") {
                         e.preventDefault();
-                        toggleMenu("name", e.currentTarget as unknown as HTMLElement);
+                        toggleMenu("name", e.currentTarget as HTMLElement);
                       }
                       if (e.key === "Escape") closeAllOverlays();
                     }}
@@ -1315,7 +1392,7 @@ export default function PlayersClientPage() {
                     onKeyDown={(e) => {
                       if (e.key === "Enter" || e.key === " ") {
                         e.preventDefault();
-                        toggleMenu("position", e.currentTarget as unknown as HTMLElement);
+                        toggleMenu("position", e.currentTarget as HTMLElement);
                       }
                       if (e.key === "Escape") closeAllOverlays();
                     }}
@@ -1340,7 +1417,7 @@ export default function PlayersClientPage() {
                     onKeyDown={(e) => {
                       if (e.key === "Enter" || e.key === " ") {
                         e.preventDefault();
-                        toggleMenu("status", e.currentTarget as unknown as HTMLElement);
+                        toggleMenu("status", e.currentTarget as HTMLElement);
                       }
                       if (e.key === "Escape") closeAllOverlays();
                     }}
@@ -1391,7 +1468,7 @@ export default function PlayersClientPage() {
         </div>
       </div>
 
-      {/* ---------------- Portal Popovers ---------------- */}
+      {/* ---------------- Portal Popovers (properly anchored) ---------------- */}
       <HeaderPopover
         open={openMenu === "name"}
         anchorEl={anchorEl}
@@ -1472,11 +1549,7 @@ export default function PlayersClientPage() {
       {/* ---------------- Mobile Filter Drawer ---------------- */}
       {drawerOpen && (
         <div className="fixed inset-0 z-40 md:hidden">
-          <button
-            className="absolute inset-0 bg-black/40"
-            onClick={() => setDrawerOpen(false)}
-            aria-label="Close filters"
-          />
+          <button className="absolute inset-0 bg-black/40" onClick={() => setDrawerOpen(false)} aria-label="Close filters" />
           <div className="absolute right-0 top-0 h-full w-[85%] max-w-sm bg-white shadow-xl p-4 overflow-y-auto">
             <div className="flex items-center justify-between">
               <div className="text-lg font-semibold">Filters</div>
@@ -1554,10 +1627,7 @@ export default function PlayersClientPage() {
                 <button className="flex-1 border rounded-lg px-3 py-2 text-sm" onClick={clearAllFilters}>
                   Reset
                 </button>
-                <button
-                  className="flex-1 bg-slate-900 text-white rounded-lg px-3 py-2 text-sm"
-                  onClick={() => setDrawerOpen(false)}
-                >
+                <button className="flex-1 bg-slate-900 text-white rounded-lg px-3 py-2 text-sm" onClick={() => setDrawerOpen(false)}>
                   Apply
                 </button>
               </div>
