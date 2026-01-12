@@ -805,6 +805,10 @@ export default function AdminPage() {
 
   const editFirstInputRef = useRef<HTMLInputElement | null>(null);
 
+  const [deleteDate, setDeleteDate] = useState<string>(() => new Date().toISOString().slice(0, 10));
+  const [deleteBusy, setDeleteBusy] = useState(false);
+
+
 
   async function loadPlayers() {
     setMsg(null);
@@ -941,7 +945,6 @@ export default function AdminPage() {
         stamina: editStamina,
       }),
     });
-
     const data = await res.json().catch(() => ({}));
     if (!res.ok) {
       setMsg(data?.error ?? "Failed to update player");
@@ -951,6 +954,34 @@ export default function AdminPage() {
     setEditId(null);
     await loadPlayers();
     setMsg("✅ Player updated.");
+  }
+
+  async function deletePublishedTeams() {
+    setMsg(null);
+  
+    const ok = confirm(`Delete published teams for ${deleteDate}? This cannot be undone.`);
+    if (!ok) return;
+  
+    setDeleteBusy(true);
+    try {
+      const res = await fetch(`/api/admin/publish?date=${encodeURIComponent(deleteDate)}`, {
+        method: "DELETE",
+      });
+      const data = await res.json().catch(() => ({}));
+  
+      if (!res.ok) {
+        setMsg(data?.error ?? "Failed to delete published teams");
+        return;
+      }
+      
+      setMsg(`✅ Deleted published teams for ${deleteDate}. (${data.deleted} record(s))`);
+  
+      // Optional: clear preview if you want
+      // setPreviewTeams(null);
+      // setPreviewDate(null);
+    } finally {
+      setDeleteBusy(false);
+    }
   }
 
   async function toggleActive(p: Player) {
@@ -1414,6 +1445,35 @@ export default function AdminPage() {
             </div>
           </div>
         </div>            
+
+        {/* Delete Published Teams */}
+<div className="border rounded-2xl p-5 space-y-3 bg-white shadow-sm mt-4">
+  <div className="font-semibold text-slate-900">Delete Published Teams</div>
+  <div className="text-xs text-slate-500">
+    Deletes the published teams saved for a specific date (Home page will no longer show them).
+  </div>
+
+  <div className="grid grid-cols-1 md:grid-cols-3 gap-3 items-end">
+    <div>
+      <label className="block text-sm font-medium text-slate-700 mb-1">Date</label>
+      <input
+        type="date"
+        className="border rounded-lg px-3 py-2 w-full bg-white"
+        value={deleteDate}
+        onChange={(e) => setDeleteDate(e.target.value)}
+      />
+    </div>
+
+    <button
+      className="rounded-lg py-2 font-semibold text-white bg-rose-600 hover:bg-rose-700 disabled:opacity-60"
+      onClick={deletePublishedTeams}
+      disabled={deleteBusy}
+    >
+      {deleteBusy ? "Deleting..." : "Delete Published Teams"}
+    </button>
+  </div>
+</div>
+
 
         {previewTeams && (
           <div className="border rounded-2xl overflow-hidden bg-white shadow-sm mt-4">
