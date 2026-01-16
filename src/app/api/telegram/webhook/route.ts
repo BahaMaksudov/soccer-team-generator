@@ -1,6 +1,27 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 
+
+function nextMondayDate(base = new Date()) {
+    // We want: if today is Monday -> today, else next Monday.
+    const d = new Date(base);
+    d.setHours(0, 0, 0, 0);
+  
+    const day = d.getDay(); // 0=Sun, 1=Mon, ... 6=Sat
+    const daysUntilMonday = (8 - day) % 7; // Sun->1, Mon->0, Tue->6, etc.
+    d.setDate(d.getDate() + daysUntilMonday);
+  
+    return d;
+  }
+  
+  function formatMDYY(d: Date) {
+    const m = d.getMonth() + 1;
+    const day = d.getDate();
+    const yy = String(d.getFullYear()).slice(-2);
+    return `${m}/${day}/${yy}`;
+  }
+  
+
 // Telegram sends JSON updates here
 export async function POST(req: NextRequest) {
   // Simple shared-secret verification (recommended)
@@ -42,7 +63,7 @@ async function handleMessage(message: any) {
   if (cmd === "/poll") {
     // Create a standard poll
     // You can customize question/options
-    const question = "Who is playing this week?";
+    const question = `Who is playing on ${formatMDYY(nextMon)}?`;
     const options = ["✅ Playing", "❌ Not playing"];
 
     const resp = await telegram("sendPoll", {

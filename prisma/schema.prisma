@@ -33,12 +33,13 @@ model Player {
   updatedAt DateTime @updatedAt
 
   // ✅ NEW (Telegram link)
-  telegramUserId   BigInt?  @unique
+  telegramUserId   BigInt? @unique
   telegramUsername String?
   telegramFirst    String?
   telegramLast     String?
-}
 
+  telegramLink TelegramUserLink[]
+}
 
 model TeamGeneration {
   id        String   @id @default(cuid())
@@ -47,6 +48,7 @@ model TeamGeneration {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 }
+
 model AppSetting {
   key       String   @id
   value     String
@@ -63,21 +65,30 @@ model TelegramPoll {
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
-  answers     TelegramPollAnswer[]
+  answers TelegramPollAnswer[]
 }
 
 model TelegramPollAnswer {
-  id          String   @id @default(cuid())
-  pollId      String
-  userId      BigInt
-  username    String?
-  firstName   String?
-  lastName    String?
+  id            String   @id @default(cuid())
+  pollId        String
+  userId        BigInt
+  username      String?
+  firstName     String?
+  lastName      String?
   optionIdsJson String
-  updatedAt   DateTime @updatedAt
+  updatedAt     DateTime @updatedAt
 
-  poll        TelegramPoll @relation(fields: [pollId], references: [pollId], onDelete: Cascade)
+  poll TelegramPoll @relation(fields: [pollId], references: [pollId], onDelete: Cascade)
 
   @@unique([pollId, userId])
 }
 
+model TelegramUserLink {
+  id        String   @id @default(cuid())
+  userId    BigInt   @unique
+  playerId  String   @unique
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  player Player @relation(fields: [playerId], references: [id], onDelete: Cascade)
+}
