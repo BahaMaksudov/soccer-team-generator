@@ -63,6 +63,7 @@ async function handleMessage(message: any) {
   if (cmd === "/poll") {
     // Create a standard poll
     // You can customize question/options
+    const nextMon = nextMondayDate(new Date());
     const question = `Who is playing on ${formatMDYY(nextMon)}?`;
     const options = ["✅ Playing", "❌ Not playing"];
 
