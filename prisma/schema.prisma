@@ -27,14 +27,18 @@ model Player {
   lastName  String
   position  Position
   rating    Rating
-  stamina Int @default(3)
+  stamina   Int      @default(3)
   isActive  Boolean  @default(true)
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
-   // ✅ Telegram link (new)
-  telegramUserId BigInt?  @unique
+
+  // ✅ NEW (Telegram link)
+  telegramUserId   BigInt?  @unique
   telegramUsername String?
+  telegramFirst    String?
+  telegramLast     String?
 }
+
 
 model TeamGeneration {
   id        String   @id @default(cuid())
