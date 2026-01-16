@@ -31,6 +31,9 @@ model Player {
   isActive  Boolean  @default(true)
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+   // ✅ Telegram link (new)
+  telegramUserId BigInt?  @unique
+  telegramUsername String?
 }
 
 model TeamGeneration {
@@ -45,3 +48,32 @@ model AppSetting {
   value     String
   updatedAt DateTime @updatedAt
 }
+
+model TelegramPoll {
+  pollId      String   @id
+  chatId      BigInt
+  messageId   BigInt?
+  question    String
+  optionsJson String
+  isClosed    Boolean  @default(false)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  answers     TelegramPollAnswer[]
+}
+
+model TelegramPollAnswer {
+  id          String   @id @default(cuid())
+  pollId      String
+  userId      BigInt
+  username    String?
+  firstName   String?
+  lastName    String?
+  optionIdsJson String
+  updatedAt   DateTime @updatedAt
+
+  poll        TelegramPoll @relation(fields: [pollId], references: [pollId], onDelete: Cascade)
+
+  @@unique([pollId, userId])
+}
+
