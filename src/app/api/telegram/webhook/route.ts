@@ -289,10 +289,10 @@ async function handleMessage(message: any) {
   const args = text.split(" ").slice(1);
 
   if (text === "/chatid") {
-    const chatId = msg.chat.id;
+    const chatId = message.chat.id;
     const title =
-      msg.chat.title ||
-      [msg.chat.first_name, msg.chat.last_name].filter(Boolean).join(" ") ||
+    message.chat.title ||
+      [message.chat.first_name, message.chat.last_name].filter(Boolean).join(" ") ||
       "Unknown chat";
   
     // 1️⃣ Reply in Telegram so you SEE it worked
