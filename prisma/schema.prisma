@@ -65,6 +65,8 @@ model TelegramPoll {
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
+  pollDate DateTime?
+
   answers TelegramPollAnswer[]
 }
 
@@ -91,4 +93,12 @@ model TelegramUserLink {
   updatedAt DateTime @updatedAt
 
   player Player @relation(fields: [playerId], references: [id], onDelete: Cascade)
+}
+
+model TelegramChat {
+  id        Int      @id @default(autoincrement())
+  chatId    BigInt   @unique
+  title     String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 }

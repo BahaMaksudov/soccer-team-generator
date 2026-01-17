@@ -2,8 +2,20 @@ import Link from "next/link";
 import { prisma } from "@/lib/prisma";
 import { positionLabel } from "@/lib/labels";
 
-function formatDate(d: Date) {
-  return d.toLocaleDateString(undefined, { year: "numeric", month: "long", day: "numeric" });
+// function formatDate(d: Date) {
+//   return d.toLocaleDateString(undefined, { year: "numeric", month: "long", day: "numeric" });
+// }
+
+function formatDate(value: Date | string) {
+  const d = value instanceof Date ? value : new Date(value);
+
+  // Always render as a calendar day in UTC (prevents 1-day shift)
+  return d.toLocaleDateString("en-US", {
+    timeZone: "UTC",
+    year: "numeric",
+    month: "long",
+    day: "numeric",
+  });
 }
 
 export default async function Home({

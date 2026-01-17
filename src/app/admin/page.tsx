@@ -25,6 +25,8 @@ type TelegramUser = {
 const positions = ["GOALKEEPER", "DEFENDER", "MIDFIELDER", "FORWARD"] as const;
 const ratings = ["FAIR", "GOOD", "VERY_GOOD", "EXCELLENT"] as const;
 
+
+
 /* ---------------- Score helpers ---------------- */
 
 const ratingWeight: Record<Player["rating"], number> = {
@@ -100,6 +102,11 @@ export default function AdminPage() {
   const [tgBusy, setTgBusy] = useState(false);
   const [linkSelection, setLinkSelection] = useState<Record<string, string>>({}); // userId -> playerId
   const [pollIdInput, setPollIdInput] = useState("");
+
+  const [importedPollId, setImportedPollId] = useState<string>("");
+
+  const topMsgRef = useRef<HTMLDivElement | null>(null);
+
 
   async function loadPlayers() {
     setMainMsg(null);
@@ -314,24 +321,97 @@ export default function AdminPage() {
     setMainMsg("Preview generated. If it looks good, click Publish. You can regenerate multiple times.");
   }
 
+  // async function publish() {
+  //   setMainMsg(null);
+  //   if (!previewTeams || !previewDate) {
+  //     setMainMsg("Generate teams first, then publish.");
+  //     return;
+  //   }
+  //   const res = await fetch("/api/admin/publish", {
+  //     method: "POST",
+  //     headers: { "Content-Type": "application/json" },
+  //     body: JSON.stringify({ date: previewDate, teams: previewTeams }),
+  //   });
+  //   const data = await res.json();
+  //   if (!res.ok) {
+  //     setMainMsg(data?.error ?? "Failed to publish");
+  //     return;
+  //   }
+  //   setMainMsg("✅ Published! Home page updated for that date (previous teams replaced).");
+  // }
+
   async function publish() {
     setMainMsg(null);
     if (!previewTeams || !previewDate) {
       setMainMsg("Generate teams first, then publish.");
       return;
     }
+  
+    const pollId = importedPollId || pollIdInput.trim(); // ✅ fallback if you didn’t import but pasted it
+  
     const res = await fetch("/api/admin/publish", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ date: previewDate, teams: previewTeams }),
+      body: JSON.stringify({
+        date: previewDate,
+        teams: previewTeams,
+        pollId,        // ✅ send pollId so API can close it
+        closePoll: true,
+      }),
     });
-    const data = await res.json();
+  
+    const data = await res.json().catch(() => ({}));
+
+if (!res.ok) {
+  setMainMsg(data?.error ?? "Failed to publish");
+  return;
+}
+
+let pollMsg = "";
+switch (data?.pollCloseStatus) {
+  case "closed_now":
+    pollMsg = " Poll closed ✅";
+    break;
+  case "already_closed":
+    pollMsg = " Poll was already closed ✅";
+    break;
+  case "missing_message":
+    pollMsg = " Poll not closed (missing chat/message info).";
+    break;
+  case "not_found":
+    pollMsg = " Poll not closed (pollId not found in DB).";
+    break;
+  default:
+    pollMsg = "";
+}
+
+    setMainMsg(`✅ Published! Home page updated.${pollMsg}`);
+
+    setTimeout(() => {
+      topMsgRef.current?.scrollIntoView({
+        behavior: "smooth",
+        block: "start",
+      });
+      topMsgRef.current?.focus();
+    }, 0);
+
+    // const data = await res.json().catch(() => ({}));
+  
     if (!res.ok) {
       setMainMsg(data?.error ?? "Failed to publish");
       return;
     }
-    setMainMsg("✅ Published! Home page updated for that date (previous teams replaced).");
+  
+    // Optional: if your API returns pollClosed + pollCloseReason, show it
+    if (data.pollClosed) {
+      setMainMsg("✅ Published! Poll closed in Telegram.");
+    } else if (pollId) {
+      setMainMsg(`✅ Published! (Poll not closed: ${data.pollCloseReason ?? "unknown reason"})`);
+    } else {
+      setMainMsg("✅ Published! (No pollId provided, so poll was not closed.)");
+    }
   }
+  
 
   function clearPreview() {
     setPreviewTeams(null);
@@ -392,44 +472,85 @@ export default function AdminPage() {
     }
   }
 
+  // async function importFromTelegramPoll() {
+  //   setImportMsg(null);
+  //   const pollId = pollIdInput.trim();
+  //   if (!pollId) {
+  //     setImportMsg("Poll ID is required.");
+  //     return;
+  //   }
+
+  //   const res = await fetch("/api/admin/telegram/import", {
+  //     method: "POST",
+  //     headers: { "Content-Type": "application/json" },
+  //     body: JSON.stringify({ pollId }),
+  //   });
+
+  //   const data = await res.json().catch(() => ({}));
+  //   if (!res.ok) {
+  //     setImportMsg(data?.error ?? "Failed to import from Telegram poll");
+  //     return;
+  //   }
+
+  //   const ids: string[] = data.selectedPlayerIds ?? [];
+  //   const missing: string[] = data.missingUserIds ?? [];
+
+  //   // auto-select imported players
+  //   setSelected((prev) => {
+  //     const next = { ...prev };
+  //     for (const id of ids) next[id] = true;
+  //     return next;
+  //   });
+
+  //   if (missing.length) {
+  //     setImportMsg(
+  //       `Imported ✅ Playing votes, but ${missing.length} Telegram user(s) are not linked yet. Link them above, then import again.`
+  //     );
+  //   } else {
+  //     setImportMsg(`✅ Imported & selected ${ids.length} player(s) from poll.`);
+  //   }
+  // }
+
   async function importFromTelegramPoll() {
     setImportMsg(null);
-    const pollId = pollIdInput.trim();
-    if (!pollId) {
+  
+    const pid = pollIdInput.trim();
+    if (!pid) {
       setImportMsg("Poll ID is required.");
       return;
     }
-
+  
     const res = await fetch("/api/admin/telegram/import", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ pollId }),
+      body: JSON.stringify({ pollId: pid }),
     });
-
+  
     const data = await res.json().catch(() => ({}));
+  
     if (!res.ok) {
       setImportMsg(data?.error ?? "Failed to import from Telegram poll");
       return;
     }
-
-    const ids: string[] = data.selectedPlayerIds ?? [];
-    const missing: string[] = data.missingUserIds ?? [];
-
-    // auto-select imported players
-    setSelected((prev) => {
-      const next = { ...prev };
+  
+    // ✅ store pollId so Publish can close it later
+    setImportedPollId(pid);
+  
+    // ✅ select imported players
+    const ids: string[] = Array.isArray(data.selectedPlayerIds) ? data.selectedPlayerIds : [];
+    setSelected(() => {
+      const next: Record<string, boolean> = {};
       for (const id of ids) next[id] = true;
       return next;
     });
-
-    if (missing.length) {
-      setImportMsg(
-        `Imported ✅ Playing votes, but ${missing.length} Telegram user(s) are not linked yet. Link them above, then import again.`
-      );
+  
+    if (data.missingUserIds?.length) {
+      setImportMsg(`Imported. Missing links for ${data.missingUserIds.length} Telegram user(s). Link them above.`);
     } else {
-      setImportMsg(`✅ Imported & selected ${ids.length} player(s) from poll.`);
+      setImportMsg("✅ Imported & selected players from poll.");
     }
   }
+  
 
   const playerOptions = useMemo(() => {
     // show active players first
@@ -448,11 +569,24 @@ export default function AdminPage() {
               Settings
             </Link>
 
+            <Link className="text-sm underline" href="/admin/telegram">
+            Telegram
+            </Link>
+
+            {/* <Link href="/admin/telegram" className="...">Telegram</Link> */}
+
+
             <button className="text-sm underline" onClick={() => signOut({ callbackUrl: "/" })}>
               Sign out
             </button>
           </div>
         </div>
+
+        <div
+  ref={topMsgRef}
+  tabIndex={-1}
+  className="mb-4"
+></div>
 
         {mainMsg && <div className="text-sm text-blue-700 mt-2">{mainMsg}</div>}
 
