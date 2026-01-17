@@ -10,6 +10,13 @@ function fullName(first?: string | null, last?: string | null) {
   return `${first ?? ""} ${last ?? ""}`.trim();
 }
 
+function toYmdLocal(d: Date) {
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, "0");
+    const day = String(d.getDate()).padStart(2, "0");
+    return `${y}-${m}-${day}`;
+  }
+
 function nextMondayDate(base = new Date()) {
     const d = new Date(base);
     d.setHours(0, 0, 0, 0);
@@ -48,6 +55,11 @@ export default function AdminTelegramPage() {
   //--setting polldate to next Monday
   useEffect(() => {
     setPollDate((prev) => prev || toYMD(nextMondayDate(new Date())));
+  }, []);
+
+  useEffect(() => {
+    // Pre-fill poll date to next Monday on first load
+    setPollDate((prev) => prev || toYmdLocal(nextMondayDate(new Date())));
   }, []);
 
   // --- Linking form ---

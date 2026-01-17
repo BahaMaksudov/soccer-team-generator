@@ -368,24 +368,58 @@ if (!res.ok) {
 }
 
 let pollMsg = "";
-switch (data?.pollCloseStatus) {
+switch (data?.pollStatus) {
   case "closed_now":
     pollMsg = " Poll closed ✅";
     break;
+
   case "already_closed":
     pollMsg = " Poll was already closed ✅";
     break;
-  case "missing_message":
+
+  case "missing_message_or_chat":
     pollMsg = " Poll not closed (missing chat/message info).";
     break;
-  case "not_found":
+
+  case "poll_not_found_in_db":
     pollMsg = " Poll not closed (pollId not found in DB).";
     break;
+
+  case "token_missing":
+    pollMsg = " Poll not closed (TELEGRAM_BOT_TOKEN missing).";
+    break;
+
+  case "close_failed":
+    pollMsg = " Poll close failed (Telegram error).";
+    break;
+
+  case "not_requested":
+  case "skipped":
   default:
-    pollMsg = "";
+    pollMsg = ""; // don’t show anything
+    break;
 }
 
-    setMainMsg(`✅ Published! Home page updated.${pollMsg}`);
+setMainMsg(`✅ Published! Home page updated.${pollMsg}`);
+
+// switch (data?.pollCloseStatus) {
+//   case "closed_now":
+//     pollMsg = " Poll closed ✅";
+//     break;
+//   case "already_closed":
+//     pollMsg = " Poll was already closed ✅";
+//     break;
+//   case "missing_message":
+//     pollMsg = " Poll not closed (missing chat/message info).";
+//     break;
+//   case "not_found":
+//     pollMsg = " Poll not closed (pollId not found in DB).";
+//     break;
+//   default:
+//     pollMsg = "";
+// }
+
+   
 
     setTimeout(() => {
       topMsgRef.current?.scrollIntoView({
