@@ -314,14 +314,12 @@ async function handleMessage(message: any) {
     return NextResponse.json({ ok: true });
   }
   
-
   if (cmd === "/poll") {
     // Create a standard poll
-    // You can customize question/options
     const nextMon = nextMondayDate(new Date());
     const question = `Who is playing on ${formatMDYY(nextMon)}?`;
     const options = ["✅ Playing", "❌ Not playing"];
-
+  
     const resp = await telegram("sendPoll", {
       chat_id: chatId.toString(),
       question,
@@ -329,12 +327,10 @@ async function handleMessage(message: any) {
       is_anonymous: false,
       allows_multiple_answers: false,
     });
-
-    const nextMon = nextMondayDate(new Date());
-
+  
     // ✅ store the same date the poll question shows
     const pollDate = toDateOnlyUTC(nextMon);
-
+  
     // Store poll in DB
     const poll = resp.poll;
     await prisma.telegramPoll.upsert({
@@ -345,9 +341,7 @@ async function handleMessage(message: any) {
         question: poll.question,
         optionsJson: JSON.stringify(poll.options),
         isClosed: Boolean(poll.is_closed),
-
         pollDate,
-
       },
       create: {
         pollId: poll.id,
@@ -356,14 +350,63 @@ async function handleMessage(message: any) {
         question: poll.question,
         optionsJson: JSON.stringify(poll.options),
         isClosed: Boolean(poll.is_closed),
-
         pollDate,
-
       },
     });
-
+  
     return;
   }
+  
+
+//   if (cmd === "/poll") {
+//     // Create a standard poll
+//     // You can customize question/options
+//     const nextMon = nextMondayDate(new Date());
+//     const question = `Who is playing on ${formatMDYY(nextMon)}?`;
+//     const options = ["✅ Playing", "❌ Not playing"];
+
+//     const resp = await telegram("sendPoll", {
+//       chat_id: chatId.toString(),
+//       question,
+//       options,
+//       is_anonymous: false,
+//       allows_multiple_answers: false,
+//     });
+
+//     const nextMon = nextMondayDate(new Date());
+
+//     // ✅ store the same date the poll question shows
+//     const pollDate = toDateOnlyUTC(nextMon);
+
+//     // Store poll in DB
+//     const poll = resp.poll;
+//     await prisma.telegramPoll.upsert({
+//       where: { pollId: poll.id },
+//       update: {
+//         chatId,
+//         messageId: BigInt(resp.message_id),
+//         question: poll.question,
+//         optionsJson: JSON.stringify(poll.options),
+//         isClosed: Boolean(poll.is_closed),
+
+//         pollDate,
+
+//       },
+//       create: {
+//         pollId: poll.id,
+//         chatId,
+//         messageId: BigInt(resp.message_id),
+//         question: poll.question,
+//         optionsJson: JSON.stringify(poll.options),
+//         isClosed: Boolean(poll.is_closed),
+
+//         pollDate,
+
+//       },
+//     });
+
+//     return;
+//   }
 
   if (cmd === "/link") {
     // /link 1234  (1234 is a short code you show in Admin next to player)
