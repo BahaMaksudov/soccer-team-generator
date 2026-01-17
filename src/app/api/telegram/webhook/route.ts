@@ -298,7 +298,8 @@ async function handleMessage(message: any) {
     // 1️⃣ Reply in Telegram so you SEE it worked
     await telegram("sendMessage", {
       chat_id: chatId,
-      text: `✅ Chat registered\n\nTitle: ${title}\nchatId: ${chatId}`,
+    //   text: `✅ Chat registered\n\nTitle: ${title}\nchatId: ${chatId}`,
+      text: `✅ Chat registered\n\nTitle: ${title}`,
     });
   
     // 2️⃣ Save chatId in DB (for dropdown later)

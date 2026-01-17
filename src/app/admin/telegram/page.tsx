@@ -10,6 +10,25 @@ function fullName(first?: string | null, last?: string | null) {
   return `${first ?? ""} ${last ?? ""}`.trim();
 }
 
+function nextMondayDate(base = new Date()) {
+    const d = new Date(base);
+    d.setHours(0, 0, 0, 0);
+  
+    const day = d.getDay(); // 0=Sun, 1=Mon, ... 6=Sat
+    const daysUntilMonday = (8 - day) % 7;
+    d.setDate(d.getDate() + daysUntilMonday);
+  
+    return d;
+  }
+  
+  function toYMD(d: Date) {
+    const yyyy = d.getFullYear();
+    const mm = String(d.getMonth() + 1).padStart(2, "0");
+    const dd = String(d.getDate()).padStart(2, "0");
+    return `${yyyy}-${mm}-${dd}`;
+  }
+  
+
 export default function AdminTelegramPage() {
   const topRef = useRef<HTMLDivElement | null>(null);
 
@@ -25,6 +44,11 @@ export default function AdminTelegramPage() {
   const [pollDate, setPollDate] = useState(""); // YYYY-MM-DD
   const [question, setQuestion] = useState(""); // optional override
   const [isLoadingPoll, setIsLoadingPoll] = useState(false);
+
+  //--setting polldate to next Monday
+  useEffect(() => {
+    setPollDate((prev) => prev || toYMD(nextMondayDate(new Date())));
+  }, []);
 
   // --- Linking form ---
   const [linkSavingUserId, setLinkSavingUserId] = useState<string | null>(null);
