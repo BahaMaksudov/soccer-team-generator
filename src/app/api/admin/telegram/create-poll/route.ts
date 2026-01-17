@@ -57,23 +57,43 @@ export async function POST(req: Request) {
     }
 
     await prisma.telegramPoll.upsert({
-      where: { pollId: String(pollId) },
-      update: {
-        chatId: BigInt(chatId),
-        messageId: BigInt(messageId),
-        question,
-        pollDate: toDateOnlyUTC(pollDate),
-        isClosed: false,
-      },
-      create: {
-        pollId: String(pollId),
-        chatId: BigInt(chatId),
-        messageId: BigInt(messageId),
-        question,
-        pollDate: toDateOnlyUTC(pollDate),
-        isClosed: false,
-      },
-    });
+        where: { pollId: String(pollId) },
+        update: {
+          chatId: BigInt(chatId),
+          messageId: BigInt(messageId),
+          question,
+          optionsJson: JSON.stringify(options), // ✅ add here too
+          pollDate,
+          isClosed: false,
+        },
+        create: {
+          pollId: String(pollId),
+          chatId: BigInt(chatId),
+          messageId: BigInt(messageId),
+          question,
+          optionsJson: JSON.stringify(options), // ✅ REQUIRED
+          pollDate,
+          isClosed: false,
+        },
+      });
+    // await prisma.telegramPoll.upsert({
+    //   where: { pollId: String(pollId) },
+    //   update: {
+    //     chatId: BigInt(chatId),
+    //     messageId: BigInt(messageId),
+    //     question,
+    //     pollDate: toDateOnlyUTC(pollDate),
+    //     isClosed: false,
+    //   },
+    //   create: {
+    //     pollId: String(pollId),
+    //     chatId: BigInt(chatId),
+    //     messageId: BigInt(messageId),
+    //     question,
+    //     pollDate: toDateOnlyUTC(pollDate),
+    //     isClosed: false,
+    //   },
+    // });
 
     return NextResponse.json({ ok: true, pollId: String(pollId), messageId });
   } catch (e: any) {
