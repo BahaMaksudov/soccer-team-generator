@@ -401,24 +401,6 @@ switch (data?.pollStatus) {
 }
 
 setMainMsg(`✅ Published! Home page updated.${pollMsg}`);
-
-// switch (data?.pollCloseStatus) {
-//   case "closed_now":
-//     pollMsg = " Poll closed ✅";
-//     break;
-//   case "already_closed":
-//     pollMsg = " Poll was already closed ✅";
-//     break;
-//   case "missing_message":
-//     pollMsg = " Poll not closed (missing chat/message info).";
-//     break;
-//   case "not_found":
-//     pollMsg = " Poll not closed (pollId not found in DB).";
-//     break;
-//   default:
-//     pollMsg = "";
-// }
-
    
 
     setTimeout(() => {
@@ -431,19 +413,19 @@ setMainMsg(`✅ Published! Home page updated.${pollMsg}`);
 
     // const data = await res.json().catch(() => ({}));
   
-    if (!res.ok) {
-      setMainMsg(data?.error ?? "Failed to publish");
-      return;
-    }
+    // if (!res.ok) {
+    //   setMainMsg(data?.error ?? "Failed to publish");
+    //   return;
+    // }
   
-    // Optional: if your API returns pollClosed + pollCloseReason, show it
-    if (data.pollClosed) {
-      setMainMsg("✅ Published! Poll closed in Telegram.");
-    } else if (pollId) {
-      setMainMsg(`✅ Published! (Poll not closed: ${data.pollCloseReason ?? "unknown reason"})`);
-    } else {
-      setMainMsg("✅ Published! (No pollId provided, so poll was not closed.)");
-    }
+    // // Optional: if your API returns pollClosed + pollCloseReason, show it
+    // if (data.pollClosed) {
+    //   setMainMsg("✅ Published! Poll closed in Telegram.");
+    // } else if (pollId) {
+    //   setMainMsg(`✅ Published! (Poll not closed: ${data.pollCloseReason ?? "unknown reason"})`);
+    // } else {
+    //   setMainMsg("✅ Published! (No pollId provided, so poll was not closed.)");
+    // }
   }
   
 
