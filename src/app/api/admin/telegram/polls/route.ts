@@ -45,7 +45,7 @@ export async function GET(req: Request) {
     return {
       pollId: p.pollId,
       chatId: chatIdStr,
-      chatTitle: titleByChatId.get(chatIdStr) || Chat ${chatIdStr},
+      chatTitle: titleByChatId.get(chatIdStr) || `Chat ${chatIdStr}`,
       question: p.question ?? "",
       isClosed: Boolean(p.isClosed),
       createdAt: p.createdAt ? p.createdAt.toISOString() : null,
