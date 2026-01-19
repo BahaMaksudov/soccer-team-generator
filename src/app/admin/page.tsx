@@ -22,6 +22,8 @@ type TelegramUser = {
   lastName: string | null;
 };
 
+
+
 const positions = ["GOALKEEPER", "DEFENDER", "MIDFIELDER", "FORWARD"] as const;
 const ratings = ["FAIR", "GOOD", "VERY_GOOD", "EXCELLENT"] as const;
 
@@ -107,6 +109,17 @@ export default function AdminPage() {
 
   const topMsgRef = useRef<HTMLDivElement | null>(null);
 
+  type TgPollItem = {
+    pollId: string;
+    chatId: string;
+    chatTitle: string;
+    question: string;
+    pollDate?: string | null; // YYYY-MM-DD
+    isClosed: boolean;
+  };
+  
+  const [tgPolls, setTgPolls] = useState<TgPollItem[]>([]);
+  const [selectedPollId, setSelectedPollId] = useState<string>("");
 
   async function loadPlayers() {
     setMainMsg(null);
@@ -130,9 +143,28 @@ export default function AdminPage() {
     setTelegramUsers(Array.isArray(data) ? data : []);
   }
 
+  async function loadTelegramPolls() {
+    try {
+      const res = await fetch("/api/admin/telegram/polls", { cache: "no-store" });
+      const data = await res.json().catch(() => ({}));
+      const polls = Array.isArray(data?.polls) ? data.polls : [];
+      setTgPolls(polls);
+  
+      // auto-select newest poll if nothing selected yet
+      if (!selectedPollId && polls.length > 0) {
+        setSelectedPollId(polls[0].pollId);
+        setPollIdInput(polls[0].pollId); // keep your existing pollIdInput in sync
+      }
+    } catch {
+      // ignore
+    }
+  }
+  
+
   useEffect(() => {
     loadPlayers();
     loadTelegramUsers();
+    loadTelegramPolls();
 
     (async () => {
       const res = await fetch("/api/admin/settings/team-name", { cache: "no-store" });
@@ -488,52 +520,61 @@ setMainMsg(`✅ Published! Home page updated.${pollMsg}`);
     }
   }
 
+
   // async function importFromTelegramPoll() {
   //   setImportMsg(null);
-  //   const pollId = pollIdInput.trim();
-  //   if (!pollId) {
+  
+  //   const pid = pollIdInput.trim();
+  //   if (!pid) {
   //     setImportMsg("Poll ID is required.");
   //     return;
   //   }
-
+  
   //   const res = await fetch("/api/admin/telegram/import", {
   //     method: "POST",
   //     headers: { "Content-Type": "application/json" },
-  //     body: JSON.stringify({ pollId }),
+  //     body: JSON.stringify({ pollId: pid }),
   //   });
-
+  
   //   const data = await res.json().catch(() => ({}));
+  
   //   if (!res.ok) {
   //     setImportMsg(data?.error ?? "Failed to import from Telegram poll");
   //     return;
   //   }
-
-  //   const ids: string[] = data.selectedPlayerIds ?? [];
-  //   const missing: string[] = data.missingUserIds ?? [];
-
-  //   // auto-select imported players
-  //   setSelected((prev) => {
-  //     const next = { ...prev };
+  
+  //   // ✅ store pollId so Publish can close it later
+  //   setImportedPollId(pid);
+  
+  //   // ✅ select imported players
+  //   const ids: string[] = Array.isArray(data.selectedPlayerIds) ? data.selectedPlayerIds : [];
+  //   setSelected(() => {
+  //     const next: Record<string, boolean> = {};
   //     for (const id of ids) next[id] = true;
   //     return next;
   //   });
-
-  //   if (missing.length) {
-  //     setImportMsg(
-  //       `Imported ✅ Playing votes, but ${missing.length} Telegram user(s) are not linked yet. Link them above, then import again.`
-  //     );
+  
+  //   if (data.missingUserIds?.length) {
+  //     setImportMsg(`Imported. Missing links for ${data.missingUserIds.length} Telegram user(s). Link them above.`);
   //   } else {
-  //     setImportMsg(`✅ Imported & selected ${ids.length} player(s) from poll.`);
+  //     setImportMsg("✅ Imported & selected players from poll.");
   //   }
   // }
-
+  
   async function importFromTelegramPoll() {
     setImportMsg(null);
   
-    const pid = pollIdInput.trim();
+    const pid = (selectedPollId || pollIdInput).trim();
     if (!pid) {
       setImportMsg("Poll ID is required.");
       return;
+    }
+  
+    // ✅ auto-set preview date from selected poll (if available)
+    const selectedPoll = tgPolls.find((p) => p.pollId === pid);
+    if (selectedPoll?.pollDate) {
+      // this assumes your previewDate wants "YYYY-MM-DD"
+      setPreviewDate(selectedPoll.pollDate);
     }
   
     const res = await fetch("/api/admin/telegram/import", {
@@ -549,10 +590,8 @@ setMainMsg(`✅ Published! Home page updated.${pollMsg}`);
       return;
     }
   
-    // ✅ store pollId so Publish can close it later
     setImportedPollId(pid);
   
-    // ✅ select imported players
     const ids: string[] = Array.isArray(data.selectedPlayerIds) ? data.selectedPlayerIds : [];
     setSelected(() => {
       const next: Record<string, boolean> = {};
@@ -561,12 +600,13 @@ setMainMsg(`✅ Published! Home page updated.${pollMsg}`);
     });
   
     if (data.missingUserIds?.length) {
-      setImportMsg(`Imported. Missing links for ${data.missingUserIds.length} Telegram user(s). Link them above.`);
+      setImportMsg(
+        `✅ Imported. Missing links for ${data.missingUserIds.length} Telegram user(s). Link them above.`
+      );
     } else {
       setImportMsg("✅ Imported & selected players from poll.");
     }
   }
-  
 
   const playerOptions = useMemo(() => {
     // show active players first
@@ -702,7 +742,69 @@ setMainMsg(`✅ Published! Home page updated.${pollMsg}`);
         </div>
 
         {/* Import from Telegram Poll */}
-        <div className="border rounded-xl p-4 bg-white space-y-3 mt-4">
+        {/* Import from Telegram Poll */}
+<div className="border rounded-xl p-4 bg-white space-y-3 mt-4">
+  <div className="flex items-center justify-between gap-3">
+    <div>
+      <div className="font-semibold">Import from Telegram Poll</div>
+      <div className="text-xs text-gray-500">
+        Select a Poll. We’ll select all players who voted ✅ Playing (option index 0).
+      </div>
+    </div>
+
+    <button
+      className="border rounded-md px-3 py-2 text-sm bg-white"
+      onClick={loadTelegramPolls}
+      type="button"
+    >
+      Refresh Polls
+    </button>
+  </div>
+
+  {importMsg && <div className="text-sm text-blue-700">{importMsg}</div>}
+
+  <div className="grid grid-cols-1 md:grid-cols-3 gap-3 items-end">
+    <div className="md:col-span-2">
+      <label className="block text-sm mb-1">Poll</label>
+
+      <select
+        className="border rounded-md px-3 py-2 w-full bg-white"
+        value={selectedPollId}
+        onChange={(e) => {
+          const v = e.target.value;
+          setSelectedPollId(v);
+          setPollIdInput(v); // keep existing import function working
+          setImportMsg(null);
+        }}
+      >
+        {tgPolls.length === 0 ? (
+          <option value="">No polls found</option>
+        ) : (
+          tgPolls.map((p) => (
+            <option key={p.pollId} value={p.pollId}>
+              {p.chatTitle} — {p.question || p.pollId} {p.isClosed ? "[closed]" : "[open]"}
+            </option>
+          ))
+        )}
+      </select>
+
+      <div className="text-xs text-gray-500 mt-1">
+        If you don’t see your poll, hit Refresh Polls.
+      </div>
+    </div>
+
+    <button
+      className="bg-indigo-600 text-white rounded-md py-2 disabled:opacity-60"
+      onClick={importFromTelegramPoll}
+      disabled={!selectedPollId}
+      type="button"
+    >
+      Import & Select Players
+    </button>
+  </div>
+</div>
+
+        {/* <div className="border rounded-xl p-4 bg-white space-y-3 mt-4">
           <div className="font-semibold">Import from Telegram Poll</div>
           <div className="text-xs text-gray-500">
             Paste Poll ID (<code>TelegramPoll.pollId</code>). We’ll select all players who voted ✅ Playing (option index 0).
@@ -725,7 +827,7 @@ setMainMsg(`✅ Published! Home page updated.${pollMsg}`);
               Import & Select Players
             </button>
           </div>
-        </div>
+        </div> */}
 
         {/* Add Player */}
         <div className="border rounded-xl p-4 space-y-3 bg-white mt-4">
