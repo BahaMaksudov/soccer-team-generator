@@ -337,11 +337,26 @@ export async function POST(req: Request) {
 
   const normalizedDate = toDateOnlyUTC(dateStr);
 
-  const saved = await prisma.teamGeneration.upsert({
-    where: { date: normalizedDate },
-    create: { date: normalizedDate, teamsJson: JSON.stringify(teams) },
-    update: { teamsJson: JSON.stringify(teams) },
-  });
+  // 1. Delete existing records for THIS specific date only (to allow overriding)
+await prisma.teamGeneration.deleteMany({
+  where: { 
+    date: normalizedDate 
+  },
+});
+
+// 2. Create a new record (this ensures history for other dates is kept)
+const saved = await prisma.teamGeneration.create({
+  data: { 
+    date: normalizedDate, 
+    teamsJson: JSON.stringify(teams) 
+  },
+});
+
+  // const saved = await prisma.teamGeneration.upsert({
+  //   where: { date: normalizedDate },
+  //   create: { date: normalizedDate, teamsJson: JSON.stringify(teams) },
+  //   update: { teamsJson: JSON.stringify(teams) },
+  // });
 
   revalidatePath("/");
 
@@ -438,28 +453,6 @@ export async function POST(req: Request) {
     }
 
     // 2) Post generated teams message (if requested)
-//     if (postToTelegram) {
-//       try {
-//         // const html = formatTeamsHtml(dateStr, teams);
-//         let headerDateStr = dateStr;
-
-//       // ✅ prefer pollDate when pollId provided
-//     if (poll?.pollDate instanceof Date) {
-//         headerDateStr = formatMDYY(poll.pollDate);
-//       }
-
-// const html = formatTeamsHtml(headerDateStr, teams);
-//         await telegram("sendMessage", {
-//           chat_id: chatId,
-//           text: html,
-//           parse_mode: "HTML",
-//           disable_web_page_preview: true,
-//         });
-//         telegramTeamsPosted = true;
-//       } catch {
-//         // don’t block publish
-//       }
-//     }
 
 if (postToTelegram) {
   try {

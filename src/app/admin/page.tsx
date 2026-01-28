@@ -353,25 +353,6 @@ export default function AdminPage() {
     setMainMsg("Preview generated. If it looks good, click Publish. You can regenerate multiple times.");
   }
 
-  // async function publish() {
-  //   setMainMsg(null);
-  //   if (!previewTeams || !previewDate) {
-  //     setMainMsg("Generate teams first, then publish.");
-  //     return;
-  //   }
-  //   const res = await fetch("/api/admin/publish", {
-  //     method: "POST",
-  //     headers: { "Content-Type": "application/json" },
-  //     body: JSON.stringify({ date: previewDate, teams: previewTeams }),
-  //   });
-  //   const data = await res.json();
-  //   if (!res.ok) {
-  //     setMainMsg(data?.error ?? "Failed to publish");
-  //     return;
-  //   }
-  //   setMainMsg("✅ Published! Home page updated for that date (previous teams replaced).");
-  // }
-
   async function publish() {
     setMainMsg(null);
     if (!previewTeams || !previewDate) {
@@ -442,22 +423,6 @@ setMainMsg(`✅ Published! Home page updated.${pollMsg}`);
       });
       topMsgRef.current?.focus();
     }, 0);
-
-    // const data = await res.json().catch(() => ({}));
-  
-    // if (!res.ok) {
-    //   setMainMsg(data?.error ?? "Failed to publish");
-    //   return;
-    // }
-  
-    // // Optional: if your API returns pollClosed + pollCloseReason, show it
-    // if (data.pollClosed) {
-    //   setMainMsg("✅ Published! Poll closed in Telegram.");
-    // } else if (pollId) {
-    //   setMainMsg(`✅ Published! (Poll not closed: ${data.pollCloseReason ?? "unknown reason"})`);
-    // } else {
-    //   setMainMsg("✅ Published! (No pollId provided, so poll was not closed.)");
-    // }
   }
   
 
@@ -519,47 +484,6 @@ setMainMsg(`✅ Published! Home page updated.${pollMsg}`);
       setTgBusy(false);
     }
   }
-
-
-  // async function importFromTelegramPoll() {
-  //   setImportMsg(null);
-  
-  //   const pid = pollIdInput.trim();
-  //   if (!pid) {
-  //     setImportMsg("Poll ID is required.");
-  //     return;
-  //   }
-  
-  //   const res = await fetch("/api/admin/telegram/import", {
-  //     method: "POST",
-  //     headers: { "Content-Type": "application/json" },
-  //     body: JSON.stringify({ pollId: pid }),
-  //   });
-  
-  //   const data = await res.json().catch(() => ({}));
-  
-  //   if (!res.ok) {
-  //     setImportMsg(data?.error ?? "Failed to import from Telegram poll");
-  //     return;
-  //   }
-  
-  //   // ✅ store pollId so Publish can close it later
-  //   setImportedPollId(pid);
-  
-  //   // ✅ select imported players
-  //   const ids: string[] = Array.isArray(data.selectedPlayerIds) ? data.selectedPlayerIds : [];
-  //   setSelected(() => {
-  //     const next: Record<string, boolean> = {};
-  //     for (const id of ids) next[id] = true;
-  //     return next;
-  //   });
-  
-  //   if (data.missingUserIds?.length) {
-  //     setImportMsg(`Imported. Missing links for ${data.missingUserIds.length} Telegram user(s). Link them above.`);
-  //   } else {
-  //     setImportMsg("✅ Imported & selected players from poll.");
-  //   }
-  // }
   
   async function importFromTelegramPoll() {
     setImportMsg(null);
@@ -803,31 +727,6 @@ setMainMsg(`✅ Published! Home page updated.${pollMsg}`);
     </button>
   </div>
 </div>
-
-        {/* <div className="border rounded-xl p-4 bg-white space-y-3 mt-4">
-          <div className="font-semibold">Import from Telegram Poll</div>
-          <div className="text-xs text-gray-500">
-            Paste Poll ID (<code>TelegramPoll.pollId</code>). We’ll select all players who voted ✅ Playing (option index 0).
-          </div>
-
-          {importMsg && <div className="text-sm text-blue-700">{importMsg}</div>}
-
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-3 items-end">
-            <div className="md:col-span-2">
-              <label className="block text-sm mb-1">Poll ID</label>
-              <input
-                className="border rounded-md px-3 py-2 w-full"
-                value={pollIdInput}
-                onChange={(e) => setPollIdInput(e.target.value)}
-                placeholder="e.g. 5138929074038636813"
-              />
-            </div>
-
-            <button className="bg-indigo-600 text-white rounded-md py-2" onClick={importFromTelegramPoll}>
-              Import & Select Players
-            </button>
-          </div>
-        </div> */}
 
         {/* Add Player */}
         <div className="border rounded-xl p-4 space-y-3 bg-white mt-4">
