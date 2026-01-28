@@ -70,7 +70,14 @@ export default function AdminPage() {
   const [selected, setSelected] = useState<Record<string, boolean>>({});
 
   const [teamCount, setTeamCount] = useState(2);
-  const [date, setDate] = useState<string>(() => new Date().toISOString().slice(0, 10));
+  // const [date, setDate] = useState<string>(() => new Date().toISOString().slice(0, 10));
+  const [date, setDate] = useState<string>(() => {
+    const now = new Date();
+    const year = now.getFullYear();
+    const month = String(now.getMonth() + 1).padStart(2, '0');
+    const day = String(now.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
+  });
 
   // keep messages near their sections
   const [mainMsg, setMainMsg] = useState<string | null>(null);

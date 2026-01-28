@@ -64,7 +64,15 @@ export default async function Home({
                 <div className="flex-1">
                   <div className="font-semibold">Teams for {formatDate(gen.date)}</div>
                   <div className="text-xs text-gray-500">
-                    Last published: {gen.updatedAt.toLocaleString()}
+                    {/* Last published: {gen.updatedAt.toLocaleString()} */}
+                    Last published: {new Date(gen.updatedAt).toLocaleString("en-US", {
+  year: 'numeric',
+  month: 'short',
+  day: 'numeric',
+  hour: '2-digit',
+  minute: '2-digit',
+  hour12: true
+})}
                   </div>
                 </div>
                 <Link className="px-3 py-2 border rounded-md text-sm bg-white" href={`/print/${gen.id}`} target="_blank">
