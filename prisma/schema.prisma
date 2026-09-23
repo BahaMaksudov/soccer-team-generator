@@ -21,6 +21,99 @@ enum Rating {
   EXCELLENT
 }
 
+// ============================================================
+// Phase 2B — additive SaaS/multi-tenancy foundation.
+//
+// These models and the nullable groupId columns below establish the
+// structural shape only. Nothing reads/writes them yet: no rows are
+// created, no application code is scoped by tenant, and every
+// existing constraint (TeamGeneration.date, TelegramUserLink's
+// unique columns, Player.telegramUserId, TelegramChat.chatId,
+// AppSetting.key) is left exactly as it was. Backfill, application
+// scoping, and constraint changes are later phases (2C+).
+// ============================================================
+
+enum OrgRole {
+  OWNER
+  ADMIN
+  MEMBER
+}
+
+model User {
+  id           String   @id @default(cuid())
+  email        String   @unique
+  passwordHash String
+  name         String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  memberships OrganizationMembership[]
+}
+
+model Organization {
+  id        String   @id @default(cuid())
+  name      String
+  slug      String   @unique
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  memberships OrganizationMembership[]
+  groups      Group[]
+}
+
+model OrganizationMembership {
+  id             String   @id @default(cuid())
+  userId         String
+  organizationId String
+  role           OrgRole
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, organizationId])
+}
+
+model Group {
+  id             String   @id @default(cuid())
+  organizationId String
+  name           String
+  slug           String
+  sportKey       String   @default("soccer")
+  // Required, no default: every Group created from here on must have
+  // an explicit IANA timezone. The one existing production group gets
+  // its value (America/New_York) during Phase 2C backfill, not here —
+  // Phase 2B creates zero Group rows, so this being required is safe.
+  timezone       String
+  isActive       Boolean  @default(true)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  players         Player[]
+  teamGenerations TeamGeneration[]
+  settings        GroupSetting[]
+  telegramChats   TelegramChat[]
+  telegramPolls   TelegramPoll[]
+  telegramLinks   TelegramUserLink[]
+
+  @@unique([organizationId, slug])
+}
+
+model GroupSetting {
+  id        String   @id @default(cuid())
+  groupId   String
+  key       String
+  value     String
+  updatedAt DateTime @updatedAt
+
+  group Group @relation(fields: [groupId], references: [id], onDelete: Cascade)
+
+  @@unique([groupId, key])
+}
+
 model Player {
   id        String   @id @default(cuid())
   firstName String
@@ -39,14 +132,26 @@ model Player {
   telegramLast     String?
 
   telegramLink TelegramUserLink[]
+
+  // Phase 2B: nullable tenant ownership, unpopulated until Phase 2C
+  // backfill. Optional relation → Prisma's default onDelete is
+  // SetNull, not Cascade: deleting a Group can never cascade-delete
+  // existing Player history, only detach it.
+  groupId String?
+  group   Group?  @relation(fields: [groupId], references: [id])
 }
 
 model TeamGeneration {
   id        String   @id @default(cuid())
+  // Unchanged — global uniqueness stays until Phase 2C/2I's
+  // (groupId, date) compound constraint replaces it.
   date      DateTime @unique
   teamsJson String
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+
+  groupId String?
+  group   Group?  @relation(fields: [groupId], references: [id])
 }
 
 model AppSetting {
@@ -68,6 +173,9 @@ model TelegramPoll {
   pollDate DateTime?
 
   answers TelegramPollAnswer[]
+
+  groupId String?
+  group   Group?  @relation(fields: [groupId], references: [id])
 }
 
 model TelegramPollAnswer {
@@ -82,23 +190,39 @@ model TelegramPollAnswer {
 
   poll TelegramPoll @relation(fields: [pollId], references: [pollId], onDelete: Cascade)
 
+  // Scalar only, deliberately no relation field yet — Phase 2C will
+  // denormalize this from the parent poll's groupId once that's
+  // populated. Left unpopulated in Phase 2B.
+  groupId String?
+
   @@unique([pollId, userId])
 }
 
 model TelegramUserLink {
   id        String   @id @default(cuid())
+  // Unchanged — global uniqueness stays until the linking-mechanism
+  // consolidation + Phase 2I's (groupId, userId)/(groupId, playerId)
+  // compound constraints replace it.
   userId    BigInt   @unique
   playerId  String   @unique
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
   player Player @relation(fields: [playerId], references: [id], onDelete: Cascade)
+
+  groupId String?
+  group   Group?  @relation(fields: [groupId], references: [id])
 }
 
 model TelegramChat {
   id        Int      @id @default(autoincrement())
+  // Unchanged — Telegram's own chat-id namespace is genuinely global,
+  // this constraint never needs to change shape.
   chatId    BigInt   @unique
   title     String?
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+
+  groupId String?
+  group   Group?  @relation(fields: [groupId], references: [id])
 }
