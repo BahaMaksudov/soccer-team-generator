@@ -16,8 +16,24 @@ export async function POST(req: Request) {
   const { teamCount, date: dateStr, selectedIds, format } = parsed.data;
 
   const normalizedDate = toDateOnlyUTC(dateStr);
+  // Explicit select: fetch only what the generator needs and what the
+  // Admin preview/home page/print view actually render. In particular,
+  // this deliberately excludes telegramUserId (BigInt) and the other
+  // Telegram-linking fields — a Player row with a linked Telegram
+  // account previously made this route 500, because NextResponse.json
+  // cannot serialize a native BigInt and the full Player record (as
+  // fetched before this fix) was returned unmodified inside the
+  // generated teams.
   const selected = await prisma.player.findMany({
     where: { id: { in: selectedIds }, isActive: true },
+    select: {
+      id: true,
+      firstName: true,
+      lastName: true,
+      position: true,
+      rating: true,
+      stamina: true,
+    },
   });
   if (selected.length === 0) {
     return NextResponse.json({ error: "No active players selected." }, { status: 400 });

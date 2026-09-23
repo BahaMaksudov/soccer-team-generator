@@ -50,8 +50,17 @@ export function splitTelegramText(text: string, max = 3900): string[] {
   return out;
 }
 
-/** Formats a UTC-midnight Date as Telegram's "M/D/YY" display format. */
+/**
+ * Formats a UTC-midnight Date as Telegram's "M/D/YY" display format.
+ * Safe to call from client components: only ever reads UTC calendar
+ * components (getUTCMonth/getUTCDate/getUTCFullYear), never local
+ * getters, so a "YYYY-MM-DD" input parsed via `new Date(...)` (always
+ * interpreted as UTC midnight per spec) can never shift by a day
+ * regardless of the caller's local timezone.
+ * Returns "" for an invalid Date rather than a garbage "NaN/NaN/aN" string.
+ */
 export function formatMDYYFromDate(d: Date): string {
+  if (Number.isNaN(d.getTime())) return "";
   const mm = d.getUTCMonth() + 1;
   const dd = d.getUTCDate();
   const yy = String(d.getUTCFullYear()).slice(-2);

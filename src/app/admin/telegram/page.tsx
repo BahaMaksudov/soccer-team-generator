@@ -2,6 +2,7 @@
 import Link from "next/link";
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import { formatMDYYFromISO } from "@/lib/telegramFormat";
 
 type TgUser = { userId: string; username?: string | null; firstName?: string | null; lastName?: string | null };
 type Player = { id: string; firstName?: string | null; lastName?: string | null };
@@ -104,6 +105,15 @@ useEffect(() => {
   useEffect(() => {
     loadAll();
   }, []);
+
+  // Mirrors the actual auto-generated question ("Who is playing on
+  // M/D/YY?") using the currently selected pollDate — never today's
+  // date, never a hard-coded example. formatMDYYFromISO never converts
+  // through local getters, so it can't shift the calendar day.
+  const formattedPollDate = pollDate ? formatMDYYFromISO(pollDate) : "";
+  const questionPlaceholder = formattedPollDate
+    ? `Leave blank to auto-generate: "Who is playing on ${formattedPollDate}?"`
+    : "Leave blank to auto-generate the question from the selected poll date.";
 
   const playerOptions = useMemo(() => {
     return players
@@ -259,7 +269,7 @@ useEffect(() => {
               className="border rounded-md px-3 py-2 w-full"
               value={question}
               onChange={(e) => setQuestion(e.target.value)}
-              placeholder='Leave blank to auto-generate: "Who is playing on 1/19/26?"'
+              placeholder={questionPlaceholder}
             />
           </div>
         </div>

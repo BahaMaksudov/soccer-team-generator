@@ -1,15 +1,29 @@
 import type { Player, Position } from "@prisma/client";
-import { getPlayerImpactScore, type BalanceWeights } from "@/lib/scoring";
+import { getPlayerImpactScore, type BalanceWeights, type ScorablePlayer } from "@/lib/scoring";
 
 // `format` (6|7|8-a-side) is accepted for backward compatibility with
 // existing callers but is not currently used by this algorithm — no
-// per-format position quotas exist yet. Left as a known no-op pending
-// the multi-sport roster-rules work (see architecture audit, §13/§14).
+// per-format position quotas etc. exist yet. Left as a known no-op
+// pending the multi-sport roster-rules work (see architecture audit,
+// §13/§14).
 type Format = 6 | 7 | 8;
+
+/**
+ * Everything the generator actually needs from a player: enough to
+ * score them (ScorablePlayer, from src/lib/scoring.ts), a stable id
+ * for dedup/tracking, and a name to carry through to the returned
+ * teams for display. Deliberately NOT the full Prisma `Player` —
+ * callers should pass only these fields (e.g. via a Prisma `select`),
+ * so nothing else on a Player row — Telegram BigInt fields in
+ * particular — can end up in a team-generation response. Any object
+ * satisfying the full `Player` type already satisfies this narrower
+ * one, so this is a non-breaking change for existing callers.
+ */
+export type GeneratorPlayer = ScorablePlayer & Pick<Player, "id" | "firstName" | "lastName">;
 
 type Team = {
   teamNumber: number;
-  players: Player[];
+  players: GeneratorPlayer[];
   score: number;
   capacity: number;
 };
@@ -47,12 +61,12 @@ function buildCapacities(playerCount: number, teamCount: number): number[] {
  * split, by design). Tests should pass a seeded rng for reproducibility.
  */
 export function generateBalancedTeams(
-  players: Player[],
+  players: GeneratorPlayer[],
   teamCount: number,
   format?: Format,
   weights?: BalanceWeights,
   rng: () => number = Math.random
-): Array<{ teamNumber: number; players: Player[] }> {
+): Array<{ teamNumber: number; players: GeneratorPlayer[] }> {
   if (teamCount < 2) throw new Error("Number of teams must be at least 2.");
   if (players.length < teamCount) throw new Error("Not enough players for that many teams.");
 

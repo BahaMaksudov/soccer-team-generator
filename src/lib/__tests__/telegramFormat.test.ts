@@ -53,6 +53,19 @@ describe("formatMDYYFromDate / formatMDYYFromISO", () => {
   it("formatMDYYFromISO matches formatMDYYFromDate for the same date-only string", () => {
     expect(formatMDYYFromISO("2026-01-19")).toBe("1/19/26");
   });
+
+  it("REGRESSION: Telegram Admin's dynamic question placeholder — required date values", () => {
+    expect(formatMDYYFromISO("2026-09-28")).toBe("9/28/26");
+    expect(formatMDYYFromISO("2026-10-05")).toBe("10/5/26");
+    expect(formatMDYYFromISO("2026-12-31")).toBe("12/31/26");
+    expect(formatMDYYFromISO("2027-01-01")).toBe("1/1/27");
+  });
+
+  it("returns '' (a safe, non-crashing fallback) for invalid or empty input, instead of a garbage string", () => {
+    expect(formatMDYYFromISO("")).toBe("");
+    expect(formatMDYYFromISO("not-a-date")).toBe("");
+    expect(formatMDYYFromDate(new Date("invalid"))).toBe("");
+  });
 });
 
 describe("parsePollDateFromQuestion (legacy fallback only)", () => {
