@@ -1,6 +1,7 @@
 import CredentialsProvider from "next-auth/providers/credentials";
 import type { NextAuthOptions } from "next-auth";
 import bcrypt from "bcrypt";
+import { checkLoginRateLimit } from "@/lib/rateLimit";
 
 export const authOptions: NextAuthOptions = {
   providers: [
@@ -17,12 +18,14 @@ export const authOptions: NextAuthOptions = {
         const adminEmail = (process.env.ADMIN_EMAIL ?? "").trim().toLowerCase();
         const hash = process.env.ADMIN_PASSWORD_HASH ?? "";
 
-        console.log("LOGIN email input:", JSON.stringify(email));
-        console.log("ENV adminEmail:", JSON.stringify(adminEmail));
-        console.log("ENV hash length:", (process.env.ADMIN_PASSWORD_HASH ?? "").length);
-        console.log("ENV hash starts:", (process.env.ADMIN_PASSWORD_HASH ?? "").slice(0, 7));
-
         if (!email || !password || !adminEmail || !hash) return null;
+
+        // Rate-limited by the submitted email so a scripted brute force
+        // against the single admin account can't run unbounded. See
+        // src/lib/rateLimit.ts for activation requirements.
+        const { allowed } = await checkLoginRateLimit(email);
+        if (!allowed) return null;
+
         if (email !== adminEmail) return null;
 
         const ok = await bcrypt.compare(password, hash);

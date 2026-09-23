@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { signOut } from "next-auth/react";
 import Link from "next/link";
 import { positionLabel, ratingLabel } from "@/lib/labels";
+import { getPlayerImpactScore, DEFAULT_BALANCE_WEIGHTS, type BalanceWeights } from "@/lib/scoring";
 
 type Player = {
   id: string;
@@ -29,42 +30,17 @@ const ratings = ["FAIR", "GOOD", "VERY_GOOD", "EXCELLENT"] as const;
 
 
 
-/* ---------------- Score helpers ---------------- */
-
-const ratingWeight: Record<Player["rating"], number> = {
-  FAIR: 1,
-  GOOD: 2,
-  VERY_GOOD: 3,
-  EXCELLENT: 4,
-};
-
-function clamp(n: number, min: number, max: number) {
-  return Math.max(min, Math.min(max, n));
-}
-
-function positionWeight(pos: Player["position"]): number {
-  switch (pos) {
-    case "DEFENDER":
-      return 1;
-    case "MIDFIELDER":
-    case "FORWARD":
-    case "GOALKEEPER":
-      return 2;
-    default:
-      return 1;
-  }
-}
-
-function computeScore(p: Player) {
-  const rw = ratingWeight[p.rating] ?? 2;
-  const st = Number.isFinite(Number(p.stamina)) ? clamp(Number(p.stamina), 1, 5) : 3;
-  const pw = positionWeight(p.position);
-  return rw * 10 + st * 2 + pw * 3;
-}
+/* ---------------- Score helpers ----------------
+ * Scoring itself now lives in src/lib/scoring.ts — the same module the
+ * server-side generator (src/lib/teamGen.ts) uses — so this displayed
+ * Score column can never drift from what team generation actually did.
+ * `weights` below is fetched from the real, now-connected Settings API.
+ */
 
 export default function AdminPage() {
   const [teamName, setTeamName] = useState("");
   const [teamNameSaving, setTeamNameSaving] = useState(false);
+  const [weights, setWeights] = useState<BalanceWeights>(DEFAULT_BALANCE_WEIGHTS);
 
   const [players, setPlayers] = useState<Player[]>([]);
   const [selected, setSelected] = useState<Record<string, boolean>>({});
@@ -121,7 +97,8 @@ export default function AdminPage() {
     chatId: string;
     chatTitle: string;
     question: string;
-    pollDate?: string | null; // YYYY-MM-DD
+    pollDate: string | null; // machine-readable, YYYY-MM-DD — for previewDate/date inputs
+    pollDateStr: string | null; // human-readable, M/D/YY — for display only
     isClosed: boolean;
   };
   
@@ -178,6 +155,14 @@ export default function AdminPage() {
       if (res.ok) {
         const data = await res.json();
         setTeamName(data.teamName || "");
+      }
+    })();
+
+    (async () => {
+      const res = await fetch("/api/admin/settings/balance-weights", { cache: "no-store" });
+      if (res.ok) {
+        const data = await res.json();
+        if (data?.weights) setWeights(data.weights);
       }
     })();
   }, []);
@@ -501,10 +486,11 @@ setMainMsg(`✅ Published! Home page updated.${pollMsg}`);
       return;
     }
   
-    // ✅ auto-set preview date from selected poll (if available)
+    // Auto-set preview date from the selected poll's real game date.
+    // selectedPoll.pollDate is the machine-readable "YYYY-MM-DD" form —
+    // previewDate expects exactly that shape, so no parsing needed here.
     const selectedPoll = tgPolls.find((p) => p.pollId === pid);
     if (selectedPoll?.pollDate) {
-      // this assumes your previewDate wants "YYYY-MM-DD"
       setPreviewDate(selectedPoll.pollDate);
     }
   
@@ -908,7 +894,7 @@ setMainMsg(`✅ Published! Home page updated.${pollMsg}`);
 
               <tbody>
                 {players.map((p) => {
-                  const score = computeScore(p);
+                  const score = getPlayerImpactScore(p, weights);
                   return (
                     <tr key={p.id} className="border-t">
                       <td className="p-3">
@@ -960,7 +946,11 @@ setMainMsg(`✅ Published! Home page updated.${pollMsg}`);
           </div>
 
           <div className="px-4 pb-4 text-xs text-slate-500">
-            Score = rating×10 + stamina×2 + positionWeight×3 (DEF=1, MID/FWD/GK=2)
+            Score = rating×10 + stamina×2×staminaCoef + positionWeight×3 (configurable in{" "}
+            <Link className="underline" href="/admin/settings">
+              Settings
+            </Link>
+            )
           </div>
         </div>
 

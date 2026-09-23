@@ -1,140 +1,59 @@
 import { NextResponse } from "next/server";
-
 import { prisma } from "@/lib/prisma";
-
 import { revalidatePath } from "next/cache";
+import { DEFAULT_BALANCE_WEIGHTS, mergeBalanceWeights } from "@/lib/scoring";
+import { balanceWeightsSchema } from "@/lib/validation";
 
-const DEFAULT_WEIGHTS = {
-
-  // player impact = ratingWeight + staminaCoef*stamina
-
-  staminaCoef: 0.5,
-
-  // role weights by position
-
-  positionWeights: {
-
-    GOALKEEPER: 1.0,
-
-    DEFENDER: 1.05,
-
-    MIDFIELDER: 1.15,
-
-    FORWARD: 1.1,
-
-  },
-
-  // fairness weights (how important each category is)
-
-  fairnessWeights: {
-
-    totalImpact: 3.0,
-
-    gkImpact: 2.0,
-
-    defImpact: 1.5,
-
-    midImpact: 1.5,
-
-    fwdImpact: 1.5,
-
-    topCount: 1.0,
-
-  },
-
-  // optimizer settings
-
-  optimizer: {
-
-    iterations: 400, // try 200–800 if you want
-
-    samePositionSwapBias: 0.7, // prefer swapping same positions
-
-  },
-
-};
+const SETTING_KEY = "balanceWeights";
 
 export async function GET() {
-
-  const row = await prisma.appSetting.findUnique({ where: { key: "balanceWeights" } });
+  const row = await prisma.appSetting.findUnique({ where: { key: SETTING_KEY } });
 
   if (!row?.value) {
-
-    return NextResponse.json({ weights: DEFAULT_WEIGHTS });
-
+    return NextResponse.json({ weights: DEFAULT_BALANCE_WEIGHTS });
   }
 
   try {
-
     const parsed = JSON.parse(row.value);
-
-    // merge with defaults so missing keys don’t break
-
-    const weights = {
-
-      ...DEFAULT_WEIGHTS,
-
-      ...parsed,
-
-      positionWeights: { ...DEFAULT_WEIGHTS.positionWeights, ...(parsed.positionWeights ?? {}) },
-
-      fairnessWeights: { ...DEFAULT_WEIGHTS.fairnessWeights, ...(parsed.fairnessWeights ?? {}) },
-
-      optimizer: { ...DEFAULT_WEIGHTS.optimizer, ...(parsed.optimizer ?? {}) },
-
-    };
-
-    return NextResponse.json({ weights });
-
+    // mergeBalanceWeights never throws — malformed/legacy stored fields
+    // (e.g. old fairnessWeights/optimizer keys) are safely ignored.
+    return NextResponse.json({ weights: mergeBalanceWeights(parsed) });
   } catch {
-
-    return NextResponse.json({ weights: DEFAULT_WEIGHTS });
-
+    return NextResponse.json({ weights: DEFAULT_BALANCE_WEIGHTS });
   }
-
 }
 
 async function save(req: Request) {
-
   const body = await req.json().catch(() => ({}));
 
-  const weights = body?.weights;
-
-  if (!weights || typeof weights !== "object") {
-
-    return NextResponse.json({ error: "weights is required" }, { status: 400 });
-
+  const parsed = balanceWeightsSchema.safeParse(body?.weights);
+  if (!parsed.success) {
+    return NextResponse.json(
+      { error: "Invalid weights.", issues: parsed.error.flatten() },
+      { status: 400 }
+    );
   }
 
+  // Normalize through mergeBalanceWeights so only the known, currently
+  // meaningful fields are ever persisted.
+  const weights = mergeBalanceWeights(parsed.data);
+
   await prisma.appSetting.upsert({
-
-    where: { key: "balanceWeights" },
-
+    where: { key: SETTING_KEY },
     update: { value: JSON.stringify(weights) },
-
-    create: { key: "balanceWeights", value: JSON.stringify(weights) },
-
+    create: { key: SETTING_KEY, value: JSON.stringify(weights) },
   });
 
-  // refresh admin pages
-
   revalidatePath("/admin");
-
   revalidatePath("/admin/settings");
 
-  return NextResponse.json({ ok: true });
-
+  return NextResponse.json({ ok: true, weights });
 }
 
 export async function POST(req: Request) {
-
   return save(req);
-
 }
 
 export async function PUT(req: Request) {
-
   return save(req);
-
 }
- 

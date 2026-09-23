@@ -1,29 +1,26 @@
 import { prisma } from "@/lib/prisma";
 import { NextResponse } from "next/server";
+import { telegramImportSchema, zodErrorResponse } from "@/lib/validation";
+import { isPlayingVote } from "@/lib/telegramFormat";
 
 export async function POST(req: Request) {
   const body = await req.json().catch(() => null);
   if (!body) return NextResponse.json({ error: "Invalid JSON" }, { status: 400 });
 
-  const pollId = String(body.pollId ?? "").trim();
-  if (!pollId) return NextResponse.json({ error: "pollId is required" }, { status: 400 });
+  const parsed = telegramImportSchema.safeParse(body);
+  if (!parsed.success) {
+    return NextResponse.json(zodErrorResponse(parsed.error), { status: 400 });
+  }
 
-  // optionIdsJson stored like "[0]" etc.
-  // We want only ✅ Playing = option index 0
+  const { pollId } = parsed.data;
+
   const answers = await prisma.telegramPollAnswer.findMany({
     where: { pollId },
     select: { userId: true, optionIdsJson: true },
   });
 
   const playingUserIds = answers
-    .filter((a) => {
-      try {
-        const arr = JSON.parse(a.optionIdsJson || "[]");
-        return Array.isArray(arr) && arr.includes(0);
-      } catch {
-        return false;
-      }
-    })
+    .filter((a) => isPlayingVote(a.optionIdsJson))
     .map((a) => a.userId);
 
   if (playingUserIds.length === 0) {
@@ -50,9 +47,5 @@ export async function POST(req: Request) {
     else missingUserIds.push(uid.toString());
   }
 
-  return NextResponse.json({
-    ok: true,
-    selectedPlayerIds,
-    missingUserIds,
-  });
+  return NextResponse.json({ ok: true, selectedPlayerIds, missingUserIds });
 }
