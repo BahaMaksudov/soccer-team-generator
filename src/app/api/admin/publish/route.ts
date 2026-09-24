@@ -4,6 +4,8 @@ import { toDateOnlyUTC } from "@/lib/dateOnly";
 import { revalidatePath } from "next/cache";
 import { formatTeamsHtml, resolvePollDisplayDate } from "@/lib/telegramFormat";
 import { publishTeamsSchema, zodErrorResponse } from "@/lib/validation";
+import { requireTenantContext } from "@/lib/tenantContext";
+import { tenantErrorResponse } from "@/lib/tenantRoute";
 
 /** --- Telegram helper --- */
 async function telegram(method: string, body: unknown) {
@@ -24,6 +26,14 @@ async function telegram(method: string, body: unknown) {
 }
 
 export async function POST(req: Request) {
+  let context;
+  try {
+    context = await requireTenantContext();
+  } catch (e) {
+    return tenantErrorResponse(e);
+  }
+  const activeGroupId = context.activeGroup.id;
+
   const body = await req.json().catch(() => ({}));
 
   const parsed = publishTeamsSchema.safeParse(body);
@@ -37,17 +47,26 @@ export async function POST(req: Request) {
 
   const normalizedDate = toDateOnlyUTC(dateStr);
 
-  // Atomic upsert on the unique `date` column: first publish for a date
-  // creates the row, republishing the same date updates it in place.
-  // No delete-then-create window, so concurrent/duplicate publish
-  // requests for the same date can no longer race on the unique
-  // constraint.
+  // ---------------------------------------------------------------
+  // Phase 2D.2b: TeamGeneration is now uniquely constrained on
+  // (groupId, date) — see prisma/migrations/
+  // 20260924214047_phase_2d_2b_team_generation_group_date_unique —
+  // replacing the old single-column, globally-unique `date`. That
+  // restores a single atomic, tenant-safe upsert: the compound
+  // selector's `groupId` is always context.activeGroup.id, never
+  // client input, in both the selector and the create payload, so
+  // this can only ever address (and only ever create) a row owned by
+  // the caller's own Group. A different Group publishing on the same
+  // date is now a fully independent row — no collision, no
+  // check-then-act race window, restoring the atomicity Phase 1
+  // originally established.
+  // ---------------------------------------------------------------
   let saved;
   try {
     saved = await prisma.teamGeneration.upsert({
-      where: { date: normalizedDate },
-      create: { date: normalizedDate, teamsJson: JSON.stringify(teams) },
+      where: { groupId_date: { groupId: activeGroupId, date: normalizedDate } },
       update: { teamsJson: JSON.stringify(teams) },
+      create: { date: normalizedDate, teamsJson: JSON.stringify(teams), groupId: activeGroupId },
     });
   } catch (e: unknown) {
     const message = e instanceof Error ? e.message : "Failed to save published teams.";
@@ -57,6 +76,13 @@ export async function POST(req: Request) {
   revalidatePath("/");
 
   // --- Telegram work (best-effort; should not break publishing) ---
+  // Deliberately NOT tenant-scoped in this phase — Telegram ownership
+  // resolution (TelegramChat/TelegramPoll → Group) is explicitly
+  // deferred to Phase 2D.3. Current production has exactly one Group
+  // and both existing Telegram chats already belong to it (Phase 2C
+  // backfill), so this is not a live cross-tenant gap today, but it
+  // will need scoping before a second Group with its own Telegram
+  // integration exists. See Phase 2D.2 report §O.
   let pollStatus:
     | "not_requested"
     | "poll_not_found_in_db"
@@ -148,6 +174,13 @@ export async function POST(req: Request) {
 }
 
 export async function DELETE(req: Request) {
+  let context;
+  try {
+    context = await requireTenantContext();
+  } catch (e) {
+    return tenantErrorResponse(e);
+  }
+
   const url = new URL(req.url);
   const dateStr = url.searchParams.get("date"); // expected YYYY-MM-DD
 
@@ -167,8 +200,12 @@ export async function DELETE(req: Request) {
   const start = new Date(Date.UTC(y, m - 1, d, 0, 0, 0, 0));
   const end = new Date(Date.UTC(y, m - 1, d + 1, 0, 0, 0, 0));
 
+  // deleteMany is a single filter-based statement — adding groupId
+  // here is fully atomic and correct: a tenant can only ever delete
+  // rows that are both in this date range AND already owned by their
+  // own active Group.
   const result = await prisma.teamGeneration.deleteMany({
-    where: { date: { gte: start, lt: end } },
+    where: { date: { gte: start, lt: end }, groupId: context.activeGroup.id },
   });
 
   revalidatePath("/");

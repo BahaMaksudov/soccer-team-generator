@@ -143,15 +143,24 @@ model Player {
 
 model TeamGeneration {
   id        String   @id @default(cuid())
-  // Unchanged — global uniqueness stays until Phase 2C/2I's
-  // (groupId, date) compound constraint replaces it.
-  date      DateTime @unique
+  // Phase 2D.2b: uniqueness is now per-Group, not global — see
+  // @@unique below. A Group may have at most one TeamGeneration per
+  // date; different Groups may each have their own record for the
+  // same date.
+  date      DateTime
   teamsJson String
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
+  // Still nullable, unchanged from Phase 2B — Phase 2C's backfill
+  // already guarantees every production row is populated, and every
+  // route that creates a row (Phase 2D.2's publish route) always
+  // server-stamps it. Making this required is a separate, deliberate
+  // decision left for a later phase, not bundled into this one.
   groupId String?
   group   Group?  @relation(fields: [groupId], references: [id])
+
+  @@unique([groupId, date])
 }
 
 model AppSetting {

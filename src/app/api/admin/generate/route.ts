@@ -4,8 +4,17 @@ import { generateBalancedTeams } from "@/lib/teamGen";
 import { toDateOnlyUTC } from "@/lib/dateOnly";
 import { generateTeamsSchema, zodErrorResponse } from "@/lib/validation";
 import type { BalanceWeights } from "@/lib/scoring";
+import { requireTenantContext } from "@/lib/tenantContext";
+import { tenantErrorResponse } from "@/lib/tenantRoute";
 
 export async function POST(req: Request) {
+  let context;
+  try {
+    context = await requireTenantContext();
+  } catch (e) {
+    return tenantErrorResponse(e);
+  }
+
   const body = await req.json().catch(() => ({}));
 
   const parsed = generateTeamsSchema.safeParse(body);
@@ -24,8 +33,13 @@ export async function POST(req: Request) {
   // cannot serialize a native BigInt and the full Player record (as
   // fetched before this fix) was returned unmodified inside the
   // generated teams.
+  //
+  // groupId is scoped to the caller's own active Group — selectedIds is
+  // untrusted client input, and without this filter a request could
+  // include another tenant's Player ids and have them silently pulled
+  // into generation.
   const selected = await prisma.player.findMany({
-    where: { id: { in: selectedIds }, isActive: true },
+    where: { id: { in: selectedIds }, isActive: true, groupId: context.activeGroup.id },
     select: {
       id: true,
       firstName: true,
@@ -35,12 +49,27 @@ export async function POST(req: Request) {
       stamina: true,
     },
   });
+
+  // Reject rather than silently proceeding with a smaller roster: a
+  // mismatch between the requested and resolved id counts means at
+  // least one id was invalid, inactive, or (most importantly) belongs
+  // to a different Group. Never reveal which — the error is identical
+  // either way.
+  if (selected.length !== selectedIds.length) {
+    return NextResponse.json(
+      { error: "One or more selected players are invalid or unavailable." },
+      { status: 400 }
+    );
+  }
   if (selected.length === 0) {
     return NextResponse.json({ error: "No active players selected." }, { status: 400 });
   }
 
   // Load balancing weights from AppSetting; generateBalancedTeams safely
   // falls back to defaults for anything missing or malformed.
+  // (AppSetting stays global/unscoped in this phase — see Phase 2D.2
+  // report §O; settings migration to GroupSetting is deliberately out
+  // of scope here.)
   const row = await prisma.appSetting.findUnique({ where: { key: "balanceWeights" } });
   let weights: BalanceWeights | undefined;
   if (row?.value) {
