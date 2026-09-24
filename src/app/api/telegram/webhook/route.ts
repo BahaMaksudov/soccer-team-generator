@@ -294,33 +294,43 @@ async function handleMessage(message: any) {
     message.chat.title ||
       [message.chat.first_name, message.chat.last_name].filter(Boolean).join(" ") ||
       "Unknown chat";
-  
-    // 1️⃣ Reply in Telegram so you SEE it worked
+
+    // Diagnostic-only (Phase 2D.3a): this command displays the chat's
+    // Telegram ID but MUST NOT create or modify a TelegramChat row.
+    // A bare /chatid message carries no trusted Group ownership
+    // signal — anyone can add the bot to any chat and type this — so
+    // it can no longer be treated as tenant registration. Trusted
+    // chat→Group registration is deferred (see §J of the Phase 2D.3a
+    // report); this command is not that mechanism.
     await telegram("sendMessage", {
       chat_id: chatId,
-    //   text: `✅ Chat registered\n\nTitle: ${title}\nchatId: ${chatId}`,
-      text: `✅ Chat registered\n\nTitle: ${title}`,
+      text: `Chat ID: ${chatId}\nTitle: ${title}`,
     });
-  
-    // 2️⃣ Save chatId in DB (for dropdown later)
-    await prisma.telegramChat.upsert({
-      where: { chatId: BigInt(chatId) },
-      update: { title },
-      create: {
-        chatId: BigInt(chatId),
-        title,
-      },
-    });
-  
+
     return NextResponse.json({ ok: true });
   }
   
   if (cmd === "/poll") {
+    // The webhook has no session, so the only trustworthy tenant
+    // signal is data we already persisted for this chatId. Resolve
+    // ownership BEFORE calling sendPoll — an unregistered/unowned
+    // chat must not get a poll sent to it, and must not silently
+    // attribute the poll to whatever Group happens to exist.
+    const chat = await prisma.telegramChat.findUnique({
+      where: { chatId },
+      select: { groupId: true },
+    });
+    if (!chat || !chat.groupId) {
+      // Fail closed: no trusted Group to attribute this poll to.
+      return;
+    }
+    const groupId = chat.groupId;
+
     // Create a standard poll
     const nextMon = nextMondayDate(new Date());
     const question = `Who is playing on ${formatMDYY(nextMon)}?`;
     const options = ["✅ Playing", "❌ Not playing"];
-  
+
     const resp = await telegram("sendPoll", {
       chat_id: chatId.toString(),
       question,
@@ -328,10 +338,10 @@ async function handleMessage(message: any) {
       is_anonymous: false,
       allows_multiple_answers: false,
     });
-  
+
     // ✅ store the same date the poll question shows
     const pollDate = toDateOnlyUTC(nextMon);
-  
+
     // Store poll in DB
     const poll = resp.poll;
     await prisma.telegramPoll.upsert({
@@ -343,6 +353,7 @@ async function handleMessage(message: any) {
         optionsJson: JSON.stringify(poll.options),
         isClosed: Boolean(poll.is_closed),
         pollDate,
+        groupId,
       },
       create: {
         pollId: poll.id,
@@ -352,9 +363,10 @@ async function handleMessage(message: any) {
         optionsJson: JSON.stringify(poll.options),
         isClosed: Boolean(poll.is_closed),
         pollDate,
+        groupId,
       },
     });
-  
+
     return;
   }
   
@@ -422,10 +434,38 @@ async function handleMessage(message: any) {
       return;
     }
 
+    // Same trusted-persisted-data model as /poll: resolve the issuing
+    // chat's Group before touching any Player. Without a registered,
+    // owned chat there is no safe Group to check the Player against.
+    const chat = await prisma.telegramChat.findUnique({
+      where: { chatId },
+      select: { groupId: true },
+    });
+    if (!chat || !chat.groupId) {
+      await telegram("sendMessage", {
+        chat_id: chatId.toString(),
+        text: "❌ Could not link. Check the playerId and try again.",
+      });
+      return;
+    }
+    const groupId = chat.groupId;
+
     const telegramUserId = BigInt(from.id);
     const username = from.username ? String(from.username) : null;
 
     try {
+      // The target Player must belong to the same Group as the
+      // issuing chat — previously this was a global update by id, so
+      // a playerId from ANY tenant could be linked from ANY chat.
+      // Same generic failure message either way: never reveal whether
+      // a foreign-group player id exists.
+      const player = await prisma.player.findFirst({
+        where: { id: playerId, groupId },
+      });
+      if (!player) {
+        throw new Error("player not found in this group");
+      }
+
       const updated = await prisma.player.update({
         where: { id: playerId },
         data: {
@@ -454,6 +494,19 @@ async function handlePollAnswer(pollAnswer: any) {
   const userId = BigInt(user.id);
   const optionIds: number[] = Array.isArray(pollAnswer.option_ids) ? pollAnswer.option_ids : [];
 
+  // Resolve tenant ownership from the poll itself — the only trusted
+  // signal available for an incoming vote. If the poll isn't one we
+  // persisted (or has no groupId), there's no safe Group to attribute
+  // this vote to, so fail closed rather than defaulting to any Group.
+  const poll = await prisma.telegramPoll.findUnique({
+    where: { pollId },
+    select: { groupId: true },
+  });
+  if (!poll || !poll.groupId) {
+    return;
+  }
+  const groupId = poll.groupId;
+
   await prisma.telegramPollAnswer.upsert({
     where: { pollId_userId: { pollId, userId } },
     update: {
@@ -461,6 +514,7 @@ async function handlePollAnswer(pollAnswer: any) {
       firstName: user.first_name ? String(user.first_name) : undefined,
       lastName: user.last_name ? String(user.last_name) : undefined,
       optionIdsJson: JSON.stringify(optionIds),
+      groupId,
     },
     create: {
       pollId,
@@ -469,6 +523,7 @@ async function handlePollAnswer(pollAnswer: any) {
       firstName: user.first_name ? String(user.first_name) : undefined,
       lastName: user.last_name ? String(user.last_name) : undefined,
       optionIdsJson: JSON.stringify(optionIds),
+      groupId,
     },
   });
 }

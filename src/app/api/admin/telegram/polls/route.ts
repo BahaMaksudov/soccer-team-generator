@@ -1,13 +1,25 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { resolvePollDisplayDate, resolvePollCalendarDate } from "@/lib/telegramFormat";
+import { requireTenantContext } from "@/lib/tenantContext";
+import { tenantErrorResponse } from "@/lib/tenantRoute";
 
 export async function GET(req: Request) {
+  let context;
+  try {
+    context = await requireTenantContext();
+  } catch (e) {
+    return tenantErrorResponse(e);
+  }
+
   const url = new URL(req.url);
   const includeClosed = url.searchParams.get("includeClosed") === "1";
 
   const polls = await prisma.telegramPoll.findMany({
-    where: includeClosed ? {} : { isClosed: false },
+    where: {
+      groupId: context.activeGroup.id,
+      ...(includeClosed ? {} : { isClosed: false }),
+    },
     orderBy: { createdAt: "desc" },
     take: 50,
     select: {

@@ -1,9 +1,22 @@
 import { prisma } from "@/lib/prisma";
 import { NextResponse } from "next/server";
+import { requireTenantContext } from "@/lib/tenantContext";
+import { tenantErrorResponse } from "@/lib/tenantRoute";
 
 export async function GET() {
-  // distinct Telegram users who ever voted in any poll
+  let context;
+  try {
+    context = await requireTenantContext();
+  } catch (e) {
+    return tenantErrorResponse(e);
+  }
+  const activeGroupId = context.activeGroup.id;
+
+  // distinct Telegram users who voted in any poll belonging to the
+  // caller's active Group — previously unscoped, which leaked every
+  // tenant's voters to every other tenant's admin.
   const users = await prisma.telegramPollAnswer.findMany({
+    where: { groupId: activeGroupId },
     distinct: ["userId"],
     select: {
       userId: true,
@@ -14,8 +27,9 @@ export async function GET() {
     orderBy: { updatedAt: "desc" },
   });
 
-  // already-linked telegram users
+  // already-linked telegram users, scoped the same way
   const linked = await prisma.telegramUserLink.findMany({
+    where: { groupId: activeGroupId },
     select: { userId: true },
   });
 

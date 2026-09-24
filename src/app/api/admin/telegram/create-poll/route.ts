@@ -2,6 +2,8 @@ import { prisma } from "@/lib/prisma";
 import { NextResponse } from "next/server";
 import { toDateOnlyUTC } from "@/lib/dateOnly";
 import { telegramCreatePollSchema, zodErrorResponse } from "@/lib/validation";
+import { requireTenantContext } from "@/lib/tenantContext";
+import { tenantErrorResponse } from "@/lib/tenantRoute";
 
 async function telegram(method: string, body: unknown) {
   const token = process.env.TELEGRAM_BOT_TOKEN;
@@ -26,6 +28,14 @@ function formatMdyTwoDigitYear(ymd: string) {
 }
 
 export async function POST(req: Request) {
+  let context;
+  try {
+    context = await requireTenantContext();
+  } catch (e) {
+    return tenantErrorResponse(e);
+  }
+  const activeGroupId = context.activeGroup.id;
+
   const body = await req.json().catch(() => ({}));
 
   const parsed = telegramCreatePollSchema.safeParse(body);
@@ -34,6 +44,28 @@ export async function POST(req: Request) {
   }
 
   const { chatId: chatIdStr, pollDate: pollDateStr, question: customQuestion } = parsed.data;
+
+  // Ownership validation BEFORE any Telegram side effect: the selected
+  // chat must already be a registered chat belonging to the caller's
+  // active Group. Previously sendPoll fired first, with no ownership
+  // check at all — a client could submit any chatId, including
+  // another tenant's, and a real poll would be sent there before
+  // anything was verified. 404, not 403 — never reveal that a foreign
+  // chat exists.
+  let chatIdBigInt: bigint;
+  try {
+    chatIdBigInt = BigInt(chatIdStr);
+  } catch {
+    return NextResponse.json({ error: "chatId must be a valid Telegram chat id" }, { status: 400 });
+  }
+
+  const chat = await prisma.telegramChat.findFirst({
+    where: { chatId: chatIdBigInt, groupId: activeGroupId },
+    select: { chatId: true },
+  });
+  if (!chat) {
+    return NextResponse.json({ error: "Chat not found" }, { status: 404 });
+  }
 
   try {
     // Convert to DateTime for Prisma (Date at 00:00 UTC)
@@ -65,21 +97,23 @@ export async function POST(req: Request) {
     await prisma.telegramPoll.upsert({
       where: { pollId: String(pollId) },
       update: {
-        chatId: BigInt(chatIdStr),
+        chatId: chatIdBigInt,
         messageId: BigInt(messageId),
         question,
         optionsJson: JSON.stringify(options),
         pollDate,
         isClosed: false,
+        groupId: activeGroupId,
       },
       create: {
         pollId: String(pollId),
-        chatId: BigInt(chatIdStr),
+        chatId: chatIdBigInt,
         messageId: BigInt(messageId),
         question,
         optionsJson: JSON.stringify(options),
         pollDate,
         isClosed: false,
+        groupId: activeGroupId,
       },
     });
 

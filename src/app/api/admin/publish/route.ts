@@ -76,13 +76,8 @@ export async function POST(req: Request) {
   revalidatePath("/");
 
   // --- Telegram work (best-effort; should not break publishing) ---
-  // Deliberately NOT tenant-scoped in this phase — Telegram ownership
-  // resolution (TelegramChat/TelegramPoll → Group) is explicitly
-  // deferred to Phase 2D.3. Current production has exactly one Group
-  // and both existing Telegram chats already belong to it (Phase 2C
-  // backfill), so this is not a live cross-tenant gap today, but it
-  // will need scoping before a second Group with its own Telegram
-  // integration exists. See Phase 2D.2 report §O.
+  // Tenant-scoped as of Phase 2D.3: the poll lookup below is checked
+  // against activeGroupId before any Telegram API call is made.
   let pollStatus:
     | "not_requested"
     | "poll_not_found_in_db"
@@ -103,7 +98,12 @@ export async function POST(req: Request) {
 
     const poll = await prisma.telegramPoll.findUnique({ where: { pollId } });
 
-    if (!poll) {
+    // Ownership check BEFORE any Telegram side effect: a pollId
+    // belonging to another Group must be treated exactly like a
+    // pollId that doesn't exist — same status, same response shape —
+    // so a caller can never distinguish "not found" from "not yours"
+    // and no close/post ever reaches a foreign tenant's chat.
+    if (!poll || poll.groupId !== activeGroupId) {
       pollStatus = "poll_not_found_in_db";
       return NextResponse.json({ ok: true, id: saved.id, pollStatus, telegramTeamsPosted });
     }
