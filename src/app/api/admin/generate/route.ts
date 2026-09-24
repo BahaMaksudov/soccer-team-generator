@@ -65,12 +65,14 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: "No active players selected." }, { status: 400 });
   }
 
-  // Load balancing weights from AppSetting; generateBalancedTeams safely
-  // falls back to defaults for anything missing or malformed.
-  // (AppSetting stays global/unscoped in this phase — see Phase 2D.2
-  // report §O; settings migration to GroupSetting is deliberately out
-  // of scope here.)
-  const row = await prisma.appSetting.findUnique({ where: { key: "balanceWeights" } });
+  // Load balancing weights from GroupSetting, scoped to the caller's
+  // own active Group (Phase 2D.4b) — never another tenant's
+  // configuration, never the legacy global AppSetting row.
+  // generateBalancedTeams safely falls back to defaults for anything
+  // missing or malformed.
+  const row = await prisma.groupSetting.findUnique({
+    where: { groupId_key: { groupId: context.activeGroup.id, key: "balanceWeights" } },
+  });
   let weights: BalanceWeights | undefined;
   if (row?.value) {
     try {

@@ -8,10 +8,12 @@ vi.mock("@/lib/tenantContext", async (importOriginal) => {
 
 const mockPlayerFindMany = vi.fn();
 const mockAppSettingFindUnique = vi.fn();
+const mockGroupSettingFindUnique = vi.fn();
 vi.mock("@/lib/prisma", () => ({
   prisma: {
     player: { findMany: (...args: unknown[]) => mockPlayerFindMany(...args) },
     appSetting: { findUnique: (...args: unknown[]) => mockAppSettingFindUnique(...args) },
+    groupSetting: { findUnique: (...args: unknown[]) => mockGroupSettingFindUnique(...args) },
   },
 }));
 
@@ -38,6 +40,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   mockRequireTenantContext.mockResolvedValue(CONTEXT_A);
   mockAppSettingFindUnique.mockResolvedValue(null);
+  mockGroupSettingFindUnique.mockResolvedValue(null);
 });
 
 describe("POST /api/admin/generate — cross-tenant player selection", () => {
@@ -85,5 +88,29 @@ describe("POST /api/admin/generate — cross-tenant player selection", () => {
     const res = await POST(req({ teamCount: 2, date: "2026-09-28", selectedIds: ["p1"] }));
     expect(res.status).toBe(401);
     expect(mockPlayerFindMany).not.toHaveBeenCalled();
+  });
+});
+
+describe("POST /api/admin/generate — balance weights tenant scoping (Phase 2D.4b)", () => {
+  it("loads balancing weights from GroupSetting scoped to the active group, never AppSetting", async () => {
+    mockPlayerFindMany.mockResolvedValue([makePlayer("p1"), makePlayer("p2")]);
+    mockGroupSettingFindUnique.mockResolvedValue({ value: JSON.stringify({ staminaCoef: 2 }) });
+
+    const res = await POST(req({ teamCount: 2, date: "2026-09-28", selectedIds: ["p1", "p2"] }));
+    expect(res.status).toBe(200);
+
+    expect(mockGroupSettingFindUnique).toHaveBeenCalledWith({
+      where: { groupId_key: { groupId: "group-a", key: "balanceWeights" } },
+    });
+    expect(mockAppSettingFindUnique).not.toHaveBeenCalled();
+  });
+
+  it("a missing GroupSetting still succeeds (falls through to generateBalancedTeams' own defaults), never reads AppSetting", async () => {
+    mockPlayerFindMany.mockResolvedValue([makePlayer("p1"), makePlayer("p2")]);
+    mockGroupSettingFindUnique.mockResolvedValue(null);
+
+    const res = await POST(req({ teamCount: 2, date: "2026-09-28", selectedIds: ["p1", "p2"] }));
+    expect(res.status).toBe(200);
+    expect(mockAppSettingFindUnique).not.toHaveBeenCalled();
   });
 });
