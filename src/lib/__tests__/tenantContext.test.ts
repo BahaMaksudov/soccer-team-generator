@@ -1,6 +1,8 @@
 import { describe, it, expect } from "vitest";
 import {
   resolveTenantContextForEmail,
+  resolveTenantContextForSlugs,
+  listAccessibleTenantsForEmail,
   hasOrgRole,
   requireRole,
   tenantContextErrorStatus,
@@ -297,5 +299,460 @@ describe("tenantContextErrorStatus", () => {
     expect(tenantContextErrorStatus("MULTIPLE_ORGANIZATIONS_REQUIRE_SELECTION")).toBe(409);
     expect(tenantContextErrorStatus("NO_GROUP")).toBe(409);
     expect(tenantContextErrorStatus("MULTIPLE_GROUPS_REQUIRE_SELECTION")).toBe(409);
+  });
+});
+
+// =================================================================
+// Phase 2D.6B — resolveTenantContextForSlugs()
+// =================================================================
+
+describe("resolveTenantContextForSlugs — success", () => {
+  it("resolves the normal single-org, single-group case explicitly by slug", async () => {
+    const db = makeDb({
+      users: { "admin@uccne.com": { id: "user-1", email: "admin@uccne.com", name: "Bahrom Maksudov" } },
+      memberships: {
+        "user-1": [
+          {
+            id: "membership-1",
+            role: "OWNER",
+            organization: { id: "org-1", name: "New England Eagles", slug: "new-england-eagles", groups: [group()] },
+          },
+        ],
+      },
+    });
+
+    const ctx = await resolveTenantContextForSlugs(
+      { email: "admin@uccne.com", organizationSlug: "new-england-eagles", groupSlug: "indoor-soccer" },
+      db
+    );
+
+    expect(ctx.organization.slug).toBe("new-england-eagles");
+    expect(ctx.activeGroup.slug).toBe("indoor-soccer");
+    expect(ctx.membership).toEqual({ id: "membership-1", role: "OWNER" });
+  });
+
+  it("resolves each Group independently when the Organization has multiple active Groups — does NOT throw MULTIPLE_GROUPS_REQUIRE_SELECTION", async () => {
+    const db = makeDb({
+      users: { "u@example.com": { id: "u1", email: "u@example.com", name: null } },
+      memberships: {
+        u1: [
+          {
+            id: "m1",
+            role: "OWNER",
+            organization: {
+              id: "o1",
+              name: "Org",
+              slug: "org",
+              groups: [
+                group({ id: "g-soccer", slug: "soccer", name: "Soccer" }),
+                group({ id: "g-basketball", slug: "basketball", name: "Basketball" }),
+                group({ id: "g-volleyball", slug: "volleyball", name: "Volleyball" }),
+              ],
+            },
+          },
+        ],
+      },
+    });
+
+    const soccer = await resolveTenantContextForSlugs({ email: "u@example.com", organizationSlug: "org", groupSlug: "soccer" }, db);
+    const basketball = await resolveTenantContextForSlugs({ email: "u@example.com", organizationSlug: "org", groupSlug: "basketball" }, db);
+    const volleyball = await resolveTenantContextForSlugs({ email: "u@example.com", organizationSlug: "org", groupSlug: "volleyball" }, db);
+
+    expect(soccer.activeGroup.id).toBe("g-soccer");
+    expect(basketball.activeGroup.id).toBe("g-basketball");
+    expect(volleyball.activeGroup.id).toBe("g-volleyball");
+  });
+
+  it("resolves each Organization independently when the User belongs to multiple — does NOT throw MULTIPLE_ORGANIZATIONS_REQUIRE_SELECTION", async () => {
+    const db = makeDb({
+      users: { "multi@example.com": { id: "user-3", email: "multi@example.com", name: null } },
+      memberships: {
+        "user-3": [
+          { id: "m-a", role: "OWNER", organization: { id: "org-a", name: "Org A", slug: "org-a", groups: [group({ id: "g-a", slug: "g-a" })] } },
+          { id: "m-b", role: "MEMBER", organization: { id: "org-b", name: "Org B", slug: "org-b", groups: [group({ id: "g-b", slug: "g-b" })] } },
+        ],
+      },
+    });
+
+    const a = await resolveTenantContextForSlugs({ email: "multi@example.com", organizationSlug: "org-a", groupSlug: "g-a" }, db);
+    const b = await resolveTenantContextForSlugs({ email: "multi@example.com", organizationSlug: "org-b", groupSlug: "g-b" }, db);
+
+    expect(a.organization.id).toBe("org-a");
+    expect(b.organization.id).toBe("org-b");
+  });
+
+  it("resolves the correct Organization even when two different Organizations share the same Group slug", async () => {
+    const db = makeDb({
+      users: {
+        "alice@org-a.com": { id: "alice", email: "alice@org-a.com", name: null },
+      },
+      memberships: {
+        alice: [
+          {
+            id: "m-alice-a",
+            role: "OWNER",
+            organization: { id: "org-a", name: "Org A", slug: "org-a", groups: [group({ id: "group-a", slug: "indoor-soccer" })] },
+          },
+          {
+            id: "m-alice-b",
+            role: "MEMBER",
+            organization: { id: "org-b", name: "Org B", slug: "org-b", groups: [group({ id: "group-b", slug: "indoor-soccer" })] },
+          },
+        ],
+      },
+    });
+
+    const viaA = await resolveTenantContextForSlugs({ email: "alice@org-a.com", organizationSlug: "org-a", groupSlug: "indoor-soccer" }, db);
+    const viaB = await resolveTenantContextForSlugs({ email: "alice@org-a.com", organizationSlug: "org-b", groupSlug: "indoor-soccer" }, db);
+
+    expect(viaA.activeGroup.id).toBe("group-a");
+    expect(viaA.organization.id).toBe("org-a");
+    expect(viaB.activeGroup.id).toBe("group-b");
+    expect(viaB.organization.id).toBe("org-b");
+  });
+
+  it("membership.role reflects the role for the SELECTED organization, not a global role (OWNER in A, MEMBER in B)", async () => {
+    const db = makeDb({
+      users: { "u@example.com": { id: "u1", email: "u@example.com", name: null } },
+      memberships: {
+        u1: [
+          { id: "m-a", role: "OWNER", organization: { id: "org-a", name: "Org A", slug: "org-a", groups: [group({ id: "g-a", slug: "g-a" })] } },
+          { id: "m-b", role: "MEMBER", organization: { id: "org-b", name: "Org B", slug: "org-b", groups: [group({ id: "g-b", slug: "g-b" })] } },
+        ],
+      },
+    });
+
+    const asOwner = await resolveTenantContextForSlugs({ email: "u@example.com", organizationSlug: "org-a", groupSlug: "g-a" }, db);
+    const asMember = await resolveTenantContextForSlugs({ email: "u@example.com", organizationSlug: "org-b", groupSlug: "g-b" }, db);
+
+    expect(asOwner.membership.role).toBe("OWNER");
+    expect(asMember.membership.role).toBe("MEMBER");
+  });
+
+  it("groups[] lists every active Group in the selected Organization, not merely the selected one", async () => {
+    const db = makeDb({
+      users: { "u@example.com": { id: "u1", email: "u@example.com", name: null } },
+      memberships: {
+        u1: [
+          {
+            id: "m1",
+            role: "OWNER",
+            organization: {
+              id: "o1",
+              name: "Org",
+              slug: "org",
+              groups: [
+                group({ id: "g-soccer", slug: "soccer" }),
+                group({ id: "g-basketball", slug: "basketball" }),
+              ],
+            },
+          },
+        ],
+      },
+    });
+
+    const ctx = await resolveTenantContextForSlugs({ email: "u@example.com", organizationSlug: "org", groupSlug: "soccer" }, db);
+
+    expect(ctx.activeGroup.id).toBe("g-soccer");
+    expect(ctx.groups.map((g) => g.id).sort()).toEqual(["g-basketball", "g-soccer"]);
+  });
+
+  it("groups[] excludes inactive Groups of the selected Organization", async () => {
+    const db = makeDb({
+      users: { "u@example.com": { id: "u1", email: "u@example.com", name: null } },
+      memberships: {
+        u1: [
+          {
+            id: "m1",
+            role: "OWNER",
+            organization: {
+              id: "o1",
+              name: "Org",
+              slug: "org",
+              groups: [
+                group({ id: "g-active", slug: "active-group", isActive: true }),
+                group({ id: "g-inactive", slug: "inactive-group", isActive: false }),
+              ],
+            },
+          },
+        ],
+      },
+    });
+
+    const ctx = await resolveTenantContextForSlugs({ email: "u@example.com", organizationSlug: "org", groupSlug: "active-group" }, db);
+
+    expect(ctx.groups.map((g) => g.id)).toEqual(["g-active"]);
+  });
+});
+
+describe("resolveTenantContextForSlugs — failure modes", () => {
+  it("UNAUTHENTICATED for missing/empty email", async () => {
+    const db = makeDb({});
+    await expect(
+      resolveTenantContextForSlugs({ email: null, organizationSlug: "org", groupSlug: "g" }, db)
+    ).rejects.toMatchObject({ code: "UNAUTHENTICATED" });
+  });
+
+  it("USER_NOT_FOUND when the authenticated email has no matching User row", async () => {
+    const db = makeDb({ users: {} });
+    await expect(
+      resolveTenantContextForSlugs({ email: "nobody@example.com", organizationSlug: "org", groupSlug: "g" }, db)
+    ).rejects.toMatchObject({ code: "USER_NOT_FOUND" });
+  });
+
+  it("NO_ORGANIZATION_MEMBERSHIP for a completely unknown organization slug", async () => {
+    const db = makeDb({
+      users: { "u@example.com": { id: "u1", email: "u@example.com", name: null } },
+      memberships: {
+        u1: [{ id: "m1", role: "OWNER", organization: { id: "o1", name: "Org", slug: "org", groups: [group()] } }],
+      },
+    });
+
+    await expect(
+      resolveTenantContextForSlugs({ email: "u@example.com", organizationSlug: "does-not-exist", groupSlug: "indoor-soccer" }, db)
+    ).rejects.toMatchObject({ code: "NO_ORGANIZATION_MEMBERSHIP" });
+  });
+
+  it("NO_ORGANIZATION_MEMBERSHIP — identical outcome for a REAL organization the user simply isn't a member of (indistinguishable from a nonexistent slug)", async () => {
+    // "org-b" genuinely exists in this fixture's universe (bob is a
+    // member) — but alice, the requester, has no membership in it.
+    const db = makeDb({
+      users: {
+        "alice@example.com": { id: "alice", email: "alice@example.com", name: null },
+        "bob@example.com": { id: "bob", email: "bob@example.com", name: null },
+      },
+      memberships: {
+        alice: [{ id: "m-alice", role: "OWNER", organization: { id: "org-a", name: "Org A", slug: "org-a", groups: [group()] } }],
+        bob: [{ id: "m-bob", role: "OWNER", organization: { id: "org-b", name: "Org B", slug: "org-b", groups: [group()] } }],
+      },
+    });
+
+    await expect(
+      resolveTenantContextForSlugs({ email: "alice@example.com", organizationSlug: "org-b", groupSlug: "indoor-soccer" }, db)
+    ).rejects.toMatchObject({ code: "NO_ORGANIZATION_MEMBERSHIP" });
+  });
+
+  it("NO_GROUP for an unknown group slug within a real, accessible organization", async () => {
+    const db = makeDb({
+      users: { "u@example.com": { id: "u1", email: "u@example.com", name: null } },
+      memberships: {
+        u1: [{ id: "m1", role: "OWNER", organization: { id: "o1", name: "Org", slug: "org", groups: [group()] } }],
+      },
+    });
+
+    await expect(
+      resolveTenantContextForSlugs({ email: "u@example.com", organizationSlug: "org", groupSlug: "does-not-exist" }, db)
+    ).rejects.toMatchObject({ code: "NO_GROUP" });
+  });
+
+  it("NO_GROUP — identical outcome for a Group that exists only under a DIFFERENT organization (never resolves Group by slug alone)", async () => {
+    const db = makeDb({
+      users: { "u@example.com": { id: "u1", email: "u@example.com", name: null } },
+      memberships: {
+        u1: [
+          { id: "m-a", role: "OWNER", organization: { id: "org-a", name: "Org A", slug: "org-a", groups: [group({ id: "g-a", slug: "group-a" })] } },
+          { id: "m-b", role: "OWNER", organization: { id: "org-b", name: "Org B", slug: "org-b", groups: [group({ id: "g-b", slug: "group-b" })] } },
+        ],
+      },
+    });
+
+    // "group-b" is real, but only under org-b — requesting it under org-a must fail.
+    await expect(
+      resolveTenantContextForSlugs({ email: "u@example.com", organizationSlug: "org-a", groupSlug: "group-b" }, db)
+    ).rejects.toMatchObject({ code: "NO_GROUP" });
+  });
+
+  it("NO_GROUP for an explicitly selected inactive Group — never silently substitutes another active Group", async () => {
+    const db = makeDb({
+      users: { "u@example.com": { id: "u1", email: "u@example.com", name: null } },
+      memberships: {
+        u1: [
+          {
+            id: "m1",
+            role: "OWNER",
+            organization: {
+              id: "o1",
+              name: "Org",
+              slug: "org",
+              groups: [
+                group({ id: "g-inactive", slug: "inactive-group", isActive: false }),
+                group({ id: "g-active", slug: "active-group", isActive: true }),
+              ],
+            },
+          },
+        ],
+      },
+    });
+
+    await expect(
+      resolveTenantContextForSlugs({ email: "u@example.com", organizationSlug: "org", groupSlug: "inactive-group" }, db)
+    ).rejects.toMatchObject({ code: "NO_GROUP" });
+  });
+
+  it("does not accept organizationId/groupId as input — the function has no such parameters (structural proof)", () => {
+    expect(resolveTenantContextForSlugs.length).toBe(2); // (params, db) only
+  });
+});
+
+// =================================================================
+// Phase 2D.6B — existing ambiguity behavior is unchanged (regression)
+// =================================================================
+
+describe("resolveTenantContextForEmail — unchanged ambiguity behavior after 2D.6B", () => {
+  it("still throws MULTIPLE_ORGANIZATIONS_REQUIRE_SELECTION for the same multi-org data the new resolver handles explicitly", async () => {
+    const db = makeDb({
+      users: { "multi@example.com": { id: "user-3", email: "multi@example.com", name: null } },
+      memberships: {
+        "user-3": [
+          { id: "m-a", role: "OWNER", organization: { id: "org-a", name: "Org A", slug: "org-a", groups: [group({ id: "g-a", slug: "g-a" })] } },
+          { id: "m-b", role: "MEMBER", organization: { id: "org-b", name: "Org B", slug: "org-b", groups: [group({ id: "g-b", slug: "g-b" })] } },
+        ],
+      },
+    });
+
+    await expect(resolveTenantContextForEmail("multi@example.com", db)).rejects.toMatchObject({
+      code: "MULTIPLE_ORGANIZATIONS_REQUIRE_SELECTION",
+    });
+  });
+
+  it("still throws MULTIPLE_GROUPS_REQUIRE_SELECTION for the same multi-group data the new resolver handles explicitly", async () => {
+    const db = makeDb({
+      users: { "u@example.com": { id: "u1", email: "u@example.com", name: null } },
+      memberships: {
+        u1: [
+          {
+            id: "m1",
+            role: "OWNER",
+            organization: {
+              id: "o1",
+              name: "Org",
+              slug: "org",
+              groups: [group({ id: "g-soccer", slug: "soccer" }), group({ id: "g-basketball", slug: "basketball" })],
+            },
+          },
+        ],
+      },
+    });
+
+    await expect(resolveTenantContextForEmail("u@example.com", db)).rejects.toMatchObject({
+      code: "MULTIPLE_GROUPS_REQUIRE_SELECTION",
+    });
+  });
+});
+
+// =================================================================
+// Phase 2D.6B — listAccessibleTenantsForEmail()
+// =================================================================
+
+describe("listAccessibleTenantsForEmail", () => {
+  it("returns every Organization the User has membership in, with role and active Groups", async () => {
+    const db = makeDb({
+      users: { "u@example.com": { id: "u1", email: "u@example.com", name: null } },
+      memberships: {
+        u1: [
+          { id: "m-a", role: "OWNER", organization: { id: "org-a", name: "Org A", slug: "org-a", groups: [group({ id: "g-a", slug: "g-a" })] } },
+          { id: "m-b", role: "MEMBER", organization: { id: "org-b", name: "Org B", slug: "org-b", groups: [group({ id: "g-b", slug: "g-b" })] } },
+        ],
+      },
+    });
+
+    const list = await listAccessibleTenantsForEmail("u@example.com", db);
+
+    expect(list).toHaveLength(2);
+    expect(list.find((o) => o.id === "org-a")).toEqual({
+      id: "org-a", name: "Org A", slug: "org-a", role: "OWNER",
+      groups: [{ id: "g-a", name: "Indoor Soccer", slug: "g-a", sportKey: "soccer", timezone: "America/New_York" }],
+    });
+    expect(list.find((o) => o.id === "org-b")?.role).toBe("MEMBER");
+  });
+
+  it("preserves the per-Organization role correctly (OWNER in one, MEMBER in another)", async () => {
+    const db = makeDb({
+      users: { "u@example.com": { id: "u1", email: "u@example.com", name: null } },
+      memberships: {
+        u1: [
+          { id: "m-a", role: "OWNER", organization: { id: "org-a", name: "Org A", slug: "org-a", groups: [] } },
+          { id: "m-b", role: "MEMBER", organization: { id: "org-b", name: "Org B", slug: "org-b", groups: [] } },
+        ],
+      },
+    });
+
+    const list = await listAccessibleTenantsForEmail("u@example.com", db);
+
+    expect(list.find((o) => o.id === "org-a")?.role).toBe("OWNER");
+    expect(list.find((o) => o.id === "org-b")?.role).toBe("MEMBER");
+  });
+
+  it("only includes active Groups within each Organization", async () => {
+    const db = makeDb({
+      users: { "u@example.com": { id: "u1", email: "u@example.com", name: null } },
+      memberships: {
+        u1: [
+          {
+            id: "m1",
+            role: "OWNER",
+            organization: {
+              id: "o1", name: "Org", slug: "org",
+              groups: [
+                group({ id: "g-active", slug: "active-group", isActive: true }),
+                group({ id: "g-inactive", slug: "inactive-group", isActive: false }),
+              ],
+            },
+          },
+        ],
+      },
+    });
+
+    const list = await listAccessibleTenantsForEmail("u@example.com", db);
+
+    expect(list[0].groups.map((g) => g.id)).toEqual(["g-active"]);
+  });
+
+  it("includes an Organization with zero active Groups, with groups: [] — distinguishable from having no Organization at all", async () => {
+    const db = makeDb({
+      users: { "u@example.com": { id: "u1", email: "u@example.com", name: null } },
+      memberships: {
+        u1: [{ id: "m1", role: "OWNER", organization: { id: "o1", name: "Empty Org", slug: "empty-org", groups: [] } }],
+      },
+    });
+
+    const list = await listAccessibleTenantsForEmail("u@example.com", db);
+
+    expect(list).toEqual([{ id: "o1", name: "Empty Org", slug: "empty-org", role: "OWNER", groups: [] }]);
+  });
+
+  it("returns [] for a valid User with zero OrganizationMemberships — a listing result, not a thrown error", async () => {
+    const db = makeDb({
+      users: { "solo@example.com": { id: "user-2", email: "solo@example.com", name: null } },
+      memberships: { "user-2": [] },
+    });
+
+    const list = await listAccessibleTenantsForEmail("solo@example.com", db);
+
+    expect(list).toEqual([]);
+  });
+
+  it("still fails closed on authentication: UNAUTHENTICATED for missing email", async () => {
+    const db = makeDb({});
+    await expect(listAccessibleTenantsForEmail(null, db)).rejects.toMatchObject({ code: "UNAUTHENTICATED" });
+  });
+
+  it("still fails closed on authentication: USER_NOT_FOUND for an unrecognized email", async () => {
+    const db = makeDb({ users: {} });
+    await expect(listAccessibleTenantsForEmail("nobody@example.com", db)).rejects.toMatchObject({ code: "USER_NOT_FOUND" });
+  });
+
+  it("never leaks passwordHash even if the underlying user row carries one", async () => {
+    const db = makeDb({
+      users: { "admin@uccne.com": { id: "user-1", email: "admin@uccne.com", name: "Bahrom Maksudov", passwordHash: "$2b$10$totallyrealhashvalue" } },
+      memberships: {
+        "user-1": [{ id: "m1", role: "OWNER", organization: { id: "o1", name: "Org", slug: "org", groups: [group()] } }],
+      },
+    });
+
+    const list = await listAccessibleTenantsForEmail("admin@uccne.com", db);
+
+    expect(JSON.stringify(list)).not.toContain("passwordHash");
+    expect(JSON.stringify(list)).not.toContain("totallyrealhashvalue");
   });
 });
