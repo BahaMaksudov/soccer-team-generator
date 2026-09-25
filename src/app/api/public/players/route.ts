@@ -1,84 +1,16 @@
-// import { NextResponse } from "next/server";
-// import { prisma } from "@/lib/prisma";
-// import type { Position, Rating } from "@prisma/client";
-
-// const ratingWeight: Record<Rating, number> = {
-//   FAIR: 1,
-//   GOOD: 2,
-//   VERY_GOOD: 3,
-//   EXCELLENT: 4,
-// };
-
-// function positionWeight(pos: Position): number {
-//   switch (pos) {
-//     case "DEFENDER":
-//       return 1;
-//     case "MIDFIELDER":
-//       return 2;
-//     case "FORWARD":
-//       return 2;
-//     case "GOALKEEPER":
-//       return 2;
-//     default:
-//       return 1;
-//   }
-// }
-
-// function clampStamina(v: any): number {
-//   const n = Number(v);
-//   return Number.isFinite(n) ? Math.min(5, Math.max(1, n)) : 3;
-// }
-
-// // Overall score: rating dominates, stamina + role add smaller boost
-// function overallScore(p: { rating: Rating; stamina: number; position: Position }) {
-//   const r = ratingWeight[p.rating];      // 1..4
-//   const s = clampStamina(p.stamina);     // 1..5
-//   const pw = positionWeight(p.position); // 1..2
-//   return r * 10 + s * 2 + pw * 3;
-// }
-
-// export async function GET() {
-//   const players = await prisma.player.findMany({
-//     orderBy: [{ lastName: "asc" }, { firstName: "asc" }],
-//     select: {
-//       id: true,
-//       firstName: true,
-//       lastName: true,
-//       position: true,
-//       isActive: true,
-//       rating: true,
-//       stamina: true,
-//     },
-//   });
-
-//   const result = players.map((p) => ({
-//     id: p.id,
-//     firstName: p.firstName,
-//     lastName: p.lastName,
-//     position: p.position,
-//     isActive: p.isActive,
-//     overallScore: overallScore(p),
-//   }));
-
-//   return NextResponse.json(result);
-// }
-
-import { prisma } from "@/lib/prisma";
 import { NextResponse } from "next/server";
 
+/**
+ * Phase 2D.5F — retired. This endpoint previously returned every
+ * Group's players, globally unscoped, to any anonymous caller (Phase
+ * 2D.5A §D/§R). Its only caller, the legacy /players page, was
+ * replaced with a redirect to the canonical, tenant-scoped Players
+ * API in this same phase — this route now has zero live callers and
+ * is retired rather than tenant-scoped, per Phase 2D.5F §I/§N:
+ * redirecting an unscoped API to a configured tenant would let API
+ * callers silently receive a specific tenant's data without ever
+ * asking for it by identity.
+ */
 export async function GET() {
-  const players = await prisma.player.findMany({
-    orderBy: [{ lastName: "asc" }, { firstName: "asc" }],
-    select: {
-      id: true,
-      firstName: true,
-      lastName: true,
-      position: true,
-      rating: true,
-      stamina: true,     // ✅ IMPORTANT
-      isActive: true,
-    },
-  });
-
-  return NextResponse.json(players);
+  return NextResponse.json({ error: "This endpoint has been retired." }, { status: 410 });
 }

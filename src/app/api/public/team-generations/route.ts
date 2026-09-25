@@ -1,29 +1,15 @@
-import { NextRequest, NextResponse } from "next/server";
-import { prisma } from "@/lib/prisma";
+import { NextResponse } from "next/server";
 
-export async function GET(req: NextRequest) {
-  const { searchParams } = new URL(req.url);
-
-  const page = Math.max(1, Number(searchParams.get("page") ?? "1"));
-  const pageSize = Math.min(20, Math.max(1, Number(searchParams.get("pageSize") ?? "4")));
-
-  const total = await prisma.teamGeneration.count();
-  const totalPages = total === 0 ? 0 : Math.ceil(total / pageSize);
-
-  const rows = await prisma.teamGeneration.findMany({
-    orderBy: { date: "desc" },
-    skip: (page - 1) * pageSize,
-    take: pageSize,
-  });
-
-  return NextResponse.json({
-    page,
-    totalPages,
-    items: rows.map((r) => ({
-      id: r.id,
-      date: r.date,
-      updatedAt: r.updatedAt,
-      teams: JSON.parse(r.teamsJson),
-    })),
-  });
+/**
+ * Phase 2D.5F — retired. This endpoint had zero live callers before
+ * this phase (confirmed by repository-wide search, Phase 2D.5A §D and
+ * re-confirmed in Phase 2D.5F §B) — it was a dead duplicate of the
+ * legacy home page's own inline, globally-unscoped query. Retired
+ * rather than tenant-scoped or removed: canonical history is served
+ * entirely by direct server-side Prisma calls in
+ * src/app/g/[organizationSlug]/[groupSlug]/data.ts, which never
+ * needed this API to begin with.
+ */
+export async function GET() {
+  return NextResponse.json({ error: "This endpoint has been retired." }, { status: 410 });
 }
