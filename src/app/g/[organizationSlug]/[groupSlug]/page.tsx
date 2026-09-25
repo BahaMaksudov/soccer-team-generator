@@ -2,21 +2,23 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { positionLabel } from "@/lib/labels";
 import { loadPublicGroupHomeData } from "./data";
+import { buildCanonicalPrintHref } from "./printHref";
 
 /**
  * Phase 2D.5B — canonical public Group home/history page.
  *
  * Deliberately a close copy of src/app/page.tsx's rendering, not a
- * shared component: the two pages will diverge in Phase 2D.5D
- * (Group-specific branding/layout) and Phase 2D.5F (legacy `/`
- * decision), so extracting a shared abstraction now would be
- * premature — some duplication is accepted temporarily and flagged
- * for cleanup rather than papered over. See Phase 2D.5B report §N.
+ * shared component: the two pages will diverge further in Phase
+ * 2D.5F (legacy `/` decision), so extracting a shared abstraction now
+ * would be premature — some duplication is accepted temporarily and
+ * flagged for cleanup rather than papered over. See Phase 2D.5B
+ * report §N.
  *
- * The one behavioral difference from `/`: every TeamGeneration query
- * is scoped to the URL-resolved Group (see ./data.ts), and Print
- * links are intentionally omitted (Phase 2D.5E owns a tenant-safe
- * print route; the legacy /print/[id] has no ownership check at all).
+ * The behavioral difference from `/`: every TeamGeneration query is
+ * scoped to the URL-resolved Group (see ./data.ts). Print links
+ * (restored in Phase 2D.5E) point at the canonical, tenant-safe print
+ * route — never the legacy /print/[id], which has no ownership check
+ * at all.
  */
 
 function formatDate(value: Date | string) {
@@ -76,6 +78,13 @@ export default async function PublicGroupHome({
                     })}
                   </div>
                 </div>
+                <Link
+                  className="px-3 py-2 border rounded-md text-sm bg-white"
+                  href={buildCanonicalPrintHref(organizationSlug, groupSlug, gen.id)}
+                  target="_blank"
+                >
+                  Print / Save as PDF
+                </Link>
               </div>
 
               <div className="overflow-x-auto">

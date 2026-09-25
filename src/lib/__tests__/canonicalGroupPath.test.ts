@@ -16,6 +16,24 @@ describe("parseCanonicalGroupPath", () => {
     });
   });
 
+  it("parses the canonical Print path (Phase 2D.5E — nested two levels below the group segment)", () => {
+    expect(
+      parseCanonicalGroupPath("/g/new-england-eagles/indoor-soccer/print/cmjxikf640005jo047roibr7m")
+    ).toEqual({
+      organizationSlug: "new-england-eagles",
+      groupSlug: "indoor-soccer",
+    });
+  });
+
+  it("resolves the SAME organizationSlug/groupSlug for home, players, and print under one group", () => {
+    const home = parseCanonicalGroupPath("/g/new-england-eagles/indoor-soccer");
+    const players = parseCanonicalGroupPath("/g/new-england-eagles/indoor-soccer/players");
+    const print = parseCanonicalGroupPath("/g/new-england-eagles/indoor-soccer/print/gen-1");
+
+    expect(home).toEqual(players);
+    expect(players).toEqual(print);
+  });
+
   it("returns null for legacy home", () => {
     expect(parseCanonicalGroupPath("/")).toBeNull();
   });
