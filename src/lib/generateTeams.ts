@@ -1,0 +1,99 @@
+import { prisma } from "@/lib/prisma";
+import { NextResponse } from "next/server";
+import { generateBalancedTeams } from "@/lib/teamGen";
+import { toDateOnlyUTC } from "@/lib/dateOnly";
+import { generateTeamsSchema, zodErrorResponse } from "@/lib/validation";
+import type { BalanceWeights } from "@/lib/scoring";
+import type { TenantContext } from "@/lib/tenantContext";
+
+/**
+ * Phase 2D.6D.2 — shared Generate core, extracted verbatim from the
+ * legacy /api/admin/generate route body (only the tenant resolution
+ * step was removed — every remaining line of validation, scoping,
+ * and balancing-library call is unchanged). Both the legacy flat
+ * route (requireTenantContext()) and the new canonical URL-bound
+ * route (requireTenantContextForSlugs()) delegate here after
+ * independently resolving and authorizing their own TenantContext —
+ * this module never resolves tenancy itself and never reads request
+ * body/query for ownership. It receives an already-authorized
+ * `context.activeGroup.id` and uses nothing else for scoping.
+ */
+export async function generateTeamsForContext(context: TenantContext, req: Request): Promise<NextResponse> {
+  const body = await req.json().catch(() => ({}));
+
+  const parsed = generateTeamsSchema.safeParse(body);
+  if (!parsed.success) {
+    return NextResponse.json(zodErrorResponse(parsed.error), { status: 400 });
+  }
+
+  const { teamCount, date: dateStr, selectedIds, format } = parsed.data;
+
+  const normalizedDate = toDateOnlyUTC(dateStr);
+
+  // Explicit select: fetch only what the generator needs and what the
+  // Admin preview/home page/print view actually render. In particular,
+  // this deliberately excludes telegramUserId (BigInt) and the other
+  // Telegram-linking fields — a Player row with a linked Telegram
+  // account previously made this route 500, because NextResponse.json
+  // cannot serialize a native BigInt and the full Player record (as
+  // fetched before this fix) was returned unmodified inside the
+  // generated teams.
+  //
+  // groupId is scoped to the caller's own active Group — selectedIds is
+  // untrusted client input, and without this filter a request could
+  // include another tenant's Player ids and have them silently pulled
+  // into generation.
+  const selected = await prisma.player.findMany({
+    where: { id: { in: selectedIds }, isActive: true, groupId: context.activeGroup.id },
+    select: {
+      id: true,
+      firstName: true,
+      lastName: true,
+      position: true,
+      rating: true,
+      stamina: true,
+    },
+  });
+
+  // Reject rather than silently proceeding with a smaller roster: a
+  // mismatch between the requested and resolved id counts means at
+  // least one id was invalid, inactive, or (most importantly) belongs
+  // to a different Group. Never reveal which — the error is identical
+  // either way.
+  if (selected.length !== selectedIds.length) {
+    return NextResponse.json(
+      { error: "One or more selected players are invalid or unavailable." },
+      { status: 400 }
+    );
+  }
+  if (selected.length === 0) {
+    return NextResponse.json({ error: "No active players selected." }, { status: 400 });
+  }
+
+  // Load balancing weights from GroupSetting, scoped to the caller's
+  // own active Group (Phase 2D.4b) — never another tenant's
+  // configuration, never the legacy global AppSetting row.
+  // generateBalancedTeams safely falls back to defaults for anything
+  // missing or malformed.
+  const row = await prisma.groupSetting.findUnique({
+    where: { groupId_key: { groupId: context.activeGroup.id, key: "balanceWeights" } },
+  });
+  let weights: BalanceWeights | undefined;
+  if (row?.value) {
+    try {
+      weights = JSON.parse(row.value);
+    } catch {
+      weights = undefined;
+    }
+  }
+
+  let teams;
+  try {
+    teams = generateBalancedTeams(selected, teamCount, format, weights);
+  } catch (e: unknown) {
+    const message = e instanceof Error ? e.message : "Failed to generate teams.";
+    return NextResponse.json({ error: message }, { status: 400 });
+  }
+
+  return NextResponse.json({ date: normalizedDate.toISOString(), teams });
+}

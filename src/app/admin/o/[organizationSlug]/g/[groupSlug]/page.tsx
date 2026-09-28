@@ -1,21 +1,22 @@
 import { notFound } from "next/navigation";
 import { loadCanonicalAdminContext } from "./data";
-import CanonicalPlayersSection from "./CanonicalPlayersSection";
+import CanonicalAdminWorkspace from "./CanonicalAdminWorkspace";
 
 /**
  * Phase 2D.6C — canonical tenant Admin entry point. Originally a
- * tenant-resolution checkpoint only; Phase 2D.6D.1 adds the first
- * operational section (Players), tenant-bound to the canonical API.
- * It still renders no other operational actions and still calls no
- * OTHER flat `/api/admin/*` route (Generate/Publish/Settings/
- * Telegram remain on the old zero-argument requireTenantContext()
- * path and are not called from here) — calling them from a page that
- * displays one specific Group would risk silently operating on a
- * different Group if the old resolver ever diverged (Phase 2D.6C
+ * tenant-resolution checkpoint only; Phase 2D.6D.1 added Players,
+ * Phase 2D.6D.2 added Generate (preview-only) — both tenant-bound to
+ * the canonical API via CanonicalAdminWorkspace. This page still
+ * calls no flat `/api/admin/*` route itself, and the canonical
+ * workspace it renders still calls no OTHER flat route either
+ * (Publish/Settings/Telegram remain on the old zero-argument
+ * requireTenantContext() path, untouched) — calling them from a page
+ * that displays one specific Group would risk silently operating on
+ * a different Group if the old resolver ever diverged (Phase 2D.6C
  * report §17). Those migrate in later phases, not this one.
  *
  * Organization/Group names displayed, and the slugs passed to
- * CanonicalPlayersSection, come from the resolved TenantContext —
+ * CanonicalAdminWorkspace, come from the resolved TenantContext —
  * never echoed directly from the raw URL params.
  */
 
@@ -44,7 +45,7 @@ export default async function CanonicalAdminHome({ params }: { params: Params })
       </p>
       <p className="text-sm text-gray-600 pt-2">Tenant-scoped Admin workspace is ready.</p>
 
-      <CanonicalPlayersSection
+      <CanonicalAdminWorkspace
         organizationSlug={context.organization.slug}
         groupSlug={context.activeGroup.slug}
       />
