@@ -8,18 +8,22 @@ import type { Player } from "./CanonicalAdminWorkspace";
 
 /**
  * Phase 2D.6D.2 — canonical tenant-bound Generate preview.
+ * Phase 2D.6D.3 — adds Publish, completing Players → Generate →
+ * Preview → Publish on canonical, tenant-bound APIs only.
  *
  * Reuses the existing TeamPreview component as-is (pure presentational,
  * no API calls, no tenant coupling — safe to import unmodified). Does
  * NOT reuse GenerationControls: that component hard-codes a Publish
- * button, and Publish is explicitly out of scope this phase — showing
- * a non-functional Publish control would be misleading, so this
- * section renders its own compact date/team-count/Generate controls
- * instead.
+ * button wired to page-owned legacy state, so this section renders its
+ * own compact date/team-count/Generate/Publish controls instead.
  *
  * Every request targets adminTenantApiPath(...) — never the legacy
- * flat /api/admin/generate. Generated results are preview-only in
- * this phase; refresh/navigation may lose them (acceptable per scope).
+ * flat /api/admin/generate or /api/admin/publish. Publish deliberately
+ * omits pollId/closePoll/postToTelegram — the shared Publish core's
+ * Telegram branch only activates when a pollId is sent, and this
+ * canonical workspace has no Telegram affordance yet (out of scope
+ * this phase), so it stays dormant here by construction, not by a
+ * special code path.
  */
 export default function CanonicalGenerateSection({
   organizationSlug,
@@ -43,9 +47,12 @@ export default function CanonicalGenerateSection({
 
   const [previewTeams, setPreviewTeams] = useState<GeneratedTeam[] | null>(null);
   const [previewDate, setPreviewDate] = useState<string | null>(null);
+  const [publishing, setPublishing] = useState(false);
+  const [published, setPublished] = useState(false);
 
   async function generate() {
     onMessage(null);
+    setPublished(false);
     const res = await fetch(adminTenantApiPath({ organizationSlug, groupSlug, path: "/generate" }), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -58,20 +65,43 @@ export default function CanonicalGenerateSection({
     }
     setPreviewTeams(data.teams);
     setPreviewDate(data.date);
-    onMessage("Preview generated. (Publish is not yet available on this canonical workspace.)");
+    onMessage("Preview generated. If it looks good, click Publish.");
   }
 
   function clearPreview() {
     setPreviewTeams(null);
     setPreviewDate(null);
+    setPublished(false);
     onMessage("Preview cleared.");
+  }
+
+  async function publish() {
+    if (!previewTeams || !previewDate) {
+      onMessage("Generate a preview first, then publish.");
+      return;
+    }
+    onMessage(null);
+    setPublishing(true);
+    const res = await fetch(adminTenantApiPath({ organizationSlug, groupSlug, path: "/publish" }), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ date: previewDate, teams: previewTeams }),
+    });
+    const data = await res.json().catch(() => ({}));
+    setPublishing(false);
+    if (!res.ok) {
+      onMessage(data?.error ?? "Failed to publish");
+      return;
+    }
+    setPublished(true);
+    onMessage("✅ Published! The public page for this Group is updated.");
   }
 
   return (
     <div className="border rounded-xl p-4 mt-4 space-y-3">
       <div className="font-semibold">Generate Teams (Preview)</div>
       <p className="text-xs text-gray-500">
-        Select players above, then generate a preview. Publishing is not yet available on this canonical workspace.
+        Select players above, generate a preview, then publish it for this Group.
       </p>
 
       <div className="flex flex-wrap items-end gap-3">
@@ -101,10 +131,22 @@ export default function CanonicalGenerateSection({
         >
           Generate (Selected: {selectedIds.length})
         </button>
+        <button
+          className="bg-sky-600 text-white rounded px-3 py-1 text-sm disabled:opacity-50 disabled:cursor-not-allowed"
+          disabled={!previewTeams || publishing}
+          onClick={publish}
+        >
+          {publishing ? "Publishing…" : "Publish"}
+        </button>
         {previewTeams && (
           <button className="bg-rose-600 text-white rounded px-3 py-1 text-sm" onClick={clearPreview}>
             Clear
           </button>
+        )}
+        {published && (
+          <span className="text-xs px-2 py-1 rounded-full border bg-emerald-50 text-emerald-700 border-emerald-200">
+            Published
+          </span>
         )}
       </div>
 
