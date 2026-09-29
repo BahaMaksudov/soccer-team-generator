@@ -2,7 +2,6 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { signOut } from "next-auth/react";
-import Link from "next/link";
 
 import type { Player, TgPollItem, GeneratedTeam } from "../types";
 import TeamSettings from "./TeamSettings";
@@ -276,14 +275,6 @@ export default function AdminWorkspace() {
           <h1 className="text-2xl font-semibold">Admin</h1>
 
           <div className="ml-auto flex items-center gap-4">
-            <Link className="text-sm underline" href="/admin/settings">
-              Settings
-            </Link>
-
-            <Link className="text-sm underline" href="/admin/telegram">
-              Telegram
-            </Link>
-
             <button className="text-sm underline" onClick={() => signOut({ callbackUrl: "/" })}>
               Sign out
             </button>

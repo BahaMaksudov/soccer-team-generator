@@ -1,7 +1,6 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState, type Dispatch, type SetStateAction } from "react";
-import Link from "next/link";
 import { positionLabel, ratingLabel } from "@/lib/labels";
 import { getPlayerImpactScore, DEFAULT_BALANCE_WEIGHTS, type BalanceWeights } from "@/lib/scoring";
 import type { Player } from "../types";
@@ -445,11 +444,8 @@ export default function PlayerSelection({
         </div>
 
         <div className="px-4 pb-4 text-xs text-slate-500">
-          Score = rating×10 + stamina×2×staminaCoef + positionWeight×3 (configurable in{" "}
-          <Link className="underline" href="/admin/settings">
-            Settings
-          </Link>
-          )
+          Score = rating×10 + stamina×2×staminaCoef + positionWeight×3 (configurable in the Group&apos;s
+          Admin workspace settings)
         </div>
       </div>
     </>
