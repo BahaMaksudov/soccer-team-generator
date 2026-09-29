@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import { adminTenantApiPath } from "@/lib/adminTenantApi";
 import CanonicalPlayersSection from "./CanonicalPlayersSection";
 import CanonicalGenerateSection from "./CanonicalGenerateSection";
+import CanonicalSettingsSection from "./CanonicalSettingsSection";
 
 /**
  * Phase 2D.6D.2 — canonical tenant-bound Admin workspace: Player
@@ -90,6 +91,12 @@ export default function CanonicalAdminWorkspace({
         organizationSlug={organizationSlug}
         groupSlug={groupSlug}
         selectedIds={selectedIds}
+        onMessage={setMessage}
+      />
+
+      <CanonicalSettingsSection
+        organizationSlug={organizationSlug}
+        groupSlug={groupSlug}
         onMessage={setMessage}
       />
     </div>

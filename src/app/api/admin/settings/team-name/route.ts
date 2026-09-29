@@ -1,11 +1,6 @@
-import { NextResponse } from "next/server";
-import { prisma } from "@/lib/prisma";
-import { revalidatePath } from "next/cache";
-import { teamNameSchema, zodErrorResponse } from "@/lib/validation";
 import { requireTenantContext } from "@/lib/tenantContext";
 import { tenantErrorResponse } from "@/lib/tenantRoute";
-
-const SETTING_KEY = "teamName";
+import { getTeamNameForContext, saveTeamNameForContext, revalidateLegacyTeamNamePages } from "@/lib/groupSettings";
 
 export async function GET() {
   let context;
@@ -15,17 +10,7 @@ export async function GET() {
     return tenantErrorResponse(e);
   }
 
-  const row = await prisma.groupSetting.findUnique({
-    where: { groupId_key: { groupId: context.activeGroup.id, key: SETTING_KEY } },
-  });
-
-  // No cross-tenant/global fallback: a Group that hasn't set a custom
-  // team name yet gets an empty value, not another tenant's name and
-  // not the legacy global AppSetting row. The Admin UI already treats
-  // an empty teamName as "nothing saved yet" (see TeamSettings.tsx).
-  return NextResponse.json({
-    teamName: row?.value?.trim() || "",
-  });
+  return getTeamNameForContext(context);
 }
 
 async function saveTeamName(req: Request) {
@@ -36,34 +21,22 @@ async function saveTeamName(req: Request) {
     return tenantErrorResponse(e);
   }
 
-  const body = await req.json().catch(() => ({}));
+  const res = await saveTeamNameForContext(context, req);
 
-  const parsed = teamNameSchema.safeParse(body);
-  if (!parsed.success) {
-    return NextResponse.json(zodErrorResponse(parsed.error), { status: 400 });
-  }
-
-  const nextName = parsed.data.teamName;
-
-  // Server determines group ownership — groupId is never accepted
-  // from the client (teamNameSchema has no such field, so any
-  // client-supplied groupId/organizationId is structurally stripped
-  // by safeParse before reaching here).
-  await prisma.groupSetting.upsert({
-    where: { groupId_key: { groupId: context.activeGroup.id, key: SETTING_KEY } },
-    update: { value: nextName },
-    create: { groupId: context.activeGroup.id, key: SETTING_KEY, value: nextName },
-  });
-
+  // Only revalidate on success — a validation failure (400) never
+  // reaches the upsert, so there's nothing to revalidate, exactly
+  // matching the original route's behavior (revalidatePath was always
+  // called after the upsert succeeded, never on the early 400 return).
+  //
   // Never write AppSetting.teamName here — GroupSetting is the sole
   // authoritative source for authenticated Admin settings as of
   // Phase 2D.4. AppSetting remains for legacy/public reads only,
   // deliberately not kept in sync (see Phase 2D.4 report §J).
-  revalidatePath("/", "layout");
-  revalidatePath("/admin", "layout");
-  revalidatePath("/players", "layout");
+  if (res.ok) {
+    revalidateLegacyTeamNamePages();
+  }
 
-  return NextResponse.json({ ok: true, teamName: nextName });
+  return res;
 }
 
 // Admin UI calls both POST and PUT historically — keep both working.
