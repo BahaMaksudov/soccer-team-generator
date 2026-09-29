@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { adminTenantApiPath } from "@/lib/adminTenantApi";
 import { applyImportedPlayerSelection } from "@/lib/telegramImportSelection";
+import type { PublishedGeneration } from "@/lib/closeAndPostUi";
 import CanonicalPlayersSection from "./CanonicalPlayersSection";
 import CanonicalGenerateSection from "./CanonicalGenerateSection";
 import CanonicalSettingsSection from "./CanonicalSettingsSection";
@@ -45,6 +46,11 @@ export default function CanonicalAdminWorkspace({
   const [loading, setLoading] = useState(true);
   const [selected, setSelected] = useState<Record<string, boolean>>({});
   const [message, setMessage] = useState<string | null>(null);
+  // Phase 2D.6D.5D — the TeamGeneration published by THIS workspace's
+  // current Generate → Publish flow (id from the canonical Publish
+  // response). Close Poll & Post Teams is only offered for it; a new
+  // Generate/Clear resets it. Local component state only.
+  const [publishedGeneration, setPublishedGeneration] = useState<PublishedGeneration | null>(null);
 
   const playersUrl = adminTenantApiPath({ organizationSlug, groupSlug, path: "/players" });
 
@@ -60,6 +66,7 @@ export default function CanonicalAdminWorkspace({
   useEffect(() => {
     loadPlayers();
     setSelected({});
+    setPublishedGeneration(null);
     // Intentional: only re-fetch when the tenant identity itself
     // changes, matching every other canonical page's own pattern.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -102,6 +109,7 @@ export default function CanonicalAdminWorkspace({
         groupSlug={groupSlug}
         selectedIds={selectedIds}
         onMessage={setMessage}
+        onPublishedGenerationChange={setPublishedGeneration}
       />
 
       <CanonicalSettingsSection
@@ -115,6 +123,7 @@ export default function CanonicalAdminWorkspace({
         groupSlug={groupSlug}
         players={players}
         onImportedPlayerIds={applyImportedSelection}
+        publishedGeneration={publishedGeneration}
       />
     </div>
   );

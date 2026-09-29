@@ -1,6 +1,11 @@
 import { prisma } from "@/lib/prisma";
 import { NextResponse } from "next/server";
-import { resolvePollDisplayDate, resolvePollCalendarDate, isPlayingVote } from "@/lib/telegramFormat";
+import {
+  resolvePollDisplayDate,
+  resolvePollCalendarDate,
+  formatYMDFromDate,
+  isPlayingVote,
+} from "@/lib/telegramFormat";
 import { toDateOnlyUTC } from "@/lib/dateOnly";
 import {
   telegramCreatePollSchema,
@@ -9,6 +14,9 @@ import {
   zodErrorResponse,
 } from "@/lib/validation";
 import type { TenantContext } from "@/lib/tenantContext";
+// Phase 2D.6D.5D: moved (unchanged behavior) to a shared module so the
+// canonical close-and-post core can classify Telegram rejections.
+import { callTelegram } from "@/lib/telegramApi";
 
 /**
  * Phase 2D.6D.5B — shared Telegram READ core, extracted verbatim from
@@ -92,6 +100,12 @@ export async function listTelegramPollsForContext(context: TenantContext, req: R
       createdAt: p.createdAt ? p.createdAt.toISOString() : null,
       pollDate: resolvePollCalendarDate(p),
       pollDateStr: resolvePollDisplayDate(p, null),
+      // Phase 2D.6D.5D (additive field): the persisted TelegramPoll.pollDate
+      // column ONLY — null whenever the column is null, never derived
+      // from question text. `pollDate` above keeps its question-text
+      // fallback for display/import; canonical Close/Post eligibility
+      // must use this field instead.
+      persistedPollDate: p.pollDate ? formatYMDFromDate(p.pollDate) : null,
     };
   });
 
@@ -130,24 +144,6 @@ export async function listUnlinkedTelegramUsersForContext(context: TenantContext
     }));
 
   return NextResponse.json(unlinked);
-}
-
-/** Minimal Telegram Bot API client, moved here verbatim from the
- * legacy create-poll route so both legacy and canonical create-poll
- * routes share one implementation. */
-async function callTelegram(method: string, body: unknown) {
-  const token = process.env.TELEGRAM_BOT_TOKEN;
-  if (!token) throw new Error("Missing TELEGRAM_BOT_TOKEN");
-
-  const res = await fetch(`https://api.telegram.org/bot${token}/${method}`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
-
-  const data = await res.json().catch(() => null);
-  if (!data?.ok) throw new Error(data?.description || "Telegram API error");
-  return data.result;
 }
 
 function formatMdyTwoDigitYear(ymd: string) {

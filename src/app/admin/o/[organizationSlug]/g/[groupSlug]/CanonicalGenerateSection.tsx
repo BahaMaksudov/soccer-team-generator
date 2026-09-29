@@ -4,7 +4,10 @@ import { useState } from "react";
 import { adminTenantApiPath } from "@/lib/adminTenantApi";
 import TeamPreview from "@/app/admin/components/TeamPreview";
 import type { GeneratedTeam } from "@/app/admin/types";
-import type { Player } from "./CanonicalAdminWorkspace";
+import {
+  publishedGenerationFromPublishResponse,
+  type PublishedGeneration,
+} from "@/lib/closeAndPostUi";
 
 /**
  * Phase 2D.6D.2 — canonical tenant-bound Generate preview.
@@ -24,17 +27,24 @@ import type { Player } from "./CanonicalAdminWorkspace";
  * canonical workspace has no Telegram affordance yet (out of scope
  * this phase), so it stays dormant here by construction, not by a
  * special code path.
+ *
+ * Phase 2D.6D.5D — still Telegram-free. After a successful Publish it
+ * reports the saved TeamGeneration ({ id, date }) up to the workspace
+ * so the separate Close Poll & Post Teams action can target exactly
+ * that row; Generate and Clear reset it to null.
  */
 export default function CanonicalGenerateSection({
   organizationSlug,
   groupSlug,
   selectedIds,
   onMessage,
+  onPublishedGenerationChange,
 }: {
   organizationSlug: string;
   groupSlug: string;
   selectedIds: string[];
   onMessage: (msg: string | null) => void;
+  onPublishedGenerationChange: (generation: PublishedGeneration | null) => void;
 }) {
   const [teamCount, setTeamCount] = useState(2);
   const [date, setDate] = useState<string>(() => {
@@ -53,6 +63,7 @@ export default function CanonicalGenerateSection({
   async function generate() {
     onMessage(null);
     setPublished(false);
+    onPublishedGenerationChange(null);
     const res = await fetch(adminTenantApiPath({ organizationSlug, groupSlug, path: "/generate" }), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -72,6 +83,7 @@ export default function CanonicalGenerateSection({
     setPreviewTeams(null);
     setPreviewDate(null);
     setPublished(false);
+    onPublishedGenerationChange(null);
     onMessage("Preview cleared.");
   }
 
@@ -94,6 +106,7 @@ export default function CanonicalGenerateSection({
       return;
     }
     setPublished(true);
+    onPublishedGenerationChange(publishedGenerationFromPublishResponse(data, previewDate));
     onMessage("✅ Published! The public page for this Group is updated.");
   }
 

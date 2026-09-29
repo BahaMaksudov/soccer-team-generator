@@ -25,6 +25,7 @@ vi.mock("@/lib/prisma", () => ({
 
 import { GET } from "./route";
 import { TenantContextError } from "@/lib/tenantContext";
+import { canCloseAndPost } from "@/lib/closeAndPostUi";
 
 const GROUP_A = { id: "group-a", name: "A", slug: "group-a", sportKey: "soccer", timezone: "America/New_York" };
 const CONTEXT_A = {
@@ -186,5 +187,47 @@ describe("GET canonical telegram/polls — side-effect prohibition", () => {
     await GET(reqWithQuery(), ctx("org-a", "group-a"));
     expect(mockPollUpsert).not.toHaveBeenCalled();
     expect(mockPollUpdateMany).not.toHaveBeenCalled();
+  });
+});
+
+describe("GET canonical telegram/polls — persistedPollDate (Phase 2D.6D.5D)", () => {
+  const PUBLISHED = { id: "gen-1", date: "2026-09-28" };
+
+  it("persistedPollDate mirrors the real pollDate column", async () => {
+    mockRequireTenantContextForSlugs.mockResolvedValue(CONTEXT_A);
+    mockPollFindMany.mockResolvedValue([
+      {
+        pollId: "p1",
+        chatId: 111n,
+        question: "Who is playing on 9/28/26?",
+        pollDate: new Date("2026-09-28T00:00:00.000Z"),
+        isClosed: false,
+        createdAt: new Date("2026-09-20"),
+      },
+    ]);
+
+    const json = await (await GET(reqWithQuery(), ctx("org-a", "group-a"))).json();
+
+    expect(json.polls[0].persistedPollDate).toBe("2026-09-28");
+    expect(canCloseAndPost({ poll: json.polls[0], publishedGeneration: PUBLISHED, running: false })).toBe(true);
+  });
+
+  it("pollDate null + matching date in question: display pollDate is question-derived, but persistedPollDate is null and Close/Post is NOT eligible", async () => {
+    mockRequireTenantContextForSlugs.mockResolvedValue(CONTEXT_A);
+    mockPollFindMany.mockResolvedValue([
+      { pollId: "p1", chatId: 111n, question: "Who is playing on 9/28/26?", pollDate: null, isClosed: false, createdAt: new Date("2026-09-20") },
+      { pollId: "p2", chatId: 111n, question: "Who is playing on 9/28/2026?", pollDate: null, isClosed: false, createdAt: new Date("2026-09-20") },
+      { pollId: "p3", chatId: 111n, question: "Anyone up for football?", pollDate: null, isClosed: false, createdAt: new Date("2026-09-20") },
+    ]);
+
+    const json = await (await GET(reqWithQuery(), ctx("org-a", "group-a"))).json();
+
+    // Question parsing still feeds the existing display/import field…
+    expect(json.polls[0].pollDate).toBe("2026-09-28");
+    // …but never the persisted field or Close/Post eligibility.
+    for (const poll of json.polls) {
+      expect(poll.persistedPollDate).toBeNull();
+      expect(canCloseAndPost({ poll, publishedGeneration: PUBLISHED, running: false })).toBe(false);
+    }
   });
 });

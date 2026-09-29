@@ -68,6 +68,14 @@ export const publishTeamsSchema = z.object({
   postToTelegram: z.boolean().optional(),
 });
 
+/**
+ * Phase 2D.6D.5D — validates a TeamGeneration.teamsJson value read back
+ * from the database (the canonical close-and-post route formats the
+ * Telegram message ONLY from persisted teams, never from the request).
+ * Same per-team/per-player shape Publish accepted when it wrote the row.
+ */
+export const persistedTeamsSchema = z.array(publishTeamSchema).min(1);
+
 export const teamNameSchema = z.object({
   teamName: z.string().trim().min(1, "Team name is required.").max(80, "Team name too long (max 80 chars)."),
 });
@@ -102,6 +110,16 @@ export const telegramLinkSchema = z.object({
 
 export const telegramImportSchema = z.object({
   pollId: z.string().trim().min(1, "pollId is required"),
+});
+
+/**
+ * Phase 2D.6D.5D — canonical close-and-post body. Only these two ids;
+ * any other key (groupId, organizationId, teams, …) is stripped by Zod
+ * and never read — tenancy comes from the URL, teams from the DB.
+ */
+export const telegramCloseAndPostSchema = z.object({
+  pollId: z.string().trim().min(1, "pollId is required"),
+  teamGenerationId: z.string().trim().min(1, "teamGenerationId is required"),
 });
 
 /**

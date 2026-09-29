@@ -21,6 +21,16 @@ enum Rating {
   EXCELLENT
 }
 
+// Phase 2D.6D.5D — durable canonical Close Poll + Post Teams record.
+// NULL (on TelegramPoll.teamsPostStatus) means "no canonical durable
+// posting record", NOT "teams were never posted": historical rows are
+// deliberately left NULL (no backfill), because legacy Publish may have
+// posted teams without recording it anywhere.
+enum TelegramTeamsPostStatus {
+  SENDING
+  POSTED
+}
+
 // ============================================================
 // Phase 2B — additive SaaS/multi-tenancy foundation.
 //
@@ -180,6 +190,19 @@ model TelegramPoll {
   updatedAt   DateTime @updatedAt
 
   pollDate DateTime?
+
+  // Phase 2D.6D.5D — canonical close-and-post idempotency state
+  // machine: NULL -> SENDING (atomic conditional claim) -> POSTED
+  // (confirmed sendMessage success). SENDING is reset to NULL only on a
+  // definite Telegram rejection (ok:false); an ambiguous send failure
+  // leaves it SENDING so it can never be resent automatically. Written
+  // only by src/lib/telegramCloseAndPost.ts — legacy Publish never
+  // reads or writes these columns. All nullable, no default, no index,
+  // no backfill.
+  teamsPostStatus        TelegramTeamsPostStatus?
+  postedTeamGenerationId String?
+  teamsPostClaimedAt     DateTime?
+  teamsPostedAt          DateTime?
 
   answers TelegramPollAnswer[]
 

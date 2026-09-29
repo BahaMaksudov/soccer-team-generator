@@ -3,6 +3,12 @@
 import { useEffect, useMemo, useState } from "react";
 import { adminTenantApiPath } from "@/lib/adminTenantApi";
 import { formatMDYYFromISO } from "@/lib/telegramFormat";
+import {
+  canCloseAndPost,
+  describeCloseAndPostResult,
+  type CloseAndPostOutcome,
+  type PublishedGeneration,
+} from "@/lib/closeAndPostUi";
 import type { Player } from "./CanonicalAdminWorkspace";
 
 /**
@@ -14,9 +20,14 @@ import type { Player } from "./CanonicalAdminWorkspace";
  * Telegram users to Players. One linking UI only, unlike the legacy
  * app's two independent implementations (Phase 2D.6D.5A §9 finding).
  *
- * Still deliberately excludes: close-poll, post-teams-to-Telegram, and
- * any chat-registration control — those remain out of scope for D.5C
- * (Phase 2D.6D.5A §12 decomposition; close/post is D.5D).
+ * Still deliberately excludes any chat-registration control.
+ *
+ * Phase 2D.6D.5D — adds the explicit "Close Poll & Post Teams to
+ * Telegram" action (separate from Publish). It is offered only for the
+ * TeamGeneration published by the current canonical workflow
+ * (`publishedGeneration`), never merely because an old poll exists,
+ * and only when the selected poll's date matches. No result is ever
+ * retried automatically. UX only — the server is authoritative.
  *
  * Every fetch is built via adminTenantApiPath(...) — never a flat
  * /api/admin/telegram/* URL, never a DB id.
@@ -36,6 +47,9 @@ type TelegramPollItem = {
   createdAt: string | null;
   pollDate: string | null;
   pollDateStr: string | null;
+  // Persisted TelegramPoll.pollDate only (null if the column is null).
+  // The only field Close/Post eligibility may use — see canCloseAndPost.
+  persistedPollDate: string | null;
 };
 
 type TelegramUserItem = {
@@ -62,17 +76,20 @@ export default function CanonicalTelegramSection({
   groupSlug,
   players,
   onImportedPlayerIds,
+  publishedGeneration,
 }: {
   organizationSlug: string;
   groupSlug: string;
   players: Player[];
   onImportedPlayerIds: (ids: string[]) => void;
+  publishedGeneration: PublishedGeneration | null;
 }) {
   const chatsUrl = adminTenantApiPath({ organizationSlug, groupSlug, path: "/telegram/chats" });
   const usersUrl = adminTenantApiPath({ organizationSlug, groupSlug, path: "/telegram/users" });
   const createPollUrl = adminTenantApiPath({ organizationSlug, groupSlug, path: "/telegram/create-poll" });
   const importUrl = adminTenantApiPath({ organizationSlug, groupSlug, path: "/telegram/import" });
   const linkUrl = adminTenantApiPath({ organizationSlug, groupSlug, path: "/telegram/link" });
+  const closeAndPostUrl = adminTenantApiPath({ organizationSlug, groupSlug, path: "/telegram/close-and-post" });
 
   function pollsUrl(includeClosed: boolean) {
     return adminTenantApiPath({
@@ -220,6 +237,61 @@ export default function CanonicalTelegramSection({
       }
     } finally {
       setImporting(false);
+    }
+  }
+
+  // --- Close Poll & Post Teams ---
+  const [closePostPollId, setClosePostPollId] = useState("");
+  const [closingAndPosting, setClosingAndPosting] = useState(false);
+  const [closePostResult, setClosePostResult] = useState<CloseAndPostOutcome | null>(null);
+
+  const closePostPoll = polls.find((p) => p.pollId === closePostPollId) ?? null;
+
+  // A newly published (or reset) generation invalidates any old result.
+  useEffect(() => {
+    setClosePostResult(null);
+  }, [publishedGeneration]);
+
+  // Preselect a listed poll with the published date, unless the current
+  // selection already matches it.
+  useEffect(() => {
+    if (!publishedGeneration) return;
+    setClosePostPollId((prev) => {
+      const current = polls.find((p) => p.pollId === prev);
+      if (current && current.persistedPollDate === publishedGeneration.date) return prev;
+      const match = polls.find((p) => p.persistedPollDate === publishedGeneration.date);
+      return match ? match.pollId : prev;
+    });
+  }, [publishedGeneration, polls]);
+
+  const closePostEnabled = canCloseAndPost({
+    poll: closePostPoll,
+    publishedGeneration,
+    running: closingAndPosting,
+  });
+
+  async function closePollAndPostTeams() {
+    if (!publishedGeneration || !closePostPoll || closingAndPosting) return;
+    setClosingAndPosting(true);
+    setClosePostResult(null);
+    try {
+      const res = await fetch(closeAndPostUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ pollId: closePostPoll.pollId, teamGenerationId: publishedGeneration.id }),
+      });
+      const data = await res.json().catch(() => null);
+      setClosePostResult(describeCloseAndPostResult(res.ok, data));
+    } catch {
+      // Network failure reaching OUR server: the server may still have
+      // posted. Same guidance as any other ambiguous outcome.
+      setClosePostResult({
+        tone: "warning",
+        message: "⚠️ Lost contact with the server. Teams may or may not have been posted — check the Telegram chat before trying again.",
+      });
+    } finally {
+      setClosingAndPosting(false);
+      await loadPolls();
     }
   }
 
@@ -373,6 +445,71 @@ export default function CanonicalTelegramSection({
           </div>
         )}
         {importMsg && <div className="text-sm text-blue-700">{importMsg}</div>}
+      </div>
+
+      {/* Close Poll & Post Teams */}
+      <div className="space-y-2 pt-2 border-t">
+        <div className="text-sm font-medium">Close Poll &amp; Post Teams to Telegram</div>
+        <div className="text-xs text-gray-500">
+          Separate from Publish. Closes the selected poll and posts the teams you just published for the same
+          date to its Telegram chat.
+        </div>
+        {!publishedGeneration ? (
+          <div className="text-sm text-gray-500">Generate and Publish teams above first.</div>
+        ) : polls.length === 0 ? (
+          <div className="text-sm text-gray-500">No polls available.</div>
+        ) : (
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-3 items-end">
+            <div className="md:col-span-2">
+              <select
+                className="border rounded-md px-3 py-2 w-full"
+                value={closePostPollId}
+                onChange={(e) => {
+                  setClosePostPollId(e.target.value);
+                  setClosePostResult(null);
+                }}
+              >
+                <option value="">Select a poll…</option>
+                {polls.map((p) => (
+                  <option key={p.pollId} value={p.pollId}>
+                    {p.chatTitle} — {p.question || p.pollId} {p.isClosed ? "[closed]" : "[open]"}
+                  </option>
+                ))}
+              </select>
+              <div className="text-xs text-gray-500 mt-1">
+                Published teams date: {publishedGeneration.date}
+                {closePostPoll && !closePostPoll.persistedPollDate && (
+                  <span className="text-rose-600"> — selected poll has no saved poll date and cannot be used</span>
+                )}
+                {closePostPoll &&
+                  closePostPoll.persistedPollDate &&
+                  closePostPoll.persistedPollDate !== publishedGeneration.date && (
+                    <span className="text-rose-600"> — selected poll date does not match</span>
+                  )}
+              </div>
+            </div>
+            <button
+              className="bg-amber-600 text-white rounded-md py-2 px-3 disabled:opacity-60"
+              onClick={closePollAndPostTeams}
+              disabled={!closePostEnabled}
+            >
+              {closingAndPosting ? "Closing & posting…" : "Close Poll & Post Teams to Telegram"}
+            </button>
+          </div>
+        )}
+        {closePostResult && (
+          <div
+            className={
+              closePostResult.tone === "success"
+                ? "text-sm text-emerald-700"
+                : closePostResult.tone === "warning"
+                  ? "text-sm text-amber-700"
+                  : "text-sm text-rose-700"
+            }
+          >
+            {closePostResult.message}
+          </div>
+        )}
       </div>
 
       {/* Link Users */}
