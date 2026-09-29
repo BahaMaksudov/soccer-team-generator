@@ -8,8 +8,7 @@ import { getTeamNameForContext, saveTeamNameForContext } from "@/lib/groupSettin
  * groupSlug) pair, resolved and authorized fresh on every request via
  * requireTenantContextForSlugs() — never from body groupId/
  * organizationId, which saveTeamNameForContext() never reads at all.
- * Business logic is 100% shared with the legacy flat route via
- * src/lib/groupSettings.ts. No revalidatePath() here — see that
+ * Business logic lives in src/lib/groupSettings.ts. No revalidatePath() here — see that
  * module's header comment for why none is needed on this path.
  */
 

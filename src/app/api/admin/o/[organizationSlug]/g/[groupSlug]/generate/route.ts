@@ -9,8 +9,7 @@ import { generateTeamsForContext } from "@/lib/generateTeams";
  * requireTenantContextForSlugs() — never from body groupId/
  * organizationId, which generateTeamsForContext() never reads at all.
  * Business logic (validation, Player scoping, balanceWeights lookup,
- * balancing) is 100% shared with the legacy flat route via
- * src/lib/generateTeams.ts.
+ * balancing) lives in src/lib/generateTeams.ts.
  */
 
 type Params = Promise<{ organizationSlug: string; groupSlug: string }>;

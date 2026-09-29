@@ -7,12 +7,11 @@ import type { TenantContext } from "@/lib/tenantContext";
  * Phase 2D.6D.1 — shared Player CRUD core, extracted verbatim from
  * the legacy /api/admin/players[/​[id]] route bodies (only the tenant
  * resolution step was removed — every remaining line of business
- * logic, validation, and Prisma call is unchanged). Both the legacy
- * flat routes (resolving via requireTenantContext()) and the new
- * canonical URL-bound routes (resolving via
- * requireTenantContextForSlugs()) delegate here after they've each
- * independently resolved and authorized their own TenantContext —
- * this module never resolves tenancy itself and never reads
+ * logic, validation, and Prisma call is unchanged). The canonical
+ * URL-bound routes (resolving via requireTenantContextForSlugs())
+ * delegate here after resolving and authorizing their TenantContext
+ * (the legacy flat routes were deleted in Phase 2D.6D.5E.5) — this
+ * module never resolves tenancy itself and never reads
  * request body/query parameters for ownership. It receives an
  * already-authorized `context.activeGroup.id` and uses nothing else
  * for scoping.

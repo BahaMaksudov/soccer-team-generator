@@ -8,8 +8,8 @@ import { listPlayers, createPlayer } from "@/lib/playerCrud";
  * (organizationSlug, groupSlug) pair, resolved and authorized fresh
  * on every request via requireTenantContextForSlugs() — the URL is
  * selection input, never authorization proof (Phase 2D.6B/2D.6C).
- * Business logic is 100% shared with the legacy flat route via
- * src/lib/playerCrud.ts — nothing here reimplements Player CRUD.
+ * Business logic lives in src/lib/playerCrud.ts — nothing here
+ * reimplements Player CRUD.
  */
 
 type Params = Promise<{ organizationSlug: string; groupSlug: string }>;

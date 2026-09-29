@@ -55,7 +55,7 @@ describe("flat operational Admin APIs are deleted", () => {
     expect(filesMatching(re)).toEqual([]);
   });
 
-  it("the remaining /api/admin/** routes are exactly the canonical set plus the 2D.6D.6 diagnostic", () => {
+  it("the remaining /api/admin/** routes are exactly the canonical URL-bound set (Phase 2D.6D.6: no flat route at all)", () => {
     const routes = walk("src/app/api/admin").filter((f) => f.endsWith("route.ts")).sort();
     const canonical = (p: string) => rel("src/app/api/admin/o/[organizationSlug]/g/[groupSlug]", p, "route.ts");
     expect(routes).toEqual(
@@ -73,9 +73,21 @@ describe("flat operational Admin APIs are deleted", () => {
         canonical("telegram/link"),
         canonical("telegram/polls"),
         canonical("telegram/users"),
-        rel("src/app/api/admin/tenant-context/route.ts"),
       ].sort()
     );
+  });
+
+  it("every /api/admin route file lives under o/[organizationSlug]/g/[groupSlug]/", () => {
+    const routes = walk("src/app/api/admin").filter((f) => f.endsWith("route.ts"));
+    expect(routes.length).toBeGreaterThan(0);
+    for (const f of routes) {
+      expect(f.startsWith(rel("src/app/api/admin/o/[organizationSlug]/g/[groupSlug]/")), f).toBe(true);
+    }
+  });
+
+  it("/api/admin/tenant-context no longer exists", () => {
+    expect(fs.existsSync(path.join(root, "src/app/api/admin/tenant-context"))).toBe(false);
+    expect(filesMatching(/["'`]\/api\/admin\/tenant-context/)).toEqual([]);
   });
 
   it("every canonical route resolves tenancy from URL slugs, never the flat resolver", () => {
@@ -83,6 +95,69 @@ describe("flat operational Admin APIs are deleted", () => {
       expect(code.get(f), f).toContain("requireTenantContextForSlugs(");
       expect(code.get(f), f).not.toMatch(/requireTenantContext\(\)/);
     }
+  });
+});
+
+describe("single-tenant resolver is gone (Phase 2D.6D.6)", () => {
+  // Word-boundary + negative lookahead so requireTenantContextForSlugs
+  // never counts as a match.
+  const FLAT_RESOLVER = /\brequireTenantContext(?!ForSlugs)\b|\bresolveTenantContextForEmail\b|\btenantContextErrorStatus\b/;
+
+  it("the pattern distinguishes the removed resolver from requireTenantContextForSlugs", () => {
+    expect(FLAT_RESOLVER.test("await requireTenantContext()")).toBe(true);
+    expect(FLAT_RESOLVER.test("export async function requireTenantContext(): Promise")).toBe(true);
+    expect(FLAT_RESOLVER.test("await requireTenantContextForSlugs({ organizationSlug, groupSlug })")).toBe(false);
+  });
+
+  it("production source contains zero definitions or calls of the single-tenant resolver", () => {
+    expect(filesMatching(FLAT_RESOLVER)).toEqual([]);
+  });
+
+  it("the exactly-one-Organization/Group ambiguity codes no longer exist", () => {
+    expect(filesMatching(/MULTIPLE_(ORGANIZATIONS|GROUPS)_REQUIRE_SELECTION/)).toEqual([]);
+  });
+
+  it("Admin tenancy comes only from the URL-bound resolver or the /admin accessible-tenant listing", () => {
+    const tenantEntry = filesMatching(/\b(requireTenantContextForSlugs|listAccessibleTenants)\(/).filter(
+      (f) => f !== rel("src/lib/tenantContext.ts")
+    );
+    const listing = tenantEntry.filter((f) => /\blistAccessibleTenants\(/.test(code.get(f)!));
+    expect(listing).toEqual([rel("src/app/admin/page.tsx")]);
+    for (const f of tenantEntry.filter((x) => !listing.includes(x))) {
+      expect(f.startsWith(rel("src/app/api/admin/o/")) || f.startsWith(rel("src/app/admin/o/")), f).toBe(true);
+    }
+  });
+
+  it("no Admin route or shared core reads groupId/organizationId from the request", () => {
+    const cores = ["playerCrud", "generateTeams", "publishTeams", "groupSettings", "telegramAdmin", "telegramCloseAndPost"].map(
+      (n) => rel("src/lib", `${n}.ts`)
+    );
+    const files = [...walk("src/app/api/admin").filter((f) => f.endsWith("route.ts")), ...cores];
+    for (const f of files) {
+      expect(code.get(f), f).not.toMatch(/(body|parsed\.data|searchParams)[^;\n]*\b(groupId|organizationId)\b/);
+      for (const m of code.get(f)!.matchAll(/\bgroupId: ([A-Za-z_.]+)/g)) {
+        expect(["activeGroupId", "context.activeGroup.id"], `${f}: groupId: ${m[1]}`).toContain(m[1]);
+      }
+    }
+  });
+});
+
+describe("/admin entry never assumes a single Group", () => {
+  const entry = code.get(rel("src/app/admin/adminEntry.ts"))!;
+
+  it("redirects only for exactly one Organization with exactly one active Group; otherwise selects", () => {
+    expect(entry).toMatch(/organizations\.length === 0[\s\S]*no-access/);
+    expect(entry).toMatch(/organizations\.length > 1[\s\S]*kind: "select"/);
+    expect(entry).toMatch(/organization\.groups\.length > 1[\s\S]*kind: "select"/);
+  });
+
+  it("links and redirects are built only from resolved slugs — no cookies, storage, or env defaults", () => {
+    const page = code.get(rel("src/app/admin/page.tsx"))!;
+    for (const src of [entry, page]) {
+      expect(src).not.toMatch(/cookies\(|localStorage|sessionStorage|DEFAULT_PUBLIC|getDefaultPublicGroupSlugs|process\.env/);
+    }
+    expect(page).toContain("`/admin/o/${encodeURIComponent(org.slug)}/g/${encodeURIComponent(g.slug)}`");
+    expect(entry).toContain("`/admin/o/${encodeURIComponent(organization.slug)}/g/${encodeURIComponent(group.slug)}`");
   });
 });
 
@@ -145,7 +220,7 @@ describe("webhook independence", () => {
   });
 
   it("never uses the Admin tenant resolvers or Admin APIs", () => {
-    expect(webhook).not.toMatch(/requireTenantContext|\/api\/admin|admin\/components|legacy-workspace/);
+    expect(webhook).not.toMatch(/requireTenantContext|listAccessibleTenants|\/api\/admin|admin\/components|legacy-workspace/);
   });
 
   it("resolves tenancy from persisted TelegramChat/TelegramPoll ownership", () => {

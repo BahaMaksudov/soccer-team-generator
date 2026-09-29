@@ -10,11 +10,11 @@ import type { TenantContext } from "@/lib/tenantContext";
  * Phase 2D.6D.2 — shared Generate core, extracted verbatim from the
  * legacy /api/admin/generate route body (only the tenant resolution
  * step was removed — every remaining line of validation, scoping,
- * and balancing-library call is unchanged). Both the legacy flat
- * route (requireTenantContext()) and the new canonical URL-bound
- * route (requireTenantContextForSlugs()) delegate here after
- * independently resolving and authorizing their own TenantContext —
- * this module never resolves tenancy itself and never reads request
+ * and balancing-library call is unchanged). The canonical URL-bound
+ * route (requireTenantContextForSlugs()) delegates here after
+ * resolving and authorizing its TenantContext (the legacy flat route
+ * was deleted in Phase 2D.6D.5E.5) — this module never resolves
+ * tenancy itself and never reads request
  * body/query for ownership. It receives an already-authorized
  * `context.activeGroup.id` and uses nothing else for scoping.
  */

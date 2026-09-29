@@ -29,16 +29,16 @@ import { callTelegram } from "@/lib/telegramApi";
  * (again, only the tenant resolution step was removed — see each
  * function's own comment for any disclosed, non-verbatim addition).
  *
- * Both the legacy flat routes (requireTenantContext()) and the
- * canonical URL-bound routes (requireTenantContextForSlugs()) delegate
- * here after independently resolving and authorizing their own
- * TenantContext — this module never resolves tenancy itself and never
+ * The canonical URL-bound routes (requireTenantContextForSlugs())
+ * delegate here after resolving and authorizing their TenantContext
+ * (the legacy flat routes were deleted in Phase 2D.6D.5E.5) — this
+ * module never resolves tenancy itself and never
  * reads request body/query for ownership, only context.activeGroup.id.
  *
- * The close-poll/post-teams-to-Telegram side effect (Publish's
- * Telegram branch) remains OUT of scope here — see
- * src/lib/publishTeams.ts and Phase 2D.6D.5A §8's Option B
- * recommendation. Deferred to a later 2D.6D.5 subphase.
+ * Closing a poll and posting generated teams is NOT done here: it is
+ * the separate canonical Close/Post operation in
+ * src/lib/telegramCloseAndPost.ts (Phase 2D.6D.5D). Publish itself is
+ * DB-only (src/lib/publishTeams.ts).
  */
 
 export async function listTelegramChatsForContext(context: TenantContext): Promise<NextResponse> {

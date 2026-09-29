@@ -4,25 +4,35 @@
  * This module is the one place server code resolves "who is logged in,
  * and which Organization/Group may they operate on." It does not
  * change authentication (still env-based Credentials login, see
- * src/lib/authOptions.ts) and it is not wired into any existing route
- * yet — this phase only establishes the primitive.
+ * src/lib/authOptions.ts).
+ *
+ * Phase 2D.6D.6 — only two resolution modes exist:
+ *   - requireTenantContextForSlugs(): URL-bound (organizationSlug,
+ *     groupSlug) → one TenantContext, used by every canonical Admin
+ *     page/API;
+ *   - listAccessibleTenants(): lists every accessible Organization and
+ *     its active Groups, used by the bare /admin selector.
+ * The former single-tenant resolver (requireTenantContext() /
+ * resolveTenantContextForEmail(), which failed closed unless the user
+ * had exactly one Organization with exactly one active Group) was
+ * removed together with its last caller, /api/admin/tenant-context.
  *
  * Not marked with the `server-only` package on purpose: that package's
  * client/server split relies on Next.js's webpack export-condition
  * resolution, which plain Vitest/Node does not apply — importing it
- * here would risk breaking `resolveTenantContextForEmail`'s unit
- * tests without extra test-runner configuration. This module is
+ * here would risk breaking this module's resolver unit tests without
+ * extra test-runner configuration. This module is
  * already unusable from a "use client" file regardless, since it
  * imports Prisma and next-auth's server APIs, neither of which can be
  * bundled for the browser — Next.js's build fails loudly on that
  * mistake with or without the `server-only` marker.
  *
  * Testability boundary (Section 15): session acquisition
- * (getServerSession) is kept to the single small function
- * `requireTenantContext()`. All the actual resolution logic lives in
- * `resolveTenantContextForEmail()`, which takes a plain email string
- * and a minimal data-source interface — no NextAuth, no global Prisma
- * singleton — so it's directly unit-testable with fixtures.
+ * (getServerSession) is kept to the small `require…`/`list…` wrappers.
+ * All the actual resolution logic lives in the `…ForSlugs`/`…ForEmail`
+ * functions, which take a plain email string and a minimal data-source
+ * interface — no NextAuth, no global Prisma singleton — so they're
+ * directly unit-testable with fixtures.
  */
 
 import { getServerSession } from "next-auth";
@@ -73,17 +83,16 @@ export type TenantContextErrorCode =
   | "UNAUTHENTICATED"
   | "USER_NOT_FOUND"
   | "NO_ORGANIZATION_MEMBERSHIP"
-  | "MULTIPLE_ORGANIZATIONS_REQUIRE_SELECTION"
   | "NO_GROUP"
-  | "MULTIPLE_GROUPS_REQUIRE_SELECTION"
   | "INSUFFICIENT_ROLE";
 
 /**
  * Deterministic, typed failure for every way tenant resolution can
  * fail closed. Never carries database internals in its message —
  * safe to log, safe to summarize to a client (never expose `.message`
- * verbatim to an end user; map `.code` to an HTTP status instead, see
- * tenantContextErrorStatus()).
+ * verbatim to an end user; map `.code` to an HTTP status instead — the
+ * canonical routes use canonicalTenantErrorResponse() in
+ * src/lib/tenantRoute.ts).
  */
 export class TenantContextError extends Error {
   readonly code: TenantContextErrorCode;
@@ -91,27 +100,6 @@ export class TenantContextError extends Error {
     super(detail ? `${code}: ${detail}` : code);
     this.name = "TenantContextError";
     this.code = code;
-  }
-}
-
-/**
- * Maps a TenantContextError code to the HTTP status a future route
- * should respond with. Not applied to any route in this phase —
- * provided so Phase 2D.2+ has a single, consistent mapping to reuse
- * instead of each route inventing its own.
- */
-export function tenantContextErrorStatus(code: TenantContextErrorCode): 401 | 403 | 409 {
-  switch (code) {
-    case "UNAUTHENTICATED":
-      return 401;
-    case "USER_NOT_FOUND":
-    case "NO_ORGANIZATION_MEMBERSHIP":
-    case "INSUFFICIENT_ROLE":
-      return 403;
-    case "MULTIPLE_ORGANIZATIONS_REQUIRE_SELECTION":
-    case "NO_GROUP":
-    case "MULTIPLE_GROUPS_REQUIRE_SELECTION":
-      return 409;
   }
 }
 
@@ -158,138 +146,18 @@ export interface TenantDataSource {
 }
 
 // ---------------------------------------------------------------
-// Pure resolver — no session, no global Prisma import used directly
-// ---------------------------------------------------------------
-
-/**
- * Resolves the full TenantContext for an already-authenticated email
- * address, or throws a TenantContextError. This is the core
- * authorization logic and is deliberately framework-free:
- *
- *   email → User (by unique email)
- *         → OrganizationMembership (the sole authority for org access —
- *           never inferred from Player/TelegramChat/email domain/env vars)
- *         → Organization → Group[] (via the Organization.groups relation;
- *           there is no GroupMembership model in the current schema, so
- *           group access is derived, not independently stored)
- *         → activeGroup (fail-closed unless exactly one active Group exists)
- *
- * Every ambiguous or missing step fails closed with a distinct error
- * code — this function never guesses (no "pick the first org", no
- * "pick the newest group").
- */
-export async function resolveTenantContextForEmail(
-  email: string | null | undefined,
-  db: TenantDataSource
-): Promise<TenantContext> {
-  if (!email || !email.trim()) {
-    throw new TenantContextError("UNAUTHENTICATED", "No email present on the session.");
-  }
-
-  const normalizedEmail = email.trim().toLowerCase();
-  const user = await db.user.findUnique({ where: { email: normalizedEmail } });
-  if (!user) {
-    throw new TenantContextError("USER_NOT_FOUND", "No User row matches the authenticated identity.");
-  }
-
-  // OrganizationMembership is the sole authority for organization
-  // access (Phase 2D.1 rule #7) — never derived from Player,
-  // TelegramChat, Group, email domain, or ADMIN_EMAIL.
-  const memberships = await db.organizationMembership.findMany({
-    where: { userId: user.id },
-    include: { organization: { include: { groups: true } } },
-  });
-
-  if (memberships.length === 0) {
-    throw new TenantContextError("NO_ORGANIZATION_MEMBERSHIP", "User has no OrganizationMembership.");
-  }
-  if (memberships.length > 1) {
-    // Fail closed rather than silently picking one — no active-
-    // organization selection mechanism exists yet (Phase 2D.1 rule #8).
-    throw new TenantContextError(
-      "MULTIPLE_ORGANIZATIONS_REQUIRE_SELECTION",
-      `User belongs to ${memberships.length} organizations; explicit selection is not yet implemented.`
-    );
-  }
-
-  const membership = memberships[0];
-  const organization = membership.organization;
-
-  // isActive filters out soft-disabled groups (a distinct concept from
-  // the "active group" selection below — a disabled Group should never
-  // become anyone's active group).
-  const groups = organization.groups.filter((g) => g.isActive);
-
-  if (groups.length === 0) {
-    throw new TenantContextError("NO_GROUP", "Organization has no active Group.");
-  }
-  if (groups.length > 1) {
-    // Fail closed rather than silently picking first/newest/oldest/
-    // alphabetical — no persistent group-selection mechanism exists
-    // yet (Phase 2D.1 rule #6). This is intentional, not a gap.
-    throw new TenantContextError(
-      "MULTIPLE_GROUPS_REQUIRE_SELECTION",
-      `Organization has ${groups.length} active groups; explicit selection is not yet implemented.`
-    );
-  }
-
-  const activeGroup = groups[0];
-
-  return {
-    user: { id: user.id, email: user.email, name: user.name },
-    organization: { id: organization.id, name: organization.name, slug: organization.slug },
-    membership: { id: membership.id, role: membership.role },
-    groups: groups.map((g) => ({
-      id: g.id,
-      name: g.name,
-      slug: g.slug,
-      sportKey: g.sportKey,
-      timezone: g.timezone,
-    })),
-    activeGroup: {
-      id: activeGroup.id,
-      name: activeGroup.name,
-      slug: activeGroup.slug,
-      sportKey: activeGroup.sportKey,
-      timezone: activeGroup.timezone,
-    },
-  };
-}
-
-// ---------------------------------------------------------------
-// Canonical server entry point (acquires the session)
-// ---------------------------------------------------------------
-
-/**
- * The one function server code (Route Handlers, Server Components)
- * should call. Acquires the current NextAuth session and resolves
- * tenant context from it, or throws TenantContextError.
- *
- * Bridges the legacy env-based admin login to the new tenant tables
- * via `session.user.email` — NOT `session.user.id`, which is not
- * reliably present: authOptions.ts defines no custom jwt/session
- * callback, so NextAuth v4's default session callback only copies
- * `name`/`email`/`image` onto `session.user`, never an id. This is a
- * deliberate, temporary bridge (Phase 2D.1 rule #9) — authentication
- * itself is unchanged; only authorization/tenant resolution is new.
- */
-export async function requireTenantContext(): Promise<TenantContext> {
-  const session = await getServerSession(authOptions);
-  return resolveTenantContextForEmail(session?.user?.email, prisma);
-}
-
-// ---------------------------------------------------------------
-// Phase 2D.6B — URL-bound tenant resolution (additive)
+// Phase 2D.6B — URL-bound tenant resolution
 // ---------------------------------------------------------------
 
 /**
  * Resolves TenantContext from an explicit (organizationSlug, groupSlug)
- * pair instead of failing closed on ambiguity. This is the primitive
- * the future URL-explicit Admin routes (/admin/o/[organizationSlug]/
- * g/[groupSlug]/...) will use — the URL supplies SELECTION input only,
- * never authorization proof: every field of the returned TenantContext
- * is still derived exclusively from OrganizationMembership, re-checked
- * fresh on every call, exactly like resolveTenantContextForEmail().
+ * pair. This is the primitive every URL-explicit Admin page/API
+ * (/admin/o/[organizationSlug]/g/[groupSlug]/..., /api/admin/o/...)
+ * uses — the URL supplies SELECTION input only, never authorization
+ * proof: every field of the returned TenantContext is derived
+ * exclusively from OrganizationMembership (the sole authority for
+ * organization access — never Player, TelegramChat, email domain, or
+ * env vars), re-checked fresh on every call.
  *
  * Deliberately reuses the exact same TenantDataSource shape (no new
  * data-source method) by fetching all of the user's memberships and
@@ -384,10 +252,13 @@ export async function resolveTenantContextForSlugs(
 }
 
 /**
- * Session-acquiring wrapper for resolveTenantContextForSlugs(), mirroring
- * requireTenantContext()'s own shape exactly (same email bridge, same
- * reasoning documented on that function). Not wired into any route or
- * UI yet — Phase 2D.6C/2D.6D do that.
+ * Session-acquiring wrapper for resolveTenantContextForSlugs(). Bridges
+ * the env-based admin login to the tenant tables via
+ * `session.user.email` — NOT `session.user.id`, which is not reliably
+ * present: authOptions.ts defines no custom jwt/session callback, so
+ * NextAuth v4's default session callback only copies name/email/image
+ * onto `session.user`. Authentication itself is unchanged; only
+ * authorization/tenant resolution happens here.
  */
 export async function requireTenantContextForSlugs(params: {
   organizationSlug: string;
@@ -422,10 +293,9 @@ export type AccessibleOrganization = {
 
 /**
  * Lists every Organization the authenticated email can access, with
- * that Organization's role and active Groups — the primitive a future
- * bare-`/admin` redirect and tenant selector will use. Unlike
- * resolveTenantContextForSlugs()/resolveTenantContextForEmail(), this
- * is a LISTING operation, not a "give me one active tenant" operation:
+ * that Organization's role and active Groups — the primitive the
+ * bare-`/admin` redirect/selector uses. Unlike
+ * resolveTenantContextForSlugs(), this is a LISTING operation, not a "give me one active tenant" operation:
  * zero memberships is a valid result ([]), not a fail-closed error —
  * authentication itself still fails closed (UNAUTHENTICATED/
  * USER_NOT_FOUND), but "you belong to nothing" is just an empty list,
@@ -473,9 +343,9 @@ export async function listAccessibleTenantsForEmail(
   }));
 }
 
-/** Session-acquiring wrapper for listAccessibleTenantsForEmail(). Not
- * exposed as an API route and not wired into any UI yet — server-side
- * infrastructure only (Phase 2D.6B §10). */
+/** Session-acquiring wrapper for listAccessibleTenantsForEmail(), used
+ * by the bare /admin entry page (src/app/admin/page.tsx). Not exposed
+ * as an API route. */
 export async function listAccessibleTenants(): Promise<AccessibleOrganization[]> {
   const session = await getServerSession(authOptions);
   return listAccessibleTenantsForEmail(session?.user?.email, prisma);

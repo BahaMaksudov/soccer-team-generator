@@ -8,9 +8,9 @@ import { updatePlayer, deletePlayer } from "@/lib/playerCrud";
  * (src/lib/playerCrud.ts) via `findFirst({ id, groupId: context.
  * activeGroup.id })` before any mutation — a foreign-Group player id
  * is indistinguishable from a nonexistent one (generic 404), and the
- * update/delete call never runs when ownership fails. Shared with
- * the legacy flat route; tenant identity here comes exclusively from
- * the URL's (organizationSlug, groupSlug) pair.
+ * update/delete call never runs when ownership fails. Tenant identity
+ * here comes exclusively from the URL's (organizationSlug, groupSlug)
+ * pair.
  */
 
 type Params = Promise<{ organizationSlug: string; groupSlug: string; id: string }>;

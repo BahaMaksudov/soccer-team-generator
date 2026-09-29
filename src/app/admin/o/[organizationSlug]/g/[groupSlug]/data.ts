@@ -10,8 +10,8 @@ import { requireTenantContextForSlugs, TenantContextError, type TenantContext } 
  * unknown/foreign/inactive Group, or even an unexpected
  * UNAUTHENTICATED/USER_NOT_FOUND at this point) collapses to the same
  * `null` result here — the page turns that into a generic 404. This
- * is a deliberate, local choice in this one loader (not a change to
- * tenantContextErrorStatus() or any existing API's error semantics):
+ * is a deliberate, local choice in this one loader (the canonical API
+ * routes reach the same outcome via canonicalTenantErrorResponse()):
  * an authenticated Admin visitor who lands on a URL they don't have
  * access to must never be able to distinguish "that Organization/
  * Group doesn't exist" from "it exists but isn't yours" (Phase 2D.6C

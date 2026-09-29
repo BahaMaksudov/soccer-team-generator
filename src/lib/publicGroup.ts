@@ -10,7 +10,7 @@
  * supplied groupId/organizationId as authority anywhere downstream of
  * this resolver.
  *
- * Same testability shape as resolveTenantContextForEmail(): the
+ * Same testability shape as resolveTenantContextForSlugs(): the
  * resolution logic is a pure function over a minimal injectable data
  * source, so it's unit-testable with a hand-written fixture — no
  * PrismaClient, no mocking framework required.
