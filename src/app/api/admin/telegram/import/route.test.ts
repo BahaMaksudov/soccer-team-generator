@@ -9,11 +9,18 @@ vi.mock("@/lib/tenantContext", async (importOriginal) => {
 const mockPollFindFirst = vi.fn();
 const mockAnswerFindMany = vi.fn();
 const mockLinkFindMany = vi.fn();
+const mockPlayerFindMany = vi.fn();
 vi.mock("@/lib/prisma", () => ({
   prisma: {
     telegramPoll: { findFirst: (...args: unknown[]) => mockPollFindFirst(...args) },
     telegramPollAnswer: { findMany: (...args: unknown[]) => mockAnswerFindMany(...args) },
     telegramUserLink: { findMany: (...args: unknown[]) => mockLinkFindMany(...args) },
+    // Phase 2D.6D.5C — added for the new defense-in-depth Player
+    // verification in importTelegramPollForContext (see
+    // src/lib/telegramAdmin.ts). Not exercised by any existing
+    // assertion; only stubbed so tests that reach this code path don't
+    // throw on an undefined prisma.player.
+    player: { findMany: (...args: unknown[]) => mockPlayerFindMany(...args) },
   },
 }));
 
@@ -39,6 +46,7 @@ function importReq(body: unknown) {
 beforeEach(() => {
   vi.clearAllMocks();
   mockRequireTenantContext.mockResolvedValue(CONTEXT_A);
+  mockPlayerFindMany.mockResolvedValue([]);
 });
 
 describe("POST /api/admin/telegram/import", () => {
@@ -60,6 +68,7 @@ describe("POST /api/admin/telegram/import", () => {
       { userId: 1n, optionIdsJson: JSON.stringify([0]) },
     ]);
     mockLinkFindMany.mockResolvedValue([{ userId: 1n, playerId: "p1" }]);
+    mockPlayerFindMany.mockResolvedValue([{ id: "p1" }]);
 
     const res = await POST(importReq({ pollId: "poll-1" }));
     expect(res.status).toBe(200);
@@ -91,6 +100,26 @@ describe("POST /api/admin/telegram/import", () => {
     const data = await res.json();
     expect(data.selectedPlayerIds).toEqual([]);
     expect(data.missingUserIds).toEqual(["1"]);
+  });
+
+  it("Phase 2D.6D.5C defense-in-depth: a selectedPlayerId whose Player row is not in the active Group is filtered out even if the (denormalized) link claimed it", async () => {
+    mockPollFindFirst.mockResolvedValue({ pollId: "poll-1" });
+    mockAnswerFindMany.mockResolvedValue([
+      { userId: 1n, optionIdsJson: JSON.stringify([0]) },
+    ]);
+    mockLinkFindMany.mockResolvedValue([{ userId: 1n, playerId: "p-stale" }]);
+    // Simulates a corrupted/stale denormalized groupId on the link: the
+    // Player lookup (scoped to the active Group) finds nothing for
+    // "p-stale".
+    mockPlayerFindMany.mockResolvedValue([]);
+
+    const res = await POST(importReq({ pollId: "poll-1" }));
+    const data = await res.json();
+
+    expect(data.selectedPlayerIds).toEqual([]);
+    expect(mockPlayerFindMany).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { id: { in: ["p-stale"] }, groupId: "group-a" } })
+    );
   });
 
   it("propagates UNAUTHENTICATED without ever touching TelegramPoll", async () => {
