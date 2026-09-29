@@ -5,6 +5,7 @@ import { adminTenantApiPath } from "@/lib/adminTenantApi";
 import CanonicalPlayersSection from "./CanonicalPlayersSection";
 import CanonicalGenerateSection from "./CanonicalGenerateSection";
 import CanonicalSettingsSection from "./CanonicalSettingsSection";
+import CanonicalTelegramSection from "./CanonicalTelegramSection";
 
 /**
  * Phase 2D.6D.2 — canonical tenant-bound Admin workspace: Player
@@ -98,6 +99,11 @@ export default function CanonicalAdminWorkspace({
         organizationSlug={organizationSlug}
         groupSlug={groupSlug}
         onMessage={setMessage}
+      />
+
+      <CanonicalTelegramSection
+        organizationSlug={organizationSlug}
+        groupSlug={groupSlug}
       />
     </div>
   );
