@@ -4,6 +4,11 @@ import { useEffect, useMemo, useState } from "react";
 import { adminTenantApiPath } from "@/lib/adminTenantApi";
 import { applyImportedPlayerSelection } from "@/lib/telegramImportSelection";
 import type { PublishedGeneration } from "@/lib/closeAndPostUi";
+import {
+  applySelectAllActive,
+  countSelectedGoalkeepers,
+  pruneSelection,
+} from "@/lib/canonicalAdminState";
 import CanonicalPlayersSection from "./CanonicalPlayersSection";
 import CanonicalGenerateSection from "./CanonicalGenerateSection";
 import CanonicalSettingsSection from "./CanonicalSettingsSection";
@@ -35,6 +40,22 @@ export type Player = {
   isActive: boolean;
 };
 
+/** Today's date as YYYY-MM-DD in the browser's local calendar (the
+ * Generate date input's long-standing default). */
+function todayYMD() {
+  const now = new Date();
+  const year = now.getFullYear();
+  const month = String(now.getMonth() + 1).padStart(2, "0");
+  const day = String(now.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+export type ImportedPollResult = {
+  selectedCount: number;
+  skippedCount: number;
+  generateDate: string | null;
+};
+
 export default function CanonicalAdminWorkspace({
   organizationSlug,
   groupSlug,
@@ -51,6 +72,9 @@ export default function CanonicalAdminWorkspace({
   // response). Close Poll & Post Teams is only offered for it; a new
   // Generate/Clear resets it. Local component state only.
   const [publishedGeneration, setPublishedGeneration] = useState<PublishedGeneration | null>(null);
+  // Phase 2D.6D.5E.3 — Generate date lifted here so a Telegram poll
+  // import can set it from the poll's persisted pollDate.
+  const [generateDate, setGenerateDate] = useState<string>(todayYMD);
 
   const playersUrl = adminTenantApiPath({ organizationSlug, groupSlug, path: "/players" });
 
@@ -58,7 +82,12 @@ export default function CanonicalAdminWorkspace({
     setLoading(true);
     const res = await fetch(playersUrl, { cache: "no-store" });
     if (res.ok) {
-      setPlayers(await res.json());
+      const list: Player[] = await res.json();
+      setPlayers(list);
+      // Phase 2D.6D.5E.3 — drop selected ids that were deleted or
+      // deactivated; canonical Generate rejects the whole request if any
+      // selected id is inactive/missing.
+      setSelected((prev) => pruneSelection(prev, list));
     }
     setLoading(false);
   }
@@ -76,17 +105,33 @@ export default function CanonicalAdminWorkspace({
     setSelected((prev) => ({ ...prev, [id]: !prev[id] }));
   }
 
+  function selectAllActive(checked: boolean) {
+    setSelected((prev) => applySelectAllActive(prev, players, checked));
+  }
+
   // Phase 2D.6D.5C — a successful Telegram poll import REPLACES the
   // current selection with the imported player ids, matching the
   // legacy AdminWorkspace.importFromTelegramPoll() semantics exactly
   // (it does not merge with whatever was previously checked).
-  function applyImportedSelection(ids: string[]) {
-    setSelected(applyImportedPlayerSelection(ids));
+  // Phase 2D.6D.5E.3 — imported ids that aren't active players here are
+  // skipped (Generate would reject them), and the poll's persisted date,
+  // when present, becomes the Generate date.
+  function applyImportedPoll(ids: string[], pollDate: string | null): ImportedPollResult {
+    const next = pruneSelection(applyImportedPlayerSelection(ids), players);
+    setSelected(next);
+    if (pollDate) setGenerateDate(pollDate);
+    const selectedCount = Object.keys(next).length;
+    return { selectedCount, skippedCount: new Set(ids).size - selectedCount, generateDate: pollDate };
   }
 
   const selectedIds = useMemo(
     () => Object.entries(selected).filter(([, v]) => v).map(([id]) => id),
     [selected]
+  );
+
+  const selectedGoalkeeperCount = useMemo(
+    () => countSelectedGoalkeepers(players, selectedIds),
+    [players, selectedIds]
   );
 
   return (
@@ -100,6 +145,7 @@ export default function CanonicalAdminWorkspace({
         loading={loading}
         selected={selected}
         onToggleSelected={toggleSelected}
+        onSelectAllActive={selectAllActive}
         onMessage={setMessage}
         refreshPlayers={loadPlayers}
       />
@@ -108,7 +154,11 @@ export default function CanonicalAdminWorkspace({
         organizationSlug={organizationSlug}
         groupSlug={groupSlug}
         selectedIds={selectedIds}
+        selectedGoalkeeperCount={selectedGoalkeeperCount}
+        date={generateDate}
+        onDateChange={setGenerateDate}
         onMessage={setMessage}
+        publishedGeneration={publishedGeneration}
         onPublishedGenerationChange={setPublishedGeneration}
       />
 
@@ -122,7 +172,7 @@ export default function CanonicalAdminWorkspace({
         organizationSlug={organizationSlug}
         groupSlug={groupSlug}
         players={players}
-        onImportedPlayerIds={applyImportedSelection}
+        onImportedPoll={applyImportedPoll}
         publishedGeneration={publishedGeneration}
       />
     </div>

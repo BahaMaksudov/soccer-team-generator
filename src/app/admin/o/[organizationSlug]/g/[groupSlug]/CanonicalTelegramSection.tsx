@@ -9,7 +9,8 @@ import {
   type CloseAndPostOutcome,
   type PublishedGeneration,
 } from "@/lib/closeAndPostUi";
-import type { Player } from "./CanonicalAdminWorkspace";
+import { generateDateFromImportedPoll } from "@/lib/canonicalAdminState";
+import type { ImportedPollResult, Player } from "./CanonicalAdminWorkspace";
 
 /**
  * Phase 2D.6D.5B — canonical Telegram section, initially read-only.
@@ -75,13 +76,14 @@ export default function CanonicalTelegramSection({
   organizationSlug,
   groupSlug,
   players,
-  onImportedPlayerIds,
+  onImportedPoll,
   publishedGeneration,
 }: {
   organizationSlug: string;
   groupSlug: string;
   players: Player[];
-  onImportedPlayerIds: (ids: string[]) => void;
+  /** Replaces the shared selection; applies the poll's persisted date (if any) to Generate. */
+  onImportedPoll: (ids: string[], pollDate: string | null) => ImportedPollResult;
   publishedGeneration: PublishedGeneration | null;
 }) {
   const chatsUrl = adminTenantApiPath({ organizationSlug, groupSlug, path: "/telegram/chats" });
@@ -226,15 +228,22 @@ export default function CanonicalTelegramSection({
       }
 
       const ids: string[] = Array.isArray(data.selectedPlayerIds) ? data.selectedPlayerIds : [];
-      onImportedPlayerIds(ids);
+      // Phase 2D.6D.5E.3 — only the persisted pollDate may set the
+      // Generate date (never question text; null → date left unchanged).
+      const importedPoll = polls.find((p) => p.pollId === selectedImportPollId);
+      const result = onImportedPoll(ids, generateDateFromImportedPoll(importedPoll));
 
+      const parts = [`✅ Imported & selected ${result.selectedCount} player(s) from poll.`];
+      if (result.skippedCount > 0) parts.push(`${result.skippedCount} inactive/unknown player(s) skipped.`);
       if (data.missingUserIds?.length) {
-        setImportMsg(
-          `✅ Imported ${ids.length} player(s). Missing links for ${data.missingUserIds.length} Telegram user(s) — link them below.`
-        );
-      } else {
-        setImportMsg(`✅ Imported & selected ${ids.length} player(s) from poll.`);
+        parts.push(`Missing links for ${data.missingUserIds.length} Telegram user(s) — link them below.`);
       }
+      parts.push(
+        result.generateDate
+          ? `Generate date set to ${result.generateDate}.`
+          : "This poll has no saved date — check the Generate date."
+      );
+      setImportMsg(parts.join(" "));
     } finally {
       setImporting(false);
     }

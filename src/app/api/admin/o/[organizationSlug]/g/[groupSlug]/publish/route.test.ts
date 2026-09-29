@@ -233,6 +233,27 @@ describe("DELETE canonical publish — cross-tenant delete protection", () => {
     );
   });
 
+  it("Delete Published Teams never touches TelegramPoll or the Telegram API (Phase 2D.6D.5E.3)", async () => {
+    mockRequireTenantContextForSlugs.mockResolvedValue(CONTEXT_A);
+    mockDeleteMany.mockResolvedValue({ count: 1 });
+
+    const res = await DELETE(new Request("http://localhost?date=2026-09-28"), ctx("org-a", "group-a"));
+    expect(res.status).toBe(200);
+    expect((await res.json()).deleted).toBe(1);
+
+    expect(mockPollFindUnique).not.toHaveBeenCalled();
+    expect(mockPollUpdate).not.toHaveBeenCalled();
+    expect(global.fetch).not.toHaveBeenCalled();
+    expect(mockUpsert).not.toHaveBeenCalled();
+  });
+
+  it("rejects a missing/invalid date without deleting", async () => {
+    mockRequireTenantContextForSlugs.mockResolvedValue(CONTEXT_A);
+    const res = await DELETE(new Request("http://localhost?date=09/28/2026"), ctx("org-a", "group-a"));
+    expect(res.status).toBe(400);
+    expect(mockDeleteMany).not.toHaveBeenCalled();
+  });
+
   it("a fail-closed tenant resolution never reaches deleteMany", async () => {
     mockRequireTenantContextForSlugs.mockRejectedValue(new TenantContextError("NO_GROUP"));
 

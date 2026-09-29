@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { adminTenantApiPath } from "@/lib/adminTenantApi";
 import TeamPreview from "@/app/admin/components/TeamPreview";
 import type { GeneratedTeam } from "@/app/admin/types";
@@ -8,6 +8,12 @@ import {
   publishedGenerationFromPublishResponse,
   type PublishedGeneration,
 } from "@/lib/closeAndPostUi";
+import {
+  deletePublishedPath,
+  isYmd,
+  publishedGenerationAfterDelete,
+  shouldWarnGoalkeepers,
+} from "@/lib/canonicalAdminState";
 
 /**
  * Phase 2D.6D.2 — canonical tenant-bound Generate preview.
@@ -32,37 +38,44 @@ import {
  * reports the saved TeamGeneration ({ id, date }) up to the workspace
  * so the separate Close Poll & Post Teams action can target exactly
  * that row; Generate and Clear reset it to null.
+ *
+ * Phase 2D.6D.5E.3 — the Generate date is owned by the workspace (so a
+ * Telegram poll import can set it); the "Published" badge is derived
+ * from the workspace's publishedGeneration; the legacy goalkeeper
+ * warning is back; and Delete Published Teams calls the canonical
+ * DELETE /publish?date=… (Group-scoped by the URL) after an explicit
+ * inline confirmation. Deleting never touches Telegram.
  */
 export default function CanonicalGenerateSection({
   organizationSlug,
   groupSlug,
   selectedIds,
+  selectedGoalkeeperCount,
+  date,
+  onDateChange,
   onMessage,
+  publishedGeneration,
   onPublishedGenerationChange,
 }: {
   organizationSlug: string;
   groupSlug: string;
   selectedIds: string[];
+  selectedGoalkeeperCount: number;
+  date: string;
+  onDateChange: (date: string) => void;
   onMessage: (msg: string | null) => void;
+  publishedGeneration: PublishedGeneration | null;
   onPublishedGenerationChange: (generation: PublishedGeneration | null) => void;
 }) {
   const [teamCount, setTeamCount] = useState(2);
-  const [date, setDate] = useState<string>(() => {
-    const now = new Date();
-    const year = now.getFullYear();
-    const month = String(now.getMonth() + 1).padStart(2, "0");
-    const day = String(now.getDate()).padStart(2, "0");
-    return `${year}-${month}-${day}`;
-  });
 
   const [previewTeams, setPreviewTeams] = useState<GeneratedTeam[] | null>(null);
   const [previewDate, setPreviewDate] = useState<string | null>(null);
   const [publishing, setPublishing] = useState(false);
-  const [published, setPublished] = useState(false);
+  const published = publishedGeneration !== null;
 
   async function generate() {
     onMessage(null);
-    setPublished(false);
     onPublishedGenerationChange(null);
     const res = await fetch(adminTenantApiPath({ organizationSlug, groupSlug, path: "/generate" }), {
       method: "POST",
@@ -82,7 +95,6 @@ export default function CanonicalGenerateSection({
   function clearPreview() {
     setPreviewTeams(null);
     setPreviewDate(null);
-    setPublished(false);
     onPublishedGenerationChange(null);
     onMessage("Preview cleared.");
   }
@@ -105,9 +117,48 @@ export default function CanonicalGenerateSection({
       onMessage(data?.error ?? "Failed to publish");
       return;
     }
-    setPublished(true);
     onPublishedGenerationChange(publishedGenerationFromPublishResponse(data, previewDate));
     onMessage("✅ Published! The public page for this Group is updated.");
+  }
+
+
+  // --- Delete Published Teams (canonical, Group-scoped by URL) ---
+  const [deleteDate, setDeleteDate] = useState<string>(() => publishedGeneration?.date ?? date);
+  const [confirmingDelete, setConfirmingDelete] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const [deleteMsg, setDeleteMsg] = useState<string | null>(null);
+
+  // Default the delete date to whatever was just published.
+  useEffect(() => {
+    if (publishedGeneration) setDeleteDate(publishedGeneration.date);
+  }, [publishedGeneration]);
+
+  async function deletePublishedTeams() {
+    if (!isYmd(deleteDate)) {
+      setDeleteMsg("Choose a date first.");
+      return;
+    }
+    setDeleting(true);
+    setDeleteMsg(null);
+    try {
+      const res = await fetch(adminTenantApiPath({ organizationSlug, groupSlug, path: deletePublishedPath(deleteDate) }), {
+        method: "DELETE",
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setDeleteMsg(data?.error ?? "Failed to delete published teams");
+        return;
+      }
+      onPublishedGenerationChange(publishedGenerationAfterDelete(publishedGeneration, deleteDate));
+      setDeleteMsg(
+        data?.deleted
+          ? `✅ Deleted the published teams for ${deleteDate}. Any teams message already posted to Telegram is not removed.`
+          : `No published teams were found for ${deleteDate}.`
+      );
+    } finally {
+      setDeleting(false);
+      setConfirmingDelete(false);
+    }
   }
 
   return (
@@ -124,7 +175,7 @@ export default function CanonicalGenerateSection({
             type="date"
             className="border rounded px-2 py-1 text-sm"
             value={date}
-            onChange={(e) => setDate(e.target.value)}
+            onChange={(e) => onDateChange(e.target.value)}
           />
         </div>
         <div>
@@ -163,7 +214,69 @@ export default function CanonicalGenerateSection({
         )}
       </div>
 
+      {selectedIds.length > 0 && shouldWarnGoalkeepers(selectedGoalkeeperCount, teamCount) && (
+        <div className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded px-3 py-2">
+          Note: Only <b>{selectedGoalkeeperCount}</b> goalkeeper(s) selected for <b>{teamCount}</b> teams.
+        </div>
+      )}
+
       {previewTeams && previewDate && <TeamPreview previewTeams={previewTeams} previewDate={previewDate} />}
+
+      <div className="pt-3 border-t space-y-2">
+        <div className="text-sm font-medium">Delete Published Teams</div>
+        <div className="text-xs text-gray-500">
+          Removes this Group&apos;s published teams for one date from the public page. It does not delete or edit any
+          teams message already posted to Telegram.
+        </div>
+        <div className="flex flex-wrap items-end gap-2">
+          <div>
+            <label className="block text-xs">Date</label>
+            <input
+              type="date"
+              className="border rounded px-2 py-1 text-sm"
+              value={deleteDate}
+              onChange={(e) => {
+                setDeleteDate(e.target.value);
+                setConfirmingDelete(false);
+                setDeleteMsg(null);
+              }}
+            />
+          </div>
+          {confirmingDelete ? (
+            <>
+              <span className="text-xs text-rose-700">
+                Delete published teams for <b>{deleteDate}</b>? This cannot be undone.
+              </span>
+              <button
+                className="bg-rose-600 text-white rounded px-3 py-1 text-sm disabled:opacity-50"
+                disabled={deleting}
+                onClick={deletePublishedTeams}
+              >
+                {deleting ? "Deleting…" : "Confirm delete"}
+              </button>
+              <button
+                className="border rounded px-3 py-1 text-sm"
+                disabled={deleting}
+                onClick={() => setConfirmingDelete(false)}
+              >
+                Cancel
+              </button>
+            </>
+          ) : (
+            <button
+              className="border border-rose-600 text-rose-700 rounded px-3 py-1 text-sm disabled:opacity-50"
+              disabled={!isYmd(deleteDate)}
+              onClick={() => {
+                setDeleteMsg(null);
+                setConfirmingDelete(true);
+              }}
+            >
+              Delete Published Teams…
+            </button>
+          )}
+        </div>
+        {deleteMsg && <div className="text-sm text-blue-700">{deleteMsg}</div>}
+      </div>
     </div>
   );
 }

@@ -110,3 +110,43 @@ describe("DELETE .../players/[id] — cross-tenant protection", () => {
     expect(mockDelete).not.toHaveBeenCalled();
   });
 });
+
+describe("PATCH .../players/[id] — full edit parity (Phase 2D.6D.5E.3)", () => {
+  it("updates all six mutable fields; body groupId/organizationId never reach the update", async () => {
+    mockFindFirst.mockResolvedValue({ id: "p1" });
+    mockUpdate.mockResolvedValue({ id: "p1" });
+
+    const req = new Request("http://localhost", {
+      method: "PATCH",
+      body: JSON.stringify({
+        firstName: "New",
+        lastName: "Name",
+        position: "FORWARD",
+        rating: "VERY_GOOD",
+        stamina: 2,
+        isActive: false,
+        groupId: "group-b",
+        organizationId: "org-b",
+      }),
+    });
+    const res = await PATCH(req, ctx("org-a", "group-a", "p1"));
+    expect(res.status).toBe(200);
+
+    expect(mockFindFirst.mock.calls[0][0].where).toEqual({ id: "p1", groupId: "group-a" });
+    expect(mockUpdate.mock.calls[0][0]).toEqual({
+      where: { id: "p1" },
+      data: { firstName: "New", lastName: "Name", position: "FORWARD", rating: "VERY_GOOD", stamina: 2, isActive: false },
+    });
+  });
+
+  it("a full-field edit of a foreign Group's player is a generic 404 and never updates", async () => {
+    mockFindFirst.mockResolvedValue(null);
+    const req = new Request("http://localhost", {
+      method: "PATCH",
+      body: JSON.stringify({ firstName: "X", lastName: "Y", position: "DEFENDER", rating: "FAIR", stamina: 1, isActive: true }),
+    });
+    const res = await PATCH(req, ctx("org-a", "group-a", "player-of-group-b"));
+    expect(res.status).toBe(404);
+    expect(mockUpdate).not.toHaveBeenCalled();
+  });
+});

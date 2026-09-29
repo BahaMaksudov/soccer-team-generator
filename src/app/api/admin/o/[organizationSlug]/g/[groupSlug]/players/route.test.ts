@@ -165,3 +165,47 @@ describe("same group slug across different Organizations — full isolation", ()
     expect(mockFindMany).toHaveBeenLastCalledWith(expect.objectContaining({ where: { groupId: "group-b" } }));
   });
 });
+
+describe("POST .../players — full field parity (Phase 2D.6D.5E.3)", () => {
+  it("persists position, rating, stamina and isActive exactly as submitted by the canonical form", async () => {
+    mockRequireTenantContextForSlugs.mockResolvedValue(CONTEXT_A);
+    mockCreate.mockResolvedValue({ id: "new-1" });
+
+    const req = new Request("http://localhost", {
+      method: "POST",
+      body: JSON.stringify({
+        firstName: "Gia",
+        lastName: "Keeper",
+        position: "GOALKEEPER",
+        rating: "EXCELLENT",
+        stamina: 5,
+        isActive: false,
+        groupId: "group-b",
+        organizationId: "org-b",
+      }),
+    });
+    const res = await POST(req, ctx("org-a", "group-a"));
+    expect(res.status).toBe(200);
+
+    expect(mockCreate.mock.calls[0][0].data).toEqual({
+      firstName: "Gia",
+      lastName: "Keeper",
+      position: "GOALKEEPER",
+      rating: "EXCELLENT",
+      stamina: 5,
+      isActive: false,
+      groupId: "group-a",
+    });
+  });
+
+  it("rejects an out-of-range stamina without creating", async () => {
+    mockRequireTenantContextForSlugs.mockResolvedValue(CONTEXT_A);
+    const req = new Request("http://localhost", {
+      method: "POST",
+      body: JSON.stringify({ firstName: "A", lastName: "B", position: "DEFENDER", rating: "FAIR", stamina: 9 }),
+    });
+    const res = await POST(req, ctx("org-a", "group-a"));
+    expect(res.status).toBe(400);
+    expect(mockCreate).not.toHaveBeenCalled();
+  });
+});
