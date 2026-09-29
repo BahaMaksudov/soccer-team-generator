@@ -1,22 +1,36 @@
 import { prisma } from "@/lib/prisma";
 import { NextResponse } from "next/server";
-import { resolvePollDisplayDate, resolvePollCalendarDate } from "@/lib/telegramFormat";
+import { resolvePollDisplayDate, resolvePollCalendarDate, isPlayingVote } from "@/lib/telegramFormat";
+import { toDateOnlyUTC } from "@/lib/dateOnly";
+import {
+  telegramCreatePollSchema,
+  telegramImportSchema,
+  telegramLinkSchema,
+  zodErrorResponse,
+} from "@/lib/validation";
 import type { TenantContext } from "@/lib/tenantContext";
 
 /**
  * Phase 2D.6D.5B — shared Telegram READ core, extracted verbatim from
  * the legacy /api/admin/telegram/chats, /polls, and /users route
- * bodies (only the tenant resolution step was removed). Both the
- * legacy flat routes (requireTenantContext()) and the new canonical
- * URL-bound routes (requireTenantContextForSlugs()) delegate here
- * after independently resolving and authorizing their own
+ * bodies (only the tenant resolution step was removed).
+ *
+ * Phase 2D.6D.5C — extended with the three MUTATION operations
+ * (create-poll, import, link), extracted verbatim from the legacy
+ * /api/admin/telegram/create-poll, /import, and /link route bodies
+ * (again, only the tenant resolution step was removed — see each
+ * function's own comment for any disclosed, non-verbatim addition).
+ *
+ * Both the legacy flat routes (requireTenantContext()) and the
+ * canonical URL-bound routes (requireTenantContextForSlugs()) delegate
+ * here after independently resolving and authorizing their own
  * TenantContext — this module never resolves tenancy itself and never
  * reads request body/query for ownership, only context.activeGroup.id.
  *
- * Deliberately read-only: no function here calls the Telegram Bot API
- * or writes to any Telegram-owned table. Poll creation, import,
- * linking, and the Publish close/post branch remain out of scope for
- * this phase and are NOT extracted here yet.
+ * The close-poll/post-teams-to-Telegram side effect (Publish's
+ * Telegram branch) remains OUT of scope here — see
+ * src/lib/publishTeams.ts and Phase 2D.6D.5A §8's Option B
+ * recommendation. Deferred to a later 2D.6D.5 subphase.
  */
 
 export async function listTelegramChatsForContext(context: TenantContext): Promise<NextResponse> {
@@ -116,4 +130,259 @@ export async function listUnlinkedTelegramUsersForContext(context: TenantContext
     }));
 
   return NextResponse.json(unlinked);
+}
+
+/** Minimal Telegram Bot API client, moved here verbatim from the
+ * legacy create-poll route so both legacy and canonical create-poll
+ * routes share one implementation. */
+async function callTelegram(method: string, body: unknown) {
+  const token = process.env.TELEGRAM_BOT_TOKEN;
+  if (!token) throw new Error("Missing TELEGRAM_BOT_TOKEN");
+
+  const res = await fetch(`https://api.telegram.org/bot${token}/${method}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+
+  const data = await res.json().catch(() => null);
+  if (!data?.ok) throw new Error(data?.description || "Telegram API error");
+  return data.result;
+}
+
+function formatMdyTwoDigitYear(ymd: string) {
+  // ymd = YYYY-MM-DD -> M/D/YY (no leading zeros)
+  const [y, m, d] = ymd.split("-").map(Number);
+  const yy = String(y).slice(-2);
+  return `${m}/${d}/${yy}`;
+}
+
+export async function createTelegramPollForContext(context: TenantContext, req: Request): Promise<NextResponse> {
+  const activeGroupId = context.activeGroup.id;
+
+  const body = await req.json().catch(() => ({}));
+
+  const parsed = telegramCreatePollSchema.safeParse(body);
+  if (!parsed.success) {
+    return NextResponse.json(zodErrorResponse(parsed.error), { status: 400 });
+  }
+
+  const { chatId: chatIdStr, pollDate: pollDateStr, question: customQuestion } = parsed.data;
+
+  // Ownership validation BEFORE any Telegram side effect — see Phase
+  // 2D.3's original fix. 404, not 403: never reveal that a foreign
+  // chat exists. Server determines groupId from context only;
+  // chatIdStr/pollDateStr/customQuestion come from the schema, which
+  // has no groupId/organizationId field.
+  let chatIdBigInt: bigint;
+  try {
+    chatIdBigInt = BigInt(chatIdStr);
+  } catch {
+    return NextResponse.json({ error: "chatId must be a valid Telegram chat id" }, { status: 400 });
+  }
+
+  const chat = await prisma.telegramChat.findFirst({
+    where: { chatId: chatIdBigInt, groupId: activeGroupId },
+    select: { chatId: true },
+  });
+  if (!chat) {
+    return NextResponse.json({ error: "Chat not found" }, { status: 404 });
+  }
+
+  try {
+    const pollDate = toDateOnlyUTC(pollDateStr);
+
+    const display = formatMdyTwoDigitYear(pollDateStr);
+    const question = customQuestion?.trim() || `Who is playing on ${display}?`;
+    const options = ["✅ Playing", "❌ Not playing"];
+
+    // sendPoll returns a Message object (includes message_id and poll.id).
+    //
+    // Known, pre-existing limitation (Phase 2D.6D.5A §8, unchanged
+    // here as instructed): if the process crashes or the network fails
+    // between this call succeeding and the upsert below completing, a
+    // client retry re-sends a NEW poll to Telegram (sendPoll has no
+    // idempotency key). This is identical to the legacy route's
+    // existing behavior, not made worse or better by canonicalization.
+    const msg = await callTelegram("sendPoll", {
+      chat_id: chatIdStr,
+      question,
+      options,
+      is_anonymous: false,
+      allows_multiple_answers: false,
+    });
+
+    const pollId = msg?.poll?.id;
+    const messageId = msg?.message_id;
+
+    if (!pollId || !messageId) {
+      return NextResponse.json(
+        { error: "Telegram sendPoll succeeded but pollId/messageId missing" },
+        { status: 500 }
+      );
+    }
+
+    await prisma.telegramPoll.upsert({
+      where: { pollId: String(pollId) },
+      update: {
+        chatId: chatIdBigInt,
+        messageId: BigInt(messageId),
+        question,
+        optionsJson: JSON.stringify(options),
+        pollDate,
+        isClosed: false,
+        groupId: activeGroupId,
+      },
+      create: {
+        pollId: String(pollId),
+        chatId: chatIdBigInt,
+        messageId: BigInt(messageId),
+        question,
+        optionsJson: JSON.stringify(options),
+        pollDate,
+        isClosed: false,
+        groupId: activeGroupId,
+      },
+    });
+
+    return NextResponse.json({ ok: true, pollId: String(pollId), messageId });
+  } catch (e: unknown) {
+    const message = e instanceof Error ? e.message : String(e);
+    return NextResponse.json({ error: message }, { status: 500 });
+  }
+}
+
+export async function importTelegramPollForContext(context: TenantContext, req: Request): Promise<NextResponse> {
+  const activeGroupId = context.activeGroup.id;
+
+  const body = await req.json().catch(() => null);
+  if (!body) return NextResponse.json({ error: "Invalid JSON" }, { status: 400 });
+
+  const parsed = telegramImportSchema.safeParse(body);
+  if (!parsed.success) {
+    return NextResponse.json(zodErrorResponse(parsed.error), { status: 400 });
+  }
+
+  const { pollId } = parsed.data;
+
+  // The poll being imported must belong to the caller's active Group.
+  // 404, not 403 — never reveal that a foreign poll exists.
+  const poll = await prisma.telegramPoll.findFirst({
+    where: { pollId, groupId: activeGroupId },
+    select: { pollId: true },
+  });
+  if (!poll) {
+    return NextResponse.json({ error: "Poll not found" }, { status: 404 });
+  }
+
+  // Defense in depth, not just the poll check above.
+  const answers = await prisma.telegramPollAnswer.findMany({
+    where: { pollId, groupId: activeGroupId },
+    select: { userId: true, optionIdsJson: true },
+  });
+
+  const playingUserIds = answers
+    .filter((a) => isPlayingVote(a.optionIdsJson))
+    .map((a) => a.userId);
+
+  if (playingUserIds.length === 0) {
+    return NextResponse.json({
+      ok: true,
+      selectedPlayerIds: [],
+      missingUserIds: [],
+      note: "No ✅ Playing votes found for that pollId.",
+    });
+  }
+
+  // Same defense-in-depth principle: only links belonging to the
+  // active Group can resolve a Telegram voter to a Player.
+  const links = await prisma.telegramUserLink.findMany({
+    where: { userId: { in: playingUserIds }, groupId: activeGroupId },
+    select: { userId: true, playerId: true },
+  });
+
+  const linkMap = new Map(links.map((l) => [l.userId.toString(), l.playerId]));
+  const rawSelectedPlayerIds: string[] = [];
+  const missingUserIds: string[] = [];
+
+  for (const uid of playingUserIds) {
+    const pid = linkMap.get(uid.toString());
+    if (pid) rawSelectedPlayerIds.push(pid);
+    else missingUserIds.push(uid.toString());
+  }
+
+  // Phase 2D.6D.5C disclosed addition (NOT present in the legacy route
+  // before this phase): TelegramUserLink.groupId is a denormalized
+  // scalar column, not a real FK (see its schema comment) — it is
+  // supposed to always match the linked Player's actual groupId,
+  // because the link route itself verifies Player.groupId before ever
+  // creating a link, and Players are never reassigned between Groups
+  // anywhere in this codebase. For all legitimately-linked data this
+  // re-check changes nothing: it returns exactly the same
+  // selectedPlayerIds. It exists only to stop a stale/corrupted
+  // denormalized groupId from ever letting a foreign-Group Player id
+  // leave this endpoint. Applied identically to legacy and canonical
+  // callers (both delegate to this same function).
+  let selectedPlayerIds = rawSelectedPlayerIds;
+  if (rawSelectedPlayerIds.length > 0) {
+    const validPlayers = await prisma.player.findMany({
+      where: { id: { in: rawSelectedPlayerIds }, groupId: activeGroupId },
+      select: { id: true },
+    });
+    const validIds = new Set(validPlayers.map((p) => p.id));
+    selectedPlayerIds = rawSelectedPlayerIds.filter((id) => validIds.has(id));
+  }
+
+  return NextResponse.json({ ok: true, selectedPlayerIds, missingUserIds });
+}
+
+export async function linkTelegramUserForContext(context: TenantContext, req: Request): Promise<NextResponse> {
+  const activeGroupId = context.activeGroup.id;
+
+  const body = await req.json().catch(() => null);
+  if (!body) return NextResponse.json({ error: "Invalid JSON" }, { status: 400 });
+
+  const parsed = telegramLinkSchema.safeParse(body);
+  if (!parsed.success) {
+    return NextResponse.json(zodErrorResponse(parsed.error), { status: 400 });
+  }
+
+  const { userId: userIdStr, playerId: playerIdStr } = parsed.data;
+
+  let userId: bigint;
+  try {
+    userId = BigInt(userIdStr);
+  } catch {
+    return NextResponse.json({ error: "userId must be a valid Telegram numeric id" }, { status: 400 });
+  }
+
+  // Ownership check: the target Player must belong to the caller's
+  // active Group.
+  const player = await prisma.player.findFirst({
+    where: { id: playerIdStr, groupId: activeGroupId },
+    select: { id: true, firstName: true, lastName: true },
+  });
+  if (!player) return NextResponse.json({ error: "Player not found" }, { status: 404 });
+
+  // TelegramUserLink.userId is still a single, globally-unique column
+  // (Phase 2D.3 §M / Phase 2D.6D.5A §7 — a genuine multi-tenant
+  // limitation, not a security hole, and NOT changed in this phase).
+  // Because of that this can't be a single atomic tenant-aware upsert
+  // — check first whether this Telegram identity is already linked
+  // under a DIFFERENT Group, and refuse to silently reassign it.
+  const existingLink = await prisma.telegramUserLink.findUnique({ where: { userId } });
+  if (existingLink && existingLink.groupId !== activeGroupId) {
+    return NextResponse.json(
+      { error: "This Telegram user is already linked elsewhere." },
+      { status: 409 }
+    );
+  }
+
+  await prisma.telegramUserLink.upsert({
+    where: { userId },
+    update: { playerId: playerIdStr, groupId: activeGroupId },
+    create: { userId, playerId: playerIdStr, groupId: activeGroupId },
+  });
+
+  return NextResponse.json({ ok: true });
 }

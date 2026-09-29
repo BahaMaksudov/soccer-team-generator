@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { adminTenantApiPath } from "@/lib/adminTenantApi";
+import { applyImportedPlayerSelection } from "@/lib/telegramImportSelection";
 import CanonicalPlayersSection from "./CanonicalPlayersSection";
 import CanonicalGenerateSection from "./CanonicalGenerateSection";
 import CanonicalSettingsSection from "./CanonicalSettingsSection";
@@ -68,6 +69,14 @@ export default function CanonicalAdminWorkspace({
     setSelected((prev) => ({ ...prev, [id]: !prev[id] }));
   }
 
+  // Phase 2D.6D.5C — a successful Telegram poll import REPLACES the
+  // current selection with the imported player ids, matching the
+  // legacy AdminWorkspace.importFromTelegramPoll() semantics exactly
+  // (it does not merge with whatever was previously checked).
+  function applyImportedSelection(ids: string[]) {
+    setSelected(applyImportedPlayerSelection(ids));
+  }
+
   const selectedIds = useMemo(
     () => Object.entries(selected).filter(([, v]) => v).map(([id]) => id),
     [selected]
@@ -104,6 +113,8 @@ export default function CanonicalAdminWorkspace({
       <CanonicalTelegramSection
         organizationSlug={organizationSlug}
         groupSlug={groupSlug}
+        players={players}
+        onImportedPlayerIds={applyImportedSelection}
       />
     </div>
   );
