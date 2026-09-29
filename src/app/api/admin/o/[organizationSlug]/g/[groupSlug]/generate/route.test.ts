@@ -72,6 +72,21 @@ describe("POST canonical generate — successful, scoped Generate", () => {
   });
 });
 
+describe("POST canonical generate — date-only value is preserved (Phase 2D.6E.3B)", () => {
+  it.each(["2026-10-05T00:00:00.000Z", "2026-10-05"])(
+    "request date %s → response date 2026-10-05T00:00:00.000Z (the exact calendar day, no shift)",
+    async (date) => {
+      mockRequireTenantContextForSlugs.mockResolvedValue(CONTEXT_A);
+      const ids = ["p1", "p2", "p3", "p4"];
+      mockPlayerFindMany.mockResolvedValue(ids.map(makePlayer));
+
+      const res = await POST(req({ teamCount: 2, date, selectedIds: ids }), ctx("org-a", "group-a"));
+      expect(res.status).toBe(200);
+      expect((await res.json()).date).toBe("2026-10-05T00:00:00.000Z");
+    }
+  );
+});
+
 describe("POST canonical generate — foreign / mixed / inactive Player rejection", () => {
   it("rejects when a requested id belongs to another Group — the scoped query simply never returns it", async () => {
     const requestedIds = ["p1", "p2", "player-owned-by-group-b"];

@@ -1,6 +1,7 @@
 "use client";
 
 import { positionLabel } from "@/lib/labels";
+import { formatLongDateOnly } from "@/lib/dateOnly";
 import type { GeneratedTeam } from "../types";
 
 /** Renders the not-yet-published preview. Purely presentational —
@@ -21,13 +22,9 @@ export default function TeamPreview({
             <div className="font-semibold text-slate-900">Preview (not published yet)</div>
             <div className="text-xs text-slate-500 mt-1">
               Date:{" "}
-              <b>
-                {new Date(previewDate).toLocaleDateString(undefined, {
-                  year: "numeric",
-                  month: "long",
-                  day: "numeric",
-                })}
-              </b>
+              {/* Date-only: formatted from UTC calendar parts, never the
+                  browser's timezone (Phase 2D.6E.3B). */}
+              <b>{formatLongDateOnly(previewDate)}</b>
             </div>
           </div>
 

@@ -85,6 +85,20 @@ describe("POST canonical publish — success, server-stamped tenancy", () => {
   });
 });
 
+describe("POST canonical publish — date-only value is persisted exactly (Phase 2D.6E.3B)", () => {
+  it("the preview's 2026-10-05T00:00:00.000Z is upserted as TeamGeneration.date 2026-10-05T00:00:00.000Z", async () => {
+    mockRequireTenantContextForSlugs.mockResolvedValue(CONTEXT_A);
+    mockUpsert.mockResolvedValue({ id: "gen-1" });
+
+    const res = await POST(publishReq({ date: "2026-10-05T00:00:00.000Z", teams: SAMPLE_TEAMS }), ctx("org-a", "group-a"));
+    expect(res.status).toBe(200);
+
+    const call = mockUpsert.mock.calls[0][0];
+    expect(call.where.groupId_date.date.toISOString()).toBe("2026-10-05T00:00:00.000Z");
+    expect(call.create.date.toISOString()).toBe("2026-10-05T00:00:00.000Z");
+  });
+});
+
 describe("POST canonical publish — same-date, different-Group isolation", () => {
   it("Group A and Group B publishing the same date use structurally different (groupId, date) selectors", async () => {
     mockRequireTenantContextForSlugs.mockResolvedValue(CONTEXT_A);

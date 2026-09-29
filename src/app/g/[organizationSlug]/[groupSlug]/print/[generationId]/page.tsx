@@ -1,6 +1,7 @@
 import { notFound } from "next/navigation";
 import Link from "next/link";
 import { positionLabel } from "@/lib/labels";
+import { formatLongDateOnly } from "@/lib/dateOnly";
 import { loadPublicGroupPrintData } from "./data";
 import PrintButton from "./PrintButton";
 
@@ -18,8 +19,11 @@ import PrintButton from "./PrintButton";
  * for why.
  */
 
+/** TeamGeneration.date is a date-only value stored at UTC midnight —
+ * format its UTC calendar day, never the server's local timezone
+ * (Phase 2D.6E.3B). */
 function formatDate(d: Date) {
-  return d.toLocaleDateString(undefined, { year: "numeric", month: "long", day: "numeric" });
+  return formatLongDateOnly(d);
 }
 
 type Params = Promise<{ organizationSlug: string; groupSlug: string; generationId: string }>;
