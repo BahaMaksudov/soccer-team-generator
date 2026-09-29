@@ -5,10 +5,10 @@ import { resolveAdminEntry } from "./adminEntry";
 
 /**
  * Phase 2D.6C — bare `/admin` is now the authenticated tenant-entry
- * point, not the operational application. The real generator UI
- * (formerly here) moved verbatim to
- * src/app/admin/components/AdminWorkspace.tsx and is not rendered by
- * anything yet — that migration is a later phase (2D.6D+).
+ * point, not the operational application. The generator UI (formerly
+ * here) now lives only in the canonical tenant-bound workspace
+ * (/admin/o/[organizationSlug]/g/[groupSlug]); the legacy copy was
+ * retired in Phase 2D.6D.5E.4 and deleted in 2D.6D.5E.5.
  *
  * Uses listAccessibleTenants() (Phase 2D.6B) — never the public
  * DEFAULT_PUBLIC_ORGANIZATION_SLUG/DEFAULT_PUBLIC_GROUP_SLUG

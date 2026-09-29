@@ -1,6 +1,5 @@
 import { prisma } from "@/lib/prisma";
 import { NextResponse } from "next/server";
-import { revalidatePath } from "next/cache";
 import { teamNameSchema, balanceWeightsSchema, zodErrorResponse } from "@/lib/validation";
 import { DEFAULT_BALANCE_WEIGHTS, mergeBalanceWeights } from "@/lib/scoring";
 import type { TenantContext } from "@/lib/tenantContext";
@@ -9,10 +8,10 @@ import type { TenantContext } from "@/lib/tenantContext";
  * Phase 2D.6D.4 — shared Group-settings core (teamName, balanceWeights),
  * extracted verbatim from the legacy /api/admin/settings/team-name and
  * /api/admin/settings/balance-weights route bodies (only the tenant
- * resolution step was removed). Both the legacy flat routes
- * (requireTenantContext()) and the new canonical URL-bound routes
- * (requireTenantContextForSlugs()) delegate here after independently
- * resolving and authorizing their own TenantContext — this module
+ * resolution step was removed). The canonical URL-bound routes
+ * (requireTenantContextForSlugs()) delegate here after resolving and
+ * authorizing their own TenantContext (the legacy flat routes were
+ * deleted in Phase 2D.6D.5E.5) — this module
  * never resolves tenancy itself and never reads request body/query
  * for ownership. It receives an already-authorized
  * `context.activeGroup.id` and uses nothing else for scoping.
@@ -24,9 +23,9 @@ import type { TenantContext } from "@/lib/tenantContext";
  * client-side with `{ cache: "no-store" }`, and canonical Generate
  * reads GroupSetting.balanceWeights fresh via Prisma on every
  * request — neither has a caching layer that would go stale, so no
- * new revalidation target exists to add. The legacy revalidatePath()
- * calls below are preserved unchanged for the legacy page routes,
- * which ARE subject to Next's page-level caching.
+ * new revalidation target exists to add. (Phase 2D.6D.5E.5 removed the
+ * legacy-only page revalidation helpers together with the flat routes
+ * that were their only callers.)
  */
 
 const TEAM_NAME_KEY = "teamName";
@@ -113,18 +112,4 @@ export async function saveBalanceWeightsForContext(context: TenantContext, req: 
   });
 
   return NextResponse.json({ ok: true, weights });
-}
-
-/** Legacy-only page-route revalidation, kept separate from the shared
- * core so the canonical routes never call it (there is nothing for
- * them to revalidate — see the module-level note above). */
-export function revalidateLegacyTeamNamePages(): void {
-  revalidatePath("/", "layout");
-  revalidatePath("/admin", "layout");
-  revalidatePath("/players", "layout");
-}
-
-export function revalidateLegacyBalanceWeightsPages(): void {
-  revalidatePath("/admin");
-  revalidatePath("/admin/settings");
 }

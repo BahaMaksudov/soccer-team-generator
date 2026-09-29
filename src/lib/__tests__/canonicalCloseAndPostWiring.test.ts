@@ -81,17 +81,18 @@ describe("canonical Close Poll & Post Teams wiring", () => {
     expect(stripComments(generate)).not.toMatch(/pollId|closePoll|postToTelegram/);
   });
 
-  it("canonical Publish route still passes allowTelegramPollActions: false (and so does the flat legacy route)", () => {
-    const route = read(path.join(root, "src/app/api/admin/o/[organizationSlug]/g/[groupSlug]/publish/route.ts"));
-    expect(route).toContain("allowTelegramPollActions: false");
-    // Phase 2D.6D.5E.1: the flat legacy route is Telegram-free too.
-    const legacy = read(path.join(root, "src/app/api/admin/publish/route.ts"));
-    expect(legacy).toContain("allowTelegramPollActions: false");
-    expect(legacy).not.toContain("allowTelegramPollActions: true");
+  it("canonical Publish route delegates to the DB-only core with no Telegram option (Phase 2D.6D.5E.5)", () => {
+    const route = stripComments(read(path.join(root, "src/app/api/admin/o/[organizationSlug]/g/[groupSlug]/publish/route.ts")));
+    expect(route).toContain("return publishTeamsForContext(context, req);");
+    expect(route).not.toContain("allowTelegramPollActions");
+    // The flat legacy Publish route no longer exists at all.
+    expect(fs.existsSync(path.join(root, "src/app/api/admin/publish/route.ts"))).toBe(false);
   });
 
-  it("legacy publishTeams.ts does not touch the canonical posting state", () => {
-    const legacy = read(path.join(root, "src/lib/publishTeams.ts"));
-    expect(legacy).not.toMatch(/teamsPostStatus|postedTeamGenerationId|telegramApi/);
+  it("publishTeams.ts does not touch the canonical posting state or Telegram", () => {
+    const core = stripComments(read(path.join(root, "src/lib/publishTeams.ts")));
+    expect(core).not.toMatch(
+      /teamsPostStatus|postedTeamGenerationId|telegramApi|telegramFormat|callTelegram|fetch\(|api\.telegram\.org|allowTelegramPollActions|PublishOptions/
+    );
   });
 });

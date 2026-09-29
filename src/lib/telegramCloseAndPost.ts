@@ -9,8 +9,8 @@ import type { TenantContext } from "@/lib/tenantContext";
 /**
  * Phase 2D.6D.5D — canonical Close Poll + Post Teams.
  *
- * A separate, explicit operation (NOT part of Publish — canonical
- * Publish stays Telegram-free, allowTelegramPollActions: false):
+ * A separate, explicit operation (NOT part of Publish — Publish is
+ * DB-only, see src/lib/publishTeams.ts):
  *
  *   validate → close poll → post teams
  *

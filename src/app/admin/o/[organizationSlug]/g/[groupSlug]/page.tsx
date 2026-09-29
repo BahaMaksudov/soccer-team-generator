@@ -6,14 +6,11 @@ import CanonicalAdminWorkspace from "./CanonicalAdminWorkspace";
  * Phase 2D.6C — canonical tenant Admin entry point. Originally a
  * tenant-resolution checkpoint only; Phase 2D.6D.1 added Players,
  * Phase 2D.6D.2 added Generate (preview-only) — both tenant-bound to
- * the canonical API via CanonicalAdminWorkspace. This page still
- * calls no flat `/api/admin/*` route itself, and the canonical
- * workspace it renders still calls no OTHER flat route either
- * (Publish/Settings/Telegram remain on the old zero-argument
- * requireTenantContext() path, untouched) — calling them from a page
- * that displays one specific Group would risk silently operating on
- * a different Group if the old resolver ever diverged (Phase 2D.6C
- * report §17). Those migrate in later phases, not this one.
+ * the canonical API via CanonicalAdminWorkspace; later 2D.6D phases
+ * added Publish, Settings, and Telegram the same way. Neither this
+ * page nor the workspace calls any flat `/api/admin/*` route (those
+ * were deleted in Phase 2D.6D.5E.5) — every request is URL-bound to
+ * this one Group via adminTenantApiPath(...).
  *
  * Organization/Group names displayed, and the slugs passed to
  * CanonicalAdminWorkspace, come from the resolved TenantContext —

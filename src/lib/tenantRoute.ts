@@ -1,33 +1,24 @@
 import { NextResponse } from "next/server";
-import { TenantContextError, tenantContextErrorStatus } from "@/lib/tenantContext";
+import { TenantContextError } from "@/lib/tenantContext";
 
 /**
- * Maps any error thrown while resolving/using tenant context to a safe
- * NextResponse: a TenantContextError via the canonical code→status
- * mapping (never route-invented), anything else to a generic 500 —
- * matching the same "return e.message, never a raw stack trace"
- * convention already used by every other route in this codebase.
+ * Next.js-specific glue for tenant-scoped routes, kept separate from
+ * src/lib/tenantContext.ts on purpose: that module is deliberately
+ * framework-free (see its own header comment) so its core resolver
+ * stays trivially unit-testable.
  *
- * Kept separate from src/lib/tenantContext.ts on purpose: that module
- * is deliberately framework-free (see its own header comment) so its
- * core resolver stays trivially unit-testable; this one small file is
- * the Next.js-specific glue every tenant-scoped route shares, instead
- * of each route re-writing its own try/catch mapping.
+ * Phase 2D.6D.5E.5 — the flat-route mapper tenantErrorResponse() was
+ * removed together with the flat /api/admin/* operational routes that
+ * were its only callers. (The /api/admin/tenant-context diagnostic maps
+ * its own errors via tenantContextErrorStatus() and is retained until
+ * Phase 2D.6D.6.)
  */
-export function tenantErrorResponse(e: unknown): NextResponse {
-  if (e instanceof TenantContextError) {
-    return NextResponse.json({ error: e.code }, { status: tenantContextErrorStatus(e.code) });
-  }
-  const message = e instanceof Error ? e.message : "Internal error";
-  return NextResponse.json({ error: message }, { status: 500 });
-}
 
 /**
  * Phase 2D.6D.1 — error mapping for URL-EXPLICIT canonical tenant
  * routes (/api/admin/o/[organizationSlug]/g/[groupSlug]/...) only.
- * Deliberately separate from tenantErrorResponse() above, which is
- * NOT reused here and NOT modified — every existing legacy route's
- * error semantics stay exactly as they are.
+ * (Historically separate from the legacy flat routes' own mapper,
+ * which was removed in Phase 2D.6D.5E.5.)
  *
  * The reason a separate mapper is needed: tenantContextErrorStatus()
  * maps different TenantContextError codes to different HTTP statuses

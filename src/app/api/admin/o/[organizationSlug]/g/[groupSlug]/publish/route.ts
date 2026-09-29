@@ -9,8 +9,10 @@ import { publishTeamsForContext, deletePublishedTeamsForContext } from "@/lib/pu
  * requireTenantContextForSlugs() — never from body groupId/
  * organizationId, which publishTeamsForContext() never reads at all.
  * Business logic (validation, the atomic (groupId, date) upsert,
- * revalidation, and the still-fully-intact Telegram branch) is 100%
- * shared with the legacy flat route via src/lib/publishTeams.ts.
+ * revalidation) lives in src/lib/publishTeams.ts, which is DB-only as
+ * of Phase 2D.6D.5E.5 — Publish never contacts Telegram. Teams reach
+ * Telegram only via the separate canonical telegram/close-and-post
+ * route.
  */
 
 type Params = Promise<{ organizationSlug: string; groupSlug: string }>;
@@ -25,12 +27,7 @@ export async function POST(req: Request, { params }: { params: Params }) {
     return canonicalTenantErrorResponse(e);
   }
 
-  // Canonical route: Telegram poll actions are not exposed here yet
-  // (deferred to the later Telegram migration phase) — this is a
-  // server-controlled flag, never derived from the request body, so a
-  // client-supplied pollId cannot activate Telegram behavior no
-  // matter what the canonical UI does or doesn't send.
-  return publishTeamsForContext(context, req, { allowTelegramPollActions: false });
+  return publishTeamsForContext(context, req);
 }
 
 export async function DELETE(req: Request, { params }: { params: Params }) {

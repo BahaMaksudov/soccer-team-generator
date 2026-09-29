@@ -80,21 +80,25 @@ describe("/admin/legacy-workspace is retired (Phase 2D.6D.5E.4)", () => {
   });
 });
 
-// Legacy components stay in source (now unreachable) until the 5E.5
-// dead-code/API deletion; these only pin their current shape.
-describe("legacy components retained in source until 5E.5", () => {
-  it("legacy components no longer link to the retired pages", () => {
-    for (const f of ["components/AdminWorkspace.tsx", "components/PlayerSelection.tsx"]) {
-      expect(stripComments(read(f)), f).not.toMatch(/(?<!\/api)\/admin\/(telegram|settings)\b/);
-    }
+describe("legacy Admin components are deleted (Phase 2D.6D.5E.5)", () => {
+  it.each([
+    "AdminWorkspace",
+    "PlayerSelection",
+    "GenerationControls",
+    "TeamSettings",
+    "DeletePublishedTeams",
+    "TelegramPollImport",
+    "TelegramUserLinks",
+  ])("components/%s.tsx no longer exists", (name) => {
+    expect(fs.existsSync(path.join(adminDir, "components", `${name}.tsx`))).toBe(false);
   });
 
-  it("AdminWorkspace source is unchanged in shape (import/linking/settings still wired)", () => {
-    const ws = read("components/AdminWorkspace.tsx");
-    expect(ws).toContain("<TelegramPollImport");
-    expect(ws).toContain("<TelegramUserLinks");
-    expect(ws).toContain("<TeamSettings");
-    expect(ws).toContain('fetch("/api/admin/telegram/import"');
+  it("shared canonical dependencies are kept: TeamPreview.tsx and types.ts", () => {
+    expect(fs.existsSync(path.join(adminDir, "components", "TeamPreview.tsx"))).toBe(true);
+    expect(fs.existsSync(path.join(adminDir, "types.ts"))).toBe(true);
+    const generate = read("o/[organizationSlug]/g/[groupSlug]/CanonicalGenerateSection.tsx");
+    expect(generate).toContain('from "@/app/admin/components/TeamPreview"');
+    expect(generate).toContain('from "@/app/admin/types"');
   });
 });
 
@@ -128,10 +132,17 @@ describe("canonical Admin still provides the retired pages' capabilities", () =>
   });
 });
 
-describe("5E.1 remains intact", () => {
-  it("flat Publish still passes allowTelegramPollActions: false", () => {
-    const route = fs.readFileSync(path.resolve(adminDir, "../api/admin/publish/route.ts"), "utf8");
-    expect(route).toContain("allowTelegramPollActions: false");
-    expect(route).not.toContain("allowTelegramPollActions: true");
+describe("flat Publish is gone; canonical Publish stays Telegram-free", () => {
+  it("the flat /api/admin/publish route file no longer exists", () => {
+    expect(fs.existsSync(path.resolve(adminDir, "../api/admin/publish/route.ts"))).toBe(false);
+  });
+
+  it("canonical Publish calls the DB-only core without any Telegram option", () => {
+    const route = fs.readFileSync(
+      path.resolve(adminDir, "../api/admin/o/[organizationSlug]/g/[groupSlug]/publish/route.ts"),
+      "utf8"
+    );
+    expect(route).toContain("publishTeamsForContext(context, req)");
+    expect(route).not.toContain("allowTelegramPollActions");
   });
 });

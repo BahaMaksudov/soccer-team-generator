@@ -311,8 +311,28 @@ describe("POST canonical publish — Telegram poll actions are server-hard-disab
     const res = await POST(publishReq({ date: "2026-09-28", teams: SAMPLE_TEAMS }), ctx("org-a", "group-a"));
     const data = await res.json();
 
-    expect(data.pollStatus).toBe("not_requested");
+    // Phase 2D.6D.5E.5 — Publish is DB-only: the response is just the
+    // saved generation (no pollStatus/telegramTeamsPosted any more).
+    expect(res.status).toBe(200);
+    expect(data).toEqual({ ok: true, id: "gen-1" });
     expect(mockPollFindUnique).not.toHaveBeenCalled();
+    expect(global.fetch).not.toHaveBeenCalled();
+  });
+
+  it("closePoll/postToTelegram without a pollId are inert: teams are saved, nothing Telegram-related happens (Phase 2D.6D.5E.5)", async () => {
+    mockRequireTenantContextForSlugs.mockResolvedValue(CONTEXT_A);
+    mockUpsert.mockResolvedValue({ id: "gen-1" });
+
+    const res = await POST(
+      publishReq({ date: "2026-09-28", teams: SAMPLE_TEAMS, closePoll: true, postToTelegram: true }),
+      ctx("org-a", "group-a")
+    );
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true, id: "gen-1" });
+    expect(mockUpsert).toHaveBeenCalledTimes(1);
+    expect(mockPollFindUnique).not.toHaveBeenCalled();
+    expect(mockPollUpdate).not.toHaveBeenCalled();
     expect(global.fetch).not.toHaveBeenCalled();
   });
 });
