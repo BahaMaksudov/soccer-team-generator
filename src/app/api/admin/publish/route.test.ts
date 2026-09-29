@@ -38,6 +38,7 @@ vi.mock("@/lib/prisma", () => ({
 vi.mock("next/cache", () => ({ revalidatePath: vi.fn() }));
 
 import { POST, DELETE } from "./route";
+import { publishTeamsForContext } from "@/lib/publishTeams";
 
 const GROUP_A = { id: "group-a", name: "A", slug: "a", sportKey: "soccer", timezone: "America/New_York" };
 const CONTEXT_A = {
@@ -170,13 +171,98 @@ describe("DELETE /api/admin/publish — cross-tenant delete protection", () => {
   });
 });
 
-describe("POST /api/admin/publish — Telegram poll ownership (Phase 2D.3)", () => {
+describe("POST /api/admin/publish — Telegram actions neutralized (Phase 2D.6D.5E.1)", () => {
+  const SAME_GROUP_POLL = {
+    pollId: "poll-1",
+    groupId: "group-a",
+    chatId: 111n,
+    messageId: 42n,
+    question: "Who is playing on 9/28/26?",
+    pollDate: new Date("2026-09-28T00:00:00.000Z"),
+  };
+
+  function expectNoTelegramAndNoWrite() {
+    expect(mockUpsert).not.toHaveBeenCalled();
+    expect(mockPollFindUnique).not.toHaveBeenCalled();
+    expect(mockPollUpdate).not.toHaveBeenCalled();
+    expect(global.fetch).not.toHaveBeenCalled();
+  }
+
+  it("normal legacy Publish (no Telegram fields) saves TeamGeneration and makes no Telegram call", async () => {
+    mockUpsert.mockResolvedValue({ id: "gen-1" });
+
+    const res = await POST(publishReq({ date: "2026-09-28", teams: SAMPLE_TEAMS }));
+    expect(res.status).toBe(200);
+    const data = await res.json();
+
+    expect(data).toMatchObject({ ok: true, id: "gen-1", pollStatus: "not_requested", telegramTeamsPosted: false });
+    expect(mockUpsert).toHaveBeenCalledTimes(1);
+    expect(mockPollFindUnique).not.toHaveBeenCalled();
+    expect(mockPollUpdate).not.toHaveBeenCalled();
+    expect(global.fetch).not.toHaveBeenCalled();
+  });
+
+  it("stale/malicious payload {pollId, closePoll:true, postToTelegram:true} → 400, no TeamGeneration write, no poll lookup, no stopPoll/sendMessage", async () => {
+    mockPollFindUnique.mockResolvedValue(SAME_GROUP_POLL);
+    (global.fetch as ReturnType<typeof vi.fn>).mockResolvedValue({ json: async () => ({ ok: true, result: {} }) });
+
+    const res = await POST(
+      publishReq({ date: "2026-09-28", teams: SAMPLE_TEAMS, pollId: "poll-1", closePoll: true, postToTelegram: true })
+    );
+
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toBe("Telegram poll actions are not supported on this endpoint.");
+    expectNoTelegramAndNoWrite();
+  });
+
+  it("the exact body a pre-5E.1 legacy tab sent ({date, teams, pollId, closePoll:true}) is rejected the same way", async () => {
+    mockPollFindUnique.mockResolvedValue(SAME_GROUP_POLL);
+    (global.fetch as ReturnType<typeof vi.fn>).mockResolvedValue({ json: async () => ({ ok: true, result: {} }) });
+
+    const res = await POST(publishReq({ date: "2026-09-28", teams: SAMPLE_TEAMS, pollId: "poll-1", closePoll: true }));
+
+    expect(res.status).toBe(400);
+    expectNoTelegramAndNoWrite();
+  });
+
+  it("a pollId alone (defaults would have closed + posted) is rejected before any write or Telegram call", async () => {
+    mockPollFindUnique.mockResolvedValue(SAME_GROUP_POLL);
+
+    const res = await POST(publishReq({ date: "2026-09-28", teams: SAMPLE_TEAMS, pollId: "poll-1" }));
+
+    expect(res.status).toBe(400);
+    expectNoTelegramAndNoWrite();
+  });
+
+  it("closePoll/postToTelegram without a pollId have no target: teams are saved and Telegram is never touched", async () => {
+    mockUpsert.mockResolvedValue({ id: "gen-1" });
+
+    const res = await POST(
+      publishReq({ date: "2026-09-28", teams: SAMPLE_TEAMS, closePoll: true, postToTelegram: true })
+    );
+
+    expect(res.status).toBe(200);
+    expect((await res.json()).pollStatus).toBe("not_requested");
+    expect(mockUpsert).toHaveBeenCalledTimes(1);
+    expect(mockPollFindUnique).not.toHaveBeenCalled();
+    expect(global.fetch).not.toHaveBeenCalled();
+  });
+});
+
+// Phase 2D.6D.5E.1 — no production route passes
+// allowTelegramPollActions: true any more, but the shared core's
+// Telegram branch intentionally still exists until legacy retirement.
+// These keep its Phase 2D.3 ownership guarantees covered by calling the
+// core directly (NOT through any route) until that branch is deleted.
+describe("publishTeamsForContext core (allowTelegramPollActions: true, no route uses this) — Telegram poll ownership (Phase 2D.3)", () => {
   it("a pollId belonging to another group is treated exactly like a nonexistent pollId, and Telegram is NEVER called", async () => {
     mockUpsert.mockResolvedValue({ id: "gen-1" });
     mockPollFindUnique.mockResolvedValue({ pollId: "poll-1", groupId: "group-b", chatId: 111n, messageId: 42n });
 
-    const res = await POST(
-      publishReq({ date: "2026-09-28", teams: SAMPLE_TEAMS, pollId: "poll-1" })
+    const res = await publishTeamsForContext(
+      CONTEXT_A,
+      publishReq({ date: "2026-09-28", teams: SAMPLE_TEAMS, pollId: "poll-1" }),
+      { allowTelegramPollActions: true }
     );
     expect(res.status).toBe(200);
 
@@ -190,8 +276,10 @@ describe("POST /api/admin/publish — Telegram poll ownership (Phase 2D.3)", () 
     mockUpsert.mockResolvedValue({ id: "gen-1" });
     mockPollFindUnique.mockResolvedValue(null);
 
-    const res = await POST(
-      publishReq({ date: "2026-09-28", teams: SAMPLE_TEAMS, pollId: "does-not-exist" })
+    const res = await publishTeamsForContext(
+      CONTEXT_A,
+      publishReq({ date: "2026-09-28", teams: SAMPLE_TEAMS, pollId: "does-not-exist" }),
+      { allowTelegramPollActions: true }
     );
     const data = await res.json();
     expect(data.pollStatus).toBe("poll_not_found_in_db");
@@ -213,8 +301,10 @@ describe("POST /api/admin/publish — Telegram poll ownership (Phase 2D.3)", () 
       json: async () => ({ ok: true, result: {} }),
     });
 
-    const res = await POST(
-      publishReq({ date: "2026-09-28", teams: SAMPLE_TEAMS, pollId: "poll-1" })
+    const res = await publishTeamsForContext(
+      CONTEXT_A,
+      publishReq({ date: "2026-09-28", teams: SAMPLE_TEAMS, pollId: "poll-1" }),
+      { allowTelegramPollActions: true }
     );
     const data = await res.json();
     expect(data.pollStatus).toBe("closed_now");

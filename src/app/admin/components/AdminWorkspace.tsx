@@ -151,16 +151,16 @@ export default function AdminWorkspace() {
       return;
     }
 
-    const pollId = importedPollId || pollIdInput.trim(); // fallback if you didn't import but pasted it
-
+    // Phase 2D.6D.5E.1 — legacy Publish only saves TeamGeneration. It no
+    // longer sends pollId/closePoll/postToTelegram: the flat route now
+    // rejects Telegram actions, and Telegram delivery is canonical-only
+    // (Close Poll & Post Teams in the canonical Admin workspace).
     const res = await fetch("/api/admin/publish", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         date: previewDate,
         teams: previewTeams,
-        pollId, // so the API can close it
-        closePoll: true,
       }),
     });
 
