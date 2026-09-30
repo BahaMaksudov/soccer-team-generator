@@ -143,12 +143,12 @@ model Player {
 
   telegramLink TelegramUserLink[]
 
-  // Phase 2B: nullable tenant ownership, unpopulated until Phase 2C
-  // backfill. Optional relation → Prisma's default onDelete is
-  // SetNull, not Cascade: deleting a Group can never cascade-delete
-  // existing Player history, only detach it.
-  groupId String?
-  group   Group?  @relation(fields: [groupId], references: [id])
+  // Phase 2D.7 — required (NOT NULL): every row belongs to exactly one
+  // Group. onDelete: Restrict — a Group cannot be deleted while it still
+  // owns rows here; a future Group-deletion workflow must remove or
+  // archive its tenant data first.
+  groupId String
+  group   Group  @relation(fields: [groupId], references: [id], onDelete: Restrict)
 }
 
 model TeamGeneration {
@@ -162,13 +162,12 @@ model TeamGeneration {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  // Still nullable, unchanged from Phase 2B — Phase 2C's backfill
-  // already guarantees every production row is populated, and every
-  // route that creates a row (Phase 2D.2's publish route) always
-  // server-stamps it. Making this required is a separate, deliberate
-  // decision left for a later phase, not bundled into this one.
-  groupId String?
-  group   Group?  @relation(fields: [groupId], references: [id])
+  // Phase 2D.7 — required (NOT NULL): every row belongs to exactly one
+  // Group. onDelete: Restrict — a Group cannot be deleted while it still
+  // owns rows here; a future Group-deletion workflow must remove or
+  // archive its tenant data first.
+  groupId String
+  group   Group  @relation(fields: [groupId], references: [id], onDelete: Restrict)
 
   @@unique([groupId, date])
 }
@@ -206,8 +205,12 @@ model TelegramPoll {
 
   answers TelegramPollAnswer[]
 
-  groupId String?
-  group   Group?  @relation(fields: [groupId], references: [id])
+  // Phase 2D.7 — required (NOT NULL): every row belongs to exactly one
+  // Group. onDelete: Restrict — a Group cannot be deleted while it still
+  // owns rows here; a future Group-deletion workflow must remove or
+  // archive its tenant data first.
+  groupId String
+  group   Group  @relation(fields: [groupId], references: [id], onDelete: Restrict)
 }
 
 model TelegramPollAnswer {
@@ -222,10 +225,9 @@ model TelegramPollAnswer {
 
   poll TelegramPoll @relation(fields: [pollId], references: [pollId], onDelete: Cascade)
 
-  // Scalar only, deliberately no relation field yet — Phase 2C will
-  // denormalize this from the parent poll's groupId once that's
-  // populated. Left unpopulated in Phase 2B.
-  groupId String?
+  // Scalar only (no relation/foreign key), denormalized from the parent
+  // poll's groupId. Phase 2D.7 — required (NOT NULL).
+  groupId String
 
   @@unique([pollId, userId])
 }
@@ -242,8 +244,12 @@ model TelegramUserLink {
 
   player Player @relation(fields: [playerId], references: [id], onDelete: Cascade)
 
-  groupId String?
-  group   Group?  @relation(fields: [groupId], references: [id])
+  // Phase 2D.7 — required (NOT NULL): every row belongs to exactly one
+  // Group. onDelete: Restrict — a Group cannot be deleted while it still
+  // owns rows here; a future Group-deletion workflow must remove or
+  // archive its tenant data first.
+  groupId String
+  group   Group  @relation(fields: [groupId], references: [id], onDelete: Restrict)
 }
 
 model TelegramChat {
@@ -255,6 +261,10 @@ model TelegramChat {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  groupId String?
-  group   Group?  @relation(fields: [groupId], references: [id])
+  // Phase 2D.7 — required (NOT NULL): every row belongs to exactly one
+  // Group. onDelete: Restrict — a Group cannot be deleted while it still
+  // owns rows here; a future Group-deletion workflow must remove or
+  // archive its tenant data first.
+  groupId String
+  group   Group  @relation(fields: [groupId], references: [id], onDelete: Restrict)
 }

@@ -281,3 +281,126 @@ describe("real-DB tenant isolation: Group B URL vs Group A resources", () => {
     expect(totalTelegramCalls).toBe(0);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Phase 2D.7 — the DATABASE itself enforces tenant ownership (groupId NOT NULL).
+// These use raw SQL on purpose: they bypass the application, its tenant
+// checks and Prisma's generated types, so only PostgreSQL can reject them.
+// ---------------------------------------------------------------------------
+const TENANT_TABLES = ["Player", "TeamGeneration", "TelegramChat", "TelegramPoll", "TelegramPollAnswer", "TelegramUserLink"] as const;
+
+/** Minimal valid INSERT for each table; `$G` is replaced by the groupId SQL literal. */
+const INSERTS: Record<(typeof TENANT_TABLES)[number], string> = {
+  Player: `INSERT INTO "Player" (id, "firstName", "lastName", position, rating, "updatedAt", "groupId") VALUES ('p-2d7', 'N', 'N', 'DEFENDER', 'GOOD', now(), $G)`,
+  TeamGeneration: `INSERT INTO "TeamGeneration" (id, date, "teamsJson", "updatedAt", "groupId") VALUES ('g-2d7', '2027-01-04', '[]', now(), $G)`,
+  TelegramChat: `INSERT INTO "TelegramChat" ("chatId", title, "updatedAt", "groupId") VALUES (4242, 'c', now(), $G)`,
+  TelegramPoll: `INSERT INTO "TelegramPoll" ("pollId", "chatId", question, "optionsJson", "updatedAt", "groupId") VALUES ('poll-2d7', 1001, 'q', '[]', now(), $G)`,
+  TelegramPollAnswer: `INSERT INTO "TelegramPollAnswer" (id, "pollId", "userId", "optionIdsJson", "updatedAt", "groupId") VALUES ('ans-2d7', 'poll-a', 4343, '[0]', now(), $G)`,
+  TelegramUserLink: `INSERT INTO "TelegramUserLink" (id, "userId", "playerId", "updatedAt", "groupId") VALUES ('link-2d7', 4444, 'a2', now(), $G)`,
+};
+
+async function pgErrorCode(sql: string): Promise<{ code?: string } | null> {
+  try {
+    await prisma.$executeRawUnsafe(sql);
+    return null;
+  } catch (e) {
+    const err = e as { meta?: { code?: string; message?: string }; message?: string };
+    const msg = `${err.meta?.message ?? ""} ${err.message ?? ""}`;
+    const code = err.meta?.code ?? (msg.match(/\b(23\d{3})\b/) || [])[1];
+    return { code };
+  }
+}
+
+/** Runs the INSERT in a PL/pgSQL block and returns the column named by a not_null_violation (nothing is kept). */
+async function notNullViolationColumn(insertSql: string): Promise<string | null> {
+  const block = `DO $blk$ DECLARE col text; BEGIN ${insertSql}; RAISE EXCEPTION 'ACCEPTED'; EXCEPTION WHEN not_null_violation THEN GET STACKED DIAGNOSTICS col = COLUMN_NAME; RAISE EXCEPTION 'NN:%', col; END $blk$`;
+  try {
+    await prisma.$executeRawUnsafe(block);
+    return null;
+  } catch (e) {
+    const msg = `${(e as { meta?: { message?: string } }).meta?.message ?? ""} ${(e as Error).message}`;
+    return (msg.match(/NN:(\w+)/) || [])[1] ?? null;
+  }
+}
+
+/** Runs the statement in a PL/pgSQL block and returns the constraint named by a foreign_key_violation (nothing is kept). */
+async function restrictingConstraint(sql: string): Promise<string | null> {
+  const block = `DO $blk$ DECLARE c text; BEGIN ${sql}; RAISE EXCEPTION 'ACCEPTED'; EXCEPTION WHEN foreign_key_violation THEN GET STACKED DIAGNOSTICS c = CONSTRAINT_NAME; RAISE EXCEPTION 'FK:%', c; END $blk$`;
+  try {
+    await prisma.$executeRawUnsafe(block);
+    return null;
+  } catch (e) {
+    const msg = `${(e as { meta?: { message?: string } }).meta?.message ?? ""} ${(e as Error).message}`;
+    return (msg.match(/FK:(\w+)/) || [])[1] ?? null;
+  }
+}
+
+describe("Phase 2D.7 — PostgreSQL enforces groupId NOT NULL on every tenant-owned table", () => {
+  it("schema: groupId is NOT NULL on all six tables (and still NOT NULL on GroupSetting)", async () => {
+    const rows = await prisma.$queryRawUnsafe<Array<{ table_name: string; is_nullable: string }>>(
+      `SELECT table_name, is_nullable FROM information_schema.columns WHERE table_schema = 'public' AND column_name = 'groupId' ORDER BY table_name`
+    );
+    const nullable = Object.fromEntries(rows.map((r) => [r.table_name, r.is_nullable]));
+    for (const t of [...TENANT_TABLES, "GroupSetting"]) expect(nullable[t], t).toBe("NO");
+  });
+
+  it("schema: the five Group foreign keys keep their names and are now ON DELETE RESTRICT / ON UPDATE CASCADE", async () => {
+    const fks = await prisma.$queryRawUnsafe<Array<{ conname: string; del: string; upd: string }>>(
+      `SELECT conname, confdeltype::text AS del, confupdtype::text AS upd FROM pg_constraint
+       WHERE contype = 'f' AND confrelid = '"Group"'::regclass AND conname LIKE '%\\_groupId\\_fkey' ORDER BY conname`
+    );
+    const byName = Object.fromEntries(fks.map((f) => [f.conname, `${f.del}/${f.upd}`]));
+    // 'r' = RESTRICT on delete, 'c' = CASCADE on update; GroupSetting keeps CASCADE/CASCADE (unchanged).
+    expect(byName).toEqual({
+      Player_groupId_fkey: "r/c",
+      TeamGeneration_groupId_fkey: "r/c",
+      TelegramChat_groupId_fkey: "r/c",
+      TelegramPoll_groupId_fkey: "r/c",
+      TelegramUserLink_groupId_fkey: "r/c",
+      GroupSetting_groupId_fkey: "c/c",
+    });
+  });
+
+  it("schema: TelegramPollAnswer still has no Group foreign key (only its poll FK)", async () => {
+    const fks = await prisma.$queryRawUnsafe<Array<{ target: string }>>(
+      `SELECT confrelid::regclass::text AS target FROM pg_constraint WHERE contype = 'f' AND conrelid = '"TelegramPollAnswer"'::regclass`
+    );
+    expect(fks.map((f) => f.target)).toEqual(['"TelegramPoll"']);
+  });
+
+  it("schema: TeamGeneration (groupId, date) uniqueness is intact", async () => {
+    const idx = await prisma.$queryRawUnsafe<Array<{ indexdef: string }>>(
+      `SELECT indexdef FROM pg_indexes WHERE tablename = 'TeamGeneration' AND indexname = 'TeamGeneration_groupId_date_key'`
+    );
+    expect(idx).toHaveLength(1);
+    expect(idx[0].indexdef).toMatch(/UNIQUE INDEX .* \("groupId", date\)/);
+  });
+
+  it.each(TENANT_TABLES)("%s: a tenantless INSERT (groupId NULL) is rejected by PostgreSQL (23502 on groupId)", async (table) => {
+    const rejected = await pgErrorCode(INSERTS[table].replace("$G", "NULL"));
+    expect(rejected, `${table} accepted a NULL groupId`).not.toBeNull();
+    expect(rejected!.code).toBe("23502"); // not_null_violation
+    // Prove WHICH column PostgreSQL rejected (Prisma's message omits it).
+    expect(await notNullViolationColumn(INSERTS[table].replace("$G", "NULL"))).toBe("groupId");
+  });
+
+  it.each(TENANT_TABLES)("%s: the identical INSERT with a valid Group succeeds (control)", async (table) => {
+    expect(await pgErrorCode(INSERTS[table].replace("$G", `'${A}'`))).toBeNull();
+  });
+
+  it("deleting a Group that still owns rows is refused by PostgreSQL via ON DELETE RESTRICT (23503)", async () => {
+    const res = await pgErrorCode(`DELETE FROM "Group" WHERE id = '${B}'`);
+    expect(res).not.toBeNull();
+    expect(res!.code).toBe("23503"); // foreign_key_violation raised by the RESTRICT rule
+    expect(await restrictingConstraint(`DELETE FROM "Group" WHERE id = '${B}'`)).toMatch(/^(Player|TeamGeneration)_groupId_fkey$/);
+    expect(await prisma.group.count({ where: { id: B } })).toBe(1);
+    expect(await prisma.player.count({ where: { groupId: B } })).toBe(2);
+  });
+
+  it("a Group with no tenant-owned rows left can still be deleted (RESTRICT only guards dependents)", async () => {
+    await prisma.organization.create({ data: { id: "org-empty", name: "Empty", slug: "empty-org" } });
+    await prisma.group.create({ data: { id: "grp-empty", organizationId: "org-empty", name: "e", slug: "e", timezone: "America/New_York" } });
+    expect(await pgErrorCode(`DELETE FROM "Group" WHERE id = 'grp-empty'`)).toBeNull();
+    expect(await prisma.group.count({ where: { id: "grp-empty" } })).toBe(0);
+  });
+});
