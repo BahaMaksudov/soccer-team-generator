@@ -238,6 +238,45 @@ describe("real-DB tenant isolation: Group B URL vs Group A resources", () => {
     expect(res.status).toBe(404);
   });
 
+  it("15. Publish stores the authoritative DB snapshot, not forged client fields, and it stays fixed afterwards", async () => {
+    const before = await snapshotGroupA();
+    // Authoritative values for b1 (seeded): firstName "b1", lastName "X", DEFENDER, GOOD, stamina 3.
+    const forged = [
+      {
+        teamNumber: 1,
+        injectedTeamKey: "bad",
+        players: [
+          { id: "b2", firstName: "FORGED", lastName: "PLAYER", position: "GOALKEEPER", rating: "EXCELLENT", stamina: 999, someInjectedKey: "bad" },
+          { id: "b1", firstName: "Also", lastName: "Forged" },
+        ],
+      },
+    ];
+    const res = await publishRoute.POST(json("POST", { date: "2026-10-19", teams: forged }), params(B));
+    expect(res.status).toBe(200);
+
+    const row = await prisma.teamGeneration.findFirst({ where: { groupId: B, date: new Date("2026-10-19T00:00:00.000Z") } });
+    const snapshot = JSON.parse(row!.teamsJson);
+    expect(snapshot).toEqual([
+      {
+        teamNumber: 1,
+        players: [
+          { id: "b2", firstName: "b2", lastName: "X", position: "DEFENDER", rating: "GOOD", stamina: 3 },
+          { id: "b1", firstName: "b1", lastName: "X", position: "DEFENDER", rating: "GOOD", stamina: 3 },
+        ],
+      },
+    ]);
+    expect(row!.teamsJson).not.toMatch(/FORGED|PLAYER|Forged|999|EXCELLENT|someInjectedKey|injectedTeamKey|bad/);
+
+    // Later edit to the Player row does NOT change the published snapshot.
+    const edit = await playerRoute.PATCH(json("PATCH", { firstName: "Renamed", stamina: 5 }), playerParams(B, "b2"));
+    expect(edit.status).toBe(200);
+    const after = await prisma.teamGeneration.findUnique({ where: { id: row!.id } });
+    expect(after!.teamsJson).toBe(row!.teamsJson);
+    expect(after!.updatedAt).toEqual(row!.updatedAt);
+
+    expect(await snapshotGroupA()).toBe(before);
+  });
+
   it("14. no Telegram network call happened anywhere in this suite", () => {
     expect(totalTelegramCalls).toBe(0);
   });

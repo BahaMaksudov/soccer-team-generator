@@ -47,6 +47,60 @@ export function collectSubmittedPlayerIds(teams: Array<{ players: Array<Record<s
   return ids;
 }
 
+/**
+ * Phase 2D.6E.6D — the exact Player fields a published snapshot stores:
+ * the same fields canonical Generate returns and that published teams
+ * have always carried. Explicit allowlist — never groupId, timestamps,
+ * Telegram fields, or anything else on the Player row.
+ */
+const SNAPSHOT_PLAYER_SELECT = {
+  id: true,
+  firstName: true,
+  lastName: true,
+  position: true,
+  rating: true,
+  stamina: true,
+} as const;
+
+type SnapshotPlayer = {
+  id: string;
+  firstName: string;
+  lastName: string;
+  position: string;
+  rating: string;
+  stamina: number;
+};
+
+/**
+ * Phase 2D.6E.6D — rebuilds the submitted teams into the snapshot that is
+ * persisted: each team keeps only its client-assigned `teamNumber` and
+ * its players IN THE SUBMITTED ORDER, and every player is replaced by an
+ * explicit copy of the authoritative Group-owned row. Nothing else from
+ * the request (extra team keys, player fields, injected keys) survives.
+ * Callers must have already verified every id is in `ownedPlayers`.
+ */
+export function buildPublishSnapshot(
+  teams: Array<{ teamNumber: number; players: Array<Record<string, unknown>> }>,
+  ownedPlayers: SnapshotPlayer[]
+): Array<{ teamNumber: number; players: SnapshotPlayer[] }> {
+  const byId = new Map(ownedPlayers.map((p) => [p.id, p]));
+  return teams.map((team) => ({
+    teamNumber: team.teamNumber,
+    players: team.players.map((submitted) => {
+      const p = byId.get(submitted.id as string);
+      if (!p) throw new Error("buildPublishSnapshot: unverified player id");
+      return {
+        id: p.id,
+        firstName: p.firstName,
+        lastName: p.lastName,
+        position: p.position,
+        rating: p.rating,
+        stamina: p.stamina,
+      };
+    }),
+  }));
+}
+
 export async function publishTeamsForContext(context: TenantContext, req: Request): Promise<NextResponse> {
   const activeGroupId = context.activeGroup.id;
 
@@ -81,11 +135,18 @@ export async function publishTeamsForContext(context: TenantContext, req: Reques
   }
   const owned = await prisma.player.findMany({
     where: { groupId: activeGroupId, id: { in: playerIds } },
-    select: { id: true },
+    select: SNAPSHOT_PLAYER_SELECT,
   });
   if (owned.length !== playerIds.length) {
     return NextResponse.json({ error: INVALID_PLAYERS_MESSAGE }, { status: 400 });
   }
+
+  // Phase 2D.6E.6D — the client decides WHO is on which team and in what
+  // order; the server decides WHAT is stored about each player. The
+  // persisted snapshot is rebuilt from the Group-owned Player rows, so
+  // forged names/positions/ratings/stamina and injected keys are never
+  // stored. It is a snapshot taken now: later Player edits don't change it.
+  const snapshotTeams = buildPublishSnapshot(teams, owned);
 
   const normalizedDate = toDateOnlyUTC(dateStr);
 
@@ -101,8 +162,8 @@ export async function publishTeamsForContext(context: TenantContext, req: Reques
   try {
     saved = await prisma.teamGeneration.upsert({
       where: { groupId_date: { groupId: activeGroupId, date: normalizedDate } },
-      update: { teamsJson: JSON.stringify(teams) },
-      create: { date: normalizedDate, teamsJson: JSON.stringify(teams), groupId: activeGroupId },
+      update: { teamsJson: JSON.stringify(snapshotTeams) },
+      create: { date: normalizedDate, teamsJson: JSON.stringify(snapshotTeams), groupId: activeGroupId },
     });
   } catch (e: unknown) {
     const message = e instanceof Error ? e.message : "Failed to save published teams.";

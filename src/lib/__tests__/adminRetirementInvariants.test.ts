@@ -235,6 +235,13 @@ describe("tenant-isolation hardening invariants (Phase 2D.6E.6C)", () => {
     expect(check).toBeLessThan(upsert);
     expect(core).toContain("where: { groupId: activeGroupId, id: { in: playerIds } }");
   });
+
+  it("Publish persists only the server-built snapshot, never the request's teams (Phase 2D.6E.6D)", () => {
+    const core = code.get(rel("src/lib/publishTeams.ts"))!;
+    expect(core).not.toMatch(/teamsJson: JSON\.stringify\(teams\)/);
+    expect(core.match(/teamsJson: JSON\.stringify\(snapshotTeams\)/g)).toHaveLength(2);
+    expect(core.indexOf("buildPublishSnapshot(teams, owned)")).toBeLessThan(core.indexOf("prisma.teamGeneration.upsert("));
+  });
 });
 
 describe("webhook independence", () => {

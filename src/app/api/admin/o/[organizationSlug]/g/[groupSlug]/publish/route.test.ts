@@ -15,7 +15,8 @@ const mockPollUpdate = vi.fn();
 // Group (so the selector-focused tests below are unaffected); the
 // dedicated ownership tests install an explicit ownership table.
 type PlayerQuery = { where: { groupId: string; id: { in: string[] } } };
-const ownAll = async ({ where }: PlayerQuery) => where.id.in.map((id) => ({ id }));
+const ownAll = async ({ where }: PlayerQuery) =>
+  where.id.in.map((id) => ({ id, firstName: `F-${id}`, lastName: `L-${id}`, position: "MIDFIELDER", rating: "GOOD", stamina: 3 }));
 const mockPlayerFindMany = vi.fn(ownAll);
 vi.mock("@/lib/prisma", () => ({
   prisma: {
@@ -362,9 +363,25 @@ describe("POST canonical publish — Telegram poll actions are server-hard-disab
 
 describe("POST canonical publish — submitted players must belong to the active Group (Phase 2D.6E.6C)", () => {
   // Explicit ownership table, applied like the real query: groupId AND id IN (...)
-  const OWNER: Record<string, string> = { pa1: "group-a", pa2: "group-a", pb1: "group-b", pb2: "group-b" };
+  // Authoritative Player rows (what the database holds).
+  const DB: Record<string, { groupId: string; firstName: string; lastName: string; position: string; rating: string; stamina: number }> = {
+    pa1: { groupId: "group-a", firstName: "Anna", lastName: "Alpha", position: "GOALKEEPER", rating: "EXCELLENT", stamina: 5 },
+    pa2: { groupId: "group-a", firstName: "Adam", lastName: "Alpha", position: "DEFENDER", rating: "GOOD", stamina: 4 },
+    pb1: { groupId: "group-b", firstName: "Bea", lastName: "Beta", position: "DEFENDER", rating: "FAIR", stamina: 2 },
+    pb2: { groupId: "group-b", firstName: "Bo", lastName: "Beta", position: "FORWARD", rating: "VERY_GOOD", stamina: 3 },
+    pb3: { groupId: "group-b", firstName: "Bix", lastName: "Beta", position: "MIDFIELDER", rating: "GOOD", stamina: 1 },
+  };
   const ownership = async ({ where }: PlayerQuery) =>
-    where.id.in.filter((id) => OWNER[id] === where.groupId).map((id) => ({ id }));
+    where.id.in
+      .filter((id) => DB[id]?.groupId === where.groupId)
+      .map((id) => {
+        const { groupId: _g, ...fields } = DB[id];
+        return { id, ...fields };
+      });
+  const canonical = (id: string) => {
+    const { groupId: _g, ...fields } = DB[id];
+    return { id, ...fields };
+  };
   const team = (n: number, ids: string[]) => ({
     teamNumber: n,
     players: ids.map((id) => ({ id, firstName: `First-${id}`, lastName: `Last-${id}`, position: "DEFENDER" })),
@@ -383,7 +400,10 @@ describe("POST canonical publish — submitted players must belong to the active
       ctx("org-b", "group-b")
     );
     expect(res.status).toBe(200);
-    expect(mockPlayerFindMany).toHaveBeenCalledWith({ where: { groupId: "group-b", id: { in: ["pb1", "pb2"] } }, select: { id: true } });
+    expect(mockPlayerFindMany).toHaveBeenCalledWith({
+      where: { groupId: "group-b", id: { in: ["pb1", "pb2"] } },
+      select: { id: true, firstName: true, lastName: true, position: true, rating: true, stamina: true },
+    });
     expect(mockPlayerFindMany.mock.invocationCallOrder[0]).toBeLessThan(mockUpsert.mock.invocationCallOrder[0]);
     // Same-date publish stays Group-scoped.
     expect(mockUpsert.mock.calls[0][0].where.groupId_date.groupId).toBe("group-b");
@@ -429,10 +449,126 @@ describe("POST canonical publish — submitted players must belong to the active
     expect(mockUpsert).not.toHaveBeenCalled();
   });
 
-  it("a legitimate Generate → Preview payload (players carry id/firstName/lastName/position) still publishes, stored as given", async () => {
-    const teams = [team(1, ["pb1"]), team(2, ["pb2"])];
+  it("a legitimate Generate → Preview payload still publishes, stored as the authoritative snapshot", async () => {
+    // Exactly what canonical Generate returns: the six snapshot fields per player.
+    const teams = [
+      { teamNumber: 1, players: [canonical("pb1")] },
+      { teamNumber: 2, players: [canonical("pb2")] },
+    ];
     const res = await POST(publishReq({ date: "2026-10-05T00:00:00.000Z", teams }), ctx("org-b", "group-b"));
     expect(res.status).toBe(200);
+    // Unchanged when the client sent the true values.
     expect(JSON.parse(mockUpsert.mock.calls[0][0].create.teamsJson)).toEqual(teams);
+  });
+});
+
+describe("POST canonical publish — server-authoritative snapshot (Phase 2D.6E.6D)", () => {
+  const DB: Record<string, { groupId: string; firstName: string; lastName: string; position: string; rating: string; stamina: number }> = {
+    pa1: { groupId: "group-a", firstName: "Anna", lastName: "Alpha", position: "GOALKEEPER", rating: "EXCELLENT", stamina: 5 },
+    pb1: { groupId: "group-b", firstName: "Bea", lastName: "Beta", position: "DEFENDER", rating: "FAIR", stamina: 2 },
+    pb2: { groupId: "group-b", firstName: "Bo", lastName: "Beta", position: "FORWARD", rating: "VERY_GOOD", stamina: 3 },
+    pb3: { groupId: "group-b", firstName: "Bix", lastName: "Beta", position: "MIDFIELDER", rating: "GOOD", stamina: 1 },
+    pb4: { groupId: "group-b", firstName: "Bel", lastName: "Beta", position: "GOALKEEPER", rating: "EXCELLENT", stamina: 4 },
+  };
+  const rows = async ({ where }: PlayerQuery) =>
+    // Deliberately returned in a DIFFERENT order than requested (DB order).
+    Object.keys(DB)
+      .filter((id) => where.id.in.includes(id) && DB[id].groupId === where.groupId)
+      .map((id) => {
+        const { groupId: _g, ...fields } = DB[id];
+        return { id, ...fields };
+      });
+  const canonical = (id: string) => {
+    const { groupId: _g, ...fields } = DB[id];
+    return { id, ...fields };
+  };
+  const stored = () => JSON.parse(mockUpsert.mock.calls[0][0].create.teamsJson);
+  const GENERIC = JSON.stringify({ error: "One or more players are invalid or unavailable." });
+  const publish = (teams: unknown) =>
+    POST(publishReq({ date: "2026-10-12", teams }), ctx("org-b", "group-b"));
+
+  beforeEach(() => {
+    mockPlayerFindMany.mockImplementation(rows);
+    mockRequireTenantContextForSlugs.mockResolvedValue(CONTEXT_B);
+    mockUpsert.mockResolvedValue({ id: "gen-b" });
+  });
+
+  it("forged first/last name → publish succeeds, DB name stored, forged name absent", async () => {
+    const res = await publish([{ teamNumber: 1, players: [{ id: "pb1", firstName: "FORGED", lastName: "PLAYER" }] }]);
+    expect(res.status).toBe(200);
+    expect(stored()[0].players[0]).toEqual(canonical("pb1"));
+    expect(mockUpsert.mock.calls[0][0].create.teamsJson).not.toMatch(/FORGED|PLAYER/);
+  });
+
+  it("forged position → DB position stored", async () => {
+    await publish([{ teamNumber: 1, players: [{ id: "pb2", firstName: "Bo", lastName: "Beta", position: "GOALKEEPER" }] }]);
+    expect(stored()[0].players[0].position).toBe("FORWARD");
+  });
+
+  it("forged rating and stamina → DB values stored", async () => {
+    await publish([{ teamNumber: 1, players: [{ id: "pb1", rating: "EXCELLENT", stamina: 999 }] }]);
+    expect(stored()[0].players[0]).toMatchObject({ rating: "FAIR", stamina: 2 });
+    expect(mockUpsert.mock.calls[0][0].create.teamsJson).not.toContain("999");
+  });
+
+  it("injected player keys and team keys are not persisted; snapshot is exactly the six allowlisted fields", async () => {
+    await publish([
+      {
+        teamNumber: 1,
+        teamInjected: "bad",
+        players: [{ id: "pb1", someInjectedKey: "bad", groupId: "group-a", isActive: false, telegramUserId: "123", __proto__x: 1 }],
+      },
+    ]);
+    const t = stored()[0];
+    expect(Object.keys(t).sort()).toEqual(["players", "teamNumber"]);
+    expect(Object.keys(t.players[0]).sort()).toEqual(["firstName", "id", "lastName", "position", "rating", "stamina"]);
+    expect(mockUpsert.mock.calls[0][0].create.teamsJson).not.toMatch(/someInjectedKey|teamInjected|group-a|telegramUserId|isActive|bad/);
+  });
+
+  it("preserves team membership, team numbers and in-team order exactly (no rebalancing, even when DB returns rows in another order)", async () => {
+    await publish([
+      { teamNumber: 1, players: [{ id: "pb3" }, { id: "pb1" }] },
+      { teamNumber: 2, players: [{ id: "pb4" }, { id: "pb2" }] },
+    ]);
+    expect(stored()).toEqual([
+      { teamNumber: 1, players: [canonical("pb3"), canonical("pb1")] },
+      { teamNumber: 2, players: [canonical("pb4"), canonical("pb2")] },
+    ]);
+    // update payload is the same snapshot as create
+    expect(mockUpsert.mock.calls[0][0].update.teamsJson).toBe(mockUpsert.mock.calls[0][0].create.teamsJson);
+  });
+
+  it("foreign player (even with forged fields) → 400 generic, no upsert", async () => {
+    const res = await publish([{ teamNumber: 1, players: [{ id: "pa1", firstName: "Bea", lastName: "Beta" }] }]);
+    expect(res.status).toBe(400);
+    expect(await res.text()).toBe(GENERIC);
+    expect(mockUpsert).not.toHaveBeenCalled();
+  });
+
+  it("mixed Group A + Group B → 400 generic, no upsert", async () => {
+    const res = await publish([{ teamNumber: 1, players: [{ id: "pb1" }, { id: "pa1" }] }]);
+    expect(res.status).toBe(400);
+    expect(await res.text()).toBe(GENERIC);
+    expect(mockUpsert).not.toHaveBeenCalled();
+  });
+
+  it("duplicate player id → 400 generic, no Player query, no upsert", async () => {
+    const res = await publish([{ teamNumber: 1, players: [{ id: "pb1" }] }, { teamNumber: 2, players: [{ id: "pb1" }] }]);
+    expect(res.status).toBe(400);
+    expect(await res.text()).toBe(GENERIC);
+    expect(mockPlayerFindMany).not.toHaveBeenCalled();
+    expect(mockUpsert).not.toHaveBeenCalled();
+  });
+
+  it("the stored snapshot is fixed at Publish time: later Player-row changes don't alter it", async () => {
+    await publish([{ teamNumber: 1, players: [{ id: "pb1" }] }]);
+    const persisted = mockUpsert.mock.calls[0][0].create.teamsJson;
+    DB.pb1.firstName = "Renamed-Later";
+    DB.pb1.stamina = 5;
+    // The persisted value is a self-contained string; nothing re-reads Player rows.
+    expect(JSON.parse(persisted)[0].players[0]).toMatchObject({ firstName: "Bea", stamina: 2 });
+    expect(persisted).not.toContain("Renamed-Later");
+    DB.pb1.firstName = "Bea";
+    DB.pb1.stamina = 2;
   });
 });
