@@ -10,8 +10,16 @@ const mockUpsert = vi.fn();
 const mockDeleteMany = vi.fn();
 const mockPollFindUnique = vi.fn();
 const mockPollUpdate = vi.fn();
+// Phase 2D.6E.6C — Publish validates submitted player ids against the
+// active Group. Default: every requested id is owned by the queried
+// Group (so the selector-focused tests below are unaffected); the
+// dedicated ownership tests install an explicit ownership table.
+type PlayerQuery = { where: { groupId: string; id: { in: string[] } } };
+const ownAll = async ({ where }: PlayerQuery) => where.id.in.map((id) => ({ id }));
+const mockPlayerFindMany = vi.fn(ownAll);
 vi.mock("@/lib/prisma", () => ({
   prisma: {
+    player: { findMany: (...a: [PlayerQuery]) => mockPlayerFindMany(...a) },
     teamGeneration: {
       upsert: (...args: unknown[]) => mockUpsert(...args),
       deleteMany: (...args: unknown[]) => mockDeleteMany(...args),
@@ -46,7 +54,7 @@ const CONTEXT_B = {
   activeGroup: GROUP_B,
 };
 
-const SAMPLE_TEAMS = [{ teamNumber: 1, players: [{ firstName: "A", lastName: "B" }] }];
+const SAMPLE_TEAMS = [{ teamNumber: 1, players: [{ id: "p1", firstName: "A", lastName: "B" }] }];
 
 function ctx(organizationSlug: string, groupSlug: string) {
   return { params: Promise.resolve({ organizationSlug, groupSlug }) };
@@ -60,6 +68,7 @@ const originalFetch = global.fetch;
 
 beforeEach(() => {
   vi.clearAllMocks();
+  mockPlayerFindMany.mockImplementation(ownAll);
   process.env.TELEGRAM_BOT_TOKEN = "test-token";
   global.fetch = vi.fn().mockRejectedValue(new Error("real Telegram API must never be called in tests"));
 });
@@ -126,7 +135,7 @@ describe("POST canonical publish — same-Group overwrite semantics", () => {
     await POST(publishReq({ date: "2026-09-28", teams: SAMPLE_TEAMS }), ctx("org-a", "group-a"));
     const firstCall = mockUpsert.mock.calls[0][0];
 
-    await POST(publishReq({ date: "2026-09-28", teams: [{ teamNumber: 1, players: [{ firstName: "C", lastName: "D" }] }] }), ctx("org-a", "group-a"));
+    await POST(publishReq({ date: "2026-09-28", teams: [{ teamNumber: 1, players: [{ id: "p2", firstName: "C", lastName: "D" }] }] }), ctx("org-a", "group-a"));
     const secondCall = mockUpsert.mock.calls[1][0];
 
     expect(firstCall.where).toEqual(secondCall.where);
@@ -348,5 +357,82 @@ describe("POST canonical publish — Telegram poll actions are server-hard-disab
     expect(mockPollFindUnique).not.toHaveBeenCalled();
     expect(mockPollUpdate).not.toHaveBeenCalled();
     expect(global.fetch).not.toHaveBeenCalled();
+  });
+});
+
+describe("POST canonical publish — submitted players must belong to the active Group (Phase 2D.6E.6C)", () => {
+  // Explicit ownership table, applied like the real query: groupId AND id IN (...)
+  const OWNER: Record<string, string> = { pa1: "group-a", pa2: "group-a", pb1: "group-b", pb2: "group-b" };
+  const ownership = async ({ where }: PlayerQuery) =>
+    where.id.in.filter((id) => OWNER[id] === where.groupId).map((id) => ({ id }));
+  const team = (n: number, ids: string[]) => ({
+    teamNumber: n,
+    players: ids.map((id) => ({ id, firstName: `First-${id}`, lastName: `Last-${id}`, position: "DEFENDER" })),
+  });
+  const GENERIC = JSON.stringify({ error: "One or more players are invalid or unavailable." });
+
+  beforeEach(() => {
+    mockPlayerFindMany.mockImplementation(ownership);
+    mockRequireTenantContextForSlugs.mockResolvedValue(CONTEXT_B);
+    mockUpsert.mockResolvedValue({ id: "gen-b" });
+  });
+
+  it("all Group B players → published; ownership query is scoped to Group B and runs before the upsert", async () => {
+    const res = await POST(
+      publishReq({ date: "2026-09-23", teams: [team(1, ["pb1"]), team(2, ["pb2"])] }),
+      ctx("org-b", "group-b")
+    );
+    expect(res.status).toBe(200);
+    expect(mockPlayerFindMany).toHaveBeenCalledWith({ where: { groupId: "group-b", id: { in: ["pb1", "pb2"] } }, select: { id: true } });
+    expect(mockPlayerFindMany.mock.invocationCallOrder[0]).toBeLessThan(mockUpsert.mock.invocationCallOrder[0]);
+    // Same-date publish stays Group-scoped.
+    expect(mockUpsert.mock.calls[0][0].where.groupId_date.groupId).toBe("group-b");
+  });
+
+  it("a Group A player through Group B Publish → 400 generic, no TeamGeneration upsert, no foreign details", async () => {
+    const res = await POST(publishReq({ date: "2026-09-23", teams: [team(1, ["pa1"])] }), ctx("org-b", "group-b"));
+    expect(res.status).toBe(400);
+    const text = await res.text();
+    expect(text).toBe(GENERIC);
+    expect(text).not.toMatch(/pa1|group-a|First-|Last-/);
+    expect(mockUpsert).not.toHaveBeenCalled();
+  });
+
+  it("a mixed Group A + Group B team → 400 generic, the whole Publish rejected, no upsert", async () => {
+    const res = await POST(
+      publishReq({ date: "2026-09-23", teams: [team(1, ["pb1", "pa1"]), team(2, ["pb2"])] }),
+      ctx("org-b", "group-b")
+    );
+    expect(res.status).toBe(400);
+    expect(await res.text()).toBe(GENERIC);
+    expect(mockUpsert).not.toHaveBeenCalled();
+  });
+
+  it("a nonexistent player id → 400 generic, indistinguishable from a foreign one, no upsert", async () => {
+    const res = await POST(publishReq({ date: "2026-09-23", teams: [team(1, ["pb1", "nope"])] }), ctx("org-b", "group-b"));
+    expect(res.status).toBe(400);
+    expect(await res.text()).toBe(GENERIC);
+    expect(mockUpsert).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["a player without an id", [{ teamNumber: 1, players: [{ firstName: "No", lastName: "Id" }] }]],
+    ["a player with an empty id", [{ teamNumber: 1, players: [{ id: "  ", firstName: "E", lastName: "M" }] }]],
+    ["a non-string id", [{ teamNumber: 1, players: [{ id: 42, firstName: "N", lastName: "S" }] }]],
+    ["the same player on two teams", [team(1, ["pb1"]), team(2, ["pb1"])]],
+    ["no players at all", [{ teamNumber: 1, players: [] }]],
+  ])("%s → 400 generic before any Player query or upsert", async (_label, teams) => {
+    const res = await POST(publishReq({ date: "2026-09-23", teams }), ctx("org-b", "group-b"));
+    expect(res.status).toBe(400);
+    expect(await res.text()).toBe(GENERIC);
+    expect(mockPlayerFindMany).not.toHaveBeenCalled();
+    expect(mockUpsert).not.toHaveBeenCalled();
+  });
+
+  it("a legitimate Generate → Preview payload (players carry id/firstName/lastName/position) still publishes, stored as given", async () => {
+    const teams = [team(1, ["pb1"]), team(2, ["pb2"])];
+    const res = await POST(publishReq({ date: "2026-10-05T00:00:00.000Z", teams }), ctx("org-b", "group-b"));
+    expect(res.status).toBe(200);
+    expect(JSON.parse(mockUpsert.mock.calls[0][0].create.teamsJson)).toEqual(teams);
   });
 });

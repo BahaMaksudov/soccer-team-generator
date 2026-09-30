@@ -55,65 +55,63 @@ export async function createPlayer(context: TenantContext, req: Request): Promis
 
     return NextResponse.json(created);
   } catch (e: unknown) {
-    const message = e instanceof Error ? e.message : "Failed to create player";
-    return NextResponse.json({ error: message }, { status: 400 });
+    // Phase 2D.6E.6C — never return raw database/Prisma messages.
+    console.error("createPlayer failed", e);
+    return NextResponse.json({ error: "Failed to create player" }, { status: 500 });
   }
 }
 
 export async function updatePlayer(context: TenantContext, id: string, req: Request): Promise<NextResponse> {
-  try {
-    const body = await req.json().catch(() => ({}));
+  const body = await req.json().catch(() => ({}));
 
-    const parsed = playerUpdateSchema.safeParse(body);
-    if (!parsed.success) {
-      return NextResponse.json(zodErrorResponse(parsed.error), { status: 400 });
+  const parsed = playerUpdateSchema.safeParse(body);
+  if (!parsed.success) {
+    return NextResponse.json(zodErrorResponse(parsed.error), { status: 400 });
+  }
+
+  const groupId = context.activeGroup.id;
+  const { firstName, lastName, position, rating, stamina, isActive } = parsed.data;
+  const data = { firstName, lastName, position, rating, stamina, isActive };
+  const hasChanges = Object.values(data).some((v) => v !== undefined);
+
+  try {
+    // Phase 2D.6E.6C — the tenant boundary is the mutation itself: one
+    // statement scoped by BOTH id and the URL-resolved Group, never a
+    // separate ownership check followed by a write by globally unique id.
+    // A foreign-Group id and a nonexistent id both affect 0 rows and are
+    // indistinguishable (plain 404, never 403).
+    if (hasChanges) {
+      const result = await prisma.player.updateMany({ where: { id, groupId }, data });
+      if (result.count !== 1) {
+        return NextResponse.json({ error: "Player not found" }, { status: 404 });
+      }
     }
 
-    // Ownership check before any mutation: a foreign-tenant id (or one
-    // that simply doesn't exist) is indistinguishable from the caller's
-    // point of view — both return a plain 404, never a 403 that would
-    // confirm "this id exists, just not yours."
-    const existing = await prisma.player.findFirst({
-      where: { id, groupId: context.activeGroup.id },
-      select: { id: true },
-    });
-    if (!existing) {
+    // Read back the Group-scoped row (never by id alone).
+    const updated = await prisma.player.findFirst({ where: { id, groupId } });
+    if (!updated) {
       return NextResponse.json({ error: "Player not found" }, { status: 404 });
     }
-
-    const { firstName, lastName, position, rating, stamina, isActive } = parsed.data;
-
-    const updated = await prisma.player.update({
-      where: { id },
-      data: { firstName, lastName, position, rating, stamina, isActive },
-    });
-
     return NextResponse.json(updated);
   } catch (e: unknown) {
-    const message = e instanceof Error ? e.message : "Failed to update player";
-    return NextResponse.json({ error: message }, { status: 400 });
+    console.error("updatePlayer failed", e);
+    return NextResponse.json({ error: "Failed to update player" }, { status: 500 });
   }
 }
 
 export async function deletePlayer(context: TenantContext, id: string): Promise<NextResponse> {
   try {
-    // Same ownership-first pattern as updatePlayer. The subsequent
-    // delete's cascade behavior (TelegramUserLink.onDelete: Cascade,
-    // see prisma/schema.prisma) is completely unchanged — this only
-    // gates *whether* the existing delete runs, not what it does.
-    const existing = await prisma.player.findFirst({
-      where: { id, groupId: context.activeGroup.id },
-      select: { id: true },
-    });
-    if (!existing) {
+    // Phase 2D.6E.6C — single Group-scoped delete: the mutation itself
+    // carries id AND the URL-resolved groupId. 0 rows (foreign or
+    // nonexistent) → 404. The cascade to TelegramUserLink (onDelete:
+    // Cascade, see prisma/schema.prisma) is unchanged.
+    const result = await prisma.player.deleteMany({ where: { id, groupId: context.activeGroup.id } });
+    if (result.count !== 1) {
       return NextResponse.json({ error: "Player not found" }, { status: 404 });
     }
-
-    await prisma.player.delete({ where: { id } });
-
     return NextResponse.json({ ok: true });
   } catch (e: unknown) {
-    const message = e instanceof Error ? e.message : "Failed to delete player";
-    return NextResponse.json({ error: message }, { status: 400 });
+    console.error("deletePlayer failed", e);
+    return NextResponse.json({ error: "Failed to delete player" }, { status: 500 });
   }
 }

@@ -79,8 +79,10 @@ export async function listTelegramPollsForContext(context: TenantContext, req: R
 
   const chatIds = Array.from(new Set(polls.map((p) => p.chatId.toString())));
 
+  // Phase 2D.6E.6C — defense in depth: chatIds already come from
+  // Group-scoped polls, but the title lookup is Group-scoped too.
   const chats = await prisma.telegramChat.findMany({
-    where: { chatId: { in: chatIds.map((id) => BigInt(id)) } },
+    where: { chatId: { in: chatIds.map((id) => BigInt(id)) }, groupId: context.activeGroup.id },
     select: { chatId: true, title: true },
   });
 
@@ -366,12 +368,13 @@ export async function linkTelegramUserForContext(context: TenantContext, req: Re
   // Because of that this can't be a single atomic tenant-aware upsert
   // — check first whether this Telegram identity is already linked
   // under a DIFFERENT Group, and refuse to silently reassign it.
+  //
+  // Phase 2D.6E.6C — the refusal is deliberately generic: it must not
+  // reveal that this Telegram identity exists or is linked in another
+  // Group (no Group/player/organization detail, no "elsewhere").
   const existingLink = await prisma.telegramUserLink.findUnique({ where: { userId } });
   if (existingLink && existingLink.groupId !== activeGroupId) {
-    return NextResponse.json(
-      { error: "This Telegram user is already linked elsewhere." },
-      { status: 409 }
-    );
+    return NextResponse.json({ error: "This Telegram user cannot be linked." }, { status: 409 });
   }
 
   await prisma.telegramUserLink.upsert({

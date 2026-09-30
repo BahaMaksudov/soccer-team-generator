@@ -97,6 +97,24 @@ describe("GET canonical telegram/polls — read isolation", () => {
     expect(chatCall.where.chatId.in).toEqual([111n]);
   });
 
+  it("chat-title lookup is ALSO scoped to the active Group (defense in depth, Phase 2D.6E.6C)", async () => {
+    mockRequireTenantContextForSlugs.mockResolvedValue(CONTEXT_A);
+    mockPollFindMany.mockResolvedValue([
+      { pollId: "p1", chatId: 111n, question: "Q", pollDate: null, isClosed: false, createdAt: new Date("2026-01-01") },
+    ]);
+    // Simulate the scoped query: a chat row owned by another Group is not returned.
+    mockChatFindMany.mockImplementation(async ({ where }: { where: { groupId?: string } }) =>
+      where.groupId === "group-a" ? [] : [{ chatId: 111n, title: "Foreign Group Chat" }]
+    );
+
+    const res = await GET(reqWithQuery(), ctx("org-a", "group-a"));
+    const json = await res.json();
+
+    expect(mockChatFindMany.mock.calls[0][0].where).toEqual({ chatId: { in: [111n] }, groupId: "group-a" });
+    expect(JSON.stringify(json)).not.toContain("Foreign Group Chat");
+    expect(json.polls[0].chatTitle).toBe("Chat 111"); // falls back, never a foreign title
+  });
+
   it("Group A and Group B requests never collide", async () => {
     mockRequireTenantContextForSlugs.mockResolvedValue(CONTEXT_A);
     await GET(reqWithQuery(), ctx("org-a", "group-a"));

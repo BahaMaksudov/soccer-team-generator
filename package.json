@@ -13,7 +13,8 @@
     "prisma:generate": "prisma generate",
     "prisma:migrate:dev": "prisma migrate dev",
     "prisma:migrate:deploy": "prisma migrate deploy",
-    "prisma:studio": "prisma studio"
+    "prisma:studio": "prisma studio",
+    "test:integration": "NODE_ENV=test vitest run --config vitest.integration.config.mts"
   },
   "dependencies": {
     "@prisma/client": "^6.19.1",

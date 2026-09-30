@@ -20,7 +20,33 @@ import type { TenantContext } from "@/lib/tenantContext";
  *
  * Tenant identity is always the caller-resolved context.activeGroup —
  * never request-body groupId/organizationId.
+ *
+ * Phase 2D.6E.6C — the submitted team contents are also validated: every
+ * player id must belong to the active Group before anything is saved.
  */
+const INVALID_PLAYERS_MESSAGE = "One or more players are invalid or unavailable.";
+
+/**
+ * Phase 2D.6E.6C — returns the player ids in a submitted Publish payload,
+ * or null when the payload can't be validated: a player without a
+ * non-empty string `id`, the same id appearing more than once (a player
+ * can't be on two teams), or no players at all. Canonical Generate
+ * always returns stable Player ids, so a legitimate Generate → Preview →
+ * Publish payload always passes this shape check.
+ */
+export function collectSubmittedPlayerIds(teams: Array<{ players: Array<Record<string, unknown>> }>): string[] | null {
+  const ids: string[] = [];
+  for (const team of teams) {
+    for (const player of team.players) {
+      const id = player.id;
+      if (typeof id !== "string" || id.trim() === "") return null;
+      ids.push(id);
+    }
+  }
+  if (ids.length === 0 || new Set(ids).size !== ids.length) return null;
+  return ids;
+}
+
 export async function publishTeamsForContext(context: TenantContext, req: Request): Promise<NextResponse> {
   const activeGroupId = context.activeGroup.id;
 
@@ -43,6 +69,22 @@ export async function publishTeamsForContext(context: TenantContext, req: Reques
       { error: "Telegram poll actions are not supported on this endpoint." },
       { status: 400 }
     );
+  }
+
+  // Phase 2D.6E.6C — every submitted player must be one of THIS Group's
+  // Players, checked BEFORE the upsert. Otherwise a caller could store
+  // (and later post) another Group's players in its own generation. The
+  // client error is generic and never says which id failed or why.
+  const playerIds = collectSubmittedPlayerIds(teams);
+  if (!playerIds) {
+    return NextResponse.json({ error: INVALID_PLAYERS_MESSAGE }, { status: 400 });
+  }
+  const owned = await prisma.player.findMany({
+    where: { groupId: activeGroupId, id: { in: playerIds } },
+    select: { id: true },
+  });
+  if (owned.length !== playerIds.length) {
+    return NextResponse.json({ error: INVALID_PLAYERS_MESSAGE }, { status: 400 });
   }
 
   const normalizedDate = toDateOnlyUTC(dateStr);

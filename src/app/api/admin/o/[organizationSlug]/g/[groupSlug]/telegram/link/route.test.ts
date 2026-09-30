@@ -108,6 +108,20 @@ describe("POST canonical telegram/link — isolation", () => {
     expect(mockLinkUpsert).not.toHaveBeenCalled();
   });
 
+  it("the foreign-Group refusal is generic: no Group/player/org metadata and no 'linked elsewhere' disclosure (Phase 2D.6E.6C)", async () => {
+    mockRequireTenantContextForSlugs.mockResolvedValue(CONTEXT_A);
+    mockPlayerFindFirst.mockResolvedValue({ id: "p1", firstName: "A", lastName: "B" });
+    mockLinkFindUnique.mockResolvedValue({ userId: 555n, playerId: "p-other-group", groupId: "group-b" });
+
+    const res = await POST(req({ userId: "555", playerId: "p1" }), ctx("org-a", "group-a"));
+    expect(res.status).toBe(409);
+    const text = await res.text();
+    expect(text).toBe(JSON.stringify({ error: "This Telegram user cannot be linked." }));
+    expect(text).not.toMatch(/elsewhere|group-b|p-other-group|org-|Group B/i);
+    // No reassignment: the existing foreign link is never touched.
+    expect(mockLinkUpsert).not.toHaveBeenCalled();
+  });
+
   it("a body groupId/organizationId cannot switch tenancy", async () => {
     mockRequireTenantContextForSlugs.mockResolvedValue(CONTEXT_A);
     mockPlayerFindFirst.mockResolvedValue({ id: "p1", firstName: "A", lastName: "B" });

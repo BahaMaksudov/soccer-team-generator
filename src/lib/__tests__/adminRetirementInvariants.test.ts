@@ -210,6 +210,33 @@ describe("Telegram delivery invariant", () => {
   });
 });
 
+describe("tenant-isolation hardening invariants (Phase 2D.6E.6C)", () => {
+  const crud = () => code.get(rel("src/lib/playerCrud.ts"))!;
+
+  it("Player PATCH/DELETE mutate only through id+groupId-scoped updateMany/deleteMany — never by id alone", () => {
+    expect(crud()).not.toMatch(/prisma\.player\.(update|delete)\(/);
+    expect(crud()).toMatch(/prisma\.player\.updateMany\(\{ where: \{ id, groupId \}/);
+    expect(crud()).toMatch(/prisma\.player\.deleteMany\(\{ where: \{ id, groupId: context\.activeGroup\.id \} \}\)/);
+  });
+
+  it("Player CRUD never returns a raw error message to the client", () => {
+    expect(crud()).not.toMatch(/error: message/);
+  });
+
+  it("the Telegram link refusal never says a user is linked elsewhere", () => {
+    expect(filesMatching(/linked elsewhere/)).toEqual([]);
+  });
+
+  it("Publish validates submitted players against the active Group before the upsert", () => {
+    const core = code.get(rel("src/lib/publishTeams.ts"))!;
+    const check = core.indexOf("prisma.player.findMany(");
+    const upsert = core.indexOf("prisma.teamGeneration.upsert(");
+    expect(check).toBeGreaterThan(-1);
+    expect(check).toBeLessThan(upsert);
+    expect(core).toContain("where: { groupId: activeGroupId, id: { in: playerIds } }");
+  });
+});
+
 describe("webhook independence", () => {
   const webhook = code.get(rel("src/app/api/telegram/webhook/route.ts"))!;
 
