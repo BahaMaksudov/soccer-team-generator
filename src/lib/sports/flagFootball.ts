@@ -1,14 +1,17 @@
 import type { SportDefinition } from "./types";
 
 /**
- * Flag Football — the initial recreational American-football option.
- * Quarterbacks are spread one per team when possible; a shortage only
- * warns. A future tackle `american_football` is a separate definition.
+ * American Football (stable internal key `flag_football`) — recreational/
+ * pickup American football with simplified roles. The key predates the
+ * label and never changes (it is stored in Group.sportKey); only the
+ * display label is "American Football". Quarterbacks are spread one per
+ * team when possible; a shortage only warns. Roles can be expanded later
+ * without changing the key.
  */
 export const flagFootball: SportDefinition = {
   key: "flag_football",
   version: 1,
-  label: "Flag Football",
+  label: "American Football",
   roles: [
     { key: "QUARTERBACK", label: "Quarterback", pluralLabel: "Quarterbacks", defaultWeight: 2 },
     { key: "RECEIVER", label: "Receiver", pluralLabel: "Receivers", defaultWeight: 2 },

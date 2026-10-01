@@ -51,7 +51,7 @@ import type { Player } from "./CanonicalAdminWorkspace";
  *
  * M7 — the goalkeeper note became sport-aware role coverage: the Group's
  * SportDefinition decides which roles are checked (soccer: goalkeepers,
- * volleyball: setters, flag football: quarterbacks, basketball: Bigs as
+ * volleyball: setters, American Football: quarterbacks, basketball: Bigs as
  * information only; Other: none) and supplies the labels.
  */
 export default function CanonicalGenerateSection({

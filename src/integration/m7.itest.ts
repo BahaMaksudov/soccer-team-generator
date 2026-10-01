@@ -221,7 +221,7 @@ describe("generation through the real routes", () => {
     expect(stringify(short.data)).not.toMatch(/GOALKEEPER/);
   });
 
-  it("flag football: QBs spread; 1 QB / 3 teams warns; ATHLETE works", async () => {
+  it("American Football (flag_football): QBs spread; 1 QB / 3 teams warns; ATHLETE works", async () => {
     const ids = await addPlayers("gff", ["QUARTERBACK", ...Array.from({ length: 11 }, (_, i) => (i % 2 ? "ATHLETE" : "RECEIVER"))]);
     const r = await generate("flag-football", ids, 3);
     expect(r.status).toBe(200);

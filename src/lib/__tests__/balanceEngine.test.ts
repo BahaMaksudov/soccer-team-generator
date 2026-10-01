@@ -125,7 +125,7 @@ describe("volleyball (setters SPREAD; shortage warns)", () => {
   });
 });
 
-describe("flag football (QB SPREAD; shortage warns)", () => {
+describe("American Football / flag_football (QB SPREAD; shortage warns)", () => {
   const s = sport("flag_football");
   it("spreads quarterbacks and warns when short; ATHLETE works", () => {
     const players = [P("QUARTERBACK", "EXCELLENT"), ...Array.from({ length: 11 }, (_, i) => P(i % 2 ? "ATHLETE" : "RECEIVER"))];

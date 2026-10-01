@@ -8,7 +8,19 @@ import { teamsContent } from "@/lib/messaging";
 describe("M7 sport registry", () => {
   it("supports exactly the five locked sports with stable keys", () => {
     expect(SPORT_KEYS).toEqual(["soccer", "basketball", "volleyball", "flag_football", "other"]);
-    expect(SPORTS.map((s) => s.label)).toEqual(["Soccer", "Basketball", "Volleyball", "Flag Football", "Other"]);
+    expect(SPORTS.map((s) => s.label)).toEqual(["Soccer", "Basketball", "Volleyball", "American Football", "Other"]);
+  });
+
+  it("American Football is a display label only: the stable key stays flag_football", () => {
+    const af = findSport("flag_football")!;
+    expect(af.key).toBe("flag_football");
+    expect(af.label).toBe("American Football");
+    expect(af.messaging.emoji).toBe("🏈");
+    expect(findSport("american_football")).toBeUndefined();
+    expect(af.roles.map((r) => [r.key, r.label])).toEqual([
+      ["QUARTERBACK", "Quarterback"], ["RECEIVER", "Receiver"], ["RUSHER_LINE", "Rusher / Line"], ["DEFENDER", "Defender"], ["ATHLETE", "Athlete / Any"],
+    ]);
+    expect(JSON.stringify(SPORTS.map((s) => s.label))).not.toMatch(/Flag Football/);
   });
 
   it("every definition is internally consistent", () => {

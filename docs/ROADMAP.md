@@ -20,7 +20,7 @@ require every future feature before launch.
 | M5.1 | Authentication Transition & Password Management | COMPLETE (legacy auth retired, `49f5a88`) |
 | M6 | Player Engagement & Messaging Foundation | COMPLETE — M6-A/B/C live and production-verified (migrations #14–#16; prod `49ebde4`, 2026-10-01) |
 | M6.1 | Telegram Identity Management (remove/disconnect a Player's Telegram link) | COMPLETE — live (prod `841853d`, 2026-10-01), no migration |
-| M7 | Multi-Sport Foundation — sport registry, sport-neutral balancing engine, Add Group (migration #17) | DEPLOYED — prod `ff29508`, migration #17 verified (2026-10-01); awaiting owner multi-sport smoke |
+| M7 | Multi-Sport Foundation — sport registry, sport-neutral balancing engine, Add Group (migration #17) | DEPLOYED — prod `ff29508`, migration #17 verified (2026-10-01); owner multi-sport smoke in progress (basketball ✔) |
 | M8 | Balance Intelligence & AI — deterministic insights first, optional LLM layer | Planned |
 | M9 | Match Experience & Player Engagement — channel-neutral match lifecycle (Telegram first), results, MVP, recap, public match page, "Share to WhatsApp" | Planned |
 | M10 | WhatsApp & Expanded Communications — GroupChannel, primary channel, WhatsApp identity, Meta Cloud API, multi-channel delivery | Planned |
@@ -231,12 +231,14 @@ them is retired).
 ## M7 — Multi-Sport Foundation (decisions as built)
 
 - **Sport registry in code** (`src/lib/sports/`): Soccer (`soccer`),
-  Basketball (`basketball`), Volleyball (`volleyball`), Flag Football
+  Basketball (`basketball`), Volleyball (`volleyball`), American Football
   (`flag_football`), Other (`other`). Each definition: roles (key, label,
   weight), default role, role rules, stamina coefficient, terminology
   (Position/Role), messaging vocabulary (emoji, game noun, result label) and
-  — for M9 only — `resultFormat` (POINTS / SETS). No sport tables. A future
-  `american_football` (tackle) is just another definition.
+  — for M9 only — `resultFormat` (POINTS / SETS). No sport tables.
+  American Football keeps the stable internal key `flag_football` (display
+  label "American Football" since the M7 follow-up; no data change); its
+  roles can be expanded later without changing the key.
 - **Group.sportKey is immutable** after creation (no update path; enforced
   by tests). Different sport → create another Group.
 - **Skill** = the existing `Rating` enum (FAIR/GOOD/VERY_GOOD/EXCELLENT),
@@ -248,7 +250,7 @@ them is retired).
 - **Roles**: `Player.position` is a sport-scoped role key (TEXT since
   migration #17; existing soccer values preserved byte-for-byte), validated
   server-side against the Group's sport. Role rules: SEED (placed first —
-  soccer goalkeeper), SPREAD (soft — basketball Big, volleyball Setter, flag
+  soccer goalkeeper), SPREAD (soft — basketball Big, volleyball Setter, American
   football QB), IGNORE. Shortages are `ROLE_SHORTAGE` warnings, never
   failures; unknown legacy roles → `UNKNOWN_ROLE` (balanced as the default
   role). Hard constraints only: ≥2 teams, ≥teamCount players, sizes ±1, no
@@ -272,6 +274,16 @@ them is retired).
   `messagingVocabulary(sportKey)`.
 - **Branding**: product wording is "Team Balance Pro" (no "Soccer Team
   Generator").
+
+### M7 production smoke (owner, manual)
+
+- **Basketball** ("Pickup basketball", `basketball`) — 2026-10-01: basketball
+  label, Role and Skill fields, stamina default 3, only basketball roles, no
+  goalkeeper behavior; Generate (2 teams, 4 selected players incl. one Big)
+  showed "Bigs: 1 across 2 teams"; Preview, Publish and the public Group page
+  worked; no Telegram message. Not yet manually verified: Big SPREAD with 2+
+  Bigs (covered by automated tests only).
+- Volleyball, American Football (`flag_football`), Other — pending.
 
 ## M8 — Balance Intelligence & AI (planned)
 
