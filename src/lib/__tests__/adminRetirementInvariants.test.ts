@@ -72,6 +72,7 @@ describe("flat operational Admin APIs are deleted", () => {
         canonical("players/[id]"),
         canonical("players/[id]/claim"), // M6-C
         canonical("players/[id]/account"), // M6-C
+        canonical("players/[id]/telegram"), // M6.1
         canonical("publish"),
         canonical("settings/balance-weights"),
         canonical("settings/team-name"),

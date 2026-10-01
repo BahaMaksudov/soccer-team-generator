@@ -14,7 +14,7 @@ import {
   telegramLinkSchema,
   zodErrorResponse,
 } from "@/lib/validation";
-import type { TenantContext } from "@/lib/tenantContext";
+import { requireRole, type TenantContext } from "@/lib/tenantContext";
 // Phase 2D.6D.5D: moved (unchanged behavior) to a shared module so the
 // canonical close-and-post core can classify Telegram rejections.
 import { callTelegram } from "@/lib/telegramApi";
@@ -325,6 +325,11 @@ export async function importTelegramPollForContext(context: TenantContext, req: 
 }
 
 export async function linkTelegramUserForContext(context: TenantContext, req: Request): Promise<NextResponse> {
+  // M6.1 — assigning/moving a Telegram identity is an organizer action:
+  // OWNER/ADMIN only, the same roles that may remove one
+  // (src/lib/telegramIdentity.ts). Throws INSUFFICIENT_ROLE → generic 404.
+  // Players connect their OWN identity through /connect instead.
+  requireRole(context, ["OWNER", "ADMIN"]);
   const activeGroupId = context.activeGroup.id;
 
   const body = await req.json().catch(() => null);

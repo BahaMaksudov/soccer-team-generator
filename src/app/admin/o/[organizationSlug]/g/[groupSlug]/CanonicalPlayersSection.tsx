@@ -12,6 +12,7 @@ import {
 } from "@/lib/canonicalAdminState";
 import CanonicalPlayerForm from "./CanonicalPlayerForm";
 import PlayerAccountCell from "./PlayerAccountCell";
+import PlayerTelegramCell from "./PlayerTelegramCell";
 import type { Player } from "./CanonicalAdminWorkspace";
 
 /**
@@ -200,6 +201,7 @@ export default function CanonicalPlayersSection({
               <th>Stamina</th>
               <th>Status</th>
               <th title="Optional Team Balance Pro account (players never need one)">Account</th>
+              <th title="Telegram connection used to match poll votes in this group">Telegram</th>
               <th></th>
             </tr>
           </thead>
@@ -237,6 +239,15 @@ export default function CanonicalPlayersSection({
                     onMessage={onMessage}
                   />
                 </td>
+                <td>
+                  <PlayerTelegramCell
+                    organizationSlug={organizationSlug}
+                    groupSlug={groupSlug}
+                    player={p}
+                    onChanged={refreshPlayers}
+                    onMessage={onMessage}
+                  />
+                </td>
                 <td className="whitespace-nowrap">
                   {confirmDeleteId === p.id ? (
                     <span className="text-xs">
@@ -263,7 +274,7 @@ export default function CanonicalPlayersSection({
             ))}
             {players.length === 0 && (
               <tr>
-                <td colSpan={8} className="py-2 text-gray-500">
+                <td colSpan={9} className="py-2 text-gray-500">
                   No players yet.
                 </td>
               </tr>

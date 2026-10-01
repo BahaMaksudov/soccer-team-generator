@@ -15,10 +15,11 @@ require every future feature before launch.
 | M4 | Tenant Security & Isolation | COMPLETE |
 | M5 | SaaS Owner Accounts & Onboarding | COMPLETE |
 | M5.1 | Authentication Transition & Password Management | COMPLETE (legacy auth retired, `49f5a88`) |
-| M6 | Player Engagement & Messaging Foundation | IN PROGRESS — M6-A/M6-B live (#14, #15); M6-C implemented (migration #16) |
+| M6 | Player Engagement & Messaging Foundation | COMPLETE — M6-A/B/C live and production-verified (migrations #14–#16; prod `49ebde4`, 2026-10-01) |
+| M6.1 | Telegram Identity Management (remove/disconnect a Player's Telegram link) | IMPLEMENTED — no migration |
 | M7 | AI Intelligence Layer | Planned |
 | M8 | Multi-Sport Architecture | Planned |
-| M9 | Match Experience & Player Engagement — scores, MVP, voting, attendance, statistics, history, leaderboards, achievements, shareable match experience | Planned |
+| M9 | Match Experience & Player Engagement — Telegram-first no-signup match lifecycle (see below), scores, MVP, voting, attendance, statistics, history, leaderboards, achievements, shareable match experience | Planned |
 | M10 | WhatsApp & Expanded Communications | Planned |
 | M11 | Plans & Billing | Planned |
 | M12 | Product UX / Analytics / Branding | Planned |
@@ -198,6 +199,69 @@ them is retired).
   view, Telegram `/connect` verification, and the `TelegramUserLink`
   per-Group uniqueness redesign. One migration.
 
+### M6.1 — Telegram identity management (decisions as built)
+- **Organizer "Remove Telegram link"** (Players table, Telegram column;
+  OWNER/ADMIN only, confirmation required):
+  `DELETE /api/admin/o/[org]/g/[group]/players/[id]/telegram`.
+- **Player "Disconnect Telegram"** on `/me` (confirmation required):
+  `DELETE /api/account/players/[playerId]/telegram` — only for a Player the
+  signed-in, verified User currently claims; the Group is taken from that
+  Player, never from the client.
+- Both delete exactly one `TelegramUserLink`, addressed by validated
+  `(playerId, groupId)` — **never by Telegram user id**, because the same
+  Telegram identity may be linked to a Player in other Groups, which stay
+  untouched. Player, `Player.userId`, claims, memberships, TeamGenerations,
+  polls, poll answers and MessageDelivery are unchanged; unused /connect
+  codes for that Player are dropped so an older code cannot re-link it.
+- Idempotent (`removed: false` when nothing was linked); serialized with
+  /connect via the same per-Player advisory lock; responses never contain
+  the Telegram user id; no Telegram API call. Wrong tenant/role → generic 404.
+- **Permissions are consistent:** organizer Telegram identity assignment
+  (link a voter / move an identity, `telegram/link`) is now OWNER/ADMIN only,
+  like removal — MEMBER, claimed Players without membership and other
+  Organizations get the generic 404. Player self-service (`/connect`,
+  Disconnect) depends only on owning the claimed Player, never on a role.
+- Afterwards the voter shows as unlinked in that Group's imports and
+  "unlinked voters" list until linked again (organizer voter linking or
+  the player's /connect). No schema change.
+
+## M9 requirement — Telegram-first, no-signup match lifecycle (confirmed 2026-10-01)
+
+Telegram is a first-class player interface. A Player who never creates a
+Team Balance Pro account must be able to follow the whole game lifecycle:
+
+```text
+Attendance poll
+→ teams generated/published
+→ Telegram team assignment
+→ game played
+→ organizer records final score
+→ organizer explicitly publishes result
+→ Telegram final-score announcement
+→ MVP voting
+→ MVP result/announcement
+→ public match page
+```
+
+Future possibilities (not committed): player stats, leaderboards, streaks,
+achievements, match history.
+
+Rules:
+1. A Player account is NOT required for the Telegram lifecycle.
+2. Telegram MVP participation uses the existing Group-scoped Telegram
+   identity (`TelegramUserLink`) where possible.
+3. Saving/editing a score must NOT automatically send Telegram messages.
+4. Telegram result publication requires an explicit organizer action.
+5. MVP opening/closing/announcement are explicit organizer-controlled
+   lifecycle actions unless a scheduled setting is deliberately introduced
+   later.
+6. Outbound result/MVP events reuse the durable M6-B delivery architecture
+   (`MessageDelivery`: claim-before-send, idempotent, recoverable).
+7. Public match pages use player-facing allow-lists and never expose rating,
+   stamina, internal ids, Telegram ids, emails or admin-only data.
+8. Registered/claimed Players may later get richer `/me` history, but signup
+   remains optional.
+
 ## Future (captured, not scheduled in M6)
 
 Scores, match results, MVP and MVP voting, goals/sport-specific stats,
@@ -210,9 +274,6 @@ posts.
 - Secure TelegramChat registration.
 - Drop the legacy TelegramPoll posting columns after M6-B bake-in.
 - Telegram 4096-character message handling.
-- Organizer "unlink Telegram identity" action (players can re-connect via
-  /connect; organizers can move an identity to another Player).
-- Configure `TELEGRAM_BOT_USERNAME` to enable the one-tap t.me deep link.
 - Drop the unused legacy `Player.telegram*` columns.
 - Upstash rate limiting not configured; password reset; multi-session
   revocation (M13).

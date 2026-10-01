@@ -127,6 +127,20 @@ describe("POST canonical telegram/link — Group-scoped identity (M6-C)", () => 
     expect(links).toEqual([]);
   });
 
+  it("M6.1: ADMIN may link; MEMBER is refused with the generic 404 before any lookup or mutation", async () => {
+    mockRequireTenantContextForSlugs.mockResolvedValueOnce({ ...CONTEXT_A, membership: { id: "m2", role: "ADMIN" } });
+    expect((await POST(req({ userId: "555", playerId: "p1" }), ctx("org-a", "group-a"))).status).toBe(200);
+    links = [{ id: "la", userId: 555n, playerId: "p1", groupId: "group-a" }];
+    vi.clearAllMocks();
+    mockRequireTenantContextForSlugs.mockResolvedValueOnce({ ...CONTEXT_A, membership: { id: "m3", role: "MEMBER" } });
+    const res = await POST(req({ userId: "555", playerId: "p2" }), ctx("org-a", "group-a")); // a move attempt
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: "NOT_FOUND" });
+    expect(mockPlayerFindFirst).not.toHaveBeenCalled();
+    expect(tx.telegramUserLink.findUnique).not.toHaveBeenCalled();
+    expect(links).toEqual([{ id: "la", userId: 555n, playerId: "p1", groupId: "group-a" }]);
+  });
+
   it("never calls the Telegram Bot API (no fetch)", async () => {
     await POST(req({ userId: "555", playerId: "p1" }), ctx("org-a", "group-a"));
     expect(fetchSpy).not.toHaveBeenCalled();
