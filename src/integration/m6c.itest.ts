@@ -161,9 +161,18 @@ afterAll(async () => {
 // =================================================================== claims
 describe("Player claim links", () => {
   it("OWNER issues a link: hash-only storage, 7-day expiry, raw token returned once", async () => {
+    vi.stubEnv("APP_BASE_URL", "https://teambalancepro.test");
     const { res, data, token } = await issueClaim();
     expect(res.status).toBe(201);
     expect(data.claimPath).toMatch(/^\/claim#[A-Za-z0-9_-]{43}$/);
+    // Copyable absolute URL on the canonical origin (fragment design kept).
+    expect(data.claimUrl).toBe(`https://teambalancepro.test/claim#${token}`);
+    expect(res.headers.get("cache-control")).toBe("no-store");
+    // The normal Player-list API never carries the token.
+    await signInAs("owner-a@example.test");
+    const list = await (await playersRoute.GET(json("GET"), g(A))).text();
+    expect(list).not.toContain(token);
+    expect(list).not.toContain("/claim#");
     const rows = await prisma.playerClaim.findMany();
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({ playerId: "ga-p1", groupId: "ga", tokenHash: hashToken(token), usedAt: null, revokedAt: null });

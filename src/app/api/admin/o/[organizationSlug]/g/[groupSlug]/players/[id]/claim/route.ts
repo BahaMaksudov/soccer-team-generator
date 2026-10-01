@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { requireTenantContextForSlugs } from "@/lib/tenantContext";
 import { canonicalTenantErrorResponse, requireJsonRequest } from "@/lib/tenantRoute";
 import { claimLinkPath, createPlayerClaim, revokePlayerClaims } from "@/lib/playerClaims";
+import { appUrl } from "@/lib/email/config";
 
 /**
  * M6-C — canonical, URL-bound Player claim links (OWNER/ADMIN).
@@ -23,8 +24,17 @@ export async function POST(req: Request, { params }: { params: Params }) {
         ? NextResponse.json({ error: "Player not found" }, { status: 404 })
         : NextResponse.json({ error: "This player is already claimed by an account." }, { status: 409 });
     }
+    const claimPath = claimLinkPath(result.token);
+    // Absolute, copyable URL on the canonical APP_BASE_URL (null if not configured;
+    // the UI then falls back to its own origin).
+    let claimUrl: string | null = null;
+    try {
+      claimUrl = appUrl(claimPath);
+    } catch {
+      claimUrl = null;
+    }
     return NextResponse.json(
-      { ok: true, claimPath: claimLinkPath(result.token), expiresAt: result.expiresAt },
+      { ok: true, claimPath, claimUrl, expiresAt: result.expiresAt },
       { status: 201, headers: { "Cache-Control": "no-store" } }
     );
   } catch (e) {

@@ -63,6 +63,17 @@ export default function CanonicalPlayersSection({
   const [createFormKey, setCreateFormKey] = useState(0);
   const [editing, setEditing] = useState<Player | null>(null);
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
+  // M6-C fix — one-time claim URLs, by Player id, in transient memory only
+  // (never storage). Owned here, not by the row, so refreshing the list
+  // after creating a link can never discard it.
+  const [oneTimeClaimLinks, setOneTimeClaimLinks] = useState<Record<string, string>>({});
+  const rememberClaimLink = (playerId: string, url: string) => setOneTimeClaimLinks((prev) => ({ ...prev, [playerId]: url }));
+  const forgetClaimLink = (playerId: string) =>
+    setOneTimeClaimLinks((prev) => {
+      const next = { ...prev };
+      delete next[playerId];
+      return next;
+    });
 
   async function createPlayer(values: PlayerFormValues): Promise<string | null> {
     onMessage(null);
@@ -163,7 +174,9 @@ export default function CanonicalPlayersSection({
         </div>
       )}
 
-      {loading ? (
+      {/* Only the very first load shows "Loading…": a background refresh must
+          keep the table (and its one-time claim links) mounted. */}
+      {loading && players.length === 0 ? (
         <div className="text-sm text-gray-500">Loading…</div>
       ) : (
         <table className="w-full text-sm">
@@ -217,6 +230,9 @@ export default function CanonicalPlayersSection({
                     organizationSlug={organizationSlug}
                     groupSlug={groupSlug}
                     player={p}
+                    oneTimeLink={oneTimeClaimLinks[p.id] ?? null}
+                    onLinkCreated={rememberClaimLink}
+                    onLinkCleared={forgetClaimLink}
                     onChanged={refreshPlayers}
                     onMessage={onMessage}
                   />

@@ -174,3 +174,20 @@ describe("M6-C — claim / connect invariants", () => {
     }
   });
 });
+
+describe("M6-C fix — one-time claim link stays transient", () => {
+  const D = "src/app/admin/o/[organizationSlug]/g/[groupSlug]";
+  it("claim link UI never touches browser storage or the URL", () => {
+    for (const f of [`${D}/PlayerAccountCell.tsx`, `${D}/CanonicalPlayersSection.tsx`, "src/lib/claimLinkUi.ts"]) {
+      expect(stripComments(read(f)), f).not.toMatch(/localStorage|sessionStorage|history\.(push|replace)State|location\.(href|assign|replace)\s*=/);
+    }
+  });
+  it("the row does not own the one-time link (the Players section does), and refreshes keep rows mounted", () => {
+    const cell = stripComments(read(`${D}/PlayerAccountCell.tsx`));
+    expect(cell).not.toMatch(/useState<string \| null>\(null\)/);
+    expect(cell).toContain("oneTimeLink");
+    const section = stripComments(read(`${D}/CanonicalPlayersSection.tsx`));
+    expect(section).toContain("oneTimeClaimLinks");
+    expect(section).toContain("loading && players.length === 0");
+  });
+});
