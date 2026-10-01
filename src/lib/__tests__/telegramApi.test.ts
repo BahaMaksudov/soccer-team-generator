@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { callTelegram, TelegramApiRejectionError } from "@/lib/telegramApi";
+import { callTelegram, TelegramAmbiguousError, TelegramApiRejectionError } from "@/lib/telegramApi";
 
 const originalFetch = global.fetch;
 
@@ -35,7 +35,8 @@ describe("callTelegram error classification", () => {
       throw new SyntaxError("bad json");
     });
     const err = await callTelegram("sendMessage", {}).catch((e) => e);
-    expect(err).toBeInstanceOf(Error);
+    expect(err).toBeInstanceOf(TelegramAmbiguousError);
+    expect(err.reason).toBe("unreadable");
     expect(err).not.toBeInstanceOf(TelegramApiRejectionError);
   });
 
@@ -48,8 +49,28 @@ describe("callTelegram error classification", () => {
   it("network failure → ambiguous, not a rejection", async () => {
     global.fetch = vi.fn().mockRejectedValue(new TypeError("fetch failed")) as unknown as typeof fetch;
     const err = await callTelegram("sendMessage", {}).catch((e) => e);
-    expect(err).toBeInstanceOf(TypeError);
+    expect(err).toBeInstanceOf(TelegramAmbiguousError);
+    expect(err.reason).toBe("network");
     expect(err).not.toBeInstanceOf(TelegramApiRejectionError);
+  });
+
+  it("M6-B: a request that exceeds the timeout → ambiguous 'timeout' (never a rejection, never retried)", async () => {
+    const fetchMock = vi.fn(
+      (_url: string, init?: RequestInit) =>
+        new Promise((_resolve, reject) => init?.signal?.addEventListener("abort", () => reject(init.signal!.reason)))
+    );
+    global.fetch = fetchMock as unknown as typeof fetch;
+    const err = await callTelegram("sendMessage", {}, { timeoutMs: 20 }).catch((e) => e);
+    expect(err).toBeInstanceOf(TelegramAmbiguousError);
+    expect(err.reason).toBe("timeout");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("M6-B: every call carries an abort signal (bounded wait)", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ json: async () => ({ ok: true, result: 1 }) });
+    global.fetch = fetchMock as unknown as typeof fetch;
+    await callTelegram("stopPoll", {});
+    expect((fetchMock.mock.calls[0][1] as RequestInit).signal).toBeInstanceOf(AbortSignal);
   });
 
   it("missing token throws before any fetch", async () => {

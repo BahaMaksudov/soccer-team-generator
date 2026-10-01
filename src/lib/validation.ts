@@ -120,6 +120,20 @@ export const telegramImportSchema = z.object({
 export const telegramCloseAndPostSchema = z.object({
   pollId: z.string().trim().min(1, "pollId is required"),
   teamGenerationId: z.string().trim().min(1, "teamGenerationId is required"),
+  // M6-B — explicit organizer intent; never inferred from client state.
+  //   post             first post, or retry after a definite failure
+  //   post_updated     send ANOTHER message because the teams changed
+  //   retry_uncertain  re-send after the organizer checked the chat
+  intent: z.enum(["post", "post_updated", "retry_uncertain"]).default("post"),
+  deliveryId: z.string().trim().min(1).max(100).optional(),
+  // M6-B — LINK Groups only: an active share link of THIS Group to include.
+  // Validated against the stored hash; never stored or logged.
+  shareUrl: z.string().trim().max(300).optional(),
+});
+
+export const telegramDeliveryActionSchema = z.object({
+  action: z.literal("mark_sent"),
+  deliveryId: z.string().trim().min(1).max(100),
 });
 
 /**

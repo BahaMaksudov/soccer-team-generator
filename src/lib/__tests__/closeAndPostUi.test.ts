@@ -76,9 +76,10 @@ describe("describeCloseAndPostResult", () => {
   it.each([
     ["posted", true, "success"],
     ["already_posted", true, "success"],
-    ["already_posted_different_generation", false, "error"],
+    ["updated_available", false, "warning"],
+    ["delivery_uncertain", false, "warning"],
+    ["marked_sent", true, "success"],
     ["post_in_progress_or_unknown", false, "warning"],
-    ["claim_conflict", false, "warning"],
     ["telegram_rejected", false, "error"],
     ["delivery_unknown", false, "warning"],
     ["delivered_confirmation_failed", false, "warning"],
@@ -104,5 +105,35 @@ describe("describeCloseAndPostResult", () => {
       tone: "error",
       message: "Poll not found",
     });
+  });
+});
+
+import { deliveryActions, deliveryStatusLabel, intentForAction } from "@/lib/closeAndPostUi";
+
+describe("M6-B delivery actions — only actions safe for the state are offered", () => {
+  it.each([
+    ["not_posted", ["post"]],
+    ["failed", ["retry_failed"]],
+    ["updated_available", ["post_updated"]],
+    ["uncertain", ["mark_sent", "retry_uncertain"]],
+    ["posted", []],
+    ["sending", []],
+    [null, []],
+  ] as const)("%s → %j", (state, actions) => {
+    expect(deliveryActions(state)).toEqual(actions);
+  });
+
+  it("maps actions to explicit server intents (mark_sent is not a send)", () => {
+    expect(intentForAction("post")).toBe("post");
+    expect(intentForAction("retry_failed")).toBe("post");
+    expect(intentForAction("post_updated")).toBe("post_updated");
+    expect(intentForAction("retry_uncertain")).toBe("retry_uncertain");
+    expect(intentForAction("mark_sent")).toBeNull();
+  });
+
+  it("labels every state", () => {
+    for (const s of ["not_posted", "sending", "posted", "failed", "uncertain", "updated_available"] as const) {
+      expect(deliveryStatusLabel(s).length).toBeGreaterThan(0);
+    }
   });
 });

@@ -35,15 +35,47 @@ export class TelegramApiRejectionError extends Error {
   }
 }
 
-export async function callTelegram(method: string, body: unknown) {
+/**
+ * M6-B — outcome unknown: the request may or may not have been performed
+ * by Telegram (timeout, network/transport failure, unreadable reply).
+ * Callers must never treat this as "definitely not delivered".
+ */
+export class TelegramAmbiguousError extends Error {
+  readonly method: string;
+  readonly reason: "timeout" | "network" | "unreadable";
+  constructor(method: string, reason: "timeout" | "network" | "unreadable") {
+    super(
+      reason === "timeout"
+        ? "Telegram did not respond in time"
+        : reason === "network"
+          ? "Could not reach Telegram"
+          : "Telegram API error"
+    );
+    this.name = "TelegramAmbiguousError";
+    this.method = method;
+    this.reason = reason;
+  }
+}
+
+/** M6-B — bounded wait for every Bot API call (never retried automatically). */
+export const TELEGRAM_TIMEOUT_MS = 8000;
+
+export async function callTelegram(method: string, body: unknown, options: { timeoutMs?: number } = {}) {
   const token = process.env.TELEGRAM_BOT_TOKEN;
   if (!token) throw new Error("Missing TELEGRAM_BOT_TOKEN");
 
-  const res = await fetch(`https://api.telegram.org/bot${token}/${method}`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
+  let res: Response;
+  try {
+    res = await fetch(`https://api.telegram.org/bot${token}/${method}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(options.timeoutMs ?? TELEGRAM_TIMEOUT_MS),
+    });
+  } catch (e) {
+    const timedOut = e instanceof Error && (e.name === "TimeoutError" || e.name === "AbortError");
+    throw new TelegramAmbiguousError(method, timedOut ? "timeout" : "network");
+  }
 
   const data = await res.json().catch(() => null);
   if (data?.ok) {
@@ -56,6 +88,5 @@ export async function callTelegram(method: string, body: unknown) {
       typeof data.error_code === "number" ? data.error_code : null
     );
   }
-  // Unparseable / unexpected shape: we cannot tell what Telegram did.
-  throw new Error(data?.description || "Telegram API error");
+  throw new TelegramAmbiguousError(method, "unreadable");
 }

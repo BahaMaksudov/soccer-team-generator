@@ -54,6 +54,30 @@ enum GroupVisibility {
   PUBLIC
 }
 
+// M6-B — durable delivery of a core business event to an external
+// channel. Only TELEGRAM/TEAMS_PUBLISHED are used today; WHATSAPP/EMAIL and
+// further events are added by extending these enums.
+enum MessageChannel {
+  TELEGRAM
+}
+
+enum MessageEventType {
+  TEAMS_PUBLISHED
+}
+
+//   SENDING   — reserved before the external send (one at a time per poll).
+//   SENT      — the channel accepted it (or an organizer confirmed it).
+//   FAILED    — the channel definitively rejected it; safe to retry.
+//   UNCERTAIN — outcome unknown (timeout/network/unreadable reply, or a
+//               SENDING reservation that never finished); NEVER retried
+//               automatically — an organizer marks it sent or retries.
+enum MessageDeliveryStatus {
+  SENDING
+  SENT
+  FAILED
+  UNCERTAIN
+}
+
 enum OrgRole {
   OWNER
   ADMIN
@@ -77,6 +101,8 @@ model User {
   // M6-A — optional claimed Player profiles (none yet; claim flow is M6-C).
   players                 Player[]
   shareLinksCreated       GroupShareLink[]
+  deliveriesCreated       MessageDelivery[]        @relation("DeliveryCreatedBy")
+  deliveriesResolved      MessageDelivery[]        @relation("DeliveryResolvedBy")
 
   // M5 — invitations this User created / accepted (audit trail only;
   // never an authorization source — OrganizationMembership is).
@@ -182,6 +208,7 @@ model Group {
   telegramPolls   TelegramPoll[]
   telegramLinks   TelegramUserLink[]
   shareLinks      GroupShareLink[]
+  deliveries      MessageDelivery[]
 
   @@unique([organizationId, slug])
 }
@@ -196,6 +223,52 @@ model GroupSetting {
   group Group @relation(fields: [groupId], references: [id], onDelete: Cascade)
 
   @@unique([groupId, key])
+}
+
+// M6-B — one delivery of a core event (TEAMS_PUBLISHED) to a channel
+// destination (a Telegram chat). Holds delivery state only; the business
+// content stays in TeamGeneration. `contentHash` = SHA-256 of the
+// delivered message body without any link ("legacy" for rows copied from
+// the pre-M6-B TelegramPoll posting columns). No raw provider responses,
+// share tokens or URLs are stored.
+model MessageDelivery {
+  id                String                @id @default(cuid())
+  groupId           String
+  eventType         MessageEventType
+  channel           MessageChannel
+  // Channel address; for TELEGRAM the chat id.
+  destination       String
+  // Context: the Telegram poll these teams answer, and the published teams.
+  telegramPollId    String?
+  teamGenerationId  String?
+  contentHash       String
+  status            MessageDeliveryStatus
+  attempts          Int                   @default(1)
+  claimedAt         DateTime
+  sentAt            DateTime?
+  failedAt          DateTime?
+  providerMessageId String?
+  // Safe category (TELEGRAM_REJECTED, TIMEOUT, NETWORK, UNREADABLE_RESPONSE,
+  // STALE_RESERVATION) and a short, truncated provider description.
+  failureCode       String?
+  failureDetail     String?
+  // MARKED_SENT when an organizer confirmed an uncertain delivery.
+  resolution        String?
+  resolvedAt        DateTime?
+  resolvedByUserId  String?
+  createdByUserId   String?
+  createdAt         DateTime              @default(now())
+  updatedAt         DateTime              @updatedAt
+
+  group          Group           @relation(fields: [groupId], references: [id], onDelete: Restrict)
+  telegramPoll   TelegramPoll?   @relation(fields: [telegramPollId], references: [pollId], onDelete: SetNull)
+  teamGeneration TeamGeneration? @relation(fields: [teamGenerationId], references: [id], onDelete: SetNull)
+  createdBy      User?           @relation("DeliveryCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
+  resolvedBy     User?           @relation("DeliveryResolvedBy", fields: [resolvedByUserId], references: [id], onDelete: SetNull)
+
+  @@index([groupId])
+  @@index([telegramPollId, channel])
+  @@index([teamGenerationId])
 }
 
 // M6-A — revocable viewer access to one Group's player-facing pages
@@ -272,6 +345,8 @@ model TeamGeneration {
   groupId String
   group   Group  @relation(fields: [groupId], references: [id], onDelete: Restrict)
 
+  deliveries MessageDelivery[]
+
   @@unique([groupId, date])
 }
 
@@ -314,6 +389,8 @@ model TelegramPoll {
   // archive its tenant data first.
   groupId String
   group   Group  @relation(fields: [groupId], references: [id], onDelete: Restrict)
+
+  deliveries MessageDelivery[]
 }
 
 model TelegramPollAnswer {

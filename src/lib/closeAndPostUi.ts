@@ -79,19 +79,24 @@ export function describeCloseAndPostResult(httpOk: boolean, data: unknown): Clos
       return { tone: "success", message: withClose("✅ Teams posted to Telegram.") };
     case "already_posted":
       return { tone: "success", message: withClose("✅ These teams were already posted to Telegram. Nothing was sent again.") };
-    case "already_posted_different_generation":
+    case "updated_available":
       return {
-        tone: "error",
-        message: "Different teams were already posted for this poll. Nothing was sent.",
+        tone: "warning",
+        message: "Different teams were already posted for this poll. Nothing was sent. Use “Post Updated Teams” to send another message.",
       };
+    case "delivery_uncertain":
+      return {
+        tone: "warning",
+        message: "⚠️ Delivery status uncertain. Check the Telegram chat, then choose “Mark as sent” or “Retry send”.",
+      };
+    case "marked_sent":
+      return { tone: "success", message: "✅ Marked as sent. Nothing was sent again." };
     case "post_in_progress_or_unknown":
       return {
         tone: "warning",
         message:
           "⚠️ A previous post for this poll may already have reached Telegram. Check the chat — do not retry automatically.",
       };
-    case "claim_conflict":
-      return { tone: "warning", message: "The poll's posting state changed during the request. Nothing was sent. Reload and check." };
     case "telegram_rejected":
       return { tone: "error", message: withClose(serverError || "Telegram rejected the teams message. Nothing was posted.") };
     case "delivery_unknown":
@@ -114,4 +119,54 @@ export function describeCloseAndPostResult(httpOk: boolean, data: unknown): Clos
         message: serverError || (httpOk ? "Done." : "Failed to close poll and post teams."),
       };
   }
+}
+
+/**
+ * M6-B — delivery state (from GET telegram/delivery) → what the organizer
+ * may safely do. Only actions valid for the state are offered.
+ */
+export type TeamsDeliveryState = "not_posted" | "sending" | "posted" | "failed" | "uncertain" | "updated_available";
+
+export type DeliveryAction = "post" | "retry_failed" | "post_updated" | "mark_sent" | "retry_uncertain";
+
+export function deliveryStatusLabel(state: TeamsDeliveryState | null): string {
+  switch (state) {
+    case "not_posted":
+      return "Not posted";
+    case "sending":
+      return "Sending…";
+    case "posted":
+      return "Posted";
+    case "failed":
+      return "Failed — Telegram rejected the message";
+    case "uncertain":
+      return "Uncertain — check the Telegram chat";
+    case "updated_available":
+      return "Updated teams available — the posted teams differ from the published ones";
+    default:
+      return "";
+  }
+}
+
+export function deliveryActions(state: TeamsDeliveryState | null): DeliveryAction[] {
+  switch (state) {
+    case "not_posted":
+      return ["post"];
+    case "failed":
+      return ["retry_failed"];
+    case "updated_available":
+      return ["post_updated"];
+    case "uncertain":
+      return ["mark_sent", "retry_uncertain"];
+    default:
+      return [];
+  }
+}
+
+/** close-and-post request intent for an action (mark_sent uses the delivery endpoint). */
+export function intentForAction(action: DeliveryAction): "post" | "post_updated" | "retry_uncertain" | null {
+  if (action === "post" || action === "retry_failed") return "post";
+  if (action === "post_updated") return "post_updated";
+  if (action === "retry_uncertain") return "retry_uncertain";
+  return null;
 }

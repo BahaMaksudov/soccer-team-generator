@@ -362,6 +362,8 @@ describe("Phase 2D.7 — PostgreSQL enforces groupId NOT NULL on every tenant-ow
       // M6-A: share links are viewer-access records, not tenant history;
       // they go with their Group (which RESTRICT above already protects).
       GroupShareLink_groupId_fkey: "c/c",
+      // M6-B: delivery history is tenant data — protected like the M4 tables.
+      MessageDelivery_groupId_fkey: "r/c",
     });
   });
 

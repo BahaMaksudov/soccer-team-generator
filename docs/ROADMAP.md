@@ -15,7 +15,7 @@ require every future feature before launch.
 | M4 | Tenant Security & Isolation | COMPLETE |
 | M5 | SaaS Owner Accounts & Onboarding | COMPLETE |
 | M5.1 | Authentication Transition & Password Management | COMPLETE (legacy auth retired, `49f5a88`) |
-| M6 | Player Engagement & Messaging Foundation | IN PROGRESS — M6-A + messaging foundation implemented (migration #14) |
+| M6 | Player Engagement & Messaging Foundation | IN PROGRESS — M6-A live (migration #14); M6-B implemented (migration #15) |
 | M7 | AI Intelligence Layer | Planned |
 | M8 | Multi-Sport Architecture | Planned |
 | M9 | Match Experience & Player Engagement — scores, MVP, voting, attendance, statistics, history, leaderboards, achievements, shareable match experience | Planned |
@@ -133,6 +133,29 @@ columns predate `TelegramUserLink` and are unused by the canonical flow.
   the Telegram teams post (renderer + URL rules are ready; Close/Post
   output is unchanged), and the webhook's own poll command.
 
+### M6-B — implemented (decisions as built)
+- `MessageDelivery` (migration #15): one row per delivery of a core event
+  (TEAMS_PUBLISHED) to a channel destination (TELEGRAM chat), bound to the
+  Group (RESTRICT), with status SENDING / SENT / FAILED / UNCERTAIN,
+  attempts, timestamps, provider message id and a safe failure code.
+  Content stays in TeamGeneration; `contentHash` = SHA-256 of the message
+  body (no link).
+- Guarantees: per-poll advisory lock around decide + reserve (no double
+  send from concurrent clicks); FAILED (definite rejection) is retryable;
+  timeouts/network/unreadable replies and stale SENDING (> 2 min) are
+  UNCERTAIN and never auto-retried — the organizer marks them sent or
+  explicitly retries (which may duplicate: Telegram has no idempotency
+  key). Telegram calls time out after 8 s.
+- "Post Updated Teams": only when the published content differs from the
+  last SENT content, and only with explicit intent.
+- Legacy: migration copies POSTED → SENT and SENDING → UNCERTAIN; code
+  dual-reads the old TelegramPoll columns and still writes them on
+  success (rollback-safe). The old columns are dropped only after bake-in.
+- Links: PUBLIC → canonical Group URL automatically; LINK → only an
+  organizer-supplied ACTIVE share link of the same Group (hash-checked,
+  never stored); PRIVATE → none.
+- Close poll and deliver teams are separate steps behind the one button.
+
 - **M6-A — Identity & visibility foundation:** `Player.userId` (nullable,
   unused by UI except organizer unlink), `Group.visibility` + share links,
   player-facing allow-list DTOs, visibility enforcement on `/g` pages,
@@ -156,12 +179,10 @@ posts.
 
 - Secure TelegramChat registration.
 - TelegramUserLink multi-group identity redesign (M6-C).
-- Stuck `teamsPostStatus=SENDING` recovery (M6-B).
-- Repost revised teams after POSTED (M6-B).
+- Drop the legacy TelegramPoll posting columns after M6-B bake-in.
 - Telegram 4096-character message handling.
 - Linking a Player already linked to another Telegram account fails with
   a generic error (unique `playerId`) instead of a clear message.
-- `callTelegram` has no request timeout.
 - Upstash rate limiting not configured; password reset; multi-session
   revocation (M13).
 - Stale pre-2D.7 ops scripts (outside the repo; do not use).

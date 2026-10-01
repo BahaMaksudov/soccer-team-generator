@@ -78,6 +78,7 @@ describe("flat operational Admin APIs are deleted", () => {
         canonical("telegram/chats"),
         canonical("telegram/close-and-post"),
         canonical("telegram/create-poll"),
+        canonical("telegram/delivery"), // M6-B
         canonical("telegram/import"),
         canonical("telegram/link"),
         canonical("telegram/polls"),

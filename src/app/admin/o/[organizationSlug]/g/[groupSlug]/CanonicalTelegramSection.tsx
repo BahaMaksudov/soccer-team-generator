@@ -5,9 +5,14 @@ import { adminTenantApiPath } from "@/lib/adminTenantApi";
 import { formatMDYYFromISO } from "@/lib/telegramFormat";
 import {
   canCloseAndPost,
+  deliveryActions,
+  deliveryStatusLabel,
   describeCloseAndPostResult,
+  intentForAction,
   type CloseAndPostOutcome,
+  type DeliveryAction,
   type PublishedGeneration,
+  type TeamsDeliveryState,
 } from "@/lib/closeAndPostUi";
 import { generateDateFromImportedPoll } from "@/lib/canonicalAdminState";
 import type { ImportedPollResult, Player } from "./CanonicalAdminWorkspace";
@@ -92,6 +97,7 @@ export default function CanonicalTelegramSection({
   const importUrl = adminTenantApiPath({ organizationSlug, groupSlug, path: "/telegram/import" });
   const linkUrl = adminTenantApiPath({ organizationSlug, groupSlug, path: "/telegram/link" });
   const closeAndPostUrl = adminTenantApiPath({ organizationSlug, groupSlug, path: "/telegram/close-and-post" });
+  const deliveryUrl = adminTenantApiPath({ organizationSlug, groupSlug, path: "/telegram/delivery" });
 
   function pollsUrl(includeClosed: boolean) {
     return adminTenantApiPath({
@@ -279,15 +285,67 @@ export default function CanonicalTelegramSection({
     running: closingAndPosting,
   });
 
-  async function closePollAndPostTeams() {
+  // M6-B — durable delivery status for (selected poll, published teams).
+  const [delivery, setDelivery] = useState<{
+    state: TeamsDeliveryState;
+    deliveryId: string | null;
+    visibility: "PUBLIC" | "LINK" | "PRIVATE";
+  } | null>(null);
+  const [shareUrl, setShareUrl] = useState("");
+
+  async function loadDelivery() {
+    if (!publishedGeneration || !closePostPoll || closePostPoll.persistedPollDate !== publishedGeneration.date) {
+      setDelivery(null);
+      return;
+    }
+    const qs = new URLSearchParams({ pollId: closePostPoll.pollId, teamGenerationId: publishedGeneration.id });
+    const res = await fetch(`${deliveryUrl}?${qs.toString()}`, { cache: "no-store" }).catch(() => null);
+    const data = res && res.ok ? await res.json().catch(() => null) : null;
+    setDelivery(data && typeof data.state === "string" ? data : null);
+  }
+  useEffect(() => {
+    loadDelivery();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [closePostPoll?.pollId, closePostPoll?.persistedPollDate, publishedGeneration?.id, publishedGeneration?.date]);
+
+  const actions = closePostEnabled ? (delivery ? deliveryActions(delivery.state) : (["post"] as DeliveryAction[])) : [];
+
+  async function markAsSent() {
+    if (!delivery?.deliveryId || closingAndPosting) return;
+    setClosingAndPosting(true);
+    setClosePostResult(null);
+    try {
+      const res = await fetch(deliveryUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "mark_sent", deliveryId: delivery.deliveryId }),
+      });
+      const data = await res.json().catch(() => null);
+      setClosePostResult(describeCloseAndPostResult(res.ok, data));
+    } catch {
+      setClosePostResult({ tone: "error", message: "Could not reach the server. Nothing was changed." });
+    } finally {
+      setClosingAndPosting(false);
+      await loadDelivery();
+    }
+  }
+
+  async function closePollAndPostTeams(action: DeliveryAction = "post") {
     if (!publishedGeneration || !closePostPoll || closingAndPosting) return;
+    const intent = intentForAction(action);
+    if (!intent) return;
     setClosingAndPosting(true);
     setClosePostResult(null);
     try {
       const res = await fetch(closeAndPostUrl, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ pollId: closePostPoll.pollId, teamGenerationId: publishedGeneration.id }),
+        body: JSON.stringify({
+          pollId: closePostPoll.pollId, teamGenerationId: publishedGeneration.id,
+          intent,
+          ...(intent === "retry_uncertain" && delivery?.deliveryId ? { deliveryId: delivery.deliveryId } : {}),
+          ...(delivery?.visibility === "LINK" && shareUrl.trim() ? { shareUrl: shareUrl.trim() } : {}),
+        }),
       });
       const data = await res.json().catch(() => null);
       setClosePostResult(describeCloseAndPostResult(res.ok, data));
@@ -301,6 +359,7 @@ export default function CanonicalTelegramSection({
     } finally {
       setClosingAndPosting(false);
       await loadPolls();
+      await loadDelivery();
     }
   }
 
@@ -499,11 +558,57 @@ export default function CanonicalTelegramSection({
             </div>
             <button
               className="bg-amber-600 text-white rounded-md py-2 px-3 disabled:opacity-60"
-              onClick={closePollAndPostTeams}
-              disabled={!closePostEnabled}
+              onClick={() => closePollAndPostTeams(actions.includes("retry_failed") ? "retry_failed" : "post")}
+              disabled={!closePostEnabled || !(actions.includes("post") || actions.includes("retry_failed"))}
             >
-              {closingAndPosting ? "Closing & posting…" : "Close Poll & Post Teams to Telegram"}
+              {closingAndPosting
+                ? "Closing & posting…"
+                : actions.includes("retry_failed")
+                  ? "Retry: Close Poll & Post Teams"
+                  : "Close Poll & Post Teams to Telegram"}
             </button>
+          </div>
+        )}
+
+        {closePostEnabled && delivery && (
+          <div className="space-y-2 text-sm">
+            <div>
+              Telegram status: <span className="font-medium">{deliveryStatusLabel(delivery.state)}</span>
+            </div>
+            {delivery.visibility === "LINK" && (actions.includes("post") || actions.includes("retry_failed") || actions.includes("post_updated") || actions.includes("retry_uncertain")) && (
+              <div>
+                <label className="block text-xs text-gray-600 mb-1" htmlFor="shareUrl">
+                  Share link to include (optional — paste the group&apos;s current share link)
+                </label>
+                <input id="shareUrl" className="border rounded-md px-3 py-1.5 w-full" value={shareUrl}
+                  onChange={(e) => setShareUrl(e.target.value)} placeholder="https://…/share#…" autoComplete="off" />
+              </div>
+            )}
+            {actions.includes("post_updated") && (
+              <div className="space-y-1">
+                <div className="text-xs text-gray-600">This sends ANOTHER message with the updated teams to the Telegram chat.</div>
+                <button type="button" className="bg-amber-600 text-white rounded-md py-1.5 px-3 disabled:opacity-60"
+                  disabled={closingAndPosting} onClick={() => closePollAndPostTeams("post_updated")}>
+                  Post Updated Teams
+                </button>
+              </div>
+            )}
+            {actions.includes("mark_sent") && (
+              <div className="space-y-1">
+                <div className="text-xs text-amber-700">
+                  Delivery status uncertain. Check the Telegram chat before retrying — retrying when the teams are already
+                  there posts them twice.
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  <button type="button" className="border rounded-md py-1.5 px-3 disabled:opacity-60" disabled={closingAndPosting || !delivery.deliveryId} onClick={markAsSent}>
+                    Mark as sent
+                  </button>
+                  <button type="button" className="border rounded-md py-1.5 px-3 disabled:opacity-60" disabled={closingAndPosting} onClick={() => closePollAndPostTeams("retry_uncertain")}>
+                    Retry send
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
         )}
         {closePostResult && (
