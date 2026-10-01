@@ -20,9 +20,9 @@ require every future feature before launch.
 | M5.1 | Authentication Transition & Password Management | COMPLETE (legacy auth retired, `49f5a88`) |
 | M6 | Player Engagement & Messaging Foundation | COMPLETE — M6-A/B/C live and production-verified (migrations #14–#16; prod `49ebde4`, 2026-10-01) |
 | M6.1 | Telegram Identity Management (remove/disconnect a Player's Telegram link) | COMPLETE — live (prod `841853d`, 2026-10-01), no migration |
-| M7 | Multi-Sport Foundation — sport registry, sport-neutral balancing engine, Add Group (migration #17) | DEPLOYED — prod `ff29508`, migration #17 verified (2026-10-01); owner multi-sport smoke in progress (basketball ✔) |
+| M7 | Multi-Sport Foundation — sport registry, sport-neutral balancing engine, Add Group (migration #17) | COMPLETE — migration #17 deployed (`ff29508`), production data verified unchanged, basketball production smoke passed, first M7 generation metadata verified (2026-10-01) |
 | M8 | Balance Intelligence & AI — deterministic insights first, optional LLM layer | Planned |
-| M9 | Match Experience & Player Engagement — channel-neutral match lifecycle (Telegram first), results, MVP, recap, public match page, "Share to WhatsApp" | Planned |
+| M9 | Match Experience & Player Engagement — self-service Telegram group connection, channel-neutral match lifecycle (Telegram first), results, MVP, recap, public match page, "Share to WhatsApp" | Planned |
 | M10 | WhatsApp & Expanded Communications — GroupChannel, primary channel, WhatsApp identity, Meta Cloud API, multi-channel delivery | Planned |
 | M11 | Plans & Billing | Planned |
 | M12 | Product UX / Analytics / Branding | Planned |
@@ -275,15 +275,33 @@ them is retired).
 - **Branding**: product wording is "Team Balance Pro" (no "Soccer Team
   Generator").
 
-### M7 production smoke (owner, manual)
+### M7 completion (2026-10-01)
 
-- **Basketball** ("Pickup basketball", `basketball`) — 2026-10-01: basketball
-  label, Role and Skill fields, stamina default 3, only basketball roles, no
-  goalkeeper behavior; Generate (2 teams, 4 selected players incl. one Big)
-  showed "Bigs: 1 across 2 teams"; Preview, Publish and the public Group page
-  worked; no Telegram message. Not yet manually verified: Big SPREAD with 2+
-  Bigs (covered by automated tests only).
-- Volleyball, American Football (`flag_football`), Other — pending.
+- **Migration #17** deployed once via the normal Vercel deploy; read-only
+  before/after fingerprints of every existing table were identical
+  (Player positions byte-for-byte; 32 legacy generations keep NULL
+  sportKey/engineVersion/metricsJson).
+- **Manual production smoke — Basketball** ("Pickup basketball",
+  `basketball`), accepted by the owner as the representative multi-sport
+  smoke: basketball label, Role and Skill fields, stamina default 3, only
+  basketball roles, no goalkeeper behavior; Generate (2 teams, 4 players incl.
+  one Big) showed "Bigs: 1 across 2 teams"; Preview, Publish and the public
+  Group page worked; no Telegram message. **Big SPREAD with 2+ Bigs was NOT
+  manually verified** (one Big only) — it is covered by automated/integration
+  tests.
+- **First M7 generation metadata (read-only verified):** the basketball
+  publish stored `sportKey=basketball`, `engineVersion=balance-v2` and
+  aggregate `metricsJson` (team sizes, impact/skill/stamina spreads, role
+  counts, Big coverage) with no identity data (no ids, names, emails,
+  Telegram/phone/WhatsApp fields, tokens or sessions).
+- **Volleyball, American Football (`flag_football`), Other:** accepted on
+  automated unit + real-PostgreSQL integration coverage (no manual
+  production smoke by owner decision).
+- **American Football label:** the sport added in M7 under the stable internal
+  key `flag_football` is displayed as "American Football" (recreational/
+  pickup roles: Quarterback, Receiver, Rusher / Line, Defender, Athlete /
+  Any). The key is kept for compatibility — no migration, no data rename, no
+  `american_football` key.
 
 ## M8 — Balance Intelligence & AI (planned)
 
@@ -319,6 +337,54 @@ attendance → teams → game → result → MVP voting → MVP announcement →
   WhatsApp share flow — no API integration, no phone numbers stored.
 - New domain concepts (attendance events/responses, results, MVP) are
   introduced in M9 above the existing Telegram tables, which stay as-is.
+
+### M9 — Telegram Group connection experience (requirement recorded 2026-10-01)
+
+Observed in the M7 basketball smoke: a new Group shows "No registered
+Telegram chats available for this Group." That is correct isolation but
+incomplete UX — today a Telegram chat can only be bound by ops/database work.
+M9 must provide self-service setup per Group, e.g.:
+
+```text
+Communication Channels
+Telegram   Not connected            [ Connect Telegram Group ]
+Telegram   Connected · Thursday Basketball   [ Manage ] [ Disconnect ]
+```
+
+The organizer is guided to add the existing Team Balance Pro bot to their
+Telegram group and securely bind that chat to the right Team Balance Pro
+Group. The flow must:
+
+- require an authenticated OWNER/ADMIN of that Group's Organization;
+- bind the TelegramChat to exactly that Group (proof via a one-time,
+  hash-stored code or deep link — never a bare /chatid);
+- prevent cross-tenant binding and accidental reassignment of a chat already
+  bound to another Group;
+- show the connected Telegram group's name; never expose raw chat ids
+  unnecessarily;
+- allow safe disconnect/reconnect;
+- work for every sport (Soccer, Basketball, Volleyball, American Football,
+  Other) without developer or database intervention.
+
+**Invariant — Telegram group isolation:** a Team Balance Pro Group's Telegram
+connection never applies automatically to another Group (e.g. Indoor Soccer →
+Telegram group A, Pickup Basketball → Telegram group B). A new Group never
+inherits another Group's chats; the empty Telegram section in the basketball
+smoke confirms this.
+
+**Rule — Publish ≠ Send:** publishing teams/results/MVP updates Team Balance
+Pro only. Posting to Telegram (or any channel) is always a separate, explicit
+organizer action (e.g. Post Teams, Publish Result to Telegram, Start MVP Vote,
+Announce MVP, Post Match Recap — names refined in M9). Nothing is ever posted
+automatically because an organizer generates, regenerates, edits, publishes,
+saves a score or changes an MVP.
+
+**Channel-neutral direction:** the Group UI evolves toward a "Communication
+Channels" section listing Telegram and WhatsApp as Connected / Not connected.
+M9: Telegram connection UX, channel-neutral lifecycle, Telegram-first
+delivery, Share to WhatsApp. M10: real WhatsApp integration, GroupChannel /
+channel architecture if still appropriate, WhatsApp identity, multi-channel
+delivery. No GroupChannel or WhatsApp work before then.
 
 ## M10 — WhatsApp & Expanded Communications (planned)
 
