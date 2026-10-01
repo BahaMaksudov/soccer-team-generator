@@ -299,7 +299,9 @@ describe("publish metadata and public privacy", () => {
     expect(row).toMatchObject({ sportKey: "volleyball", engineVersion: ENGINE_VERSION });
     const metrics = JSON.parse(row.metricsJson!);
     expect(metrics).toMatchObject({ teamCount: 2, playerCount: 2, ruleCoverage: [expect.objectContaining({ roleKey: "SETTER", teamsCovered: 1 })] });
-    expect(row.metricsJson).not.toMatch(/Ann|Bo|v1|v2|telegram|email|phone|whatsapp|userId|firstName|lastName/i);
+    // Player ids are matched exactly (M8 adds "metrics-v2"/"balance-analysis-v1" version strings).
+    expect(row.metricsJson).not.toMatch(/\b(Ann|Bo)\b|"v1"|"v2"/);
+    expect(row.metricsJson).not.toMatch(/telegram|email|phone|whatsapp|userId|firstName|lastName/i);
     // Snapshot: exactly the six allow-listed fields, DB values (forged rating ignored), no identity data.
     const snap = JSON.parse(row.teamsJson);
     for (const p of snap.flatMap((t: { players: unknown[] }) => t.players)) {

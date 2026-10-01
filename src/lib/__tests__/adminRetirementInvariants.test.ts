@@ -71,6 +71,7 @@ describe("flat operational Admin APIs are deleted", () => {
     expect(routes).toEqual(
       [
         canonical("generate"),
+        canonical("generate/swap"), // M8-A: Apply Swap (preview only)
         canonical("players"),
         canonical("players/[id]"),
         canonical("players/[id]/claim"), // M6-C

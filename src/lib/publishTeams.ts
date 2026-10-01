@@ -4,7 +4,8 @@ import { toDateOnlyUTC } from "@/lib/dateOnly";
 import { revalidatePath } from "next/cache";
 import { publishTeamsSchema, zodErrorResponse } from "@/lib/validation";
 import type { TenantContext } from "@/lib/tenantContext";
-import { ENGINE_VERSION, evaluateTeams, resolveBalanceConfig, type BalanceMetrics } from "@/lib/balanceEngine";
+import { ENGINE_VERSION, resolveBalanceConfig } from "@/lib/balanceEngine";
+import { buildStoredMetrics } from "@/lib/balanceAnalysis";
 import { findSport, type SportDefinition } from "@/lib/sports";
 import { loadStoredBalanceWeights } from "@/lib/groupSettings";
 
@@ -109,14 +110,19 @@ export function buildPublishSnapshot(
  * the engine version, and aggregate BalanceMetrics computed from the
  * ALLOW-LISTED snapshot (never raw request data, never raw teamsJson).
  * Metrics contain no player ids, names or identity fields.
+ *
+ * M8-A — metricsJson is now `metrics-v2`: the same metrics plus
+ * `metricsVersion` and the deterministic balance analysis
+ * (`balance-analysis-v1`: quality, spreads, roster notes, role coverage,
+ * improvable). Swap suggestions, player ids and summary text are never stored.
  */
 export function buildGenerationMetadata(
   sport: SportDefinition,
   storedWeights: unknown,
   snapshotTeams: Array<{ teamNumber: number; players: SnapshotPlayer[] }>
 ): { sportKey: string; engineVersion: string; metricsJson: string } {
-  const metrics: BalanceMetrics = evaluateTeams(sport, resolveBalanceConfig(sport, storedWeights), snapshotTeams);
-  return { sportKey: sport.key, engineVersion: ENGINE_VERSION, metricsJson: JSON.stringify(metrics) };
+  const stored = buildStoredMetrics(sport, resolveBalanceConfig(sport, storedWeights), snapshotTeams);
+  return { sportKey: sport.key, engineVersion: ENGINE_VERSION, metricsJson: JSON.stringify(stored) };
 }
 
 export async function publishTeamsForContext(context: TenantContext, req: Request): Promise<NextResponse> {

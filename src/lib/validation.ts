@@ -66,6 +66,19 @@ const publishTeamSchema = z
   })
   .passthrough();
 
+/**
+ * M8-A — Apply Swap on the organizer's preview. Only player ids and team
+ * membership are read; any rating/stamina/role/metrics/analysis a client
+ * sends is stripped (non-passthrough) and recomputed server-side from the
+ * Group's own Players and settings.
+ */
+export const applySwapSchema = z.object({
+  teams: z
+    .array(z.object({ teamNumber: z.number().int().min(1), playerIds: z.array(z.string().min(1)).min(1) }))
+    .min(2, "At least two teams are required."),
+  swap: z.object({ playerA: z.string().min(1), playerB: z.string().min(1) }),
+});
+
 export const publishTeamsSchema = z.object({
   date: z.string().trim().min(1, "Date is required."),
   teams: z.array(publishTeamSchema).min(1, "Teams are required."),

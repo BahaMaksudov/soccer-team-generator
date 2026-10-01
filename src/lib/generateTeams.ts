@@ -4,6 +4,7 @@ import { toDateOnlyUTC } from "@/lib/dateOnly";
 import { generateTeamsSchema, zodErrorResponse } from "@/lib/validation";
 import type { TenantContext } from "@/lib/tenantContext";
 import { generateTeams, resolveBalanceConfig } from "@/lib/balanceEngine";
+import { analyzeTeams, METRICS_VERSION } from "@/lib/balanceAnalysis";
 import { findSport } from "@/lib/sports";
 import { loadStoredBalanceWeights } from "@/lib/groupSettings";
 
@@ -86,9 +87,10 @@ export async function generateTeamsForContext(context: TenantContext, req: Reque
   // missing or malformed.
   const stored = await loadStoredBalanceWeights(context.activeGroup.id);
 
+  const config = resolveBalanceConfig(sport, stored);
   let result;
   try {
-    result = generateTeams({ players: selected, teamCount, sport, config: resolveBalanceConfig(sport, stored) });
+    result = generateTeams({ players: selected, teamCount, sport, config });
   } catch (e: unknown) {
     const message = e instanceof Error ? e.message : "Failed to generate teams.";
     return NextResponse.json({ error: message }, { status: 400 });
@@ -96,11 +98,15 @@ export async function generateTeamsForContext(context: TenantContext, req: Reque
 
   // `teams` keeps its pre-M7 shape; warnings/metrics/version are additive.
   // Metrics are aggregates only (no ids/names); warnings carry role keys.
+  // M8-A: deterministic Balance Intelligence of the generated teams, for the
+  // organizer's preview only. The teams themselves are returned unchanged —
+  // a suggested swap is applied only if the organizer explicitly asks.
   return NextResponse.json({
     date: normalizedDate.toISOString(),
     teams: result.teams,
     warnings: result.warnings,
-    metrics: result.metrics,
+    metrics: { metricsVersion: METRICS_VERSION, ...result.metrics },
+    analysis: analyzeTeams(sport, config, result.teams),
     engineVersion: result.engineVersion,
     sportKey: result.sportKey,
   });

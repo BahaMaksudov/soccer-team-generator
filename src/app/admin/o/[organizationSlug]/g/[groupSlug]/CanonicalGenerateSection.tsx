@@ -17,6 +17,10 @@ import {
 } from "@/lib/canonicalAdminState";
 import type { SportClientView } from "@/lib/sports";
 import type { Player } from "./CanonicalAdminWorkspace";
+import BalanceIntelligence from "./BalanceIntelligence";
+import type { BalanceAnalysis } from "@/lib/balanceAnalysis";
+import type { BalanceMetrics } from "@/lib/balanceEngine";
+import { applySwapBody } from "@/lib/balanceAnalysisUi";
 
 /**
  * Phase 2D.6D.2 — canonical tenant-bound Generate preview.
@@ -53,6 +57,10 @@ import type { Player } from "./CanonicalAdminWorkspace";
  * SportDefinition decides which roles are checked (soccer: goalkeepers,
  * volleyball: setters, American Football: quarterbacks, basketball: Bigs as
  * information only; Other: none) and supplies the labels.
+ *
+ * M8-A — the preview shows deterministic Balance Intelligence (quality,
+ * facts, best single swap). "Apply Swap" asks the server to re-validate and
+ * apply the suggestion to the PREVIEW only; it never publishes or posts.
  */
 export default function CanonicalGenerateSection({
   organizationSlug,
@@ -82,6 +90,9 @@ export default function CanonicalGenerateSection({
   const [previewTeams, setPreviewTeams] = useState<GeneratedTeam[] | null>(null);
   const [previewDate, setPreviewDate] = useState<string | null>(null);
   const [previewWarnings, setPreviewWarnings] = useState<Array<{ code: string; roleKey?: string; count?: number }>>([]);
+  const [previewAnalysis, setPreviewAnalysis] = useState<BalanceAnalysis | null>(null);
+  const [previewMetrics, setPreviewMetrics] = useState<BalanceMetrics | null>(null);
+  const [applyingSwap, setApplyingSwap] = useState(false);
   const shortRoles = useMemo(
     () => selectedRoleCoverage(sport, players, selectedIds, teamCount).filter((c) => c.short),
     [sport, players, selectedIds, teamCount]
@@ -105,6 +116,8 @@ export default function CanonicalGenerateSection({
     setPreviewTeams(data.teams);
     setPreviewDate(data.date);
     setPreviewWarnings(Array.isArray(data.warnings) ? data.warnings : []);
+    setPreviewAnalysis(data.analysis ?? null);
+    setPreviewMetrics(data.metrics ?? null);
     onMessage("Preview generated. If it looks good, click Publish.");
   }
 
@@ -112,8 +125,42 @@ export default function CanonicalGenerateSection({
     setPreviewTeams(null);
     setPreviewDate(null);
     setPreviewWarnings([]);
+    setPreviewAnalysis(null);
+    setPreviewMetrics(null);
     onPublishedGenerationChange(null);
     onMessage("Preview cleared.");
+  }
+
+  async function applySuggestedSwap() {
+    if (!previewTeams || !previewAnalysis?.bestSwap || applyingSwap) return;
+    setApplyingSwap(true);
+    onMessage(null);
+    try {
+      const res = await fetch(adminTenantApiPath({ organizationSlug, groupSlug, path: "/generate/swap" }), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(applySwapBody(previewTeams, previewAnalysis)),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.status === 409 && data.analysis) {
+        setPreviewAnalysis(data.analysis);
+        if (data.metrics) setPreviewMetrics(data.metrics);
+        onMessage(data.error ?? "The suggestion changed. Review the latest suggestion.");
+        return;
+      }
+      if (!res.ok) {
+        onMessage(data?.error ?? "Could not apply the swap.");
+        return;
+      }
+      setPreviewTeams(data.teams);
+      setPreviewAnalysis(data.analysis ?? null);
+      setPreviewMetrics(data.metrics ?? null);
+      // The preview now differs from anything published earlier.
+      onPublishedGenerationChange(null);
+      onMessage("Swap applied to the preview. Publish when you're happy with the teams.");
+    } finally {
+      setApplyingSwap(false);
+    }
   }
 
   async function publish() {
@@ -252,6 +299,17 @@ export default function CanonicalGenerateSection({
             {w.count} player(s) have a {sport.terminology.roleNoun.toLowerCase()} that isn&apos;t used in {sport.label} ({w.roleKey}); they were balanced as a general player.
           </div>
         ))}
+
+      {previewTeams && previewAnalysis && (
+        <BalanceIntelligence
+          analysis={previewAnalysis}
+          metrics={previewMetrics}
+          teams={previewTeams}
+          sport={sport}
+          applying={applyingSwap}
+          onApplySwap={applySuggestedSwap}
+        />
+      )}
 
       {previewTeams && previewDate && <TeamPreview previewTeams={previewTeams} previewDate={previewDate} sportKey={sport.key} />}
 
