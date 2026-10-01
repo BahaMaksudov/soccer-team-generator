@@ -108,13 +108,34 @@ export async function authenticateCredentials(
   }
 
   const identity = { id: user.id, email: user.email, name: user.name };
-  if (await verifyPassword(password, user.passwordHash)) return identity;
+  const matched = await matchUserPassword(user, password, env);
+  if (matched === "legacy") {
+    console.warn("[auth] Signed in via the transitional ADMIN_PASSWORD_HASH fallback (User.passwordHash did not match).");
+  }
+  return matched ? identity : null;
+}
+
+/**
+ * The single place a password is checked for an EXISTING User row:
+ * first against User.passwordHash (bcrypt); then — only if that fails —
+ * the transitional ADMIN_PASSWORD_HASH fallback, under exactly the M5
+ * conditions (both env vars set, and this User's normalized email equals
+ * ADMIN_EMAIL). Used by login and by Change Password, so the fallback can
+ * never be broader in one than the other. Returns which check matched,
+ * or null. Never logs or returns either hash.
+ */
+export async function matchUserPassword(
+  user: { email: string; passwordHash: string },
+  password: string,
+  env: LegacyAdminEnv = process.env
+): Promise<"database" | "legacy" | null> {
+  if (!password) return null;
+  if (await verifyPassword(password, user.passwordHash)) return "database";
 
   const legacyEmail = normalizeEmail(env.ADMIN_EMAIL ?? "");
   const legacyHash = env.ADMIN_PASSWORD_HASH ?? "";
-  if (legacyEmail && legacyHash && email === legacyEmail && (await verifyPassword(password, legacyHash))) {
-    console.warn("[auth] Signed in via the transitional ADMIN_PASSWORD_HASH fallback (User.passwordHash did not match).");
-    return identity;
+  if (legacyEmail && legacyHash && normalizeEmail(user.email) === legacyEmail && (await verifyPassword(password, legacyHash))) {
+    return "legacy";
   }
   return null;
 }

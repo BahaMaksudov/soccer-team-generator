@@ -116,3 +116,43 @@ describe("authenticateCredentials — transitional ADMIN_PASSWORD_HASH fallback"
     expect(await authenticateCredentials(OWNER.email, "wrong-password", db([diverged]), legacyEnv)).toBeNull();
   });
 });
+
+// =================================================================
+// M5.1 — shared current-password matcher + Change Password schema
+// =================================================================
+import { matchUserPassword } from "@/lib/accounts";
+import { changePasswordSchema } from "@/lib/changePassword";
+
+describe("matchUserPassword — one check for login and Change Password", () => {
+  const legacyEnv = { ADMIN_EMAIL: " Admin@UCCNE.com ", ADMIN_PASSWORD_HASH: LEGACY_HASH };
+  const owner = { email: "admin@uccne.com", passwordHash: HASH };
+
+  it("database hash first", async () => {
+    expect(await matchUserPassword(owner, PASSWORD, legacyEnv)).toBe("database");
+  });
+  it("legacy only for the ADMIN_EMAIL User with both env vars set", async () => {
+    expect(await matchUserPassword(owner, LEGACY_PASSWORD, legacyEnv)).toBe("legacy");
+    expect(await matchUserPassword({ ...owner, email: "someone@example.com" }, LEGACY_PASSWORD, legacyEnv)).toBeNull();
+    expect(await matchUserPassword(owner, LEGACY_PASSWORD, {})).toBeNull();
+    expect(await matchUserPassword(owner, LEGACY_PASSWORD, { ADMIN_EMAIL: owner.email })).toBeNull();
+    expect(await matchUserPassword(owner, LEGACY_PASSWORD, { ADMIN_PASSWORD_HASH: LEGACY_HASH })).toBeNull();
+  });
+  it("wrong / empty password → null", async () => {
+    expect(await matchUserPassword(owner, "wrong-password", legacyEnv)).toBeNull();
+    expect(await matchUserPassword(owner, "", legacyEnv)).toBeNull();
+  });
+});
+
+describe("changePasswordSchema", () => {
+  const ok = { currentPassword: "old-password-1", newPassword: "new-password-1", confirmPassword: "new-password-1" };
+  it("accepts a valid change and strips every other field", () => {
+    expect(changePasswordSchema.parse({ ...ok, userId: "x", email: "e@x.com", role: "OWNER", passwordHash: "h" })).toEqual(ok);
+  });
+  it("rejects mismatch, short, over-long, unchanged and missing current password", () => {
+    expect(changePasswordSchema.safeParse({ ...ok, confirmPassword: "nope-nope-1" }).success).toBe(false);
+    expect(changePasswordSchema.safeParse({ ...ok, newPassword: "short", confirmPassword: "short" }).success).toBe(false);
+    expect(changePasswordSchema.safeParse({ ...ok, newPassword: "a".repeat(73), confirmPassword: "a".repeat(73) }).success).toBe(false);
+    expect(changePasswordSchema.safeParse({ ...ok, newPassword: ok.currentPassword, confirmPassword: ok.currentPassword }).success).toBe(false);
+    expect(changePasswordSchema.safeParse({ ...ok, currentPassword: "" }).success).toBe(false);
+  });
+});

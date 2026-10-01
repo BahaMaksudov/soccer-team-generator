@@ -47,9 +47,14 @@ export default async function AdminEntryPage() {
     <div className="rounded-2xl border bg-white shadow-sm p-5 space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <h1 className="text-2xl font-semibold">Your workspaces</h1>
-        <Link className="text-sm rounded-md border px-3 py-1.5 hover:bg-gray-50" href="/onboarding">
-          Create organization
-        </Link>
+        <div className="flex flex-wrap items-center gap-3">
+          <Link className="text-sm underline" href="/account/security">
+            Account
+          </Link>
+          <Link className="text-sm rounded-md border px-3 py-1.5 hover:bg-gray-50" href="/onboarding">
+            Create organization
+          </Link>
+        </div>
       </div>
       {shown.map((org) => (
         <div key={org.id} className="border rounded-xl p-4">

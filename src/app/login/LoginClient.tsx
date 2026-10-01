@@ -10,6 +10,7 @@ export default function LoginClient() {
   const sp = useSearchParams();
   // Only internal paths are honored (no open redirect); see src/lib/safeRedirect.ts.
   const callbackUrl = safeCallbackPath(sp.get("callbackUrl"));
+  const passwordChanged = sp.get("passwordChanged") === "1";
 
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -40,6 +41,9 @@ export default function LoginClient() {
     <div className="min-h-[70vh] flex items-center justify-center p-6">
       <form onSubmit={submit} className="w-full max-w-sm border rounded-xl p-6 bg-white">
         <h1 className="text-xl font-semibold mb-4">Sign in</h1>
+        {passwordChanged && !err && (
+          <div className="text-sm text-green-700 mb-3">Password changed. Please sign in again.</div>
+        )}
         {err && <div className="text-sm text-red-600 mb-3" role="alert">{err}</div>}
 
         <label className="block text-sm mb-1" htmlFor="email">Email</label>

@@ -33,11 +33,16 @@ export default async function OnboardingPage() {
         </p>
       </div>
       <OnboardingClient sports={SUPPORTED_SPORTS.map((s) => ({ key: s.key, label: s.label }))} defaultTimezone={DEFAULT_TIMEZONE} />
-      {organizationCount > 0 && (
-        <Link className="text-sm underline" href="/admin">
-          Back to your workspaces
+      <div className="flex flex-wrap gap-4 text-sm">
+        {organizationCount > 0 && (
+          <Link className="underline" href="/admin">
+            Back to your workspaces
+          </Link>
+        )}
+        <Link className="underline" href="/account/security">
+          Account
         </Link>
-      )}
+      </div>
     </div>
   );
 }

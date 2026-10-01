@@ -39,6 +39,9 @@ export default async function CanonicalAdminHome({ params }: { params: Params })
           <Link className="underline" href="/admin">
             Switch workspace
           </Link>
+          <Link className="underline" href="/account/security">
+            Account
+          </Link>
         </div>
       </div>
       <p>

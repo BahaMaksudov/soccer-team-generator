@@ -34,7 +34,12 @@ describe("link-scanner safety: GET pages never consume single-use tokens", () =>
   });
 
   it("sign-up, resend and organization creation are POST-only", () => {
-    for (const f of ["src/app/api/signup/route.ts", "src/app/api/account/resend-verification/route.ts", "src/app/api/admin/organizations/route.ts"]) {
+    for (const f of [
+      "src/app/api/signup/route.ts",
+      "src/app/api/account/resend-verification/route.ts",
+      "src/app/api/account/change-password/route.ts",
+      "src/app/api/admin/organizations/route.ts",
+    ]) {
       expect(exportedHandlers(stripComments(read(f))), f).toEqual(["POST"]);
     }
   });
@@ -71,5 +76,22 @@ describe("invitations are consumed only by explicit acceptance", () => {
       const c = stripComments(read(f));
       expect(c, f).not.toMatch(/consumeInvitationInTx|organizationMembership|organizationInvitation\.update/);
     }
+  });
+});
+
+describe("M5.1 — Change Password stays narrow", () => {
+  it("the route resolves the User only from the session and the service writes only passwordHash", () => {
+    const route = stripComments(read("src/app/api/account/change-password/route.ts"));
+    expect(route).toContain("requireSessionAccount()");
+    expect(route).toContain("changePassword(account.id, parsed.data)");
+    const svc = stripComments(read("src/lib/changePassword.ts"));
+    const writes = [...svc.matchAll(/data:\s*\{([^}]*)\}/g)].map((m) => m[1].trim());
+    expect(writes).toEqual(["passwordHash"]);
+    expect(svc).not.toMatch(/emailVerifiedAt|organizationMembership|console\.(log|info|error)/);
+  });
+
+  it("the legacy check exists in exactly one place (shared by login and Change Password)", () => {
+    const users = sources.filter(([, c]) => /ADMIN_PASSWORD_HASH/.test(c)).map(([f]) => f);
+    expect(users).toEqual([path.join("src", "lib", "accounts.ts")]);
   });
 });
