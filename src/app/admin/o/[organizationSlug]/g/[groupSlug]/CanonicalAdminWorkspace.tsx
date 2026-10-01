@@ -12,6 +12,7 @@ import {
 import CanonicalPlayersSection from "./CanonicalPlayersSection";
 import CanonicalGenerateSection from "./CanonicalGenerateSection";
 import CanonicalSettingsSection from "./CanonicalSettingsSection";
+import CanonicalVisibilitySection from "./CanonicalVisibilitySection";
 import CanonicalTelegramSection from "./CanonicalTelegramSection";
 
 /**
@@ -167,6 +168,8 @@ export default function CanonicalAdminWorkspace({
         groupSlug={groupSlug}
         onMessage={setMessage}
       />
+
+      <CanonicalVisibilitySection organizationSlug={organizationSlug} groupSlug={groupSlug} />
 
       <CanonicalTelegramSection
         organizationSlug={organizationSlug}

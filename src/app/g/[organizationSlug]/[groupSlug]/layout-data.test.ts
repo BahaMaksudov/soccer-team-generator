@@ -20,6 +20,7 @@ const GROUP_A = {
   sportKey: "soccer",
   timezone: "America/New_York",
   isActive: true,
+  visibility: "PUBLIC" as const,
 };
 
 beforeEach(() => {

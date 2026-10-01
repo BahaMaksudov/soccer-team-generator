@@ -43,6 +43,17 @@ enum TelegramTeamsPostStatus {
 // scoping, and constraint changes are later phases (2C+).
 // ============================================================
 
+// M6-A — who may view a Group's player-facing pages (published teams,
+// roster names). Organizer access (OrganizationMembership) is unaffected.
+//   PUBLIC  — anyone with the Group URL.
+//   LINK    — only holders of an active GroupShareLink (no account).
+//   PRIVATE — only authorized Team Balance Pro users.
+enum GroupVisibility {
+  PRIVATE
+  LINK
+  PUBLIC
+}
+
 enum OrgRole {
   OWNER
   ADMIN
@@ -63,6 +74,9 @@ model User {
 
   memberships             OrganizationMembership[]
   emailVerificationTokens EmailVerificationToken[]
+  // M6-A — optional claimed Player profiles (none yet; claim flow is M6-C).
+  players                 Player[]
+  shareLinksCreated       GroupShareLink[]
 
   // M5 — invitations this User created / accepted (audit trail only;
   // never an authorization source — OrganizationMembership is).
@@ -142,19 +156,22 @@ model OrganizationInvitation {
 }
 
 model Group {
-  id             String   @id @default(cuid())
+  id             String          @id @default(cuid())
   organizationId String
   name           String
   slug           String
-  sportKey       String   @default("soccer")
+  sportKey       String          @default("soccer")
   // Required, no default: every Group created from here on must have
   // an explicit IANA timezone. The one existing production group gets
   // its value (America/New_York) during Phase 2C backfill, not here —
   // Phase 2B creates zero Group rows, so this being required is safe.
   timezone       String
-  isActive       Boolean  @default(true)
-  createdAt      DateTime @default(now())
-  updatedAt      DateTime @updatedAt
+  isActive       Boolean         @default(true)
+  // M6-A — new Groups default to LINK; migration #14 sets every Group
+  // that existed before it to PUBLIC (unchanged behavior).
+  visibility     GroupVisibility @default(LINK)
+  createdAt      DateTime        @default(now())
+  updatedAt      DateTime        @updatedAt
 
   organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
 
@@ -164,6 +181,7 @@ model Group {
   telegramChats   TelegramChat[]
   telegramPolls   TelegramPoll[]
   telegramLinks   TelegramUserLink[]
+  shareLinks      GroupShareLink[]
 
   @@unique([organizationId, slug])
 }
@@ -178,6 +196,25 @@ model GroupSetting {
   group Group @relation(fields: [groupId], references: [id], onDelete: Cascade)
 
   @@unique([groupId, key])
+}
+
+// M6-A — revocable viewer access to one Group's player-facing pages
+// (no account). Only the SHA-256 hash of the random token is stored; the
+// raw token is returned once, at creation. Rotation revokes every active
+// link of the Group and creates a new one. Not a membership: grants
+// read-only access to allow-listed player-facing data only.
+model GroupShareLink {
+  id              String    @id @default(cuid())
+  groupId         String
+  tokenHash       String    @unique
+  createdByUserId String?
+  createdAt       DateTime  @default(now())
+  revokedAt       DateTime?
+
+  group     Group @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  createdBy User? @relation(fields: [createdByUserId], references: [id], onDelete: SetNull)
+
+  @@index([groupId])
 }
 
 model Player {
@@ -205,6 +242,16 @@ model Player {
   // archive its tenant data first.
   groupId String
   group   Group  @relation(fields: [groupId], references: [id], onDelete: Restrict)
+
+  // M6-A — OPTIONAL Team Balance Pro account that has claimed this
+  // Player (claim flow: M6-C). A Player never requires a User. Deleting
+  // the User keeps the Player and its history (SET NULL). A User may
+  // claim at most one Player per Group, and Players in many Groups.
+  userId String?
+  user   User?   @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@unique([groupId, userId])
+  @@index([userId])
 }
 
 model TeamGeneration {

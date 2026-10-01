@@ -14,8 +14,8 @@ require every future feature before launch.
 | M3 | Multi-Tenant Foundation | COMPLETE |
 | M4 | Tenant Security & Isolation | COMPLETE |
 | M5 | SaaS Owner Accounts & Onboarding | COMPLETE |
-| M5.1 | Authentication Transition & Password Management | COMPLETE after the legacy-auth cleanup is deployed |
-| M6 | Player Engagement & Messaging Foundation | NEXT |
+| M5.1 | Authentication Transition & Password Management | COMPLETE (legacy auth retired, `49f5a88`) |
+| M6 | Player Engagement & Messaging Foundation | IN PROGRESS — M6-A + messaging foundation implemented (migration #14) |
 | M7 | AI Intelligence Layer | Planned |
 | M8 | Multi-Sport Architecture | Planned |
 | M9 | Match Experience & Player Engagement — scores, MVP, voting, attendance, statistics, history, leaderboards, achievements, shareable match experience | Planned |
@@ -111,6 +111,27 @@ columns predate `TelegramUserLink` and are unused by the canonical flow.
   M8 owns the rules engine.
 
 ## M6 implementation batches
+
+### M6-A — implemented (decisions as built)
+- `Group.visibility` PRIVATE | LINK | PUBLIC; migration #14 backfills every
+  existing Group to PUBLIC; new Groups default to **LINK**.
+- Enforcement: `resolvePublicGroup()` is the single gate for every
+  slug-addressed player-facing page/API — non-PUBLIC Groups resolve only
+  for verified organizers of that Organization; otherwise "not found".
+- Share links: `/share#<token>` — the token is in the URL fragment (never
+  sent to the server, not in access logs or Referer) and POSTed to
+  `/api/share/view`; SHA-256 stored only; shown once; rotation revokes
+  the previous link; PRIVATE disables links without revoking them.
+  OWNER/ADMIN manage visibility and links.
+- Player-facing allow-list (`src/lib/playerFacing.ts`): names, position,
+  team number, date. Public `/g` pages and share views use it.
+- `Player.userId` nullable, `@@unique([groupId, userId])`, ON DELETE SET
+  NULL — no claim UI yet.
+- Messaging foundation (`src/lib/messaging/`): POLL_CREATED and
+  TEAMS_PUBLISHED events → neutral content → Telegram renderer
+  (byte-identical to the previous output). Not yet wired: a view link in
+  the Telegram teams post (renderer + URL rules are ready; Close/Post
+  output is unchanged), and the webhook's own poll command.
 
 - **M6-A — Identity & visibility foundation:** `Player.userId` (nullable,
   unused by UI except organizer unlink), `Group.visibility` + share links,

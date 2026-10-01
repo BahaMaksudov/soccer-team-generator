@@ -143,6 +143,8 @@ export async function createOrganizationWorkspace(
             slug: groupSlug,
             sportKey: input.sportKey,
             timezone: input.timezone,
+            // M6-A: privacy-conscious default — players view via a share link.
+            visibility: "LINK",
           },
           select: { id: true, name: true, slug: true },
         });

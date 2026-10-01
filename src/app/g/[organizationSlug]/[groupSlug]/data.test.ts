@@ -26,6 +26,7 @@ const GROUP_A = {
   sportKey: "soccer",
   timezone: "America/New_York",
   isActive: true,
+  visibility: "PUBLIC" as const,
 };
 
 const ORG_B = { id: "org-b", name: "Boston Rovers", slug: "boston-rovers" };
@@ -36,6 +37,7 @@ const GROUP_B = {
   sportKey: "soccer",
   timezone: "America/New_York",
   isActive: true,
+  visibility: "PUBLIC" as const,
 };
 
 function genFixture(id: string, teamNumber: number, playerName: string) {

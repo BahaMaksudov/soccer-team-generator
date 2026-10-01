@@ -14,7 +14,17 @@
  * resolution logic is a pure function over a minimal injectable data
  * source, so it's unit-testable with a hand-written fixture — no
  * PrismaClient, no mocking framework required.
+ *
+ * M6-A — this is also THE visibility gate for every slug-addressed
+ * player-facing page/API. Only PUBLIC Groups resolve by default; a LINK
+ * or PRIVATE Group resolves only if the caller supplies
+ * `canViewNonPublic` and it approves (Group pages pass an organizer
+ * check — see src/lib/groupAccess.ts). Anything else fails closed as
+ * "not found", indistinguishable from a missing Group. Share-link
+ * viewing (LINK) is a separate path (src/lib/shareLinks.ts).
  */
+
+export type GroupVisibility = "PRIVATE" | "LINK" | "PUBLIC";
 
 /** Safe, minimal DTO — built field-by-field, never by spreading a raw
  * Prisma row, so a future schema field can never leak through here by
@@ -31,6 +41,7 @@ export type PublicGroupContext = {
     slug: string;
     sportKey: string;
     timezone: string;
+    visibility: GroupVisibility;
   };
 };
 
@@ -53,6 +64,7 @@ export interface PublicGroupDataSource {
       sportKey: string;
       timezone: string;
       isActive: boolean;
+      visibility: GroupVisibility;
     } | null>;
   };
 }
@@ -78,7 +90,8 @@ export interface PublicGroupDataSource {
  */
 export async function resolvePublicGroup(
   params: { organizationSlug: string; groupSlug: string },
-  db: PublicGroupDataSource
+  db: PublicGroupDataSource,
+  options: { canViewNonPublic?: (organizationId: string) => Promise<boolean> } = {}
 ): Promise<PublicGroupContext | null> {
   const organization = await db.organization.findUnique({
     where: { slug: params.organizationSlug },
@@ -95,6 +108,11 @@ export async function resolvePublicGroup(
   });
   if (!group || !group.isActive) return null;
 
+  if (group.visibility !== "PUBLIC") {
+    const allowed = options.canViewNonPublic ? await options.canViewNonPublic(organization.id) : false;
+    if (!allowed) return null;
+  }
+
   return {
     organization: {
       id: organization.id,
@@ -107,6 +125,7 @@ export async function resolvePublicGroup(
       slug: group.slug,
       sportKey: group.sportKey,
       timezone: group.timezone,
+      visibility: group.visibility,
     },
   };
 }

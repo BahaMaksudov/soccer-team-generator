@@ -94,3 +94,38 @@ describe("M5.1 — Change Password stays narrow; no env credentials", () => {
     expect(sources.filter(([, c]) => /ADMIN_PASSWORD_HASH|ADMIN_EMAIL/.test(c)).map(([f]) => f)).toEqual([]);
   });
 });
+
+describe("M6-A — visibility & share-link invariants", () => {
+  it("every slug-addressed player-facing resolver passes an access check (non-PUBLIC fails closed otherwise)", () => {
+    const callers = sources.filter(([f, c]) => /resolvePublicGroup\(/.test(c) && !f.endsWith(path.join("lib", "publicGroup.ts")));
+    expect(callers.length).toBeGreaterThanOrEqual(6);
+    for (const [f, c] of callers) {
+      if (f.endsWith(path.join("lib", "groupAccess.ts"))) continue;
+      expect(c, f).toContain("canViewNonPublic: viewerIsOrganizationMember");
+    }
+  });
+
+  it("share tokens are never part of a route path (fragment + POST body only)", () => {
+    expect(fs.existsSync(path.join(root, "src/app/share/[token]"))).toBe(false);
+    expect(exportedHandlers(stripComments(read("src/app/api/share/view/route.ts")))).toEqual(["POST"]);
+    expect(stripComments(read("src/lib/shareLinks.ts"))).toContain("`${SHARE_PATH}#${token}`");
+  });
+
+  it("public pages and share views build teams through the player-facing allow-list", () => {
+    for (const f of [
+      "src/app/g/[organizationSlug]/[groupSlug]/data.ts",
+      "src/app/g/[organizationSlug]/[groupSlug]/print/[generationId]/data.ts",
+      "src/lib/shareLinks.ts",
+    ]) {
+      const c = stripComments(read(f));
+      expect(c, f).toContain("toPlayerFacingTeams(");
+      expect(c, f).not.toMatch(/JSON\.parse\([^)]*teamsJson/);
+    }
+  });
+
+  it("the share view, page and API never log tokens", () => {
+    for (const f of ["src/lib/shareLinks.ts", "src/app/api/share/view/route.ts", "src/app/share/ShareView.tsx"]) {
+      expect(stripComments(read(f)), f).not.toMatch(/console\./);
+    }
+  });
+});

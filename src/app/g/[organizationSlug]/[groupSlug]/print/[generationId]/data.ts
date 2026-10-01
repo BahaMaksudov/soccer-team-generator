@@ -1,5 +1,7 @@
 import { prisma } from "@/lib/prisma";
 import { resolvePublicGroup } from "@/lib/publicGroup";
+import { viewerIsOrganizationMember } from "@/lib/groupAccess";
+import { toPlayerFacingTeams, type PlayerFacingTeam } from "@/lib/playerFacing";
 
 /**
  * Phase 2D.5E — canonical, tenant-safe print data loader.
@@ -22,10 +24,8 @@ export type PublicPrintGeneration = {
   id: string;
   date: Date;
   updatedAt: Date;
-  teams: Array<{
-    teamNumber: number;
-    players: Array<{ id: string; firstName: string; lastName: string; position: string }>;
-  }>;
+  // M6-A: allow-listed player-facing fields only (src/lib/playerFacing.ts).
+  teams: PlayerFacingTeam[];
 };
 
 /**
@@ -46,7 +46,9 @@ export async function loadPublicGroupPrintData(params: {
 }): Promise<PublicPrintGeneration | null> {
   const publicGroup = await resolvePublicGroup(
     { organizationSlug: params.organizationSlug, groupSlug: params.groupSlug },
-    prisma
+    prisma,
+    // M6-A: non-PUBLIC Groups only for their organizers (fails closed otherwise).
+    { canViewNonPublic: viewerIsOrganizationMember }
   );
   if (!publicGroup) return null;
 
@@ -56,10 +58,8 @@ export async function loadPublicGroupPrintData(params: {
   });
   if (!gen) return null;
 
-  // Matches legacy /print/[id]'s exact parsing: a plain JSON.parse
-  // with no try/catch. Preserved as-is (not hardened) per Phase
-  // 2D.5E §10 — no materially different policy introduced here.
-  const teams = JSON.parse(gen.teamsJson) as PublicPrintGeneration["teams"];
+  // M6-A: rebuilt from the player-facing allow-list (no rating/stamina/ids).
+  const teams = toPlayerFacingTeams(gen.teamsJson);
 
   return {
     id: gen.id,

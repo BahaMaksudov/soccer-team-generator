@@ -4,32 +4,20 @@
  * components, and unit tests alike.
  */
 
-export function escapeHtml(s: string): string {
-  return String(s).replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
-}
+// M6-B foundation: the implementation lives in the channel-neutral
+// messaging layer; these exports keep every existing caller unchanged.
+import { escapeHtml, renderTelegramHtml } from "@/lib/messaging/telegram";
+import { teamsContent } from "@/lib/messaging/content";
+export { escapeHtml };
 
 export type TeamForMessage = {
   teamNumber: number;
   players: Array<{ firstName?: string | null; lastName?: string | null }>;
 };
 
+/** Byte-identical to the pre-M6 formatter (asserted in tests); no link. */
 export function formatTeamsHtml(displayDate: string, teams: TeamForMessage[]): string {
-  const title = `<b>\u{1F3DF}\u{FE0F} Generated Teams — ${escapeHtml(displayDate)}</b>`;
-  const lines: string[] = [title, ""];
-
-  for (const t of teams) {
-    lines.push(`<b>Team #${escapeHtml(String(t.teamNumber))}</b>`);
-    const players = Array.isArray(t.players) ? t.players : [];
-    for (const p of players) {
-      const first = (p?.firstName ?? "").toString().trim();
-      const last = (p?.lastName ?? "").toString().trim();
-      const name = `${first} ${last}`.trim() || "Unknown";
-      lines.push(`• ${escapeHtml(name)}`);
-    }
-    lines.push("");
-  }
-
-  return lines.join("\n").trim();
+  return renderTelegramHtml(teamsContent({ type: "TEAMS_PUBLISHED", displayDate, teams, viewUrl: null }));
 }
 
 /** Telegram's message length cap is 4096 chars; split on line boundaries. */

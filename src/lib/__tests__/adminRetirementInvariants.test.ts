@@ -73,6 +73,8 @@ describe("flat operational Admin APIs are deleted", () => {
         canonical("publish"),
         canonical("settings/balance-weights"),
         canonical("settings/team-name"),
+        canonical("settings/visibility"), // M6-A
+        canonical("share-link"), // M6-A
         canonical("telegram/chats"),
         canonical("telegram/close-and-post"),
         canonical("telegram/create-poll"),

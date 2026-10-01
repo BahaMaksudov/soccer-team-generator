@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
-import { resolvePublicGroup, type PublicGroupDataSource } from "../publicGroup";
+import { resolvePublicGroup, type GroupVisibility, type PublicGroupDataSource } from "../publicGroup";
 
 type OrgFixture = { id: string; name: string; slug: string };
 type GroupFixture = {
@@ -11,6 +11,7 @@ type GroupFixture = {
   sportKey: string;
   timezone: string;
   isActive: boolean;
+  visibility?: GroupVisibility; // M6-A: fixtures are PUBLIC unless a test says otherwise
 };
 
 /** Builds a fixture data source. No mocking framework needed for the
@@ -29,7 +30,8 @@ function makeDb(opts: { orgs?: OrgFixture[]; groups?: GroupFixture[] }): PublicG
     group: {
       async findUnique({ where }) {
         const { organizationId, slug } = where.organizationId_slug;
-        return groups.find((g) => g.organizationId === organizationId && g.slug === slug) ?? null;
+        const g = groups.find((x) => x.organizationId === organizationId && x.slug === slug);
+        return g ? { visibility: "PUBLIC" as const, ...g } : null;
       },
     },
   };
@@ -65,6 +67,7 @@ describe("resolvePublicGroup", () => {
         slug: "indoor-soccer",
         sportKey: "soccer",
         timezone: "America/New_York",
+        visibility: "PUBLIC",
       },
     });
   });
@@ -161,5 +164,32 @@ describe("resolvePublicGroup", () => {
     }
     expect(source).not.toMatch(/getServerSession\(/);
     expect(source).not.toMatch(/requireTenantContext\(/);
+  });
+});
+
+describe("M6-A — resolvePublicGroup is the visibility gate (fails closed)", () => {
+  const link: GroupFixture = { ...GROUP_A, visibility: "LINK" };
+  const priv: GroupFixture = { ...GROUP_A, visibility: "PRIVATE" };
+  const params = { organizationSlug: "new-england-eagles", groupSlug: "indoor-soccer" };
+
+  it("LINK and PRIVATE Groups do not resolve without an access check (same as not found)", async () => {
+    expect(await resolvePublicGroup(params, makeDb({ orgs: [ORG_A], groups: [link] }))).toBeNull();
+    expect(await resolvePublicGroup(params, makeDb({ orgs: [ORG_A], groups: [priv] }))).toBeNull();
+  });
+
+  it("non-PUBLIC Groups resolve only when the access check approves, and it is asked about the right Organization", async () => {
+    const asked: string[] = [];
+    const deny = async (orgId: string) => (asked.push(orgId), false);
+    const allow = async (orgId: string) => (asked.push(orgId), true);
+    expect(await resolvePublicGroup(params, makeDb({ orgs: [ORG_A], groups: [priv] }), { canViewNonPublic: deny })).toBeNull();
+    expect((await resolvePublicGroup(params, makeDb({ orgs: [ORG_A], groups: [priv] }), { canViewNonPublic: allow }))?.group.visibility).toBe("PRIVATE");
+    expect(asked).toEqual(["org-a", "org-a"]);
+  });
+
+  it("PUBLIC Groups never consult the access check", async () => {
+    let called = false;
+    const check = async () => ((called = true), false);
+    expect(await resolvePublicGroup(params, makeDb({ orgs: [ORG_A], groups: [GROUP_A] }), { canViewNonPublic: check })).not.toBeNull();
+    expect(called).toBe(false);
   });
 });

@@ -17,6 +17,7 @@ import type { TenantContext } from "@/lib/tenantContext";
 // Phase 2D.6D.5D: moved (unchanged behavior) to a shared module so the
 // canonical close-and-post core can classify Telegram rejections.
 import { callTelegram } from "@/lib/telegramApi";
+import { pollContent, renderTelegramPoll } from "@/lib/messaging";
 
 /**
  * Phase 2D.6D.5B — shared Telegram READ core, extracted verbatim from
@@ -148,13 +149,6 @@ export async function listUnlinkedTelegramUsersForContext(context: TenantContext
   return NextResponse.json(unlinked);
 }
 
-function formatMdyTwoDigitYear(ymd: string) {
-  // ymd = YYYY-MM-DD -> M/D/YY (no leading zeros)
-  const [y, m, d] = ymd.split("-").map(Number);
-  const yy = String(y).slice(-2);
-  return `${m}/${d}/${yy}`;
-}
-
 export async function createTelegramPollForContext(context: TenantContext, req: Request): Promise<NextResponse> {
   const activeGroupId = context.activeGroup.id;
 
@@ -190,9 +184,10 @@ export async function createTelegramPollForContext(context: TenantContext, req: 
   try {
     const pollDate = toDateOnlyUTC(pollDateStr);
 
-    const display = formatMdyTwoDigitYear(pollDateStr);
-    const question = customQuestion?.trim() || `Who is playing on ${display}?`;
-    const options = ["✅ Playing", "❌ Not playing"];
+    // M6-B foundation: wording comes from the channel-neutral POLL_CREATED
+    // content, rendered for Telegram (identical question/options as before).
+    const poll = renderTelegramPoll(pollContent({ type: "POLL_CREATED", pollDate: pollDateStr, customQuestion }));
+    const { question, options } = poll;
 
     // sendPoll returns a Message object (includes message_id and poll.id).
     //
@@ -202,13 +197,7 @@ export async function createTelegramPollForContext(context: TenantContext, req: 
     // client retry re-sends a NEW poll to Telegram (sendPoll has no
     // idempotency key). This is identical to the legacy route's
     // existing behavior, not made worse or better by canonicalization.
-    const msg = await callTelegram("sendPoll", {
-      chat_id: chatIdStr,
-      question,
-      options,
-      is_anonymous: false,
-      allows_multiple_answers: false,
-    });
+    const msg = await callTelegram("sendPoll", { chat_id: chatIdStr, ...poll });
 
     const pollId = msg?.poll?.id;
     const messageId = msg?.message_id;

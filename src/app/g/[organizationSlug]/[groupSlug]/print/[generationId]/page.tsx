@@ -74,10 +74,10 @@ export default async function PublicGroupPrint({ params }: { params: Params }) {
                 <td className="p-3 font-semibold">#{t.teamNumber}</td>
                 <td className="p-3">
                   <ul className="list-disc pl-5 space-y-1">
-                    {t.players.map((p) => (
-                      <li key={p.id}>
+                    {t.players.map((p, i) => (
+                      <li key={i}>
                         {p.firstName} {p.lastName} —{" "}
-                        <span className="text-gray-700">{positionLabel(p.position)}</span>
+                        <span className="text-gray-700">{p.position ? positionLabel(p.position) : ""}</span>
                       </li>
                     ))}
                   </ul>

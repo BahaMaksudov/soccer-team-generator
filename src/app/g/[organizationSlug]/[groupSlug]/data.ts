@@ -1,5 +1,7 @@
 import { prisma } from "@/lib/prisma";
 import { resolvePublicGroup, type PublicGroupContext } from "@/lib/publicGroup";
+import { viewerIsOrganizationMember } from "@/lib/groupAccess";
+import { toPlayerFacingTeams, type PlayerFacingTeam } from "@/lib/playerFacing";
 
 /**
  * Phase 2D.5B — data loading for the canonical public Group home page,
@@ -15,10 +17,8 @@ export type PublicGeneration = {
   id: string;
   date: Date;
   updatedAt: Date;
-  teams: Array<{
-    teamNumber: number;
-    players: Array<{ id: string; firstName: string; lastName: string; position: string }>;
-  }>;
+  // M6-A: allow-listed player-facing fields only (src/lib/playerFacing.ts).
+  teams: PlayerFacingTeam[];
 };
 
 export type PublicGroupHomeData = {
@@ -44,7 +44,9 @@ export async function loadPublicGroupHomeData(params: {
 }): Promise<PublicGroupHomeData | null> {
   const publicGroup = await resolvePublicGroup(
     { organizationSlug: params.organizationSlug, groupSlug: params.groupSlug },
-    prisma
+    prisma,
+    // M6-A: non-PUBLIC Groups only for their organizers (fails closed otherwise).
+    { canViewNonPublic: viewerIsOrganizationMember }
   );
   if (!publicGroup) return null;
 
@@ -67,7 +69,7 @@ export async function loadPublicGroupHomeData(params: {
     id: r.id,
     date: r.date,
     updatedAt: r.updatedAt,
-    teams: JSON.parse(r.teamsJson) as PublicGeneration["teams"],
+    teams: toPlayerFacingTeams(r.teamsJson),
   }));
 
   return { publicGroup, items, page, totalPages };
