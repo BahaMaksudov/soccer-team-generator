@@ -16,7 +16,7 @@ require every future feature before launch.
 | M5 | SaaS Owner Accounts & Onboarding | COMPLETE |
 | M5.1 | Authentication Transition & Password Management | COMPLETE (legacy auth retired, `49f5a88`) |
 | M6 | Player Engagement & Messaging Foundation | COMPLETE — M6-A/B/C live and production-verified (migrations #14–#16; prod `49ebde4`, 2026-10-01) |
-| M6.1 | Telegram Identity Management (remove/disconnect a Player's Telegram link) | IMPLEMENTED — no migration |
+| M6.1 | Telegram Identity Management (remove/disconnect a Player's Telegram link) | COMPLETE — live (prod `841853d`, 2026-10-01), no migration |
 | M7 | AI Intelligence Layer | Planned |
 | M8 | Multi-Sport Architecture | Planned |
 | M9 | Match Experience & Player Engagement — Telegram-first no-signup match lifecycle (see below), scores, MVP, voting, attendance, statistics, history, leaderboards, achievements, shareable match experience | Planned |
@@ -272,6 +272,13 @@ posts.
 ## Deferred backlog (still open)
 
 - Secure TelegramChat registration.
+- (M6.1 follow-up, non-blocking hardening) MEMBER can still call the
+  read-only unlinked-voter endpoint (`telegram/users`), which returns Telegram
+  usernames/ids, although MEMBER can no longer link voters. Evaluate
+  restricting organizer identity-management data to OWNER/ADMIN.
+- (M6.1 follow-up, non-blocking UX) MEMBER still sees the Telegram "Link"
+  action (and Players-row identity controls) that end in a 404; hide/disable
+  organizer identity mutation controls when the current role cannot use them.
 - Drop the legacy TelegramPoll posting columns after M6-B bake-in.
 - Telegram 4096-character message handling.
 - Drop the unused legacy `Player.telegram*` columns.
