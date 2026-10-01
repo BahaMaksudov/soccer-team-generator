@@ -2,6 +2,9 @@
 
 Production: https://teambalancepro.com · Last updated: 2026-10-01
 
+Sequence decided 2026-10-01: Multi-Sport moved before AI (M7 ↔ M8 swapped)
+so AI consumes a sport-neutral engine instead of soccer-only assumptions.
+
 Roadmap sequencing may overlap for speed. This document does **not**
 require every future feature before launch.
 
@@ -17,10 +20,10 @@ require every future feature before launch.
 | M5.1 | Authentication Transition & Password Management | COMPLETE (legacy auth retired, `49f5a88`) |
 | M6 | Player Engagement & Messaging Foundation | COMPLETE — M6-A/B/C live and production-verified (migrations #14–#16; prod `49ebde4`, 2026-10-01) |
 | M6.1 | Telegram Identity Management (remove/disconnect a Player's Telegram link) | COMPLETE — live (prod `841853d`, 2026-10-01), no migration |
-| M7 | AI Intelligence Layer | Planned |
-| M8 | Multi-Sport Architecture | Planned |
-| M9 | Match Experience & Player Engagement — Telegram-first no-signup match lifecycle (see below), scores, MVP, voting, attendance, statistics, history, leaderboards, achievements, shareable match experience | Planned |
-| M10 | WhatsApp & Expanded Communications | Planned |
+| M7 | Multi-Sport Foundation — sport registry, sport-neutral balancing engine, Add Group (migration #17) | IMPLEMENTED — in review (not deployed) |
+| M8 | Balance Intelligence & AI — deterministic insights first, optional LLM layer | Planned |
+| M9 | Match Experience & Player Engagement — channel-neutral match lifecycle (Telegram first), results, MVP, recap, public match page, "Share to WhatsApp" | Planned |
+| M10 | WhatsApp & Expanded Communications — GroupChannel, primary channel, WhatsApp identity, Meta Cloud API, multi-channel delivery | Planned |
 | M11 | Plans & Billing | Planned |
 | M12 | Product UX / Analytics / Branding | Planned |
 | M13 | Production Hardening | Planned |
@@ -114,8 +117,8 @@ them is retired).
 
 ### Multi-sport
 - M6 concepts (visibility, claims, messaging, share pages) stay
-  sport-neutral; soccer-specific logic remains in team generation only.
-  M8 owns the rules engine.
+  sport-neutral. Since M7, sport-specific logic lives only in the sport
+  definitions (`src/lib/sports`), never in the engine.
 
 ## M6 implementation batches
 
@@ -225,6 +228,97 @@ them is retired).
   "unlinked voters" list until linked again (organizer voter linking or
   the player's /connect). No schema change.
 
+## M7 — Multi-Sport Foundation (decisions as built)
+
+- **Sport registry in code** (`src/lib/sports/`): Soccer (`soccer`),
+  Basketball (`basketball`), Volleyball (`volleyball`), Flag Football
+  (`flag_football`), Other (`other`). Each definition: roles (key, label,
+  weight), default role, role rules, stamina coefficient, terminology
+  (Position/Role), messaging vocabulary (emoji, game noun, result label) and
+  — for M9 only — `resultFormat` (POINTS / SETS). No sport tables. A future
+  `american_football` (tackle) is just another definition.
+- **Group.sportKey is immutable** after creation (no update path; enforced
+  by tests). Different sport → create another Group.
+- **Skill** = the existing `Rating` enum (FAIR/GOOD/VERY_GOOD/EXCELLENT),
+  shown as "Skill", meaning skill in this Group's sport. Player is per Group,
+  so one person can be EXCELLENT at soccer and GOOD at basketball through
+  separate Players optionally linked to one User. Admin-only, never public.
+- **Stamina** stays 1–5 (default 3), optional under "More"; the sport supplies
+  the default coefficient (volleyball 0.5, others 1).
+- **Roles**: `Player.position` is a sport-scoped role key (TEXT since
+  migration #17; existing soccer values preserved byte-for-byte), validated
+  server-side against the Group's sport. Role rules: SEED (placed first —
+  soccer goalkeeper), SPREAD (soft — basketball Big, volleyball Setter, flag
+  football QB), IGNORE. Shortages are `ROLE_SHORTAGE` warnings, never
+  failures; unknown legacy roles → `UNKNOWN_ROLE` (balanced as the default
+  role). Hard constraints only: ≥2 teams, ≥teamCount players, sizes ±1, no
+  dropped/duplicated players. `format` (6|7|8) is deprecated and ignored.
+- **Engine** (`src/lib/balanceEngine.ts`, `balance-v2`): pure, deterministic,
+  returns teams + aggregate metrics + structured warnings. Soccer output is
+  byte-identical to the pre-M7 generator (seeded parity test, 5000 rosters,
+  frozen oracle in `src/lib/__tests__/fixtures/`).
+- **Generation metadata**: publishes record `TeamGeneration.sportKey`,
+  `engineVersion`, `metricsJson` (aggregates only — no ids/names/identity).
+  NULL = legacy pre-M7 generation (never backfilled). `teamsJson` shape is
+  unchanged; snapshots stay allow-list-built; metrics never read raw
+  `teamsJson`.
+- **Add Group** (`/admin/o/[org]/groups/new`, OWNER/ADMIN): name, sport,
+  timezone; onboarding offers all five sports.
+- **Settings**: role weights per sport (bounded, only the sport's role keys).
+  The rule-strength editor (Strong/Prefer/Off) is deferred — registry
+  defaults apply.
+- **Messaging**: the existing Telegram teams post is unchanged (its
+  contentHash drives delivery state); new content takes vocabulary from
+  `messagingVocabulary(sportKey)`.
+- **Branding**: product wording is "Team Balance Pro" (no "Soccer Team
+  Generator").
+
+## M8 — Balance Intelligence & AI (planned)
+
+- The deterministic engine stays authoritative; AI never generates teams.
+- M8-A (no LLM): template explanations from metrics/warnings, deterministic
+  swap search + `evaluateTeams` before/after, pre-generation roster checks.
+- M8-B (optional LLM): on-demand, cached explanations/recaps from a
+  pseudonymous allow-listed metrics payload; never in the Generate/Publish/
+  Telegram path; must degrade gracefully when the provider is unavailable.
+
+## M9 — channel-neutral match lifecycle (decisions recorded 2026-10-01)
+
+The lifecycle belongs to Team Balance Pro, not to Telegram; Telegram is the
+first channel adapter (WhatsApp in M10):
+
+```text
+attendance → teams → game → result → MVP voting → MVP announcement → recap → public match page
+```
+
+- Attendance options: ✅ Playing · ❌ Not playing · 🤔 Maybe. "Maybe" is not
+  confirmed and is never included automatically in generation.
+- CORE: attendance, teams announcement, explicit result publication, MVP
+  voting, MVP announcement, public match page.
+- HIGH VALUE: one deterministic pre-game balance fact, match recap, eventual
+  streak/milestone line.
+- Fun content is folded into useful messages — no standalone spam. Default
+  activity: **Standard** (essential lifecycle messages + at most one relevant
+  fun line).
+- Saving/editing a score never sends anything; publishing is explicit; AI
+  never sends automatically.
+- Sport vocabulary and `resultFormat` come from the SportDefinition (M7).
+- **Share to WhatsApp** for teams/result/MVP links via the organizer's normal
+  WhatsApp share flow — no API integration, no phone numbers stored.
+- New domain concepts (attendance events/responses, results, MVP) are
+  introduced in M9 above the existing Telegram tables, which stay as-is.
+
+## M10 — WhatsApp & Expanded Communications (planned)
+
+- `GroupChannel` (a Group has channels; one primary/default initially),
+  WhatsApp identity (provider-scoped ids, minimal/no raw phone storage),
+  Meta WhatsApp Cloud API integration (official APIs only), multi-channel
+  delivery through `MessageDelivery` (one row per channel/destination,
+  independently recoverable). The official WhatsApp Groups API cannot run a
+  bot inside a typical pickup group (business-created groups, ≤8
+  participants, no interactive messages), so WhatsApp interaction is 1:1
+  opt-in plus share links and web fallback pages.
+
 ## M9 requirement — Telegram-first, no-signup match lifecycle (confirmed 2026-10-01)
 
 Telegram is a first-class player interface. A Player who never creates a
@@ -272,6 +366,16 @@ posts.
 ## Deferred backlog (still open)
 
 - Secure TelegramChat registration.
+- **Security (before broad commercial rollout):** the Telegram webhook's
+  `/poll` command lacks organizer authorization in bound chats — any member
+  of a bound chat can make the bot post an attendance poll. Gate it to
+  organizers or retire it.
+- (M7 follow-up) Organizer rule-strength editor (Strong/Prefer/Off) for role
+  rules; registry defaults apply until then.
+- (M7 follow-up) The site background image (`/SoccerTeam.jpg`) is
+  soccer-themed; replace with a neutral visual in M12.
+- Legacy pre-allow-list TeamGeneration snapshots contain Telegram fields;
+  public/metrics code never reads them raw. Consider a reviewed scrub (M13).
 - (M6.1 follow-up, non-blocking hardening) MEMBER can still call the
   read-only unlinked-voter endpoint (`telegram/users`), which returns Telegram
   usernames/ids, although MEMBER can no longer link voters. Evaluate
