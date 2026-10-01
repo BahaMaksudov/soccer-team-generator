@@ -4,6 +4,9 @@ import {
   listAccessibleTenantsForEmail,
   hasOrgRole,
   requireRole,
+  resolveSessionUser,
+  resolveSessionAccount,
+  resolveOrganizationContextForSlug,
   TenantContextError,
   type TenantDataSource,
 } from "../tenantContext";
@@ -41,13 +44,15 @@ function group(overrides: Partial<GroupFixture> = {}): GroupFixture {
  * passwordHash) can be attached to a user fixture to prove the
  * resolver never lets them leak into the returned context. */
 function makeDb(opts: {
-  users?: Record<string, { id: string; email: string; name: string | null; passwordHash?: string }>;
+  users?: Record<string, { id: string; email: string; name: string | null; passwordHash?: string; emailVerifiedAt?: Date | null }>;
   memberships?: Record<string, MembershipFixture[]>;
 }): TenantDataSource {
   return {
     user: {
+      // M5: fixture Users are email-verified unless a test says otherwise.
       async findUnique({ where }) {
-        return opts.users?.[where.email] ?? null;
+        const u = opts.users?.[where.email];
+        return u ? { emailVerifiedAt: new Date("2026-01-01T00:00:00Z"), ...u } : null;
       },
     },
     organizationMembership: {
@@ -586,5 +591,103 @@ describe("listAccessibleTenantsForEmail", () => {
 
     expect(JSON.stringify(list)).not.toContain("passwordHash");
     expect(JSON.stringify(list)).not.toContain("totallyrealhashvalue");
+  });
+});
+
+// =================================================================
+// M5 — session identity binding and Organization-level resolution
+// =================================================================
+
+describe("M5 — resolveSessionUser binds the session to one User row", () => {
+  const db = makeDb({ users: { "a@example.com": { id: "user-a", email: "a@example.com", name: "A", passwordHash: "$2b$12$x" } } });
+
+  it("resolves by normalized email and returns only id/email/name", async () => {
+    const u = await resolveSessionUser({ email: " A@Example.com ", userId: "user-a" }, db);
+    expect(u).toEqual({ id: "user-a", email: "a@example.com", name: "A" });
+  });
+
+  it("pre-M5 sessions without an id still resolve by email", async () => {
+    expect((await resolveSessionUser({ email: "a@example.com" }, db)).id).toBe("user-a");
+  });
+
+  it("a session id that does not match the User found by email fails closed (USER_NOT_FOUND)", async () => {
+    await expect(resolveSessionUser({ email: "a@example.com", userId: "someone-else" }, db)).rejects.toMatchObject({ code: "USER_NOT_FOUND" });
+  });
+
+  it("the same binding applies to the Group resolver and the /admin listing", async () => {
+    const withOrg = makeDb({
+      users: { "a@example.com": { id: "user-a", email: "a@example.com", name: null } },
+      memberships: { "user-a": [{ id: "m1", role: "OWNER", organization: { id: "o1", name: "O", slug: "o", groups: [group()] } }] },
+    });
+    await expect(
+      resolveTenantContextForSlugs({ email: "a@example.com", userId: "stale-id", organizationSlug: "o", groupSlug: "indoor-soccer" }, withOrg)
+    ).rejects.toMatchObject({ code: "USER_NOT_FOUND" });
+    await expect(listAccessibleTenantsForEmail("a@example.com", withOrg, "stale-id")).rejects.toMatchObject({ code: "USER_NOT_FOUND" });
+    expect(await listAccessibleTenantsForEmail("a@example.com", withOrg, "user-a")).toHaveLength(1);
+  });
+
+  it("UNAUTHENTICATED without an email", async () => {
+    await expect(resolveSessionUser({ email: null, userId: "user-a" }, db)).rejects.toMatchObject({ code: "UNAUTHENTICATED" });
+  });
+});
+
+describe("M5 — resolveOrganizationContextForSlug", () => {
+  const db = makeDb({
+    users: {
+      "alice@a.com": { id: "alice", email: "alice@a.com", name: "Alice" },
+      "bob@b.com": { id: "bob", email: "bob@b.com", name: "Bob" },
+    },
+    memberships: {
+      alice: [{ id: "ma", role: "OWNER", organization: { id: "org-a", name: "Org A", slug: "org-a", groups: [] } }],
+      bob: [{ id: "mb", role: "MEMBER", organization: { id: "org-b", name: "Org B", slug: "org-b", groups: [group()] } }],
+    },
+  });
+
+  it("returns the User's own membership role for the URL-selected Organization", async () => {
+    const ctx = await resolveOrganizationContextForSlug({ email: "alice@a.com", organizationSlug: "org-a" }, db);
+    expect(ctx).toEqual({
+      user: { id: "alice", email: "alice@a.com", name: "Alice" },
+      organization: { id: "org-a", name: "Org A", slug: "org-a" },
+      membership: { id: "ma", role: "OWNER" },
+    });
+  });
+
+  it("another Organization and an unknown slug are the same NO_ORGANIZATION_MEMBERSHIP outcome", async () => {
+    const foreign = resolveOrganizationContextForSlug({ email: "alice@a.com", organizationSlug: "org-b" }, db);
+    const unknown = resolveOrganizationContextForSlug({ email: "alice@a.com", organizationSlug: "nope" }, db);
+    await expect(foreign).rejects.toMatchObject({ code: "NO_ORGANIZATION_MEMBERSHIP" });
+    await expect(unknown).rejects.toMatchObject({ code: "NO_ORGANIZATION_MEMBERSHIP" });
+  });
+
+  it("requireRole(OWNER) rejects a MEMBER", async () => {
+    const ctx = await resolveOrganizationContextForSlug({ email: "bob@b.com", organizationSlug: "org-b" }, db);
+    expect(() => requireRole(ctx, ["OWNER"])).toThrow(TenantContextError);
+  });
+});
+
+describe("M5 — the verified-email rule is enforced centrally (DB value, never the session)", () => {
+  const db = makeDb({
+    users: { "new@example.com": { id: "u-new", email: "new@example.com", name: "New", emailVerifiedAt: null } },
+    memberships: { "u-new": [{ id: "m", role: "OWNER", organization: { id: "o", name: "O", slug: "o", groups: [group()] } }] },
+  });
+
+  it("an unverified User is refused by every tenant resolver with EMAIL_NOT_VERIFIED", async () => {
+    await expect(resolveSessionUser({ email: "new@example.com" }, db)).rejects.toMatchObject({ code: "EMAIL_NOT_VERIFIED" });
+    await expect(
+      resolveTenantContextForSlugs({ email: "new@example.com", organizationSlug: "o", groupSlug: "indoor-soccer" }, db)
+    ).rejects.toMatchObject({ code: "EMAIL_NOT_VERIFIED" });
+    await expect(resolveOrganizationContextForSlug({ email: "new@example.com", organizationSlug: "o" }, db)).rejects.toMatchObject({
+      code: "EMAIL_NOT_VERIFIED",
+    });
+    await expect(listAccessibleTenantsForEmail("new@example.com", db)).rejects.toMatchObject({ code: "EMAIL_NOT_VERIFIED" });
+  });
+
+  it("resolveSessionAccount (verification flow only) still identifies the unverified User", async () => {
+    expect(await resolveSessionAccount({ email: "new@example.com" }, db)).toEqual({
+      id: "u-new",
+      email: "new@example.com",
+      name: "New",
+      emailVerified: false,
+    });
   });
 });

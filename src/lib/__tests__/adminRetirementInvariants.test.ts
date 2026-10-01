@@ -19,7 +19,7 @@ function walk(dir: string, out: string[] = []): string[] {
   for (const e of fs.readdirSync(path.join(root, dir), { withFileTypes: true })) {
     const p = path.join(dir, e.name);
     if (e.isDirectory()) walk(p, out);
-    else if (/\.(ts|tsx|js|mjs)$/.test(e.name) && !e.name.endsWith(".test.ts")) out.push(p);
+    else if (/\.(ts|tsx|js|mjs)$/.test(e.name) && !/\.i?test\.ts$/.test(e.name)) out.push(p);
   }
   return out;
 }
@@ -27,6 +27,13 @@ function walk(dir: string, out: string[] = []): string[] {
 const productionFiles = [...walk("src"), "next.config.js"].filter((f) => fs.existsSync(path.join(root, f)));
 const code = new Map(productionFiles.map((f) => [f, stripComments(fs.readFileSync(path.join(root, f), "utf8"))]));
 const filesMatching = (re: RegExp) => [...code].filter(([, c]) => re.test(c)).map(([f]) => f).sort();
+
+// M5 — the only /api/admin routes outside o/[org]/g/[group]: account-level
+// (the session User creates their own Organization) and Organization-level
+// (OWNER members/invitations, URL-bound via requireOrganizationContextForSlug).
+const M5_ACCOUNT_ROUTE = rel("src/app/api/admin/organizations/route.ts");
+const M5_ORGANIZATION_ROUTES = [rel("src/app/api/admin/o/[organizationSlug]/invitations/route.ts")];
+const M5_NON_GROUP_ROUTES = [M5_ACCOUNT_ROUTE, ...M5_ORGANIZATION_ROUTES];
 
 const DELETED_FLAT_ROUTES = [
   "players",
@@ -73,12 +80,13 @@ describe("flat operational Admin APIs are deleted", () => {
         canonical("telegram/link"),
         canonical("telegram/polls"),
         canonical("telegram/users"),
+        ...M5_NON_GROUP_ROUTES,
       ].sort()
     );
   });
 
-  it("every /api/admin route file lives under o/[organizationSlug]/g/[groupSlug]/", () => {
-    const routes = walk("src/app/api/admin").filter((f) => f.endsWith("route.ts"));
+  it("every /api/admin route file lives under o/[organizationSlug]/g/[groupSlug]/ (except the listed M5 routes)", () => {
+    const routes = walk("src/app/api/admin").filter((f) => f.endsWith("route.ts") && !M5_NON_GROUP_ROUTES.includes(f));
     expect(routes.length).toBeGreaterThan(0);
     for (const f of routes) {
       expect(f.startsWith(rel("src/app/api/admin/o/[organizationSlug]/g/[groupSlug]/")), f).toBe(true);
@@ -91,10 +99,18 @@ describe("flat operational Admin APIs are deleted", () => {
   });
 
   it("every canonical route resolves tenancy from URL slugs, never the flat resolver", () => {
-    for (const f of walk("src/app/api/admin/o").filter((x) => x.endsWith("route.ts"))) {
+    for (const f of walk("src/app/api/admin/o").filter((x) => x.endsWith("route.ts") && !M5_ORGANIZATION_ROUTES.includes(x))) {
       expect(code.get(f), f).toContain("requireTenantContextForSlugs(");
       expect(code.get(f), f).not.toMatch(/requireTenantContext\(\)/);
     }
+  });
+
+  it("M5 Organization-level routes resolve the Organization from the URL slug + membership; the account route only from the session User", () => {
+    for (const f of M5_ORGANIZATION_ROUTES) {
+      expect(code.get(f), f).toContain("requireOrganizationContextForSlug(");
+    }
+    expect(code.get(M5_ACCOUNT_ROUTE)).toContain("requireSessionUser()");
+    expect(code.get(M5_ACCOUNT_ROUTE)).toContain("createOrganizationWorkspace(user.id,");
   });
 });
 
@@ -122,7 +138,8 @@ describe("single-tenant resolver is gone (Phase 2D.6D.6)", () => {
       (f) => f !== rel("src/lib/tenantContext.ts")
     );
     const listing = tenantEntry.filter((f) => /\blistAccessibleTenants\(/.test(code.get(f)!));
-    expect(listing).toEqual([rel("src/app/admin/page.tsx")]);
+    // M5: /onboarding uses the listing only to count the User's own Organizations.
+    expect(listing).toEqual([rel("src/app/admin/page.tsx"), rel("src/app/onboarding/page.tsx")]);
     for (const f of tenantEntry.filter((x) => !listing.includes(x))) {
       expect(f.startsWith(rel("src/app/api/admin/o/")) || f.startsWith(rel("src/app/admin/o/")), f).toBe(true);
     }

@@ -3,8 +3,8 @@
  *
  * This module is the one place server code resolves "who is logged in,
  * and which Organization/Group may they operate on." It does not
- * change authentication (still env-based Credentials login, see
- * src/lib/authOptions.ts).
+ * change authentication (database-backed Credentials login since M5,
+ * see src/lib/authOptions.ts and src/lib/accounts.ts).
  *
  * Phase 2D.6D.6 — only two resolution modes exist:
  *   - requireTenantContextForSlugs(): URL-bound (organizationSlug,
@@ -84,7 +84,8 @@ export type TenantContextErrorCode =
   | "USER_NOT_FOUND"
   | "NO_ORGANIZATION_MEMBERSHIP"
   | "NO_GROUP"
-  | "INSUFFICIENT_ROLE";
+  | "INSUFFICIENT_ROLE"
+  | "EMAIL_NOT_VERIFIED";
 
 /**
  * Deterministic, typed failure for every way tenant resolution can
@@ -135,7 +136,7 @@ export interface TenantDataSource {
   user: {
     findUnique(args: {
       where: { email: string };
-    }): Promise<{ id: string; email: string; name: string | null } | null>;
+    }): Promise<{ id: string; email: string; name: string | null; emailVerifiedAt: Date | null } | null>;
   };
   organizationMembership: {
     findMany(args: {
@@ -143,6 +144,121 @@ export interface TenantDataSource {
       include: { organization: { include: { groups: true } } };
     }): Promise<MembershipWithOrgAndGroups[]>;
   };
+}
+
+// ---------------------------------------------------------------
+// M5 — authenticated User resolution (shared by every resolver)
+// ---------------------------------------------------------------
+
+/**
+ * Maps the session identity to the database User. The session carries
+ * the normalized email (unique) and, for sessions issued since M5, the
+ * User.id; when an id is present it must match the User found by
+ * email, so a session can never silently attach to a different User row
+ * (e.g. one deleted and re-created with the same email). Sessions issued
+ * before M5 carry no id and resolve by email alone, exactly as before.
+ * Roles are NEVER read from the session — only from
+ * OrganizationMembership, re-queried on every call.
+ */
+export type SessionAccount = TenantContext["user"] & { emailVerified: boolean };
+
+/**
+ * Identity only — does NOT require a verified email. Used solely by the
+ * verification flow itself (check-email page, resend, invitation
+ * landing). Everything that grants or uses Organization access goes
+ * through resolveSessionUser() instead.
+ */
+export async function resolveSessionAccount(
+  params: { email: string | null | undefined; userId?: string | null },
+  db: Pick<TenantDataSource, "user">
+): Promise<SessionAccount> {
+  const { email, userId } = params;
+  if (!email || !email.trim()) {
+    throw new TenantContextError("UNAUTHENTICATED", "No email present on the session.");
+  }
+
+  const normalizedEmail = email.trim().toLowerCase();
+  const user = await db.user.findUnique({ where: { email: normalizedEmail } });
+  if (!user || (userId && user.id !== userId)) {
+    throw new TenantContextError("USER_NOT_FOUND", "No User row matches the authenticated identity.");
+  }
+  return { id: user.id, email: user.email, name: user.name, emailVerified: user.emailVerifiedAt != null };
+}
+
+/**
+ * M5 — THE central verified-account rule. Every tenant resolver (Group
+ * workspaces/APIs, Organization members/invitations, the /admin
+ * listing, Organization creation, invitation acceptance) obtains its
+ * User here, so an unverified email can reach none of them. Verification
+ * is read from the database on every call (User.emailVerifiedAt) — never
+ * from the session/JWT — so it cannot go stale.
+ */
+export async function resolveSessionUser(
+  params: { email: string | null | undefined; userId?: string | null },
+  db: Pick<TenantDataSource, "user">
+): Promise<TenantContext["user"]> {
+  const account = await resolveSessionAccount(params, db);
+  if (!account.emailVerified) {
+    throw new TenantContextError("EMAIL_NOT_VERIFIED", "The account's email address has not been verified.");
+  }
+  return { id: account.id, email: account.email, name: account.name };
+}
+
+/** Session-acquiring wrapper for resolveSessionUser() (verified Users only). */
+export async function requireSessionUser(): Promise<TenantContext["user"]> {
+  const session = await getServerSession(authOptions);
+  return resolveSessionUser({ email: session?.user?.email, userId: session?.user?.id }, prisma);
+}
+
+/** Session-acquiring wrapper for resolveSessionAccount() (verification flow only). */
+export async function requireSessionAccount(): Promise<SessionAccount> {
+  const session = await getServerSession(authOptions);
+  return resolveSessionAccount({ email: session?.user?.email, userId: session?.user?.id }, prisma);
+}
+
+// ---------------------------------------------------------------
+// M5 — URL-bound Organization-level resolution (members/invitations)
+// ---------------------------------------------------------------
+
+export type OrganizationContext = Pick<TenantContext, "user" | "organization" | "membership">;
+
+/**
+ * Organization-level counterpart of resolveTenantContextForSlugs(), for
+ * pages/APIs that act on an Organization rather than one Group. Same
+ * rules: the URL slug is selection input only; access comes solely from
+ * the User's own OrganizationMembership, and "unknown Organization" and
+ * "not a member" are the identical NO_ORGANIZATION_MEMBERSHIP outcome.
+ */
+export async function resolveOrganizationContextForSlug(
+  params: { email: string | null | undefined; userId?: string | null; organizationSlug: string },
+  db: TenantDataSource
+): Promise<OrganizationContext> {
+  const user = await resolveSessionUser(params, db);
+  const memberships = await db.organizationMembership.findMany({
+    where: { userId: user.id },
+    include: { organization: { include: { groups: true } } },
+  });
+  const membership = memberships.find((m) => m.organization.slug === params.organizationSlug);
+  if (!membership) {
+    throw new TenantContextError(
+      "NO_ORGANIZATION_MEMBERSHIP",
+      "No OrganizationMembership matches the requested organization."
+    );
+  }
+  const organization = membership.organization;
+  return {
+    user,
+    organization: { id: organization.id, name: organization.name, slug: organization.slug },
+    membership: { id: membership.id, role: membership.role },
+  };
+}
+
+export async function requireOrganizationContextForSlug(params: { organizationSlug: string }): Promise<OrganizationContext> {
+  const session = await getServerSession(authOptions);
+  return resolveOrganizationContextForSlug(
+    { email: session?.user?.email, userId: session?.user?.id, organizationSlug: params.organizationSlug },
+    prisma
+  );
 }
 
 // ---------------------------------------------------------------
@@ -189,22 +305,14 @@ export interface TenantDataSource {
 export async function resolveTenantContextForSlugs(
   params: {
     email: string | null | undefined;
+    userId?: string | null;
     organizationSlug: string;
     groupSlug: string;
   },
   db: TenantDataSource
 ): Promise<TenantContext> {
-  const { email, organizationSlug, groupSlug } = params;
-
-  if (!email || !email.trim()) {
-    throw new TenantContextError("UNAUTHENTICATED", "No email present on the session.");
-  }
-
-  const normalizedEmail = email.trim().toLowerCase();
-  const user = await db.user.findUnique({ where: { email: normalizedEmail } });
-  if (!user) {
-    throw new TenantContextError("USER_NOT_FOUND", "No User row matches the authenticated identity.");
-  }
+  const { organizationSlug, groupSlug } = params;
+  const user = await resolveSessionUser(params, db);
 
   const memberships = await db.organizationMembership.findMany({
     where: { userId: user.id },
@@ -253,12 +361,10 @@ export async function resolveTenantContextForSlugs(
 
 /**
  * Session-acquiring wrapper for resolveTenantContextForSlugs(). Bridges
- * the env-based admin login to the tenant tables via
- * `session.user.email` — NOT `session.user.id`, which is not reliably
- * present: authOptions.ts defines no custom jwt/session callback, so
- * NextAuth v4's default session callback only copies name/email/image
- * onto `session.user`. Authentication itself is unchanged; only
- * authorization/tenant resolution happens here.
+ * the login session to the tenant tables via `session.user.email`,
+ * bound to `session.user.id` when present (see resolveSessionUser()).
+ * Only identity comes from the session; authorization/tenant
+ * resolution happens here, from the database.
  */
 export async function requireTenantContextForSlugs(params: {
   organizationSlug: string;
@@ -268,6 +374,7 @@ export async function requireTenantContextForSlugs(params: {
   return resolveTenantContextForSlugs(
     {
       email: session?.user?.email,
+      userId: session?.user?.id,
       organizationSlug: params.organizationSlug,
       groupSlug: params.groupSlug,
     },
@@ -309,17 +416,10 @@ export type AccessibleOrganization = {
  */
 export async function listAccessibleTenantsForEmail(
   email: string | null | undefined,
-  db: TenantDataSource
+  db: TenantDataSource,
+  userId?: string | null
 ): Promise<AccessibleOrganization[]> {
-  if (!email || !email.trim()) {
-    throw new TenantContextError("UNAUTHENTICATED", "No email present on the session.");
-  }
-
-  const normalizedEmail = email.trim().toLowerCase();
-  const user = await db.user.findUnique({ where: { email: normalizedEmail } });
-  if (!user) {
-    throw new TenantContextError("USER_NOT_FOUND", "No User row matches the authenticated identity.");
-  }
+  const user = await resolveSessionUser({ email, userId }, db);
 
   const memberships = await db.organizationMembership.findMany({
     where: { userId: user.id },
@@ -348,21 +448,21 @@ export async function listAccessibleTenantsForEmail(
  * as an API route. */
 export async function listAccessibleTenants(): Promise<AccessibleOrganization[]> {
   const session = await getServerSession(authOptions);
-  return listAccessibleTenantsForEmail(session?.user?.email, prisma);
+  return listAccessibleTenantsForEmail(session?.user?.email, prisma, session?.user?.id);
 }
 
 // ---------------------------------------------------------------
 // Role primitives (Section 12) — only actual schema OrgRole values
 // ---------------------------------------------------------------
 
-export function hasOrgRole(context: TenantContext, allowed: OrgRole[]): boolean {
+export function hasOrgRole(context: Pick<TenantContext, "membership">, allowed: OrgRole[]): boolean {
   return allowed.includes(context.membership.role);
 }
 
 /** Throws TenantContextError("INSUFFICIENT_ROLE") if the context's
  * role is not one of `allowed`. Does not (yet) express a full
  * authorization matrix — later phases build on this primitive. */
-export function requireRole(context: TenantContext, allowed: OrgRole[]): void {
+export function requireRole(context: Pick<TenantContext, "membership">, allowed: OrgRole[]): void {
   if (!hasOrgRole(context, allowed)) {
     throw new TenantContextError(
       "INSUFFICIENT_ROLE",

@@ -50,14 +50,24 @@ enum OrgRole {
 }
 
 model User {
-  id           String   @id @default(cuid())
-  email        String   @unique
-  passwordHash String
-  name         String?
-  createdAt    DateTime @default(now())
-  updatedAt    DateTime @updatedAt
+  id              String    @id @default(cuid())
+  email           String    @unique
+  passwordHash    String
+  name            String?
+  // M5 — set only by a successful email verification (or, once, by
+  // migration #13 for Users who already owned an Organization before
+  // self-service signup existed). NULL = unverified.
+  emailVerifiedAt DateTime?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
 
-  memberships OrganizationMembership[]
+  memberships             OrganizationMembership[]
+  emailVerificationTokens EmailVerificationToken[]
+
+  // M5 — invitations this User created / accepted (audit trail only;
+  // never an authorization source — OrganizationMembership is).
+  invitationsCreated  OrganizationInvitation[] @relation("InvitationCreatedBy")
+  invitationsAccepted OrganizationInvitation[] @relation("InvitationAcceptedBy")
 }
 
 model Organization {
@@ -69,6 +79,7 @@ model Organization {
 
   memberships OrganizationMembership[]
   groups      Group[]
+  invitations OrganizationInvitation[]
 }
 
 model OrganizationMembership {
@@ -83,6 +94,51 @@ model OrganizationMembership {
   organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
 
   @@unique([userId, organizationId])
+}
+
+// M5 — proof-of-ownership token for a User's email address. Only the
+// SHA-256 hash of the random token is stored; the raw token exists only
+// in the verification link. Bound to one User and the normalized email
+// it was sent to; single-use (usedAt) and time-limited (expiresAt).
+// Issuing a new token deletes the User's older unused ones. Separate
+// from OrganizationInvitation — the two token types never interchange.
+model EmailVerificationToken {
+  id        String    @id @default(cuid())
+  userId    String
+  email     String
+  tokenHash String    @unique
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+// M5 — invitation to join an Organization. Only the SHA-256 hash of the
+// random token is stored; the raw token exists only in the invitation
+// link. Bound to one Organization, one normalized email and one role —
+// acceptance never reads any of those from the client. Single-use
+// (acceptedAt) and time-limited (expiresAt).
+model OrganizationInvitation {
+  id               String    @id @default(cuid())
+  organizationId   String
+  // Normalized (trimmed, lowercased) at creation.
+  email            String
+  role             OrgRole
+  tokenHash        String    @unique
+  expiresAt        DateTime
+  acceptedAt       DateTime?
+  acceptedByUserId String?
+  createdByUserId  String?
+  createdAt        DateTime  @default(now())
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  createdBy    User?        @relation("InvitationCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
+  acceptedBy   User?        @relation("InvitationAcceptedBy", fields: [acceptedByUserId], references: [id], onDelete: SetNull)
+
+  @@index([organizationId, email])
 }
 
 model Group {

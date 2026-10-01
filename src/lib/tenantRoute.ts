@@ -38,8 +38,48 @@ export function canonicalTenantErrorResponse(e: unknown): NextResponse {
     if (e.code === "UNAUTHENTICATED") {
       return NextResponse.json({ error: e.code }, { status: 401 });
     }
+    // M5: about the caller's own account, not the tenant — no existence leak.
+    if (e.code === "EMAIL_NOT_VERIFIED") {
+      return NextResponse.json({ error: e.code }, { status: 403 });
+    }
     return NextResponse.json({ error: "NOT_FOUND" }, { status: 404 });
   }
   const message = e instanceof Error ? e.message : "Internal error";
   return NextResponse.json({ error: message }, { status: 500 });
+}
+
+/**
+ * M5 — error mapping for authenticated, non-Group routes (account,
+ * onboarding, organization members/invitations). A session that does
+ * not map to a User is "not logged in" (401); every other tenant
+ * failure collapses to the same generic 404 as the canonical routes;
+ * unexpected errors are a generic 500 that never carries internals.
+ */
+export function accountRouteErrorResponse(e: unknown): NextResponse {
+  if (e instanceof TenantContextError) {
+    if (e.code === "UNAUTHENTICATED" || e.code === "USER_NOT_FOUND") {
+      return NextResponse.json({ error: "UNAUTHENTICATED" }, { status: 401 });
+    }
+    if (e.code === "EMAIL_NOT_VERIFIED") {
+      return NextResponse.json({ error: e.code }, { status: 403 });
+    }
+    return NextResponse.json({ error: "NOT_FOUND" }, { status: 404 });
+  }
+  console.error("[account-route] unexpected error:", e instanceof Error ? e.name : "unknown");
+  return NextResponse.json({ error: "Something went wrong. Please try again." }, { status: 500 });
+}
+
+/**
+ * M5 — new state-changing endpoints accept only JSON bodies. Browsers
+ * cannot send a cross-site `application/json` request without a CORS
+ * preflight (which this app never grants), so together with NextAuth's
+ * SameSite=Lax session cookie this keeps them off the plain
+ * cross-site-form path. Returns a 415 response, or null when OK.
+ */
+export function requireJsonRequest(req: Request): NextResponse | null {
+  const type = req.headers.get("content-type") ?? "";
+  if (!type.toLowerCase().startsWith("application/json")) {
+    return NextResponse.json({ error: "Expected application/json." }, { status: 415 });
+  }
+  return null;
 }

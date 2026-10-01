@@ -21,15 +21,13 @@ export default async function AdminEntryPage() {
   try {
     organizations = await listAccessibleTenants();
   } catch (e) {
-    // Middleware already requires a session to reach this page at
-    // all; a TenantContextError here (e.g. the tenant tables somehow
-    // don't recognize this session) is treated as "no access" rather
-    // than crashing — fail closed, not fail loud.
+    // Middleware already requires a session to reach this page; a
+    // session that no longer maps to a User (e.g. deleted, or bound to
+    // a different User.id) is sent back to sign in — fail closed.
     if (e instanceof TenantContextError) {
-      organizations = [];
-    } else {
-      throw e;
+      redirect(e.code === "EMAIL_NOT_VERIFIED" ? "/verify-email" : "/login?callbackUrl=%2Fadmin");
     }
+    throw e;
   }
 
   const entry = resolveAdminEntry(organizations);
@@ -38,35 +36,32 @@ export default async function AdminEntryPage() {
     redirect(entry.href);
   }
 
+  // M5: a signed-in User with no Organization yet starts onboarding.
   if (entry.kind === "no-access") {
-    return (
-      <div className="rounded-2xl border bg-white shadow-sm p-5">
-        <h1 className="text-2xl font-semibold mb-2">Admin</h1>
-        <p className="text-gray-600">
-          Your account does not currently have access to any organization. Contact an administrator.
-        </p>
-      </div>
-    );
+    redirect("/onboarding");
   }
 
-  if (entry.kind === "no-active-groups") {
-    return (
-      <div className="rounded-2xl border bg-white shadow-sm p-5">
-        <h1 className="text-2xl font-semibold mb-2">Admin</h1>
-        <p className="text-gray-600">
-          No active groups are currently available for {entry.organization.name}.
-        </p>
-      </div>
-    );
-  }
+  const shown = entry.kind === "select" ? entry.organizations : [entry.organization];
 
   return (
     <div className="rounded-2xl border bg-white shadow-sm p-5 space-y-4">
-      <h1 className="text-2xl font-semibold">Select a workspace</h1>
-      {entry.organizations.map((org) => (
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <h1 className="text-2xl font-semibold">Your workspaces</h1>
+        <Link className="text-sm rounded-md border px-3 py-1.5 hover:bg-gray-50" href="/onboarding">
+          Create organization
+        </Link>
+      </div>
+      {shown.map((org) => (
         <div key={org.id} className="border rounded-xl p-4">
-          <div className="font-semibold">
-            {org.name} <span className="text-xs text-gray-500 font-normal">({org.role})</span>
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="font-semibold">
+              {org.name} <span className="text-xs text-gray-500 font-normal">({org.role})</span>
+            </div>
+            {org.role === "OWNER" && (
+              <Link className="text-sm underline" href={`/admin/o/${encodeURIComponent(org.slug)}/members`}>
+                Members
+              </Link>
+            )}
           </div>
           {org.groups.length === 0 ? (
             <div className="text-sm text-gray-500 mt-2">No active groups.</div>

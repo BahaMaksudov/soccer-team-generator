@@ -1,3 +1,4 @@
+import { redirect } from "next/navigation";
 import { requireTenantContextForSlugs, TenantContextError, type TenantContext } from "@/lib/tenantContext";
 
 /**
@@ -24,6 +25,8 @@ export async function loadCanonicalAdminContext(params: {
   try {
     return await requireTenantContextForSlugs(params);
   } catch (e) {
+    // M5: an unverified account is sent to verify (says nothing about the tenant).
+    if (e instanceof TenantContextError && e.code === "EMAIL_NOT_VERIFIED") redirect("/verify-email");
     if (e instanceof TenantContextError) return null;
     throw e;
   }

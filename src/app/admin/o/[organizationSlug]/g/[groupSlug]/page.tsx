@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { notFound } from "next/navigation";
 import { loadCanonicalAdminContext } from "./data";
 import CanonicalAdminWorkspace from "./CanonicalAdminWorkspace";
@@ -27,7 +28,19 @@ export default async function CanonicalAdminHome({ params }: { params: Params })
 
   return (
     <div className="rounded-2xl border bg-white shadow-sm p-5 space-y-2">
-      <h1 className="text-2xl font-semibold mb-2">Admin</h1>
+      <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
+        <h1 className="text-2xl font-semibold">Admin</h1>
+        <div className="flex gap-3 text-sm">
+          {context.membership.role === "OWNER" && (
+            <Link className="underline" href={`/admin/o/${encodeURIComponent(context.organization.slug)}/members`}>
+              Members
+            </Link>
+          )}
+          <Link className="underline" href="/admin">
+            Switch workspace
+          </Link>
+        </div>
+      </div>
       <p>
         <span className="text-gray-500">Organization:</span> {context.organization.name}
       </p>

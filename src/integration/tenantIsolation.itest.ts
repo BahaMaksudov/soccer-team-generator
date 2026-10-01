@@ -63,9 +63,10 @@ async function snapshotGroupA() {
 
 async function seed() {
   await prisma.$executeRawUnsafe(
-    `TRUNCATE "TelegramPollAnswer","TelegramPoll","TelegramUserLink","TelegramChat","TeamGeneration","GroupSetting","Player","Group","OrganizationMembership","Organization","User","AppSetting" RESTART IDENTITY CASCADE`
+    `TRUNCATE "EmailVerificationToken","OrganizationInvitation","TelegramPollAnswer","TelegramPoll","TelegramUserLink","TelegramChat","TeamGeneration","GroupSetting","Player","Group","OrganizationMembership","Organization","User","AppSetting" RESTART IDENTITY CASCADE`
   );
-  const user = await prisma.user.create({ data: { email: ADMIN_EMAIL, passwordHash: "x", name: "ITest" } });
+  // Verified, as migration #13 makes every pre-existing OWNER.
+  const user = await prisma.user.create({ data: { email: ADMIN_EMAIL, passwordHash: "x", name: "ITest", emailVerifiedAt: new Date() } });
   const org = await prisma.organization.create({ data: { id: "org-itest", name: "ITest Org", slug: ORG } });
   await prisma.organizationMembership.create({ data: { userId: user.id, organizationId: org.id, role: "OWNER" } });
   for (const id of [A, B]) {
