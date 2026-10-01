@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { prisma } from "@/lib/prisma";
-import { hashPassword, matchUserPassword, passwordSchema, verifyPassword, type LegacyAdminEnv } from "@/lib/accounts";
+import { hashPassword, passwordSchema, verifyPassword } from "@/lib/accounts";
 
 /**
  * M5.1 — authenticated Change Password.
@@ -8,12 +8,8 @@ import { hashPassword, matchUserPassword, passwordSchema, verifyPassword, type L
  * - The User is always the session-resolved User id passed in by the
  *   route; the body carries only the three password fields (anything
  *   else — userId, email, role, passwordHash… — is stripped by zod).
- * - The current password is checked with matchUserPassword(): the
- *   User's own bcrypt hash first, then — only for the one existing User
- *   whose email equals ADMIN_EMAIL, with both legacy env vars set — the
- *   transitional ADMIN_PASSWORD_HASH. That legacy path exists solely so
- *   the pre-M5 owner can move onto a database password; after the change
- *   their login matches User.passwordHash and never reaches the fallback.
+ * - The current password is verified with bcrypt against the User's own
+ *   User.passwordHash — the only credential source.
  * - Only User.passwordHash is written (bcrypt, same cost as sign-up),
  *   guarded by the hash that was just verified so a concurrent change
  *   cannot be silently overwritten.
@@ -38,24 +34,14 @@ export type ChangePasswordInput = z.infer<typeof changePasswordSchema>;
 
 export type ChangePasswordResult =
   | { ok: true }
-  | { ok: false; code: "CURRENT_PASSWORD_INCORRECT" | "NEW_PASSWORD_SAME" | "CONFLICT" };
+  | { ok: false; code: "CURRENT_PASSWORD_INCORRECT" | "CONFLICT" };
 
-export async function changePassword(
-  userId: string,
-  input: ChangePasswordInput,
-  env: LegacyAdminEnv = process.env
-): Promise<ChangePasswordResult> {
+export async function changePassword(userId: string, input: ChangePasswordInput): Promise<ChangePasswordResult> {
   const user = await prisma.user.findUnique({ where: { id: userId }, select: { email: true, passwordHash: true } });
   if (!user) return { ok: false, code: "CURRENT_PASSWORD_INCORRECT" };
 
-  const matched = await matchUserPassword(user, input.currentPassword, env);
-  if (!matched) return { ok: false, code: "CURRENT_PASSWORD_INCORRECT" };
-  if (matched === "legacy") {
-    console.warn("[auth] Legacy password accepted for authenticated password transition");
-  }
-  // Also refuse re-using the password the database already holds
-  // (relevant when the current password was accepted via the legacy hash).
-  if (await verifyPassword(input.newPassword, user.passwordHash)) return { ok: false, code: "NEW_PASSWORD_SAME" };
+  if (!(await verifyPassword(input.currentPassword, user.passwordHash))) return { ok: false, code: "CURRENT_PASSWORD_INCORRECT" };
+  // newPassword !== currentPassword is enforced by changePasswordSchema.
 
   const passwordHash = await hashPassword(input.newPassword);
   const { count } = await prisma.user.updateMany({

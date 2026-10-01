@@ -30,9 +30,6 @@ export async function POST(req: Request) {
       if (result.code === "CURRENT_PASSWORD_INCORRECT") {
         return NextResponse.json({ error: "Current password is incorrect." }, { status: 400 });
       }
-      if (result.code === "NEW_PASSWORD_SAME") {
-        return NextResponse.json({ error: "Choose a password different from your current one." }, { status: 400 });
-      }
       return NextResponse.json({ error: "Your password was changed elsewhere. Please sign in again." }, { status: 409 });
     }
     return NextResponse.json({ ok: true });

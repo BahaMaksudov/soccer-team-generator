@@ -315,10 +315,10 @@ describe("M5 sign-up, verification and login (real DB)", () => {
 
   it("DB-backed login works before verification (identity only); wrong password / unknown email → null", async () => {
     await signup("Ann", "ann@example.com", "ann-password-1");
-    const ok = await authenticateCredentials(" ANN@example.com ", "ann-password-1", prisma, {});
+    const ok = await authenticateCredentials(" ANN@example.com ", "ann-password-1", prisma);
     expect(ok).toEqual({ id: expect.any(String), email: "ann@example.com", name: "Ann" });
-    expect(await authenticateCredentials("ann@example.com", "wrong-password", prisma, {})).toBeNull();
-    expect(await authenticateCredentials("ghost@example.com", "ann-password-1", prisma, {})).toBeNull();
+    expect(await authenticateCredentials("ann@example.com", "wrong-password", prisma)).toBeNull();
+    expect(await authenticateCredentials("ghost@example.com", "ann-password-1", prisma)).toBeNull();
   });
 });
 
@@ -751,7 +751,7 @@ describe("M5 existing production owner compatibility (real DB)", () => {
   });
 
   it("the grandfathered owner signs in through the DB path and keeps access to both existing Groups", async () => {
-    const identity = await authenticateCredentials(OWNER_EMAIL, OWNER_PASSWORD, prisma, {});
+    const identity = await authenticateCredentials(OWNER_EMAIL, OWNER_PASSWORD, prisma);
     expect(identity).toMatchObject({ email: OWNER_EMAIL, name: "Bahrom Maksudov" });
     session = { user: { id: identity!.id, email: identity!.email } };
 
@@ -768,12 +768,13 @@ describe("M5 existing production owner compatibility (real DB)", () => {
     expect((await playersRoute.GET(get(), groupParams(NEE, "indoor-soccer"))).status).toBe(200);
   });
 
-  it("the transitional env fallback authenticates the SAME owner row without writing anything", async () => {
+  it("env-based credentials are ignored (legacy fallback retired in M5.1); nothing is written", async () => {
     const before = await prisma.user.findUniqueOrThrow({ where: { email: OWNER_EMAIL } });
-    const env = { ADMIN_EMAIL: OWNER_EMAIL, ADMIN_PASSWORD_HASH: bcrypt.hashSync("rotated-env-password", 4) };
-    expect(await authenticateCredentials(OWNER_EMAIL, "rotated-env-password", prisma, env)).toMatchObject({ id: before.id });
+    vi.stubEnv("ADMIN_EMAIL", OWNER_EMAIL);
+    vi.stubEnv("ADMIN_PASSWORD_HASH", bcrypt.hashSync("rotated-env-password", 4));
+    expect(await authenticateCredentials(OWNER_EMAIL, "rotated-env-password", prisma)).toBeNull();
+    expect(await authenticateCredentials(OWNER_EMAIL, OWNER_PASSWORD, prisma)).toMatchObject({ id: before.id });
     expect(await prisma.user.findUniqueOrThrow({ where: { email: OWNER_EMAIL } })).toEqual(before);
-    expect(await prisma.user.count()).toBe(1);
   });
 
   it("after the M5 flows there is still exactly one owner User, one New England Eagles, one OWNER membership, two Groups", async () => {

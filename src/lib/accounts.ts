@@ -67,8 +67,6 @@ const getDummyHash = () => (dummyHash ??= bcrypt.hash(randomBytes(16).toString("
 
 export type AuthenticatedUser = { id: string; email: string; name: string | null };
 
-export type LegacyAdminEnv = Record<string, string | undefined>;
-
 type UserLookup = {
   user: {
     findUnique(args: { where: { email: string } }): Promise<{ id: string; email: string; name: string | null; passwordHash: string } | null>;
@@ -76,27 +74,17 @@ type UserLookup = {
 };
 
 /**
- * Verifies email + password against the User table.
- *
- * TRANSITIONAL legacy fallback (M5): before M5 the only login was the
- * env credential ADMIN_EMAIL / ADMIN_PASSWORD_HASH. The existing owner's
- * User row was created (Phase 2C) with passwordHash copied from that
- * env hash, so the database path already authenticates them. If the
- * deployed env hash has since diverged from the stored copy, the
- * fallback still lets that ONE existing User sign in — but only:
- *   - when both env vars are set,
- *   - for the email equal to ADMIN_EMAIL,
- *   - when a User row with that email already exists (it never creates
- *     a User and never returns a synthetic identity),
- *   - and it grants nothing beyond that User's own memberships.
- * Each use is logged (no secrets) so it can be observed before the env
- * vars are removed; unsetting ADMIN_PASSWORD_HASH disables it.
+ * Verifies email + password against the User table: normalized email →
+ * User row → bcrypt compare with User.passwordHash. That is the only
+ * credential source (the pre-M5 ADMIN_EMAIL / ADMIN_PASSWORD_HASH
+ * transition fallback was retired in M5.1 after the owner moved onto a
+ * database password). Unknown emails still cost one bcrypt compare, so
+ * timing does not reveal which accounts exist.
  */
 export async function authenticateCredentials(
   rawEmail: string | undefined,
   password: string | undefined,
-  db: UserLookup = prisma,
-  env: LegacyAdminEnv = process.env
+  db: UserLookup = prisma
 ): Promise<AuthenticatedUser | null> {
   const email = normalizeEmail(rawEmail ?? "");
   if (!email || !password) return null;
@@ -106,36 +94,6 @@ export async function authenticateCredentials(
     await verifyPassword(password, await getDummyHash());
     return null;
   }
-
-  const identity = { id: user.id, email: user.email, name: user.name };
-  const matched = await matchUserPassword(user, password, env);
-  if (matched === "legacy") {
-    console.warn("[auth] Signed in via the transitional ADMIN_PASSWORD_HASH fallback (User.passwordHash did not match).");
-  }
-  return matched ? identity : null;
-}
-
-/**
- * The single place a password is checked for an EXISTING User row:
- * first against User.passwordHash (bcrypt); then — only if that fails —
- * the transitional ADMIN_PASSWORD_HASH fallback, under exactly the M5
- * conditions (both env vars set, and this User's normalized email equals
- * ADMIN_EMAIL). Used by login and by Change Password, so the fallback can
- * never be broader in one than the other. Returns which check matched,
- * or null. Never logs or returns either hash.
- */
-export async function matchUserPassword(
-  user: { email: string; passwordHash: string },
-  password: string,
-  env: LegacyAdminEnv = process.env
-): Promise<"database" | "legacy" | null> {
-  if (!password) return null;
-  if (await verifyPassword(password, user.passwordHash)) return "database";
-
-  const legacyEmail = normalizeEmail(env.ADMIN_EMAIL ?? "");
-  const legacyHash = env.ADMIN_PASSWORD_HASH ?? "";
-  if (legacyEmail && legacyHash && normalizeEmail(user.email) === legacyEmail && (await verifyPassword(password, legacyHash))) {
-    return "legacy";
-  }
-  return null;
+  if (!(await verifyPassword(password, user.passwordHash))) return null;
+  return { id: user.id, email: user.email, name: user.name };
 }

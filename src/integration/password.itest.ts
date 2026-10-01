@@ -1,7 +1,7 @@
 /**
- * M5.1 — REAL-DATABASE tests for authenticated Change Password and the
- * transitional owner's move from the legacy ADMIN_PASSWORD_HASH fallback
- * to a normal database password.
+ * M5.1 — REAL-DATABASE tests for authenticated Change Password, and proof
+ * that the retired ADMIN_EMAIL/ADMIN_PASSWORD_HASH fallback no longer
+ * authenticates anyone (login or Change Password), even if still set.
  *
  * Guarded local TEST database only. Real route handler, services, Prisma
  * client and NextAuth Credentials authorize(); only the NextAuth session
@@ -22,8 +22,8 @@ import { authenticateCredentials, verifyPassword } from "@/lib/accounts";
 import * as changeRoute from "@/app/api/account/change-password/route";
 
 const OWNER_EMAIL = "owner@example.test";
-const OWNER_DB_PASSWORD = "stale-db-copy-password"; // what User.passwordHash holds (≠ what the owner types)
-const LEGACY_PASSWORD = "legacy-env-password-1"; // what the owner actually types today
+const OWNER_DB_PASSWORD = "owner-db-password-1"; // what User.passwordHash holds
+const LEGACY_PASSWORD = "legacy-env-password-1"; // what a leftover ADMIN_PASSWORD_HASH would encode
 const NEW_PASSWORD = "brand-new-password-1";
 const OTHER_EMAIL = "other@example.test";
 const OTHER_PASSWORD = "other-password-123";
@@ -71,7 +71,6 @@ async function seed() {
   await prisma.$executeRawUnsafe(
     `TRUNCATE "EmailVerificationToken","OrganizationInvitation","TelegramPollAnswer","TelegramPoll","TelegramUserLink","TelegramChat","TeamGeneration","GroupSetting","Player","Group","OrganizationMembership","Organization","User","AppSetting" RESTART IDENTITY CASCADE`
   );
-  // Production-equivalent: the grandfathered OWNER whose DB hash no longer matches what they type.
   const owner = await prisma.user.create({
     data: { email: OWNER_EMAIL, name: "Owner", passwordHash: bcrypt.hashSync(OWNER_DB_PASSWORD, 4), emailVerifiedAt: new Date("2026-10-01T00:00:00Z") },
   });
@@ -195,90 +194,46 @@ describe("M5.1 Change Password — normal database-authenticated User", () => {
   });
 });
 
-describe("M5.1 Change Password — transitional owner (legacy ADMIN_PASSWORD_HASH)", () => {
-  const stubLegacy = (email = OWNER_EMAIL) => {
-    vi.stubEnv("ADMIN_EMAIL", email);
+describe("M5.1 legacy fallback retired — only User.passwordHash authenticates", () => {
+  const stubLegacy = () => {
+    vi.stubEnv("ADMIN_EMAIL", OWNER_EMAIL);
     vi.stubEnv("ADMIN_PASSWORD_HASH", legacyHash);
   };
 
-  it("production-equivalent: login today uses the fallback (DB hash does not match)", async () => {
+  it("with ADMIN_EMAIL/ADMIN_PASSWORD_HASH still set, the env password no longer logs in (NextAuth authorize)", async () => {
     stubLegacy();
-    expect(await nextAuthLogin(OWNER_EMAIL, LEGACY_PASSWORD)).toMatchObject({ email: OWNER_EMAIL });
-    expect(authMessages()).toEqual([expect.stringContaining("transitional ADMIN_PASSWORD_HASH fallback")]);
-  });
-
-  it("legacy current password → change succeeds; the new password then logs in via the DB hash WITHOUT the fallback", async () => {
-    stubLegacy();
-    const before = await tenantFingerprint();
-    const owner = await signInAs(OWNER_EMAIL);
-
-    const res = await change(LEGACY_PASSWORD);
-    expect(res.status).toBe(200);
-    const body = await res.text();
-    expect(body).not.toMatch(/legacy|ADMIN|\$2[aby]\$/i);
-    expect(authMessages()).toEqual(["[auth] Legacy password accepted for authenticated password transition"]);
-    for (const m of (warn.mock.calls as unknown[][]).flat().map(String)) {
-      expect(m).not.toContain(OWNER_EMAIL);
-      expect(m).not.toContain(LEGACY_PASSWORD);
-      expect(m).not.toContain(NEW_PASSWORD);
-      expect(m).not.toContain(legacyHash);
-    }
-
-    const after = await prisma.user.findUniqueOrThrow({ where: { id: owner.id } });
-    expect(after.passwordHash).toMatch(/^\$2[aby]\$12\$/);
-    expect(after.passwordHash).not.toBe(legacyHash);
-    expect(await verifyPassword(NEW_PASSWORD, after.passwordHash)).toBe(true);
-    expect(await verifyPassword(LEGACY_PASSWORD, after.passwordHash)).toBe(false);
-    expect(await verifyPassword(OWNER_DB_PASSWORD, after.passwordHash)).toBe(false);
-    expect(await tenantFingerprint()).toBe(before);
-
-    // Login regression through NextAuth's real authorize(): DB path only.
-    warn.mockClear();
-    expect(await nextAuthLogin(OWNER_EMAIL, NEW_PASSWORD)).toMatchObject({ id: owner.id, email: OWNER_EMAIL });
-    expect(authMessages()).toEqual([]); // fallback branch NOT entered
-
-    // With the legacy env removed, the new password still works and the old legacy one does not.
-    vi.unstubAllEnvs();
-    expect(await authenticateCredentials(OWNER_EMAIL, NEW_PASSWORD, prisma, {})).toMatchObject({ id: owner.id });
-    expect(await authenticateCredentials(OWNER_EMAIL, LEGACY_PASSWORD, prisma, {})).toBeNull();
-  });
-
-  it("wrong legacy current password → rejected, no change", async () => {
-    stubLegacy();
-    const owner = await signInAs(OWNER_EMAIL);
-    expect((await change("wrong-legacy-password")).status).toBe(400);
-    expect((await prisma.user.findUniqueOrThrow({ where: { id: owner.id } })).passwordHash).toBe(owner.passwordHash);
-  });
-
-  it("a different authenticated User cannot use the legacy password", async () => {
-    stubLegacy();
-    const other = await signInAs(OTHER_EMAIL);
-    const res = await change(LEGACY_PASSWORD);
-    expect(res.status).toBe(400);
-    expect(await res.json()).toEqual({ error: "Current password is incorrect." });
-    expect((await prisma.user.findUniqueOrThrow({ where: { id: other.id } })).passwordHash).toBe(other.passwordHash);
+    expect(await nextAuthLogin(OWNER_EMAIL, LEGACY_PASSWORD)).toBeNull();
+    expect(await nextAuthLogin(OWNER_EMAIL, OWNER_DB_PASSWORD)).toMatchObject({ email: OWNER_EMAIL });
     expect(authMessages()).toEqual([]);
   });
 
-  it("ADMIN_EMAIL naming someone else → the owner cannot use the legacy password", async () => {
-    stubLegacy(OTHER_EMAIL);
-    const owner = await signInAs(OWNER_EMAIL);
-    expect((await change(LEGACY_PASSWORD)).status).toBe(400);
-    expect((await prisma.user.findUniqueOrThrow({ where: { id: owner.id } })).passwordHash).toBe(owner.passwordHash);
-  });
-
-  it("missing legacy configuration → fallback unavailable", async () => {
-    const owner = await signInAs(OWNER_EMAIL);
-    expect((await change(LEGACY_PASSWORD)).status).toBe(400);
-    vi.stubEnv("ADMIN_EMAIL", OWNER_EMAIL); // hash still missing
-    expect((await change(LEGACY_PASSWORD)).status).toBe(400);
-    expect((await prisma.user.findUniqueOrThrow({ where: { id: owner.id } })).passwordHash).toBe(owner.passwordHash);
-  });
-
-  it("the legacy path cannot set the new password to the stale DB copy (must differ from the stored password)", async () => {
+  it("Change Password does not accept the env password as the current password", async () => {
     stubLegacy();
-    await signInAs(OWNER_EMAIL);
-    expect((await change(LEGACY_PASSWORD, OWNER_DB_PASSWORD)).status).toBe(400);
+    const owner = await signInAs(OWNER_EMAIL);
+    const res = await change(LEGACY_PASSWORD);
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: "Current password is incorrect." });
+    expect((await prisma.user.findUniqueOrThrow({ where: { id: owner.id } })).passwordHash).toBe(owner.passwordHash);
+    expect(authMessages()).toEqual([]);
+  });
+
+  it("owner changes password with the database password; the new password logs in through authorize() with no fallback", async () => {
+    stubLegacy();
+    const before = await tenantFingerprint();
+    const owner = await signInAs(OWNER_EMAIL);
+    expect((await change(OWNER_DB_PASSWORD)).status).toBe(200);
+
+    const after = await prisma.user.findUniqueOrThrow({ where: { id: owner.id } });
+    expect(after.passwordHash).toMatch(/^\$2[aby]\$12\$/);
+    expect(await verifyPassword(NEW_PASSWORD, after.passwordHash)).toBe(true);
+    expect(await verifyPassword(OWNER_DB_PASSWORD, after.passwordHash)).toBe(false);
+    expect(await tenantFingerprint()).toBe(before);
+
+    expect(await nextAuthLogin(OWNER_EMAIL, NEW_PASSWORD)).toMatchObject({ id: owner.id, email: OWNER_EMAIL });
+    expect(await nextAuthLogin(OWNER_EMAIL, OWNER_DB_PASSWORD)).toBeNull();
+    expect(await nextAuthLogin(OWNER_EMAIL, LEGACY_PASSWORD)).toBeNull();
+    expect(await authenticateCredentials(OWNER_EMAIL, NEW_PASSWORD, prisma)).toMatchObject({ id: owner.id });
+    expect(authMessages()).toEqual([]);
   });
 });
 

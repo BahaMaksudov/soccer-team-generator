@@ -79,7 +79,7 @@ describe("invitations are consumed only by explicit acceptance", () => {
   });
 });
 
-describe("M5.1 — Change Password stays narrow", () => {
+describe("M5.1 — Change Password stays narrow; no env credentials", () => {
   it("the route resolves the User only from the session and the service writes only passwordHash", () => {
     const route = stripComments(read("src/app/api/account/change-password/route.ts"));
     expect(route).toContain("requireSessionAccount()");
@@ -90,8 +90,7 @@ describe("M5.1 — Change Password stays narrow", () => {
     expect(svc).not.toMatch(/emailVerifiedAt|organizationMembership|console\.(log|info|error)/);
   });
 
-  it("the legacy check exists in exactly one place (shared by login and Change Password)", () => {
-    const users = sources.filter(([, c]) => /ADMIN_PASSWORD_HASH/.test(c)).map(([f]) => f);
-    expect(users).toEqual([path.join("src", "lib", "accounts.ts")]);
+  it("no production source reads env-based admin credentials (fallback retired)", () => {
+    expect(sources.filter(([, c]) => /ADMIN_PASSWORD_HASH|ADMIN_EMAIL/.test(c)).map(([f]) => f)).toEqual([]);
   });
 });

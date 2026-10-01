@@ -18,8 +18,7 @@
 3) Create env:
    cp .env.example .env
    openssl rand -base64 32   # paste into NEXTAUTH_SECRET
-   node -e "const bcrypt=require('bcrypt'); bcrypt.hash('YourPassword123!',10).then(console.log)"
-   # paste into ADMIN_PASSWORD_HASH
+   # Accounts are database-backed: sign up at /signup (no admin env credentials).
 4) Init DB:
    npx prisma migrate dev --name init
 5) Run:
