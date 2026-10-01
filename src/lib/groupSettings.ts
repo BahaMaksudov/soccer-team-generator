@@ -1,7 +1,8 @@
 import { prisma } from "@/lib/prisma";
 import { NextResponse } from "next/server";
 import { teamNameSchema, balanceWeightsSchema, zodErrorResponse } from "@/lib/validation";
-import { DEFAULT_BALANCE_WEIGHTS, mergeBalanceWeights } from "@/lib/scoring";
+import { resolveBalanceConfig } from "@/lib/balanceEngine";
+import { findSport, type SportDefinition } from "@/lib/sports";
 import type { TenantContext } from "@/lib/tenantContext";
 
 /**
@@ -66,26 +67,48 @@ export async function saveTeamNameForContext(context: TenantContext, req: Reques
   return NextResponse.json({ ok: true, teamName: nextName });
 }
 
+/**
+ * M7 — the Group's stored balanceWeights GroupSetting, parsed (undefined
+ * when absent or malformed). Shared by Generate and Publish so both
+ * score players identically.
+ */
+export async function loadStoredBalanceWeights(activeGroupId: string): Promise<unknown> {
+  const row = await prisma.groupSetting.findUnique({ where: { groupId_key: { groupId: activeGroupId, key: BALANCE_WEIGHTS_KEY } } });
+  if (!row?.value) return undefined;
+  try {
+    return JSON.parse(row.value);
+  } catch {
+    return undefined;
+  }
+}
+
+/** M7 — the stored shape: { staminaCoef, positionWeights } keyed by the sport's role keys. */
+function weightsFor(sport: SportDefinition, stored: unknown) {
+  const config = resolveBalanceConfig(sport, stored);
+  return { staminaCoef: config.staminaCoef, positionWeights: config.roleWeights };
+}
+
+const UNSUPPORTED_SPORT = () => NextResponse.json({ error: "This group's sport is not supported." }, { status: 400 });
+
 export async function getBalanceWeightsForContext(context: TenantContext): Promise<NextResponse> {
+  // M7 — defaults and allowed role keys come from the Group's own sport.
+  const sport = findSport(context.activeGroup.sportKey);
+  if (!sport) return UNSUPPORTED_SPORT();
+
   const row = await prisma.groupSetting.findUnique({
     where: { groupId_key: { groupId: context.activeGroup.id, key: BALANCE_WEIGHTS_KEY } },
   });
 
-  // No GroupSetting yet for this Group -> application defaults. Never
+  // No GroupSetting yet for this Group -> the sport's defaults. Never
   // fall back to the legacy global AppSetting.balanceWeights row or
-  // to another Group's row.
-  if (!row?.value) {
-    return NextResponse.json({ weights: DEFAULT_BALANCE_WEIGHTS });
-  }
-
+  // to another Group's row. Malformed stored fields fall back field by field.
+  let stored: unknown;
   try {
-    const parsed = JSON.parse(row.value);
-    // mergeBalanceWeights never throws — malformed/legacy stored
-    // fields are safely ignored.
-    return NextResponse.json({ weights: mergeBalanceWeights(parsed) });
+    stored = row?.value ? JSON.parse(row.value) : undefined;
   } catch {
-    return NextResponse.json({ weights: DEFAULT_BALANCE_WEIGHTS });
+    stored = undefined;
   }
+  return NextResponse.json({ weights: weightsFor(sport, stored) });
 }
 
 export async function saveBalanceWeightsForContext(context: TenantContext, req: Request): Promise<NextResponse> {
@@ -99,9 +122,16 @@ export async function saveBalanceWeightsForContext(context: TenantContext, req: 
     );
   }
 
-  // Normalize through mergeBalanceWeights so only the known,
-  // currently meaningful fields are ever persisted.
-  const weights = mergeBalanceWeights(parsed.data);
+  const sport = findSport(context.activeGroup.sportKey);
+  if (!sport) return UNSUPPORTED_SPORT();
+
+  // M7 — only this sport's role keys may be weighted (no cross-sport or
+  // invented roles), then normalize so only meaningful fields are persisted.
+  const unknownRoles = Object.keys(parsed.data.positionWeights ?? {}).filter((k) => !sport.roles.some((r) => r.key === k));
+  if (unknownRoles.length > 0) {
+    return NextResponse.json({ error: `Unknown ${sport.terminology.roleNoun.toLowerCase()} for ${sport.label}: ${unknownRoles.join(", ")}` }, { status: 400 });
+  }
+  const weights = weightsFor(sport, parsed.data);
 
   // Server determines group ownership — balanceWeightsSchema has no
   // groupId field and this function never reads body.groupId at all.

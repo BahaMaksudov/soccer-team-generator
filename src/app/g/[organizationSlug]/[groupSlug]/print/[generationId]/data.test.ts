@@ -174,7 +174,8 @@ describe("loadPublicGroupPrintData — DTO", () => {
     });
 
     expect(data).not.toHaveProperty("groupId");
-    expect(Object.keys(data ?? {}).sort()).toEqual(["date", "id", "teams", "updatedAt"]);
+    // M7: + sportKey (role labels only).
+    expect(Object.keys(data ?? {}).sort()).toEqual(["date", "id", "sportKey", "teams", "updatedAt"]);
 
     // Also assert the Prisma select itself never requests groupId.
     const call = mockTeamGenerationFindFirst.mock.calls[0][0];

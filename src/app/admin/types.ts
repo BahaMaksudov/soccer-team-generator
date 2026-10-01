@@ -8,7 +8,8 @@ export type Player = {
   id: string;
   firstName: string;
   lastName: string;
-  position: "GOALKEEPER" | "DEFENDER" | "MIDFIELDER" | "FORWARD";
+  /** M7: sport-scoped role key. */
+  position: string;
   rating: "FAIR" | "GOOD" | "VERY_GOOD" | "EXCELLENT";
   stamina: number;
   isActive: boolean;

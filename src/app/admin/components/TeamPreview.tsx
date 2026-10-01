@@ -1,6 +1,6 @@
 "use client";
 
-import { positionLabel } from "@/lib/labels";
+import { roleLabel } from "@/lib/sports";
 import { formatLongDateOnly } from "@/lib/dateOnly";
 import type { GeneratedTeam } from "../types";
 
@@ -10,9 +10,12 @@ import type { GeneratedTeam } from "../types";
 export default function TeamPreview({
   previewTeams,
   previewDate,
+  sportKey,
 }: {
   previewTeams: GeneratedTeam[];
   previewDate: string;
+  /** M7 — role labels come from the Group's sport. */
+  sportKey: string;
 }) {
   return (
     <div className="border rounded-2xl overflow-hidden bg-white shadow-sm mt-4">
@@ -51,7 +54,7 @@ export default function TeamPreview({
                   <ul className="list-disc pl-5 space-y-1">
                     {t.players.map((p) => (
                       <li key={p.id}>
-                        {p.firstName} {p.lastName} — <span className="text-slate-600">{positionLabel(p.position)}</span>
+                        {p.firstName} {p.lastName} — <span className="text-slate-600">{roleLabel(sportKey, p.position)}</span>
                       </li>
                     ))}
                   </ul>

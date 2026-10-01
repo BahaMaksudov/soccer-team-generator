@@ -179,6 +179,7 @@ describe("M6-A share links", () => {
     const body = await res.json();
     expect(body).toEqual({
       groupName: "group-a",
+      sportKey: "soccer", // M7: role labels only
       teamName: "Team group-a",
       generations: [{ date: "2026-10-05", teams: [{ teamNumber: 1, players: [{ firstName: "First-ga", lastName: "Last", position: "GOALKEEPER" }] }] }],
     });

@@ -7,12 +7,10 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
-enum Position {
-  GOALKEEPER
-  DEFENDER
-  MIDFIELDER
-  FORWARD
-}
+// M7: the soccer-only `enum Position` was removed — Player.position is now a
+// sport-scoped role key (TEXT), validated against the Group's SportDefinition
+// (src/lib/sports). Existing values (GOALKEEPER/DEFENDER/MIDFIELDER/FORWARD)
+// were preserved byte-for-byte by migration #17.
 
 enum Rating {
   FAIR
@@ -351,7 +349,8 @@ model Player {
   id        String   @id @default(cuid())
   firstName String
   lastName  String
-  position  Position
+  // M7: sport-scoped role key (see src/lib/sports); was enum Position.
+  position  String
   rating    Rating
   stamina   Int      @default(3)
   isActive  Boolean  @default(true)
@@ -397,6 +396,13 @@ model TeamGeneration {
   teamsJson String
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+
+  // M7 — generation metadata recorded on publish. NULL on rows published
+  // before M7 (= legacy soccer generation); never backfilled. metricsJson
+  // holds aggregate BalanceMetrics only (no player ids/names/identity).
+  sportKey      String?
+  engineVersion String?
+  metricsJson   String?
 
   // Phase 2D.7 — required (NOT NULL): every row belongs to exactly one
   // Group. onDelete: Restrict — a Group cannot be deleted while it still

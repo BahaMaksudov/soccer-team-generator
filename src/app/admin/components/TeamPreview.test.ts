@@ -25,6 +25,7 @@ function withTZ<T>(tz: string, fn: () => T): T {
 function shownDate(previewDate: string): string {
   const html = renderToStaticMarkup(
     createElement(TeamPreview, {
+      sportKey: "soccer",
       previewDate,
       previewTeams: [
         { teamNumber: 1, players: [{ id: "p1", firstName: "test", lastName: "one", position: "MIDFIELDER" }] },
@@ -57,6 +58,7 @@ describe("TeamPreview date display is timezone-safe", () => {
   it("still renders the teams and players unchanged", () => {
     const html = renderToStaticMarkup(
       createElement(TeamPreview, {
+        sportKey: "soccer",
         previewDate: "2026-10-05T00:00:00.000Z",
         previewTeams: [
           { teamNumber: 1, players: [{ id: "p1", firstName: "test", lastName: "one", position: "MIDFIELDER" }] },

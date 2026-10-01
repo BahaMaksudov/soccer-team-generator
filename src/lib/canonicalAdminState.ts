@@ -1,4 +1,5 @@
 import type { PublishedGeneration } from "@/lib/closeAndPostUi";
+import { rosterRoleCoverage, type RoleCoverage, type SportRules } from "@/lib/balanceEngine";
 
 /**
  * Phase 2D.6D.5E.3 — pure, framework-free helpers for canonical Admin
@@ -9,7 +10,8 @@ import type { PublishedGeneration } from "@/lib/closeAndPostUi";
  * isActive+groupId-scoped Generate lookup, the groupId-scoped delete).
  */
 
-export type PlayerPosition = "GOALKEEPER" | "DEFENDER" | "MIDFIELDER" | "FORWARD";
+/** M7: a sport-scoped role key (allowed values come from the Group's SportDefinition). */
+export type PlayerPosition = string;
 export type PlayerRating = "FAIR" | "GOOD" | "VERY_GOOD" | "EXCELLENT";
 
 type PlayerLike = {
@@ -22,7 +24,6 @@ type PlayerLike = {
   isActive: boolean;
 };
 
-export const PLAYER_POSITIONS: PlayerPosition[] = ["GOALKEEPER", "DEFENDER", "MIDFIELDER", "FORWARD"];
 export const PLAYER_RATINGS: PlayerRating[] = ["FAIR", "GOOD", "VERY_GOOD", "EXCELLENT"];
 /** Same 1–5 range as validation.ts staminaSchema; 3 is the server default. */
 export const STAMINA_OPTIONS = [1, 2, 3, 4, 5] as const;
@@ -41,11 +42,12 @@ export type PlayerFormValues = {
   isActive: boolean;
 };
 
-export function emptyPlayerForm(): PlayerFormValues {
+/** `defaultRole` comes from the Group's sport (newPlayerRoleKey; soccer keeps Midfielder). */
+export function emptyPlayerForm(defaultRole: PlayerPosition = "MIDFIELDER"): PlayerFormValues {
   return {
     firstName: "",
     lastName: "",
-    position: "MIDFIELDER",
+    position: defaultRole,
     rating: "GOOD",
     stamina: DEFAULT_STAMINA,
     isActive: true,
@@ -64,9 +66,9 @@ export function playerFormFromPlayer(p: PlayerLike): PlayerFormValues {
 }
 
 /** Client-side pre-check; returns an error message or null. */
-export function validatePlayerForm(v: PlayerFormValues): string | null {
+export function validatePlayerForm(v: PlayerFormValues, roleKeys: readonly string[], roleNoun = "position"): string | null {
   if (!v.firstName.trim() || !v.lastName.trim()) return "First name and last name are required.";
-  if (!PLAYER_POSITIONS.includes(v.position)) return "Choose a valid position.";
+  if (!roleKeys.includes(v.position)) return `Choose a valid ${roleNoun.toLowerCase()}.`;
   if (!PLAYER_RATINGS.includes(v.rating)) return "Choose a valid rating.";
   if (!(STAMINA_OPTIONS as readonly number[]).includes(v.stamina)) return "Stamina must be between 1 and 5.";
   return null;
@@ -138,18 +140,34 @@ export function selectAllActiveState(
   return count === active.length ? "all" : "some";
 }
 
-/** Same count legacy GenerationControls used: selected, active goalkeepers. */
-export function countSelectedGoalkeepers(
+/**
+ * M7 — sport-aware pre-generation role check over the selected, active
+ * players (replaces the soccer-only goalkeeper count). Only the sport's
+ * non-IGNORE role rules are checked, so basketball/volleyball never see a
+ * goalkeeper line. For soccer this is the legacy rule exactly: warn when
+ * fewer goalkeepers than teams are selected. Advisory only.
+ */
+export function selectedRoleCoverage(
+  sport: SportRules,
   players: Pick<PlayerLike, "id" | "isActive" | "position">[],
-  selectedIds: string[]
-): number {
+  selectedIds: string[],
+  teamCount: number
+): RoleCoverage[] {
   const sel = new Set(selectedIds);
-  return players.filter((p) => sel.has(p.id) && p.isActive && p.position === "GOALKEEPER").length;
+  return rosterRoleCoverage(sport, players.filter((p) => sel.has(p.id) && p.isActive), teamCount);
 }
 
-/** Legacy warning rule, unchanged: fewer selected goalkeepers than teams. Advisory only. */
-export function shouldWarnGoalkeepers(selectedGoalkeepers: number, teamCount: number): boolean {
-  return selectedGoalkeepers < teamCount;
+/** UI line for a short role, labels from the sport ("Goalkeepers: 2 available for 3 teams"). */
+export function roleCoverageMessage(
+  sport: Pick<SportRules, "roles">,
+  c: Pick<RoleCoverage, "roleKey" | "available" | "needed" | "perTeam" | "warn">,
+  teamCount: number
+): string {
+  const plural = sport.roles.find((r) => r.key === c.roleKey)?.pluralLabel ?? c.roleKey;
+  if (!c.warn) return `${plural}: ${c.available} across ${teamCount} teams`;
+  return c.perTeam === 1
+    ? `${plural}: ${c.available} available for ${teamCount} teams`
+    : `${plural}: ${c.available} available, ${c.needed} needed for ${teamCount} teams`;
 }
 
 // ---------------------------------------------------------------

@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { positionLabel } from "@/lib/labels";
+import { findSport, roleLabel } from "@/lib/sports";
 import { loadPublicGroupHomeData } from "./data";
 import { buildCanonicalPrintHref } from "./printHref";
 
@@ -49,6 +49,9 @@ export default async function PublicGroupHome({
   if (!data) notFound();
 
   const { items, page, totalPages } = data;
+  // M7 — role labels/noun from this Group's sport (never soccer wording elsewhere).
+  const sportKey = data.publicGroup.group.sportKey;
+  const roleNoun = findSport(sportKey)?.terminology.roleNoun ?? "Role";
 
   return (
     <div className="space-y-6">
@@ -92,7 +95,7 @@ export default async function PublicGroupHome({
                   <thead className="bg-white">
                     <tr>
                       <th className="text-left p-3 w-28">Team</th>
-                      <th className="text-left p-3">Players (Name — Position)</th>
+                      <th className="text-left p-3">Players (Name — {roleNoun})</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -104,7 +107,7 @@ export default async function PublicGroupHome({
                             {t.players.map((p, i) => (
                               <li key={i}>
                                 {p.firstName} {p.lastName} —{" "}
-                                <span className="text-gray-600">{p.position ? positionLabel(p.position) : ""}</span>
+                                <span className="text-gray-600">{p.position ? roleLabel(sportKey, p.position) : ""}</span>
                               </li>
                             ))}
                           </ul>

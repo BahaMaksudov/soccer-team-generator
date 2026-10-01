@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { adminTenantApiPath } from "@/lib/adminTenantApi";
 import TeamPreview from "@/app/admin/components/TeamPreview";
 import type { GeneratedTeam } from "@/app/admin/types";
@@ -12,8 +12,11 @@ import {
   deletePublishedPath,
   isYmd,
   publishedGenerationAfterDelete,
-  shouldWarnGoalkeepers,
+  roleCoverageMessage,
+  selectedRoleCoverage,
 } from "@/lib/canonicalAdminState";
+import type { SportClientView } from "@/lib/sports";
+import type { Player } from "./CanonicalAdminWorkspace";
 
 /**
  * Phase 2D.6D.2 — canonical tenant-bound Generate preview.
@@ -45,12 +48,18 @@ import {
  * warning is back; and Delete Published Teams calls the canonical
  * DELETE /publish?date=… (Group-scoped by the URL) after an explicit
  * inline confirmation. Deleting never touches Telegram.
+ *
+ * M7 — the goalkeeper note became sport-aware role coverage: the Group's
+ * SportDefinition decides which roles are checked (soccer: goalkeepers,
+ * volleyball: setters, flag football: quarterbacks, basketball: Bigs as
+ * information only; Other: none) and supplies the labels.
  */
 export default function CanonicalGenerateSection({
   organizationSlug,
   groupSlug,
   selectedIds,
-  selectedGoalkeeperCount,
+  players,
+  sport,
   date,
   onDateChange,
   onMessage,
@@ -60,7 +69,8 @@ export default function CanonicalGenerateSection({
   organizationSlug: string;
   groupSlug: string;
   selectedIds: string[];
-  selectedGoalkeeperCount: number;
+  players: Player[];
+  sport: SportClientView;
   date: string;
   onDateChange: (date: string) => void;
   onMessage: (msg: string | null) => void;
@@ -71,6 +81,11 @@ export default function CanonicalGenerateSection({
 
   const [previewTeams, setPreviewTeams] = useState<GeneratedTeam[] | null>(null);
   const [previewDate, setPreviewDate] = useState<string | null>(null);
+  const [previewWarnings, setPreviewWarnings] = useState<Array<{ code: string; roleKey?: string; count?: number }>>([]);
+  const shortRoles = useMemo(
+    () => selectedRoleCoverage(sport, players, selectedIds, teamCount).filter((c) => c.short),
+    [sport, players, selectedIds, teamCount]
+  );
   const [publishing, setPublishing] = useState(false);
   const published = publishedGeneration !== null;
 
@@ -89,12 +104,14 @@ export default function CanonicalGenerateSection({
     }
     setPreviewTeams(data.teams);
     setPreviewDate(data.date);
+    setPreviewWarnings(Array.isArray(data.warnings) ? data.warnings : []);
     onMessage("Preview generated. If it looks good, click Publish.");
   }
 
   function clearPreview() {
     setPreviewTeams(null);
     setPreviewDate(null);
+    setPreviewWarnings([]);
     onPublishedGenerationChange(null);
     onMessage("Preview cleared.");
   }
@@ -214,13 +231,29 @@ export default function CanonicalGenerateSection({
         )}
       </div>
 
-      {selectedIds.length > 0 && shouldWarnGoalkeepers(selectedGoalkeeperCount, teamCount) && (
-        <div className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded px-3 py-2">
-          Note: Only <b>{selectedGoalkeeperCount}</b> goalkeeper(s) selected for <b>{teamCount}</b> teams.
-        </div>
-      )}
+      {selectedIds.length > 0 &&
+        shortRoles.map((c) => (
+          <div
+            key={c.roleKey}
+            className={
+              c.warn
+                ? "text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded px-3 py-2"
+                : "text-xs text-gray-600 bg-gray-50 border rounded px-3 py-2"
+            }
+          >
+            Note: {roleCoverageMessage(sport, c, teamCount)}
+          </div>
+        ))}
 
-      {previewTeams && previewDate && <TeamPreview previewTeams={previewTeams} previewDate={previewDate} />}
+      {previewWarnings
+        .filter((w) => w.code === "UNKNOWN_ROLE")
+        .map((w) => (
+          <div key={`unknown-${w.roleKey}`} className="text-xs text-amber-700">
+            {w.count} player(s) have a {sport.terminology.roleNoun.toLowerCase()} that isn&apos;t used in {sport.label} ({w.roleKey}); they were balanced as a general player.
+          </div>
+        ))}
+
+      {previewTeams && previewDate && <TeamPreview previewTeams={previewTeams} previewDate={previewDate} sportKey={sport.key} />}
 
       <div className="pt-3 border-t space-y-2">
         <div className="text-sm font-medium">Delete Published Teams</div>

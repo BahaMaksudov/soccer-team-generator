@@ -39,8 +39,13 @@ describe("createWorkspaceSchema", () => {
     expect(parsed).toEqual(ok);
   });
 
-  it("soccer is the only supported sport for now", () => {
-    expect(createWorkspaceSchema.safeParse({ ...ok, sportKey: "basketball" }).success).toBe(false);
+  it("M7: every registry sport is accepted; arbitrary sport strings are rejected", () => {
+    for (const sportKey of ["soccer", "basketball", "volleyball", "flag_football", "other"]) {
+      expect(createWorkspaceSchema.safeParse({ ...ok, sportKey }).success).toBe(true);
+    }
+    for (const sportKey of ["american_football", "hockey", "Soccer", "", "soccer "]) {
+      expect(createWorkspaceSchema.safeParse({ ...ok, sportKey }).success).toBe(false);
+    }
   });
 
   it("requires a real IANA timezone", () => {

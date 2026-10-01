@@ -4,11 +4,8 @@ import { useEffect, useMemo, useState } from "react";
 import { adminTenantApiPath } from "@/lib/adminTenantApi";
 import { applyImportedPlayerSelection } from "@/lib/telegramImportSelection";
 import type { PublishedGeneration } from "@/lib/closeAndPostUi";
-import {
-  applySelectAllActive,
-  countSelectedGoalkeepers,
-  pruneSelection,
-} from "@/lib/canonicalAdminState";
+import { applySelectAllActive, pruneSelection } from "@/lib/canonicalAdminState";
+import type { SportClientView } from "@/lib/sports";
 import CanonicalPlayersSection from "./CanonicalPlayersSection";
 import CanonicalGenerateSection from "./CanonicalGenerateSection";
 import CanonicalSettingsSection from "./CanonicalSettingsSection";
@@ -35,7 +32,8 @@ export type Player = {
   id: string;
   firstName: string;
   lastName: string;
-  position: "GOALKEEPER" | "DEFENDER" | "MIDFIELDER" | "FORWARD";
+  /** M7: sport-scoped role key. */
+  position: string;
   rating: "FAIR" | "GOOD" | "VERY_GOOD" | "EXCELLENT";
   stamina: number;
   isActive: boolean;
@@ -65,9 +63,12 @@ export type ImportedPollResult = {
 export default function CanonicalAdminWorkspace({
   organizationSlug,
   groupSlug,
+  sport,
 }: {
   organizationSlug: string;
   groupSlug: string;
+  /** M7 — the Group's sport (roles, labels, rules); plain serializable data. */
+  sport: SportClientView;
 }) {
   const [players, setPlayers] = useState<Player[]>([]);
   const [loading, setLoading] = useState(true);
@@ -135,11 +136,6 @@ export default function CanonicalAdminWorkspace({
     [selected]
   );
 
-  const selectedGoalkeeperCount = useMemo(
-    () => countSelectedGoalkeepers(players, selectedIds),
-    [players, selectedIds]
-  );
-
   return (
     <div>
       {message && <div className="text-sm text-blue-700 mt-2">{message}</div>}
@@ -154,13 +150,15 @@ export default function CanonicalAdminWorkspace({
         onSelectAllActive={selectAllActive}
         onMessage={setMessage}
         refreshPlayers={loadPlayers}
+        sport={sport}
       />
 
       <CanonicalGenerateSection
         organizationSlug={organizationSlug}
         groupSlug={groupSlug}
         selectedIds={selectedIds}
-        selectedGoalkeeperCount={selectedGoalkeeperCount}
+        players={players}
+        sport={sport}
         date={generateDate}
         onDateChange={setGenerateDate}
         onMessage={setMessage}
@@ -171,6 +169,7 @@ export default function CanonicalAdminWorkspace({
       <CanonicalSettingsSection
         organizationSlug={organizationSlug}
         groupSlug={groupSlug}
+        sport={sport}
         onMessage={setMessage}
       />
 

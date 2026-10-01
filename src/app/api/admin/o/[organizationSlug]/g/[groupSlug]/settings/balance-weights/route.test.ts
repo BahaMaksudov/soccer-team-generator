@@ -32,6 +32,8 @@ vi.mock("next/cache", () => ({ revalidatePath: vi.fn() }));
 
 import { GET, POST, PUT } from "./route";
 import { DEFAULT_BALANCE_WEIGHTS } from "@/lib/scoring";
+// M7: soccer defaults are the pre-M7 defaults plus the new ANY role (weight 2).
+const SOCCER_DEFAULTS = { ...DEFAULT_BALANCE_WEIGHTS, positionWeights: { ...DEFAULT_BALANCE_WEIGHTS.positionWeights, ANY: 2 } };
 import { TenantContextError } from "@/lib/tenantContext";
 
 const GROUP_A = { id: "group-a", name: "A", slug: "group-a", sportKey: "soccer", timezone: "America/New_York" };
@@ -87,7 +89,7 @@ describe("GET canonical balance-weights — read isolation", () => {
     const res = await GET(new Request("http://localhost"), ctx("org-a", "group-a"));
     const json = await res.json();
 
-    expect(json.weights).toEqual(DEFAULT_BALANCE_WEIGHTS);
+    expect(json.weights).toEqual(SOCCER_DEFAULTS);
     expect(mockAppSettingFindUnique).not.toHaveBeenCalled();
   });
 
@@ -98,7 +100,7 @@ describe("GET canonical balance-weights — read isolation", () => {
     const res = await GET(new Request("http://localhost"), ctx("org-a", "group-a"));
     const json = await res.json();
 
-    expect(json.weights).toEqual(DEFAULT_BALANCE_WEIGHTS);
+    expect(json.weights).toEqual(SOCCER_DEFAULTS);
   });
 
   it("unknown Organization fails closed before any GroupSetting read", async () => {

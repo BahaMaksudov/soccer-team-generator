@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { positionLabel } from "@/lib/labels";
+import { findSport, roleLabel } from "@/lib/sports";
 
 /**
  * Phase 2D.5C — canonical, Group-aware Players client.
@@ -18,22 +18,24 @@ import { positionLabel } from "@/lib/labels";
  * browser never asserts ownership.
  */
 
-type Position = "GOALKEEPER" | "DEFENDER" | "MIDFIELDER" | "FORWARD";
-
 type Player = {
   id: string;
   firstName: string;
   lastName: string;
-  position: Position;
+  /** M7: sport-scoped role key. */
+  position: string;
   isActive: boolean;
 };
 
 export default function CanonicalPlayersClient({
   organizationSlug,
   groupSlug,
+  sportKey,
 }: {
   organizationSlug: string;
   groupSlug: string;
+  /** M7 — role labels come from the Group's sport. */
+  sportKey: string;
 }) {
   const [players, setPlayers] = useState<Player[]>([]);
   const [loading, setLoading] = useState(true);
@@ -83,7 +85,7 @@ export default function CanonicalPlayersClient({
               <thead className="bg-slate-900 text-white">
                 <tr>
                   <th className="p-3 text-left">Name</th>
-                  <th className="p-3 text-left">Position</th>
+                  <th className="p-3 text-left">{findSport(sportKey)?.terminology.roleNoun ?? "Role"}</th>
                   <th className="p-3 text-left">Status</th>
                 </tr>
               </thead>
@@ -92,7 +94,7 @@ export default function CanonicalPlayersClient({
                 {rows.map((p) => (
                   <tr key={p.id} className="border-t hover:bg-slate-50">
                     <td className="p-3">{p.fullName}</td>
-                    <td className="p-3">{positionLabel(p.position)}</td>
+                    <td className="p-3">{roleLabel(sportKey, p.position)}</td>
                     <td className="p-3">
                       <span
                         className={`px-2 py-1 rounded-full text-xs border ${

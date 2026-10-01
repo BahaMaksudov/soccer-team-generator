@@ -40,7 +40,8 @@ describe("canonical Player create/edit", () => {
   });
 
   it("the shared form exposes all six fields", () => {
-    for (const label of ["First Name", "Last Name", "Position", "Rating", "Stamina", "Active"]) {
+    // M7: the role label comes from the sport ({sport.terminology.roleNoun}); rating shows as "Skill".
+    for (const label of ["First Name", "Last Name", "{sport.terminology.roleNoun}", "Skill", "Stamina", "Active"]) {
       expect(form).toContain(label);
     }
     for (const key of ['"firstName"', '"lastName"', '"position"', '"rating"', '"stamina"', '"isActive"']) {
@@ -50,7 +51,7 @@ describe("canonical Player create/edit", () => {
 
   it("both Create and Edit use CanonicalPlayerForm", () => {
     expect(players.match(/<CanonicalPlayerForm/g)).toHaveLength(2);
-    expect(players).toContain("initial={emptyPlayerForm()}");
+    expect(players).toContain("initial={emptyPlayerForm(newPlayerRoleKey(sport))}");
     expect(players).toContain("initial={playerFormFromPlayer(editing)}");
   });
 
@@ -126,9 +127,10 @@ describe("canonical Delete Published Teams", () => {
 });
 
 describe("goalkeeper warning", () => {
-  it("Generate shows the legacy warning via shouldWarnGoalkeepers", () => {
-    expect(workspace).toContain("countSelectedGoalkeepers(players, selectedIds)");
-    expect(generate).toContain("shouldWarnGoalkeepers(selectedGoalkeeperCount, teamCount)");
+  it("Generate shows sport-aware role warnings (M7; soccer = the legacy goalkeeper rule)", () => {
+    expect(generate).toContain("selectedRoleCoverage(sport, players, selectedIds, teamCount)");
+    expect(generate).toContain("roleCoverageMessage(sport, c, teamCount)");
+    expect(generate).not.toMatch(/countSelectedGoalkeepers|shouldWarnGoalkeepers/);
   });
 });
 

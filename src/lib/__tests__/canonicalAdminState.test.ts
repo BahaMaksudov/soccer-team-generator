@@ -1,7 +1,6 @@
 import { describe, it, expect } from "vitest";
 import {
   applySelectAllActive,
-  countSelectedGoalkeepers,
   deletePublishedPath,
   emptyPlayerForm,
   generateDateFromImportedPoll,
@@ -10,14 +9,19 @@ import {
   pruneSelection,
   publishedGenerationAfterDelete,
   selectAllActiveState,
-  shouldWarnGoalkeepers,
+  selectedRoleCoverage,
+  roleCoverageMessage,
   validatePlayerForm,
-  PLAYER_POSITIONS,
   PLAYER_RATINGS,
 } from "@/lib/canonicalAdminState";
 import { applyImportedPlayerSelection } from "@/lib/telegramImportSelection";
 import { playerCreateSchema, playerUpdateSchema } from "@/lib/validation";
-import { Position, Rating } from "@prisma/client";
+import { Rating } from "@prisma/client";
+import { soccer } from "@/lib/sports/soccer";
+import { basketball } from "@/lib/sports/basketball";
+import { volleyball } from "@/lib/sports/volleyball";
+import { other } from "@/lib/sports/other";
+const SOCCER_ROLES = soccer.roles.map((r) => r.key);
 
 const P = (id: string, over: Partial<{ position: string; isActive: boolean; stamina: number }> = {}) => ({
   id,
@@ -31,7 +35,8 @@ const P = (id: string, over: Partial<{ position: string; isActive: boolean; stam
 
 describe("player form", () => {
   it("options match the Prisma enums exactly", () => {
-    expect(PLAYER_POSITIONS).toEqual(Object.values(Position));
+    // M7: roles come from the sport registry; soccer keeps the four pre-M7 keys (+ ANY).
+    expect(SOCCER_ROLES).toEqual(["GOALKEEPER", "DEFENDER", "MIDFIELDER", "FORWARD", "ANY"]);
     expect(PLAYER_RATINGS).toEqual(Object.values(Rating));
   });
 
@@ -85,9 +90,17 @@ describe("player form", () => {
   });
 
   it("validation requires names and a 1–5 stamina", () => {
-    expect(validatePlayerForm({ ...emptyPlayerForm(), firstName: " ", lastName: "B" })).toMatch(/required/);
-    expect(validatePlayerForm({ ...emptyPlayerForm(), firstName: "A", lastName: "B", stamina: 6 })).toMatch(/Stamina/);
-    expect(validatePlayerForm({ ...emptyPlayerForm(), firstName: "A", lastName: "B" })).toBeNull();
+    expect(validatePlayerForm({ ...emptyPlayerForm(), firstName: " ", lastName: "B" }, SOCCER_ROLES)).toMatch(/required/);
+    expect(validatePlayerForm({ ...emptyPlayerForm(), firstName: "A", lastName: "B", stamina: 6 }, SOCCER_ROLES)).toMatch(/Stamina/);
+    expect(validatePlayerForm({ ...emptyPlayerForm(), firstName: "A", lastName: "B" }, SOCCER_ROLES)).toBeNull();
+  });
+
+  it("M7: soccer's Add Player default stays Midfielder; roles are validated per sport", () => {
+    expect(emptyPlayerForm().position).toBe("MIDFIELDER");
+    expect(emptyPlayerForm("ANY").position).toBe("ANY");
+    const basketballRoles = basketball.roles.map((r) => r.key);
+    expect(validatePlayerForm({ ...emptyPlayerForm("GOALKEEPER"), firstName: "A", lastName: "B" }, basketballRoles, "Role")).toMatch(/valid role/);
+    expect(validatePlayerForm({ ...emptyPlayerForm("BIG"), firstName: "A", lastName: "B" }, basketballRoles, "Role")).toBeNull();
   });
 });
 
@@ -129,17 +142,30 @@ describe("shared selection coherence", () => {
   });
 });
 
-describe("goalkeeper warning (legacy semantics)", () => {
+describe("role coverage warning (M7; soccer = the legacy goalkeeper rule)", () => {
   const players = [P("g1", { position: "GOALKEEPER" }), P("g2", { position: "GOALKEEPER", isActive: false }), P("m")];
+  const gk = (selected: string[], teams: number) => selectedRoleCoverage(soccer, players, selected, teams).find((c) => c.roleKey === "GOALKEEPER")!;
 
   it("counts selected ACTIVE goalkeepers only", () => {
-    expect(countSelectedGoalkeepers(players, ["g1", "g2", "m"])).toBe(1);
+    expect(gk(["g1", "g2", "m"], 2).available).toBe(1);
   });
 
-  it("warns when selected goalkeepers < team count", () => {
-    expect(shouldWarnGoalkeepers(1, 2)).toBe(true);
-    expect(shouldWarnGoalkeepers(2, 2)).toBe(false);
-    expect(shouldWarnGoalkeepers(3, 2)).toBe(false);
+  it("warns when selected goalkeepers < team count (same thresholds as before)", () => {
+    expect(gk(["g1"], 2)).toMatchObject({ short: true, warn: true });
+    expect(gk(["g1"], 1)).toMatchObject({ short: false });
+    const three = [P("a", { position: "GOALKEEPER" }), P("b", { position: "GOALKEEPER" }), P("c", { position: "GOALKEEPER" })];
+    expect(selectedRoleCoverage(soccer, three, ["a", "b", "c"], 2)[0].short).toBe(false);
+    expect(roleCoverageMessage(soccer, gk(["g1"], 3), 3)).toBe("Goalkeepers: 1 available for 3 teams");
+  });
+
+  it("other sports never mention goalkeepers; Other has no role checks", () => {
+    const vb = selectedRoleCoverage(volleyball, [P("s", { position: "SETTER" })], ["s"], 2);
+    expect(vb.map((c) => c.roleKey)).toEqual(["SETTER"]);
+    expect(roleCoverageMessage(volleyball, vb[0], 2)).toBe("Setters: 1 available for 2 teams");
+    const bb = selectedRoleCoverage(basketball, [P("b", { position: "BIG" })], ["b"], 3);
+    expect(roleCoverageMessage(basketball, bb[0], 3)).toBe("Bigs: 1 across 3 teams");
+    expect(bb[0].warn).toBe(false);
+    expect(selectedRoleCoverage(other, [P("x", { position: "PLAYER" })], ["x"], 2)).toEqual([]);
   });
 });
 

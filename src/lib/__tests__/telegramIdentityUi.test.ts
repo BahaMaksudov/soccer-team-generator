@@ -9,6 +9,8 @@ vi.mock("next/navigation", () => ({ useRouter: () => ({ refresh: vi.fn() }) }));
 import PlayerTelegramCell from "@/app/admin/o/[organizationSlug]/g/[groupSlug]/PlayerTelegramCell";
 import CanonicalPlayersSection from "@/app/admin/o/[organizationSlug]/g/[groupSlug]/CanonicalPlayersSection";
 import ConnectTelegram from "@/app/me/ConnectTelegram";
+import { sportClientView } from "@/lib/sports";
+import { soccer } from "@/lib/sports/soccer";
 import type { Player } from "@/app/admin/o/[organizationSlug]/g/[groupSlug]/CanonicalAdminWorkspace";
 
 const PLAYER: Player = { id: "p1", firstName: "test", lastName: "one", position: "FORWARD", rating: "GOOD", stamina: 3, isActive: true };
@@ -39,6 +41,7 @@ describe("M6.1 organizer Telegram cell", () => {
         onSelectAllActive: noop,
         onMessage: noop,
         refreshPlayers: noop,
+        sport: sportClientView(soccer),
       })
     );
     expect(html).toMatch(/<th[^>]*>Telegram<\/th>/);

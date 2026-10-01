@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { adminTenantApiPath } from "@/lib/adminTenantApi";
+import type { SportClientView } from "@/lib/sports";
 
 /**
  * Phase 2D.6D.4 — canonical tenant-bound Group settings (teamName,
@@ -18,6 +19,10 @@ import { adminTenantApiPath } from "@/lib/adminTenantApi";
  * existing TeamSettings.tsx and /admin/settings/page.tsx contracts
  * (same validation, same stamina-coefficient/position-weight shape),
  * not a redesign.
+ *
+ * M7 — role weights are listed from the Group's SportDefinition (labels,
+ * not raw keys). Role-rule strength (Strong/Prefer/Off) is NOT editable
+ * yet: the sport's registry defaults apply (deferred to keep M7 small).
  */
 
 type Weights = {
@@ -25,15 +30,15 @@ type Weights = {
   positionWeights: Record<string, number>;
 };
 
-const POSITIONS = ["GOALKEEPER", "DEFENDER", "MIDFIELDER", "FORWARD"];
-
 export default function CanonicalSettingsSection({
   organizationSlug,
   groupSlug,
+  sport,
   onMessage,
 }: {
   organizationSlug: string;
   groupSlug: string;
+  sport: SportClientView;
   onMessage: (msg: string | null) => void;
 }) {
   const teamNameUrl = adminTenantApiPath({ organizationSlug, groupSlug, path: "/settings/team-name" });
@@ -141,7 +146,7 @@ export default function CanonicalSettingsSection({
         <div className="space-y-2 pt-2 border-t">
           <div className="text-sm font-medium">Balance Weights</div>
           <div className="text-xs text-gray-500">
-            playerImpact = rating×10 + stamina×2×staminaCoef + positionWeight×3
+            playerImpact = skill×10 + stamina×2×staminaCoef + {sport.terminology.roleNoun.toLowerCase()}Weight×3
           </div>
 
           <div>
@@ -156,9 +161,9 @@ export default function CanonicalSettingsSection({
           </div>
 
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-            {POSITIONS.map((k) => (
+            {sport.roles.map(({ key: k, label }) => (
               <div key={k}>
-                <label className="block text-xs mb-1">{k}</label>
+                <label className="block text-xs mb-1">{label}</label>
                 <input
                   type="number"
                   step="0.5"

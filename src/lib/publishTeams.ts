@@ -4,6 +4,9 @@ import { toDateOnlyUTC } from "@/lib/dateOnly";
 import { revalidatePath } from "next/cache";
 import { publishTeamsSchema, zodErrorResponse } from "@/lib/validation";
 import type { TenantContext } from "@/lib/tenantContext";
+import { ENGINE_VERSION, evaluateTeams, resolveBalanceConfig, type BalanceMetrics } from "@/lib/balanceEngine";
+import { findSport, type SportDefinition } from "@/lib/sports";
+import { loadStoredBalanceWeights } from "@/lib/groupSettings";
 
 /**
  * Phase 2D.6D.3 — shared Publish core, originally extracted from the
@@ -101,6 +104,21 @@ export function buildPublishSnapshot(
   }));
 }
 
+/**
+ * M7 — generation metadata stored next to the snapshot: the Group's sport,
+ * the engine version, and aggregate BalanceMetrics computed from the
+ * ALLOW-LISTED snapshot (never raw request data, never raw teamsJson).
+ * Metrics contain no player ids, names or identity fields.
+ */
+export function buildGenerationMetadata(
+  sport: SportDefinition,
+  storedWeights: unknown,
+  snapshotTeams: Array<{ teamNumber: number; players: SnapshotPlayer[] }>
+): { sportKey: string; engineVersion: string; metricsJson: string } {
+  const metrics: BalanceMetrics = evaluateTeams(sport, resolveBalanceConfig(sport, storedWeights), snapshotTeams);
+  return { sportKey: sport.key, engineVersion: ENGINE_VERSION, metricsJson: JSON.stringify(metrics) };
+}
+
 export async function publishTeamsForContext(context: TenantContext, req: Request): Promise<NextResponse> {
   const activeGroupId = context.activeGroup.id;
 
@@ -148,6 +166,12 @@ export async function publishTeamsForContext(context: TenantContext, req: Reques
   // stored. It is a snapshot taken now: later Player edits don't change it.
   const snapshotTeams = buildPublishSnapshot(teams, owned);
 
+  const sport = findSport(context.activeGroup.sportKey);
+  if (!sport) {
+    return NextResponse.json({ error: "This group's sport is not supported." }, { status: 400 });
+  }
+  const metadata = buildGenerationMetadata(sport, await loadStoredBalanceWeights(activeGroupId), snapshotTeams);
+
   const normalizedDate = toDateOnlyUTC(dateStr);
 
   // ---------------------------------------------------------------
@@ -162,8 +186,8 @@ export async function publishTeamsForContext(context: TenantContext, req: Reques
   try {
     saved = await prisma.teamGeneration.upsert({
       where: { groupId_date: { groupId: activeGroupId, date: normalizedDate } },
-      update: { teamsJson: JSON.stringify(snapshotTeams) },
-      create: { date: normalizedDate, teamsJson: JSON.stringify(snapshotTeams), groupId: activeGroupId },
+      update: { teamsJson: JSON.stringify(snapshotTeams), ...metadata },
+      create: { date: normalizedDate, teamsJson: JSON.stringify(snapshotTeams), groupId: activeGroupId, ...metadata },
     });
   } catch (e: unknown) {
     const message = e instanceof Error ? e.message : "Failed to save published teams.";

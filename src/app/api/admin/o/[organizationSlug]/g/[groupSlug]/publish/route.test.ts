@@ -29,6 +29,8 @@ vi.mock("@/lib/prisma", () => ({
       findUnique: (...args: unknown[]) => mockPollFindUnique(...args),
       update: (...args: unknown[]) => mockPollUpdate(...args),
     },
+    // M7 — Publish reads the Group's balance weights to record metrics.
+    groupSetting: { findUnique: async () => null },
   },
 }));
 

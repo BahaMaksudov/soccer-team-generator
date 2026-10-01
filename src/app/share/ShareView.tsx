@@ -2,10 +2,11 @@
 
 import { useEffect, useState } from "react";
 import { formatLongDateOnly } from "@/lib/dateOnly";
-import { positionLabel } from "@/lib/labels";
+import { roleLabel } from "@/lib/sports";
 
 type View = {
   groupName: string;
+  sportKey: string;
   teamName: string;
   generations: Array<{
     date: string;
@@ -70,7 +71,7 @@ export default function ShareView() {
                     {t.players.map((p, i) => (
                       <li key={i}>
                         {p.firstName} {p.lastName}
-                        {p.position ? <span className="text-gray-600"> — {positionLabel(p.position)}</span> : null}
+                        {p.position ? <span className="text-gray-600"> — {roleLabel(view.sportKey, p.position)}</span> : null}
                       </li>
                     ))}
                   </ul>

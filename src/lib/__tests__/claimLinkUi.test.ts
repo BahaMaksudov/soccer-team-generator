@@ -1,6 +1,8 @@
 import { describe, it, expect, vi } from "vitest";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
+import { sportClientView } from "@/lib/sports";
+import { soccer } from "@/lib/sports/soccer";
 import { accountCellState, claimUrlFromResponse, createClaimLinkFlow } from "@/lib/claimLinkUi";
 import PlayerAccountCell from "@/app/admin/o/[organizationSlug]/g/[groupSlug]/PlayerAccountCell";
 import CanonicalPlayersSection from "@/app/admin/o/[organizationSlug]/g/[groupSlug]/CanonicalPlayersSection";
@@ -94,6 +96,7 @@ describe("Players section keeps rows mounted during a refresh (root cause)", () 
   const props = (loading: boolean, players: Player[]) => ({
     organizationSlug: "org", groupSlug: "grp", players, loading, selected: {},
     onToggleSelected: vi.fn(), onSelectAllActive: vi.fn(), onMessage: vi.fn(), refreshPlayers: vi.fn(),
+    sport: sportClientView(soccer),
   });
 
   it("a refresh of an existing list (loading=true) still renders the table and account cells", () => {

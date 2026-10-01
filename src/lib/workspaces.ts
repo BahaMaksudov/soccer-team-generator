@@ -1,6 +1,8 @@
 import { z } from "zod";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
+import { SPORTS, SPORT_KEYS } from "@/lib/sports";
+import { requireRole, type OrganizationContext } from "@/lib/tenantContext";
 
 /**
  * M5 — self-service workspace creation: Organization + the creator's
@@ -23,7 +25,8 @@ import { prisma } from "@/lib/prisma";
  * free suffix (name, name-2, name-3, …).
  */
 
-export const SUPPORTED_SPORTS = [{ key: "soccer", label: "Soccer" }] as const;
+/** M7 — every sport in the registry (src/lib/sports); arbitrary strings are rejected. */
+export const SUPPORTED_SPORTS = SPORTS.map((s) => ({ key: s.key, label: s.label }));
 export const DEFAULT_TIMEZONE = "America/New_York";
 const REPLAY_WINDOW_MS = 10 * 60 * 1000;
 const MAX_SLUG_ATTEMPTS = 5;
@@ -40,12 +43,11 @@ export function isValidTimeZone(tz: string): boolean {
   }
 }
 
-const sportKeys = SUPPORTED_SPORTS.map((s) => s.key) as [string, ...string[]];
 
 export const createWorkspaceSchema = z.object({
   organizationName: z.string().trim().min(2, "Organization name is required.").max(80, "Organization name is too long."),
   groupName: z.string().trim().min(1, "Group name is required.").max(80, "Group name is too long."),
-  sportKey: z.enum(sportKeys),
+  sportKey: z.enum(SPORT_KEYS),
   timezone: z.string().trim().refine(isValidTimeZone, "Choose a valid timezone."),
 });
 
@@ -155,6 +157,97 @@ export async function createOrganizationWorkspace(
         });
 
         return { organization, group, href: workspaceHref(organization.slug, group.slug), replayed: false };
+      });
+    } catch (e) {
+      if (isSlugCollision(e) && attempt < MAX_SLUG_ATTEMPTS) continue;
+      throw e;
+    }
+  }
+}
+
+// ---------------------------------------------------------------
+// M7 — Add Group to an existing Organization
+// ---------------------------------------------------------------
+
+/**
+ * Group name, sport and timezone only. The Organization comes from the
+ * URL-resolved OrganizationContext; any organizationId/groupId/slug in
+ * the body is stripped. The sport must be a registry key and can never
+ * be changed afterwards (there is no update path for Group.sportKey).
+ */
+export const createGroupSchema = z.object({
+  groupName: z.string().trim().min(1, "Group name is required.").max(80, "Group name is too long."),
+  sportKey: z.enum(SPORT_KEYS),
+  timezone: z.string().trim().refine(isValidTimeZone, "Choose a valid timezone."),
+});
+
+export type CreateGroupInput = z.infer<typeof createGroupSchema>;
+
+export type CreatedGroup = {
+  group: { id: string; name: string; slug: string; sportKey: string };
+  href: string;
+  replayed: boolean;
+};
+
+/** OWNER/ADMIN of the Organization (same managers as Players/claims/Telegram identity). */
+export const GROUP_CREATOR_ROLES = ["OWNER", "ADMIN"] as const;
+
+/**
+ * Creates a Group (+ its initial teamName GroupSetting, as onboarding
+ * does) inside the context's Organization. Serialized per Organization;
+ * an identical request (same name and sport) within REPLAY_WINDOW_MS
+ * returns the Group it already created (refresh/double-submit). Slugs are
+ * unique per Organization: name, name-2, … with the DB constraint as the
+ * final authority.
+ */
+export async function createGroupInOrganization(
+  context: OrganizationContext,
+  input: CreateGroupInput,
+  now: Date = new Date()
+): Promise<CreatedGroup> {
+  requireRole(context, [...GROUP_CREATOR_ROLES]);
+  const organizationId = context.organization.id;
+  const baseSlug = slugify(input.groupName, "group");
+
+  for (let attempt = 1; ; attempt++) {
+    try {
+      return await prisma.$transaction(async (tx) => {
+        await tx.$queryRaw`SELECT 1 AS locked FROM pg_advisory_xact_lock(hashtext(${"group-create:" + organizationId}))`;
+
+        const recent = await tx.group.findFirst({
+          where: {
+            organizationId,
+            name: input.groupName,
+            sportKey: input.sportKey,
+            createdAt: { gt: new Date(now.getTime() - REPLAY_WINDOW_MS) },
+          },
+          select: { id: true, name: true, slug: true, sportKey: true },
+          orderBy: { createdAt: "desc" },
+        });
+        if (recent) {
+          return { group: recent, href: workspaceHref(context.organization.slug, recent.slug), replayed: true };
+        }
+
+        const taken = await tx.group.findMany({
+          where: { organizationId, slug: { startsWith: baseSlug } },
+          select: { slug: true },
+        });
+        const group = await tx.group.create({
+          data: {
+            organizationId,
+            name: input.groupName,
+            slug: nextAvailableSlug(baseSlug, taken.map((t) => t.slug)),
+            sportKey: input.sportKey,
+            timezone: input.timezone,
+            // Same privacy-conscious default as onboarding.
+            visibility: "LINK",
+          },
+          select: { id: true, name: true, slug: true, sportKey: true },
+        });
+        await tx.groupSetting.create({
+          data: { groupId: group.id, key: TEAM_NAME_KEY, value: context.organization.name },
+        });
+        return { group, href: workspaceHref(context.organization.slug, group.slug), replayed: false };
       });
     } catch (e) {
       if (isSlugCollision(e) && attempt < MAX_SLUG_ATTEMPTS) continue;

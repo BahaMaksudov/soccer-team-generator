@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { Position, Rating } from "@prisma/client";
+import { Rating } from "@prisma/client";
 
 /**
  * Shared request-validation schemas for admin/mutating API routes.
@@ -11,7 +11,10 @@ import { Position, Rating } from "@prisma/client";
  * defensive parsing instead.
  */
 
-export const positionSchema = z.nativeEnum(Position);
+// M7: Player.position is a sport-scoped role key. This only checks its
+// shape; the allowed values come from the Group's SportDefinition and are
+// enforced in src/lib/playerCrud.ts (server-authoritative).
+export const positionSchema = z.string().trim().regex(/^[A-Z][A-Z0-9_]{0,39}$/, "Choose a valid role.");
 export const ratingSchema = z.nativeEnum(Rating);
 
 const staminaSchema = z.coerce.number().min(1).max(5);
@@ -38,6 +41,9 @@ export const generateTeamsSchema = z.object({
   teamCount: z.coerce.number().int().min(2),
   date: z.string().trim().min(1, "Date is required."),
   selectedIds: z.array(z.string().min(1)).min(1, "Select at least one player."),
+  // DEPRECATED (M7): a soccer "N-a-side" hint that never affected generation.
+  // Still accepted for API compatibility and ignored; team sizes come only
+  // from selected players ÷ number of teams.
   format: z.union([z.literal(6), z.literal(7), z.literal(8)]).optional(),
 });
 
@@ -80,17 +86,14 @@ export const teamNameSchema = z.object({
   teamName: z.string().trim().min(1, "Team name is required.").max(80, "Team name too long (max 80 chars)."),
 });
 
-export const positionWeightsSchema = z
-  .object({
-    GOALKEEPER: z.coerce.number().optional(),
-    DEFENDER: z.coerce.number().optional(),
-    MIDFIELDER: z.coerce.number().optional(),
-    FORWARD: z.coerce.number().optional(),
-  })
-  .partial();
+// M7: role weights keyed by the Group's sport role keys (stored under the
+// historical name `positionWeights`). Which keys are allowed is checked
+// against the Group's SportDefinition in src/lib/groupSettings.ts.
+const boundedWeight = z.coerce.number().finite().min(-100).max(100);
+export const positionWeightsSchema = z.record(z.string().regex(/^[A-Z][A-Z0-9_]{0,39}$/), boundedWeight);
 
 export const balanceWeightsSchema = z.object({
-  staminaCoef: z.coerce.number().optional(),
+  staminaCoef: boundedWeight.optional(),
   positionWeights: positionWeightsSchema.optional(),
 });
 

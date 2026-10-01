@@ -1,6 +1,14 @@
-import type { Player, Position, Rating } from "@prisma/client";
+import type { Player, Rating } from "@prisma/client";
+
+/** M7: the soccer role keys (Player.position is now a sport-scoped string). */
+export type Position = "GOALKEEPER" | "DEFENDER" | "MIDFIELDER" | "FORWARD";
 
 /**
+ * M7: superseded for generation by the sport-neutral engine
+ * (src/lib/balanceEngine.ts + src/lib/sports/soccer.ts), which reproduces
+ * this exact formula for soccer. Kept as the soccer compatibility surface
+ * for existing callers/tests.
+ *
  * Single source of truth for player balancing math.
  *
  * Both the server (src/lib/teamGen.ts) and the Admin UI's displayed
@@ -78,14 +86,14 @@ export function mergeBalanceWeights(input?: unknown): Required<BalanceWeights> {
  * rating dominates; stamina and position are smaller modifiers.
  */
 export function getPlayerImpactScore(
-  player: { rating: Rating; position: Position; stamina?: number | null },
+  player: { rating: Rating; position: string; stamina?: number | null },
   weights?: BalanceWeights
 ): number {
   const W = mergeBalanceWeights(weights);
   const rating = RATING_WEIGHT[player.rating] ?? 2;
   const stamina = getStamina(player);
-  const positionWeight = W.positionWeights[player.position] ?? 1;
+  const positionWeight = W.positionWeights[player.position as Position] ?? 1;
   return rating * 10 + stamina * 2 * W.staminaCoef + positionWeight * 3;
 }
 
-export type ScorablePlayer = Pick<Player, "rating" | "position" | "stamina">;
+export type ScorablePlayer = Pick<Player, "rating" | "stamina"> & { position: Position };

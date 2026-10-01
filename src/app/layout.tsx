@@ -76,9 +76,10 @@ export const dynamic = "force-dynamic";
 export const revalidate = 0;
 
 
+// M7 — product branding is sport-neutral (Group pages carry their own sport wording).
 export const metadata = {
-  title: "Soccer Team Generator",
-  description: "Pickup soccer team generator",
+  title: "Team Balance Pro",
+  description: "Balanced teams for pickup sports",
 };
 
 export default async function RootLayout({ children }: { children: React.ReactNode }) {
@@ -104,7 +105,7 @@ export default async function RootLayout({ children }: { children: React.ReactNo
 
         <footer className="border-t bg-white/80 mt-12 print:hidden">
           <div className="max-w-6xl mx-auto px-4 py-6 text-sm text-slate-600">
-            © {new Date().getFullYear()} Pickup Soccer Team Generator
+            © {new Date().getFullYear()} Team Balance Pro
           </div>
         </footer>
       </body>

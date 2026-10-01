@@ -2,7 +2,8 @@
 
 import { useEffect, useRef, useState } from "react";
 import { adminTenantApiPath } from "@/lib/adminTenantApi";
-import { positionLabel, ratingLabel } from "@/lib/labels";
+import { ratingLabel } from "@/lib/labels";
+import { newPlayerRoleKey, roleLabel, type SportClientView } from "@/lib/sports";
 import {
   emptyPlayerForm,
   playerFormFromPlayer,
@@ -46,6 +47,7 @@ export default function CanonicalPlayersSection({
   onSelectAllActive,
   onMessage,
   refreshPlayers,
+  sport,
 }: {
   organizationSlug: string;
   groupSlug: string;
@@ -56,6 +58,8 @@ export default function CanonicalPlayersSection({
   onSelectAllActive: (checked: boolean) => void;
   onMessage: (msg: string | null) => void;
   refreshPlayers: () => Promise<void> | void;
+  /** M7 — the Group's sport (role options/labels). */
+  sport: SportClientView;
 }) {
   const playersUrl = adminTenantApiPath({ organizationSlug, groupSlug, path: "/players" });
   const playerUrl = (id: string) => adminTenantApiPath({ organizationSlug, groupSlug, path: `/players/${id}` });
@@ -152,7 +156,8 @@ export default function CanonicalPlayersSection({
         <div className="text-sm font-medium">Add Player</div>
         <CanonicalPlayerForm
           key={createFormKey}
-          initial={emptyPlayerForm()}
+          initial={emptyPlayerForm(newPlayerRoleKey(sport))}
+          sport={sport}
           submitLabel="Add player"
           busyLabel="Adding…"
           onSubmit={createPlayer}
@@ -167,6 +172,7 @@ export default function CanonicalPlayersSection({
           <CanonicalPlayerForm
             key={editing.id}
             initial={playerFormFromPlayer(editing)}
+            sport={sport}
             submitLabel="Save changes"
             busyLabel="Saving…"
             onSubmit={saveEdit}
@@ -196,8 +202,8 @@ export default function CanonicalPlayersSection({
                 </label>
               </th>
               <th>Name</th>
-              <th>Position</th>
-              <th>Rating</th>
+              <th>{sport.terminology.roleNoun}</th>
+              <th>Skill</th>
               <th>Stamina</th>
               <th>Status</th>
               <th title="Optional Team Balance Pro account (players never need one)">Account</th>
@@ -219,7 +225,7 @@ export default function CanonicalPlayersSection({
                 <td>
                   {p.firstName} {p.lastName}
                 </td>
-                <td>{positionLabel(p.position)}</td>
+                <td>{roleLabel(sport.key, p.position)}</td>
                 <td>{ratingLabel(p.rating)}</td>
                 <td>{Number(p.stamina)}</td>
                 <td>

@@ -1,6 +1,6 @@
 import { notFound } from "next/navigation";
 import Link from "next/link";
-import { positionLabel } from "@/lib/labels";
+import { roleLabel } from "@/lib/sports";
 import { formatLongDateOnly } from "@/lib/dateOnly";
 import { loadPublicGroupPrintData } from "./data";
 import PrintButton from "./PrintButton";
@@ -77,7 +77,7 @@ export default async function PublicGroupPrint({ params }: { params: Params }) {
                     {t.players.map((p, i) => (
                       <li key={i}>
                         {p.firstName} {p.lastName} —{" "}
-                        <span className="text-gray-700">{p.position ? positionLabel(p.position) : ""}</span>
+                        <span className="text-gray-700">{p.position ? roleLabel(gen.sportKey, p.position) : ""}</span>
                       </li>
                     ))}
                   </ul>

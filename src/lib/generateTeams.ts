@@ -1,10 +1,11 @@
 import { prisma } from "@/lib/prisma";
 import { NextResponse } from "next/server";
-import { generateBalancedTeams } from "@/lib/teamGen";
 import { toDateOnlyUTC } from "@/lib/dateOnly";
 import { generateTeamsSchema, zodErrorResponse } from "@/lib/validation";
-import type { BalanceWeights } from "@/lib/scoring";
 import type { TenantContext } from "@/lib/tenantContext";
+import { generateTeams, resolveBalanceConfig } from "@/lib/balanceEngine";
+import { findSport } from "@/lib/sports";
+import { loadStoredBalanceWeights } from "@/lib/groupSettings";
 
 /**
  * Phase 2D.6D.2 — shared Generate core, extracted verbatim from the
@@ -26,7 +27,15 @@ export async function generateTeamsForContext(context: TenantContext, req: Reque
     return NextResponse.json(zodErrorResponse(parsed.error), { status: 400 });
   }
 
-  const { teamCount, date: dateStr, selectedIds, format } = parsed.data;
+  // `format` (6|7|8) is deprecated: accepted for compatibility, ignored.
+  const { teamCount, date: dateStr, selectedIds } = parsed.data;
+
+  // M7 — the Group's own sport (URL-resolved context, never the request)
+  // supplies roles and balancing rules. Unknown sport → fail closed.
+  const sport = findSport(context.activeGroup.sportKey);
+  if (!sport) {
+    return NextResponse.json({ error: "This group's sport is not supported." }, { status: 400 });
+  }
 
   const normalizedDate = toDateOnlyUTC(dateStr);
 
@@ -75,25 +84,24 @@ export async function generateTeamsForContext(context: TenantContext, req: Reque
   // configuration, never the legacy global AppSetting row.
   // generateBalancedTeams safely falls back to defaults for anything
   // missing or malformed.
-  const row = await prisma.groupSetting.findUnique({
-    where: { groupId_key: { groupId: context.activeGroup.id, key: "balanceWeights" } },
-  });
-  let weights: BalanceWeights | undefined;
-  if (row?.value) {
-    try {
-      weights = JSON.parse(row.value);
-    } catch {
-      weights = undefined;
-    }
-  }
+  const stored = await loadStoredBalanceWeights(context.activeGroup.id);
 
-  let teams;
+  let result;
   try {
-    teams = generateBalancedTeams(selected, teamCount, format, weights);
+    result = generateTeams({ players: selected, teamCount, sport, config: resolveBalanceConfig(sport, stored) });
   } catch (e: unknown) {
     const message = e instanceof Error ? e.message : "Failed to generate teams.";
     return NextResponse.json({ error: message }, { status: 400 });
   }
 
-  return NextResponse.json({ date: normalizedDate.toISOString(), teams });
+  // `teams` keeps its pre-M7 shape; warnings/metrics/version are additive.
+  // Metrics are aggregates only (no ids/names); warnings carry role keys.
+  return NextResponse.json({
+    date: normalizedDate.toISOString(),
+    teams: result.teams,
+    warnings: result.warnings,
+    metrics: result.metrics,
+    engineVersion: result.engineVersion,
+    sportKey: result.sportKey,
+  });
 }

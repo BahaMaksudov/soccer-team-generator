@@ -1,5 +1,6 @@
 "use client";
 
+import { findSport } from "@/lib/sports";
 import Link from "next/link";
 import { useEffect, useState } from "react";
 
@@ -65,7 +66,7 @@ export default function ClaimView({ signedIn, emailVerified, email }: { signedIn
         <>
           <p className="text-sm">
             Link <span className="font-semibold">{preview.playerName}</span> in{" "}
-            <span className="font-semibold">{preview.groupName}</span> ({preview.organizationName}, {preview.sportKey}) to
+            <span className="font-semibold">{preview.groupName}</span> ({preview.organizationName}, {findSport(preview.sportKey)?.label ?? preview.sportKey}) to
             your Team Balance Pro account?
           </p>
           <p className="text-xs text-gray-500">

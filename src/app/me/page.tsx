@@ -4,6 +4,7 @@ import { requireSessionAccount, TenantContextError } from "@/lib/tenantContext";
 import { formatLongDateOnly } from "@/lib/dateOnly";
 import { loadMyPlayers } from "./data";
 import ConnectTelegram from "./ConnectTelegram";
+import { findSport } from "@/lib/sports";
 
 /**
  * M6-C — "My teams": the signed-in player's claimed Player profiles.
@@ -48,7 +49,7 @@ export default async function MyTeamsPage() {
               <div className="text-sm text-gray-500">{p.organizationName}</div>
               <div className="text-lg font-semibold">
                 <Link className="underline" href={p.groupHref}>{p.groupName}</Link>{" "}
-                <span className="text-xs text-gray-500 font-normal">({p.sportKey})</span>
+                <span className="text-xs text-gray-500 font-normal">({findSport(p.sportKey)?.label ?? p.sportKey})</span>
               </div>
               <div className="text-sm">Player: {p.displayName}</div>
             </div>

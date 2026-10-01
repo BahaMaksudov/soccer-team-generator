@@ -411,7 +411,8 @@ describe("M5 onboarding: Organization + first Group (real DB)", () => {
 
   it("invalid input is rejected server-side and creates nothing; unauthenticated → 401", async () => {
     await signInAs(OWNER_EMAIL);
-    expect((await organizationsRoute.POST(post({ ...workspace("X Org", "G"), sportKey: "basketball" }))).status).toBe(400);
+    // M7: every registry sport is valid; an unknown sport key is not.
+    expect((await organizationsRoute.POST(post({ ...workspace("X Org", "G"), sportKey: "hockey" }))).status).toBe(400);
     expect((await organizationsRoute.POST(post({ ...workspace("X Org", "G"), timezone: "Mars/Base" }))).status).toBe(400);
     session = null;
     expect((await organizationsRoute.POST(post(workspace("X Org", "G")))).status).toBe(401);

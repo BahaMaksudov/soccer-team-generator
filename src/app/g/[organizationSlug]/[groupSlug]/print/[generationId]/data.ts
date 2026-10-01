@@ -26,6 +26,8 @@ export type PublicPrintGeneration = {
   updatedAt: Date;
   // M6-A: allow-listed player-facing fields only (src/lib/playerFacing.ts).
   teams: PlayerFacingTeam[];
+  /** M7 — the Group's sport key, for role labels only. */
+  sportKey: string;
 };
 
 /**
@@ -66,5 +68,6 @@ export async function loadPublicGroupPrintData(params: {
     date: gen.date,
     updatedAt: gen.updatedAt,
     teams,
+    sportKey: publicGroup.group.sportKey,
   };
 }

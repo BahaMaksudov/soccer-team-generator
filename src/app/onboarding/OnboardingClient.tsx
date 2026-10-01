@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import { timeZoneOptions } from "@/lib/timeZoneOptions";
 
 type Sport = { key: string; label: string };
 
@@ -10,16 +11,6 @@ function firstError(data: unknown): string {
   return field || d?.error || "Could not create the organization. Please try again.";
 }
 
-function timeZoneOptions(current: string): string[] {
-  let zones: string[] = [];
-  try {
-    zones = (Intl as unknown as { supportedValuesOf?: (k: string) => string[] }).supportedValuesOf?.("timeZone") ?? [];
-  } catch {
-    zones = [];
-  }
-  if (zones.length === 0) zones = ["America/New_York", "America/Chicago", "America/Denver", "America/Los_Angeles", "Europe/London", "UTC"];
-  return zones.includes(current) ? zones : [current, ...zones];
-}
 
 export default function OnboardingClient({ sports, defaultTimezone }: { sports: Sport[]; defaultTimezone: string }) {
   const [organizationName, setOrganizationName] = useState("");
@@ -71,13 +62,13 @@ export default function OnboardingClient({ sports, defaultTimezone }: { sports: 
       <div>
         <label className="block text-sm mb-1" htmlFor="organizationName">Organization name</label>
         <input id="organizationName" className="w-full border rounded-md px-3 py-2" value={organizationName}
-          onChange={(e) => setOrganizationName(e.target.value)} placeholder="Boston Pickup Soccer" maxLength={80} required />
+          onChange={(e) => setOrganizationName(e.target.value)} placeholder="Boston Pickup Sports" maxLength={80} required />
       </div>
 
       <div>
         <label className="block text-sm mb-1" htmlFor="groupName">First group name</label>
         <input id="groupName" className="w-full border rounded-md px-3 py-2" value={groupName}
-          onChange={(e) => setGroupName(e.target.value)} placeholder="Wednesday Night Soccer" maxLength={80} required />
+          onChange={(e) => setGroupName(e.target.value)} placeholder="Wednesday Night Pickup" maxLength={80} required />
       </div>
 
       <div className="grid gap-3 sm:grid-cols-2">
@@ -89,6 +80,7 @@ export default function OnboardingClient({ sports, defaultTimezone }: { sports: 
               <option key={s.key} value={s.key}>{s.label}</option>
             ))}
           </select>
+          <p className="text-xs text-gray-500 mt-1">Sport can&apos;t be changed later.</p>
         </div>
         <div>
           <label className="block text-sm mb-1" htmlFor="timezone">Timezone</label>

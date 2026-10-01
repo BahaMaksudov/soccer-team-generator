@@ -32,7 +32,10 @@ const filesMatching = (re: RegExp) => [...code].filter(([, c]) => re.test(c)).ma
 // (the session User creates their own Organization) and Organization-level
 // (OWNER members/invitations, URL-bound via requireOrganizationContextForSlug).
 const M5_ACCOUNT_ROUTE = rel("src/app/api/admin/organizations/route.ts");
-const M5_ORGANIZATION_ROUTES = [rel("src/app/api/admin/o/[organizationSlug]/invitations/route.ts")];
+const M5_ORGANIZATION_ROUTES = [
+  rel("src/app/api/admin/o/[organizationSlug]/invitations/route.ts"),
+  rel("src/app/api/admin/o/[organizationSlug]/groups/route.ts"), // M7: Add Group (OWNER/ADMIN)
+];
 const M5_NON_GROUP_ROUTES = [M5_ACCOUNT_ROUTE, ...M5_ORGANIZATION_ROUTES];
 
 const DELETED_FLAT_ROUTES = [

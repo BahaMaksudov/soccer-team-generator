@@ -2,6 +2,7 @@ import { prisma } from "@/lib/prisma";
 import { NextResponse } from "next/server";
 import { playerCreateSchema, playerUpdateSchema, zodErrorResponse } from "@/lib/validation";
 import type { TenantContext } from "@/lib/tenantContext";
+import { findSport, isValidRoleKey } from "@/lib/sports";
 
 /**
  * Phase 2D.6D.1 — shared Player CRUD core, extracted verbatim from
@@ -58,6 +59,21 @@ function toAdminPlayer(p: AdminPlayerRow) {
   };
 }
 
+/**
+ * M7 — a role key is valid only for the Group's own sport (from the
+ * URL-resolved context, never the request). An unknown sport fails closed.
+ * Returns an error response, or null when the role is allowed.
+ */
+function roleError(context: TenantContext, position: string | undefined): NextResponse | null {
+  if (position === undefined) return null;
+  const sport = findSport(context.activeGroup.sportKey);
+  if (!sport) return NextResponse.json({ error: "This group's sport is not supported." }, { status: 400 });
+  if (!isValidRoleKey(sport, position)) {
+    return NextResponse.json({ error: `Choose a valid ${sport.terminology.roleNoun.toLowerCase()} for ${sport.label}.` }, { status: 400 });
+  }
+  return null;
+}
+
 export async function listPlayers(context: TenantContext): Promise<NextResponse> {
   const players = await prisma.player.findMany({
     where: { groupId: context.activeGroup.id },
@@ -86,6 +102,8 @@ export async function createPlayer(context: TenantContext, req: Request): Promis
 
   const { firstName, lastName, position, rating, isActive } = parsed.data;
   const stamina = parsed.data.stamina ?? 3;
+  const invalidRole = roleError(context, position);
+  if (invalidRole) return invalidRole;
 
   try {
     const created = await prisma.player.create({
@@ -120,6 +138,8 @@ export async function updatePlayer(context: TenantContext, id: string, req: Requ
   const groupId = context.activeGroup.id;
   const { firstName, lastName, position, rating, stamina, isActive } = parsed.data;
   const data = { firstName, lastName, position, rating, stamina, isActive };
+  const invalidRole = roleError(context, position);
+  if (invalidRole) return invalidRole;
   const hasChanges = Object.values(data).some((v) => v !== undefined);
 
   try {

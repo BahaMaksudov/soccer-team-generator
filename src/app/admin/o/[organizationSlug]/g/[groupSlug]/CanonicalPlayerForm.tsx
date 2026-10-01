@@ -1,9 +1,9 @@
 "use client";
 
 import { useState, type FormEvent } from "react";
-import { positionLabel, ratingLabel } from "@/lib/labels";
+import { ratingLabel } from "@/lib/labels";
+import type { SportClientView } from "@/lib/sports";
 import {
-  PLAYER_POSITIONS,
   PLAYER_RATINGS,
   STAMINA_OPTIONS,
   validatePlayerForm,
@@ -16,15 +16,22 @@ import {
  * the parent decides which canonical route to call. Exposes every
  * mutable Player field: first/last name, position, rating, stamina,
  * active.
+ *
+ * M7 — sport-aware: role options and the "Position"/"Role" label come
+ * from the Group's SportDefinition (the server re-validates the role
+ * against the Group's sport). Rating is shown as "Skill" (skill in this
+ * Group's sport); stamina sits under "More" (optional, defaults to 3).
  */
 export default function CanonicalPlayerForm({
   initial,
+  sport,
   submitLabel,
   busyLabel,
   onSubmit,
   onCancel,
 }: {
   initial: PlayerFormValues;
+  sport: SportClientView;
   submitLabel: string;
   busyLabel: string;
   /** Resolves to an error message (shown inline) or null on success. */
@@ -41,7 +48,11 @@ export default function CanonicalPlayerForm({
 
   async function handleSubmit(e: FormEvent) {
     e.preventDefault();
-    const invalid = validatePlayerForm(values);
+    const invalid = validatePlayerForm(
+      values,
+      sport.roles.map((r) => r.key),
+      sport.terminology.roleNoun
+    );
     if (invalid) {
       setError(invalid);
       return;
@@ -78,21 +89,23 @@ export default function CanonicalPlayerForm({
           />
         </div>
         <div>
-          <label className="block text-xs">Position</label>
+          <label className="block text-xs">{sport.terminology.roleNoun}</label>
           <select
             className="border rounded px-2 py-1 text-sm"
             value={values.position}
-            onChange={(e) => set("position", e.target.value as PlayerFormValues["position"])}
+            onChange={(e) => set("position", e.target.value)}
           >
-            {PLAYER_POSITIONS.map((p) => (
-              <option key={p} value={p}>
-                {positionLabel(p)}
+            {/* A legacy/unknown stored role stays selectable so editing other fields never rewrites it. */}
+            {!sport.roles.some((r) => r.key === values.position) && <option value={values.position}>{values.position}</option>}
+            {sport.roles.map((r) => (
+              <option key={r.key} value={r.key}>
+                {r.label}
               </option>
             ))}
           </select>
         </div>
         <div>
-          <label className="block text-xs">Rating</label>
+          <label className="block text-xs" title="This player's skill level in this group's sport">Skill</label>
           <select
             className="border rounded px-2 py-1 text-sm"
             value={values.rating}
@@ -101,20 +114,6 @@ export default function CanonicalPlayerForm({
             {PLAYER_RATINGS.map((r) => (
               <option key={r} value={r}>
                 {ratingLabel(r)}
-              </option>
-            ))}
-          </select>
-        </div>
-        <div>
-          <label className="block text-xs">Stamina</label>
-          <select
-            className="border rounded px-2 py-1 text-sm"
-            value={values.stamina}
-            onChange={(e) => set("stamina", Number(e.target.value))}
-          >
-            {STAMINA_OPTIONS.map((s) => (
-              <option key={s} value={s}>
-                {s}
               </option>
             ))}
           </select>
@@ -136,6 +135,23 @@ export default function CanonicalPlayerForm({
           </button>
         )}
       </div>
+      <details className="text-xs">
+        <summary className="cursor-pointer text-gray-600">More</summary>
+        <div className="mt-1">
+          <label className="block text-xs">Stamina (optional, 1–5)</label>
+          <select
+            className="border rounded px-2 py-1 text-sm"
+            value={values.stamina}
+            onChange={(e) => set("stamina", Number(e.target.value))}
+          >
+            {STAMINA_OPTIONS.map((s) => (
+              <option key={s} value={s}>
+                {s}
+              </option>
+            ))}
+          </select>
+        </div>
+      </details>
       {error && <div className="text-sm text-rose-700">{error}</div>}
     </form>
   );

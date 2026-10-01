@@ -1,4 +1,5 @@
 import { redirect } from "next/navigation";
+import { findSport } from "@/lib/sports";
 import Link from "next/link";
 import { listAccessibleTenants, TenantContextError, type AccessibleOrganization } from "@/lib/tenantContext";
 import { resolveAdminEntry } from "./adminEntry";
@@ -65,11 +66,18 @@ export default async function AdminEntryPage() {
             <div className="font-semibold">
               {org.name} <span className="text-xs text-gray-500 font-normal">({org.role})</span>
             </div>
-            {org.role === "OWNER" && (
-              <Link className="text-sm underline" href={`/admin/o/${encodeURIComponent(org.slug)}/members`}>
-                Members
-              </Link>
-            )}
+            <div className="flex gap-3">
+              {(org.role === "OWNER" || org.role === "ADMIN") && (
+                <Link className="text-sm underline" href={`/admin/o/${encodeURIComponent(org.slug)}/groups/new`}>
+                  Add group
+                </Link>
+              )}
+              {org.role === "OWNER" && (
+                <Link className="text-sm underline" href={`/admin/o/${encodeURIComponent(org.slug)}/members`}>
+                  Members
+                </Link>
+              )}
+            </div>
           </div>
           {org.groups.length === 0 ? (
             <div className="text-sm text-gray-500 mt-2">No active groups.</div>
@@ -81,7 +89,7 @@ export default async function AdminEntryPage() {
                     className="text-sm underline"
                     href={`/admin/o/${encodeURIComponent(org.slug)}/g/${encodeURIComponent(g.slug)}`}
                   >
-                    {g.name} ({g.sportKey})
+                    {g.name} ({findSport(g.sportKey)?.label ?? g.sportKey})
                   </Link>
                 </li>
               ))}

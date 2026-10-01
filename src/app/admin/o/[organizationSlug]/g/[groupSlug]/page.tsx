@@ -2,6 +2,8 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { loadCanonicalAdminContext } from "./data";
 import CanonicalAdminWorkspace from "./CanonicalAdminWorkspace";
+import { findSport, sportClientView } from "@/lib/sports";
+import { other } from "@/lib/sports/other";
 
 /**
  * Phase 2D.6C — canonical tenant Admin entry point. Originally a
@@ -25,12 +27,21 @@ export default async function CanonicalAdminHome({ params }: { params: Params })
 
   const context = await loadCanonicalAdminContext({ organizationSlug, groupSlug });
   if (!context) notFound();
+  // M7 — the Group's sport drives roles, labels, rules and settings. An
+  // unknown key (never written by the app) renders with neutral labels;
+  // every write and Generate fails closed server-side.
+  const sport = findSport(context.activeGroup.sportKey);
 
   return (
     <div className="rounded-2xl border bg-white shadow-sm p-5 space-y-2">
       <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
         <h1 className="text-2xl font-semibold">Admin</h1>
         <div className="flex gap-3 text-sm">
+          {(context.membership.role === "OWNER" || context.membership.role === "ADMIN") && (
+            <Link className="underline" href={`/admin/o/${encodeURIComponent(context.organization.slug)}/groups/new`}>
+              Add group
+            </Link>
+          )}
           {context.membership.role === "OWNER" && (
             <Link className="underline" href={`/admin/o/${encodeURIComponent(context.organization.slug)}/members`}>
               Members
@@ -51,8 +62,11 @@ export default async function CanonicalAdminHome({ params }: { params: Params })
         <span className="text-gray-500">Group:</span> {context.activeGroup.name}
       </p>
       <p>
-        <span className="text-gray-500">Sport:</span> {context.activeGroup.sportKey}
+        <span className="text-gray-500">Sport:</span> {sport?.label ?? context.activeGroup.sportKey}
       </p>
+      {!sport && (
+        <p className="text-sm text-rose-700">This group&apos;s sport is not supported, so players and teams can&apos;t be changed.</p>
+      )}
       <p>
         <span className="text-gray-500">Role:</span> {context.membership.role}
       </p>
@@ -61,6 +75,7 @@ export default async function CanonicalAdminHome({ params }: { params: Params })
       <CanonicalAdminWorkspace
         organizationSlug={context.organization.slug}
         groupSlug={context.activeGroup.slug}
+        sport={sportClientView(sport ?? other)}
       />
     </div>
   );

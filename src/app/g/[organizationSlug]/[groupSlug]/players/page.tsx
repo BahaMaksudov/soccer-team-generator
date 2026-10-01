@@ -21,5 +21,5 @@ export default async function PublicGroupPlayers({ params }: { params: Params })
   const data = await loadPublicGroupPlayersPageData({ organizationSlug, groupSlug });
   if (!data) notFound();
 
-  return <CanonicalPlayersClient organizationSlug={organizationSlug} groupSlug={groupSlug} />;
+  return <CanonicalPlayersClient organizationSlug={organizationSlug} groupSlug={groupSlug} sportKey={data.publicGroup.group.sportKey} />;
 }

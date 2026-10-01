@@ -87,6 +87,8 @@ export async function revokeShareLinks(context: TenantContext, now: Date = new D
 
 export type ShareView = {
   groupName: string;
+  /** M7 — for role labels only. */
+  sportKey: string;
   teamName: string;
   generations: Array<{ date: string; teams: PlayerFacingTeam[] }>;
 };
@@ -102,7 +104,7 @@ export async function resolveShareView(token: unknown): Promise<ShareView | null
 
   const group = await prisma.group.findUnique({
     where: { id: link.groupId },
-    select: { id: true, name: true, isActive: true, visibility: true },
+    select: { id: true, name: true, sportKey: true, isActive: true, visibility: true },
   });
   if (!group || !group.isActive || (group.visibility !== "LINK" && group.visibility !== "PUBLIC")) return null;
 
@@ -118,6 +120,7 @@ export async function resolveShareView(token: unknown): Promise<ShareView | null
 
   return {
     groupName: group.name,
+    sportKey: group.sportKey,
     teamName: teamName?.value?.trim() || "",
     generations: rows.map((r) => ({ date: formatYMDFromDate(r.date), teams: toPlayerFacingTeams(r.teamsJson) })),
   };

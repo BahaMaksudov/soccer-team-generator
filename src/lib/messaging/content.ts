@@ -29,6 +29,13 @@ export function pollContent(event: Extract<MessagingEvent, { type: "POLL_CREATED
   return { kind: "poll", question, options: [...POLL_OPTIONS] };
 }
 
+/**
+ * M7: deliberately sport-neutral and byte-identical to pre-M7 — the
+ * delivery state compares contentHash(body), so changing this wording
+ * would make every already-posted teams message look "changed". New
+ * sport-aware wording (emoji, game noun, result label) is read from the
+ * Group's SportDefinition via messagingVocabulary() by M9 events.
+ */
 export function teamsContent(event: Extract<MessagingEvent, { type: "TEAMS_PUBLISHED" }>): TextContent {
   return {
     kind: "text",
