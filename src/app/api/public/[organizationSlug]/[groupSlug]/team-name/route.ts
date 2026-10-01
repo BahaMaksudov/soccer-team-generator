@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { resolvePublicGroup } from "@/lib/publicGroup";
-import { viewerIsOrganizationMember } from "@/lib/groupAccess";
+import { viewerCanViewGroup } from "@/lib/groupAccess";
 
 /**
  * Phase 2D.5D — canonical, tenant-scoped public teamName.
@@ -22,7 +22,7 @@ type Params = Promise<{ organizationSlug: string; groupSlug: string }>;
 export async function GET(_req: Request, { params }: { params: Params }) {
   const { organizationSlug, groupSlug } = await params;
 
-  const publicGroup = await resolvePublicGroup({ organizationSlug, groupSlug }, prisma, { canViewNonPublic: viewerIsOrganizationMember });
+  const publicGroup = await resolvePublicGroup({ organizationSlug, groupSlug }, prisma, { canViewNonPublic: viewerCanViewGroup });
   if (!publicGroup) {
     return NextResponse.json({ error: "Not found" }, { status: 404 });
   }

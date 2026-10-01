@@ -18,8 +18,8 @@
  * M6-A — this is also THE visibility gate for every slug-addressed
  * player-facing page/API. Only PUBLIC Groups resolve by default; a LINK
  * or PRIVATE Group resolves only if the caller supplies
- * `canViewNonPublic` and it approves (Group pages pass an organizer
- * check — see src/lib/groupAccess.ts). Anything else fails closed as
+ * `canViewNonPublic` and it approves (Group pages pass the organizer /
+ * claimed-player check — see src/lib/groupAccess.ts). Anything else fails closed as
  * "not found", indistinguishable from a missing Group. Share-link
  * viewing (LINK) is a separate path (src/lib/shareLinks.ts).
  */
@@ -91,7 +91,7 @@ export interface PublicGroupDataSource {
 export async function resolvePublicGroup(
   params: { organizationSlug: string; groupSlug: string },
   db: PublicGroupDataSource,
-  options: { canViewNonPublic?: (organizationId: string) => Promise<boolean> } = {}
+  options: { canViewNonPublic?: (organizationId: string, groupId: string) => Promise<boolean> } = {}
 ): Promise<PublicGroupContext | null> {
   const organization = await db.organization.findUnique({
     where: { slug: params.organizationSlug },
@@ -109,7 +109,7 @@ export async function resolvePublicGroup(
   if (!group || !group.isActive) return null;
 
   if (group.visibility !== "PUBLIC") {
-    const allowed = options.canViewNonPublic ? await options.canViewNonPublic(organization.id) : false;
+    const allowed = options.canViewNonPublic ? await options.canViewNonPublic(organization.id, group.id) : false;
     if (!allowed) return null;
   }
 

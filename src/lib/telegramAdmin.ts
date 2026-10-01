@@ -1,3 +1,4 @@
+import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { NextResponse } from "next/server";
 import {
@@ -351,26 +352,41 @@ export async function linkTelegramUserForContext(context: TenantContext, req: Re
   });
   if (!player) return NextResponse.json({ error: "Player not found" }, { status: 404 });
 
-  // TelegramUserLink.userId is still a single, globally-unique column
-  // (Phase 2D.3 §M / Phase 2D.6D.5A §7 — a genuine multi-tenant
-  // limitation, not a security hole, and NOT changed in this phase).
-  // Because of that this can't be a single atomic tenant-aware upsert
-  // — check first whether this Telegram identity is already linked
-  // under a DIFFERENT Group, and refuse to silently reassign it.
-  //
-  // Phase 2D.6E.6C — the refusal is deliberately generic: it must not
-  // reveal that this Telegram identity exists or is linked in another
-  // Group (no Group/player/organization detail, no "elsewhere").
-  const existingLink = await prisma.telegramUserLink.findUnique({ where: { userId } });
-  if (existingLink && existingLink.groupId !== activeGroupId) {
-    return NextResponse.json({ error: "This Telegram user cannot be linked." }, { status: 409 });
+  // M6-C — Telegram identity is Group-scoped (@@unique([groupId, userId])):
+  // the same Telegram user may be linked to one Player in EACH Group, so a
+  // link in another Group is never read, changed or treated as a conflict.
+  // Within this Group (organizer's explicit choice):
+  //   - already linked to this Player → no-op;
+  //   - linked to another Player here → the identity MOVES to this Player
+  //     (unchanged pre-M6-C behavior for fixing a wrong link);
+  //   - this Player already has a DIFFERENT Telegram identity → 409.
+  const result = await prisma
+    .$transaction(async (tx) => {
+      const existing = await tx.telegramUserLink.findUnique({
+        where: { groupId_userId: { groupId: activeGroupId, userId } },
+        select: { id: true, playerId: true },
+      });
+      if (existing?.playerId === playerIdStr) return "ok" as const;
+      const playerLink = await tx.telegramUserLink.findUnique({ where: { playerId: playerIdStr }, select: { userId: true } });
+      if (playerLink && playerLink.userId !== userId) return "player_has_other_identity" as const;
+      if (existing) {
+        await tx.telegramUserLink.update({ where: { id: existing.id }, data: { playerId: playerIdStr } });
+      } else {
+        await tx.telegramUserLink.create({ data: { userId, playerId: playerIdStr, groupId: activeGroupId } });
+      }
+      return "ok" as const;
+    })
+    // A concurrent link of the same identity/Player hit a unique constraint.
+    .catch((e: unknown) => {
+      if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === "P2002") return "conflict" as const;
+      throw e;
+    });
+  if (result === "player_has_other_identity") {
+    return NextResponse.json({ error: "This player is already linked to a different Telegram account." }, { status: 409 });
   }
-
-  await prisma.telegramUserLink.upsert({
-    where: { userId },
-    update: { playerId: playerIdStr, groupId: activeGroupId },
-    create: { userId, playerId: playerIdStr, groupId: activeGroupId },
-  });
+  if (result === "conflict") {
+    return NextResponse.json({ error: "This Telegram user cannot be linked right now. Reload and try again." }, { status: 409 });
+  }
 
   return NextResponse.json({ ok: true });
 }

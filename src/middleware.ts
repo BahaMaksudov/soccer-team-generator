@@ -16,5 +16,5 @@ export async function middleware(req: NextRequest) {
 
 // Must be a static literal for Next.js; kept identical to PROTECTED_MATCHER (asserted in tests).
 export const config = {
-  matcher: ["/admin/:path*", "/api/admin/:path*", "/onboarding/:path*", "/api/invitations/:path*", "/api/account/:path*", "/account/:path*"],
+  matcher: ["/admin/:path*", "/api/admin/:path*", "/onboarding/:path*", "/api/invitations/:path*", "/api/account/:path*", "/account/:path*", "/me/:path*", "/api/claims/accept"],
 };

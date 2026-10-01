@@ -103,6 +103,10 @@ model User {
   shareLinksCreated       GroupShareLink[]
   deliveriesCreated       MessageDelivery[]        @relation("DeliveryCreatedBy")
   deliveriesResolved      MessageDelivery[]        @relation("DeliveryResolvedBy")
+  playerClaimsCreated     PlayerClaim[]            @relation("ClaimCreatedBy")
+  playerClaimsAccepted    PlayerClaim[]            @relation("ClaimAcceptedBy")
+  playerClaimsUnlinked    PlayerClaim[]            @relation("ClaimUnlinkedBy")
+  telegramConnectCodes    TelegramConnectCode[]
 
   // M5 — invitations this User created / accepted (audit trail only;
   // never an authorization source — OrganizationMembership is).
@@ -201,14 +205,16 @@ model Group {
 
   organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
 
-  players         Player[]
-  teamGenerations TeamGeneration[]
-  settings        GroupSetting[]
-  telegramChats   TelegramChat[]
-  telegramPolls   TelegramPoll[]
-  telegramLinks   TelegramUserLink[]
-  shareLinks      GroupShareLink[]
-  deliveries      MessageDelivery[]
+  players              Player[]
+  teamGenerations      TeamGeneration[]
+  settings             GroupSetting[]
+  telegramChats        TelegramChat[]
+  telegramPolls        TelegramPoll[]
+  telegramLinks        TelegramUserLink[]
+  shareLinks           GroupShareLink[]
+  deliveries           MessageDelivery[]
+  playerClaims         PlayerClaim[]
+  telegramConnectCodes TelegramConnectCode[]
 
   @@unique([organizationId, slug])
 }
@@ -271,6 +277,57 @@ model MessageDelivery {
   @@index([teamGenerationId])
 }
 
+// M6-C — organizer-issued, single-use link that lets ONE person link their
+// Team Balance Pro account to an EXISTING Player (Player.userId). Only the
+// SHA-256 of the random token is stored; the raw token is shown once.
+// The row is also the claim's audit trail: created (by whom), accepted (by
+// which User, when), revoked/replaced, and — if an organizer later unlinks
+// the account — unlinked (by whom, when).
+model PlayerClaim {
+  id               String    @id @default(cuid())
+  playerId         String
+  groupId          String
+  tokenHash        String    @unique
+  expiresAt        DateTime
+  createdAt        DateTime  @default(now())
+  createdByUserId  String?
+  usedAt           DateTime?
+  acceptedByUserId String?
+  revokedAt        DateTime?
+  unlinkedAt       DateTime?
+  unlinkedByUserId String?
+
+  player     Player @relation(fields: [playerId], references: [id], onDelete: Cascade)
+  group      Group  @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  createdBy  User?  @relation("ClaimCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
+  acceptedBy User?  @relation("ClaimAcceptedBy", fields: [acceptedByUserId], references: [id], onDelete: SetNull)
+  unlinkedBy User?  @relation("ClaimUnlinkedBy", fields: [unlinkedByUserId], references: [id], onDelete: SetNull)
+
+  @@index([playerId])
+  @@index([groupId])
+}
+
+// M6-C — short-lived, single-use code a claimed Player's account creates
+// and sends to the Telegram bot (/connect CODE) to link that Telegram
+// identity to the Player in its Group. Only the SHA-256 is stored.
+model TelegramConnectCode {
+  id                   String    @id @default(cuid())
+  playerId             String
+  groupId              String
+  codeHash             String    @unique
+  expiresAt            DateTime
+  createdAt            DateTime  @default(now())
+  createdByUserId      String?
+  usedAt               DateTime?
+  usedByTelegramUserId BigInt?
+
+  player    Player @relation(fields: [playerId], references: [id], onDelete: Cascade)
+  group     Group  @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  createdBy User?  @relation(fields: [createdByUserId], references: [id], onDelete: SetNull)
+
+  @@index([playerId])
+}
+
 // M6-A — revocable viewer access to one Group's player-facing pages
 // (no account). Only the SHA-256 hash of the random token is stored; the
 // raw token is returned once, at creation. Rotation revokes every active
@@ -322,6 +379,9 @@ model Player {
   // claim at most one Player per Group, and Players in many Groups.
   userId String?
   user   User?   @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  claims               PlayerClaim[]
+  telegramConnectCodes TelegramConnectCode[]
 
   @@unique([groupId, userId])
   @@index([userId])
@@ -414,10 +474,11 @@ model TelegramPollAnswer {
 
 model TelegramUserLink {
   id        String   @id @default(cuid())
-  // Unchanged — global uniqueness stays until the linking-mechanism
-  // consolidation + Phase 2I's (groupId, userId)/(groupId, playerId)
-  // compound constraints replace it.
-  userId    BigInt   @unique
+  // M6-C — Group-scoped identity: the same Telegram user may be linked to
+  // one Player in EACH Group (@@unique([groupId, userId]) below). A Player
+  // belongs to exactly one Group, so playerId stays unique: one Player →
+  // at most one Telegram identity.
+  userId    BigInt
   playerId  String   @unique
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -430,6 +491,8 @@ model TelegramUserLink {
   // archive its tenant data first.
   groupId String
   group   Group  @relation(fields: [groupId], references: [id], onDelete: Restrict)
+
+  @@unique([groupId, userId])
 }
 
 model TelegramChat {

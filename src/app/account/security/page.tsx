@@ -21,9 +21,10 @@ export default async function AccountSecurityPage() {
     <div className="max-w-md mx-auto rounded-2xl border bg-white shadow-sm p-5 space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <h1 className="text-2xl font-semibold">Account security</h1>
-        <Link className="text-sm underline" href="/admin">
-          Back to workspaces
-        </Link>
+        <span className="flex gap-3 text-sm">
+          <Link className="underline" href="/me">My teams</Link>
+          <Link className="underline" href="/admin">Workspaces</Link>
+        </span>
       </div>
       <p className="text-sm text-gray-600">
         Signed in as <span className="font-medium">{email}</span>

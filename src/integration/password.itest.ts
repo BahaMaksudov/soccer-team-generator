@@ -69,7 +69,7 @@ async function tenantFingerprint() {
 
 async function seed() {
   await prisma.$executeRawUnsafe(
-    `TRUNCATE "EmailVerificationToken","OrganizationInvitation","TelegramPollAnswer","TelegramPoll","TelegramUserLink","TelegramChat","TeamGeneration","GroupSetting","Player","Group","OrganizationMembership","Organization","User","AppSetting" RESTART IDENTITY CASCADE`
+    `TRUNCATE "TelegramConnectCode","PlayerClaim","EmailVerificationToken","OrganizationInvitation","TelegramPollAnswer","TelegramPoll","TelegramUserLink","TelegramChat","TeamGeneration","GroupSetting","Player","Group","OrganizationMembership","Organization","User","AppSetting" RESTART IDENTITY CASCADE`
   );
   const owner = await prisma.user.create({
     data: { email: OWNER_EMAIL, name: "Owner", passwordHash: bcrypt.hashSync(OWNER_DB_PASSWORD, 4), emailVerifiedAt: new Date("2026-10-01T00:00:00Z") },

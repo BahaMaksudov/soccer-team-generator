@@ -17,12 +17,59 @@ import type { TenantContext } from "@/lib/tenantContext";
  * for scoping.
  */
 
+// M6-C — organizer DTO: an explicit allow-list (never the raw row), so no
+// account id, legacy Telegram columns or future fields leak. Account and
+// Telegram state are exposed only as booleans.
+const ADMIN_PLAYER_FIELDS = {
+  id: true,
+  firstName: true,
+  lastName: true,
+  position: true,
+  rating: true,
+  stamina: true,
+  isActive: true,
+} as const;
+
+type AdminPlayerRow = {
+  id: string;
+  firstName: string;
+  lastName: string;
+  position: string;
+  rating: string;
+  stamina: number;
+  isActive: boolean;
+  userId?: string | null;
+  telegramLink?: Array<{ id: string }>;
+  claims?: Array<{ id: string }>;
+};
+
+function toAdminPlayer(p: AdminPlayerRow) {
+  return {
+    id: p.id,
+    firstName: p.firstName,
+    lastName: p.lastName,
+    position: p.position,
+    rating: p.rating,
+    stamina: p.stamina,
+    isActive: p.isActive,
+    accountClaimed: Boolean(p.userId),
+    claimPending: (p.claims?.length ?? 0) > 0,
+    telegramConnected: (p.telegramLink?.length ?? 0) > 0,
+  };
+}
+
 export async function listPlayers(context: TenantContext): Promise<NextResponse> {
   const players = await prisma.player.findMany({
     where: { groupId: context.activeGroup.id },
     orderBy: [{ lastName: "asc" }, { firstName: "asc" }],
+    select: {
+      ...ADMIN_PLAYER_FIELDS,
+      userId: true,
+      telegramLink: { select: { id: true } },
+      claims: { where: { usedAt: null, revokedAt: null, expiresAt: { gt: new Date() } }, select: { id: true } },
+    },
   });
-  return NextResponse.json(players);
+  return NextResponse.json((players as AdminPlayerRow[]).map(toAdminPlayer));
 }
 
 export async function createPlayer(context: TenantContext, req: Request): Promise<NextResponse> {
@@ -51,9 +98,10 @@ export async function createPlayer(context: TenantContext, req: Request): Promis
         isActive: isActive ?? true,
         groupId: context.activeGroup.id,
       },
+      select: { ...ADMIN_PLAYER_FIELDS, userId: true },
     });
 
-    return NextResponse.json(created);
+    return NextResponse.json(toAdminPlayer(created as AdminPlayerRow));
   } catch (e: unknown) {
     // Phase 2D.6E.6C — never return raw database/Prisma messages.
     console.error("createPlayer failed", e);
@@ -88,11 +136,14 @@ export async function updatePlayer(context: TenantContext, id: string, req: Requ
     }
 
     // Read back the Group-scoped row (never by id alone).
-    const updated = await prisma.player.findFirst({ where: { id, groupId } });
+    const updated = await prisma.player.findFirst({
+      where: { id, groupId },
+      select: { ...ADMIN_PLAYER_FIELDS, userId: true, telegramLink: { select: { id: true } } },
+    });
     if (!updated) {
       return NextResponse.json({ error: "Player not found" }, { status: 404 });
     }
-    return NextResponse.json(updated);
+    return NextResponse.json(toAdminPlayer(updated as AdminPlayerRow));
   } catch (e: unknown) {
     console.error("updatePlayer failed", e);
     return NextResponse.json({ error: "Failed to update player" }, { status: 500 });

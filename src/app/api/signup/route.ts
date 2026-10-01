@@ -36,6 +36,7 @@ export async function POST(req: Request) {
       email: parsed.data.email,
       password: parsed.data.password,
       inviteToken: parsed.data.inviteToken,
+      next: parsed.data.next,
     });
     if (!result.ok) {
       if (result.code === "EMAIL_TAKEN") {

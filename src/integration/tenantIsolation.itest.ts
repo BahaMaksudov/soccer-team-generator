@@ -63,7 +63,7 @@ async function snapshotGroupA() {
 
 async function seed() {
   await prisma.$executeRawUnsafe(
-    `TRUNCATE "EmailVerificationToken","OrganizationInvitation","TelegramPollAnswer","TelegramPoll","TelegramUserLink","TelegramChat","TeamGeneration","GroupSetting","Player","Group","OrganizationMembership","Organization","User","AppSetting" RESTART IDENTITY CASCADE`
+    `TRUNCATE "TelegramConnectCode","PlayerClaim","EmailVerificationToken","OrganizationInvitation","TelegramPollAnswer","TelegramPoll","TelegramUserLink","TelegramChat","TeamGeneration","GroupSetting","Player","Group","OrganizationMembership","Organization","User","AppSetting" RESTART IDENTITY CASCADE`
   );
   // Verified, as migration #13 makes every pre-existing OWNER.
   const user = await prisma.user.create({ data: { email: ADMIN_EMAIL, passwordHash: "x", name: "ITest", emailVerifiedAt: new Date() } });
@@ -173,15 +173,16 @@ describe("real-DB tenant isolation: Group B URL vs Group A resources", () => {
     expect(res.status).toBe(404);
   });
 
-  it("7. Link refuses a Telegram user linked in Group A, generically and without reassignment", async () => {
+  it("7. (M6-C) Group B links a Telegram user who is also linked in Group A — Group A is never read into the response or changed", async () => {
     const before = await snapshotGroupA();
     const res = await linkRoute.POST(json("POST", { userId: "777", playerId: "b1" }), params(B));
-    expect(res.status).toBe(409);
-    const text = await res.text();
-    expect(text).toBe(JSON.stringify({ error: "This Telegram user cannot be linked." }));
-    expect(text).not.toMatch(/grp-a|a1|elsewhere|ITest Org|org-itest/);
-    expect(await snapshotGroupA()).toBe(before);
-    expect(await prisma.telegramUserLink.count({ where: { groupId: B } })).toBe(0);
+    expect(res.status).toBe(200);
+    expect(await res.text()).not.toMatch(/grp-a|a1|elsewhere|ITest Org|org-itest/);
+    expect(await snapshotGroupA()).toBe(before); // no reassignment of Group A's link
+    expect(await prisma.telegramUserLink.findMany({ where: { userId: 777n }, select: { groupId: true, playerId: true }, orderBy: { groupId: "asc" } })).toEqual([
+      { groupId: A, playerId: "a1" },
+      { groupId: B, playerId: "b1" },
+    ]);
   });
 
   it("8. Close/Post rejects a Group A poll before any Telegram call", async () => {
@@ -364,6 +365,9 @@ describe("Phase 2D.7 — PostgreSQL enforces groupId NOT NULL on every tenant-ow
       GroupShareLink_groupId_fkey: "c/c",
       // M6-B: delivery history is tenant data — protected like the M4 tables.
       MessageDelivery_groupId_fkey: "r/c",
+      // M6-C: claim links / connect codes are access artifacts that go with their Group.
+      PlayerClaim_groupId_fkey: "c/c",
+      TelegramConnectCode_groupId_fkey: "c/c",
     });
   });
 

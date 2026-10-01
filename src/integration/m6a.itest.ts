@@ -60,7 +60,7 @@ const viewShare = (token: unknown) => shareViewRoute.POST(json("POST", { token }
 
 async function seed() {
   await prisma.$executeRawUnsafe(
-    `TRUNCATE "GroupShareLink","EmailVerificationToken","OrganizationInvitation","TelegramPollAnswer","TelegramPoll","TelegramUserLink","TelegramChat","TeamGeneration","GroupSetting","Player","Group","OrganizationMembership","Organization","User","AppSetting" RESTART IDENTITY CASCADE`
+    `TRUNCATE "TelegramConnectCode","PlayerClaim","GroupShareLink","EmailVerificationToken","OrganizationInvitation","TelegramPollAnswer","TelegramPoll","TelegramUserLink","TelegramChat","TeamGeneration","GroupSetting","Player","Group","OrganizationMembership","Organization","User","AppSetting" RESTART IDENTITY CASCADE`
   );
   const verified = new Date("2026-10-01T00:00:00Z");
   const mk = (email: string, emailVerifiedAt: Date | null = verified) =>

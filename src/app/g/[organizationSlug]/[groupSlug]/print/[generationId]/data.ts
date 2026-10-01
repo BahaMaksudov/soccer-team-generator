@@ -1,6 +1,6 @@
 import { prisma } from "@/lib/prisma";
 import { resolvePublicGroup } from "@/lib/publicGroup";
-import { viewerIsOrganizationMember } from "@/lib/groupAccess";
+import { viewerCanViewGroup } from "@/lib/groupAccess";
 import { toPlayerFacingTeams, type PlayerFacingTeam } from "@/lib/playerFacing";
 
 /**
@@ -47,8 +47,8 @@ export async function loadPublicGroupPrintData(params: {
   const publicGroup = await resolvePublicGroup(
     { organizationSlug: params.organizationSlug, groupSlug: params.groupSlug },
     prisma,
-    // M6-A: non-PUBLIC Groups only for their organizers (fails closed otherwise).
-    { canViewNonPublic: viewerIsOrganizationMember }
+    // Non-PUBLIC Groups only for their organizers or claimed Players (fails closed otherwise).
+    { canViewNonPublic: viewerCanViewGroup }
   );
   if (!publicGroup) return null;
 

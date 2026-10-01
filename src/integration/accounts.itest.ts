@@ -87,7 +87,7 @@ const signup = (name: string, email: string | undefined, password: string, invit
 /** Production-equivalent owner state: owner User (verified by migration #13) → OWNER of New England Eagles → two Groups with data. */
 async function seed() {
   await prisma.$executeRawUnsafe(
-    `TRUNCATE "EmailVerificationToken","OrganizationInvitation","TelegramPollAnswer","TelegramPoll","TelegramUserLink","TelegramChat","TeamGeneration","GroupSetting","Player","Group","OrganizationMembership","Organization","User","AppSetting" RESTART IDENTITY CASCADE`
+    `TRUNCATE "TelegramConnectCode","PlayerClaim","EmailVerificationToken","OrganizationInvitation","TelegramPollAnswer","TelegramPoll","TelegramUserLink","TelegramChat","TeamGeneration","GroupSetting","Player","Group","OrganizationMembership","Organization","User","AppSetting" RESTART IDENTITY CASCADE`
   );
   const owner = await prisma.user.create({
     data: { email: OWNER_EMAIL, name: "Bahrom Maksudov", passwordHash: bcrypt.hashSync(OWNER_PASSWORD, 4), emailVerifiedAt: new Date("2026-09-30T12:00:00Z") },

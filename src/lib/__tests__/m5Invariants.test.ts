@@ -101,7 +101,7 @@ describe("M6-A — visibility & share-link invariants", () => {
     expect(callers.length).toBeGreaterThanOrEqual(6);
     for (const [f, c] of callers) {
       if (f.endsWith(path.join("lib", "groupAccess.ts"))) continue;
-      expect(c, f).toContain("canViewNonPublic: viewerIsOrganizationMember");
+      expect(c, f).toContain("canViewNonPublic: viewerCanViewGroup");
     }
   });
 
@@ -126,6 +126,51 @@ describe("M6-A — visibility & share-link invariants", () => {
   it("the share view, page and API never log tokens", () => {
     for (const f of ["src/lib/shareLinks.ts", "src/app/api/share/view/route.ts", "src/app/share/ShareView.tsx"]) {
       expect(stripComments(read(f)), f).not.toMatch(/console\./);
+    }
+  });
+});
+
+describe("M6-C — claim / connect invariants", () => {
+  it("claim tokens and connect codes are never part of a route path; preview/accept/connect are POST-only", () => {
+    expect(fs.existsSync(path.join(root, "src/app/claim/[token]"))).toBe(false);
+    for (const f of [
+      "src/app/api/claims/preview/route.ts",
+      "src/app/api/claims/accept/route.ts",
+      "src/app/api/account/players/[playerId]/telegram-connect/route.ts",
+    ]) {
+      expect(exportedHandlers(stripComments(read(f))), f).toEqual(["POST"]);
+    }
+    expect(stripComments(read("src/lib/playerClaims.ts"))).toContain("`${CLAIM_PATH}#${token}`");
+  });
+
+  it("the /claim page never accepts on load — acceptance is an explicit button POST", () => {
+    const view = stripComments(read("src/app/claim/ClaimView.tsx"));
+    const effect = view.slice(view.indexOf("useEffect("), view.indexOf("async function confirm"));
+    expect(effect).toContain("/api/claims/preview");
+    expect(effect).not.toContain("/api/claims/accept");
+  });
+
+  it("claim / connect code paths never log or store raw secrets", () => {
+    for (const f of ["src/lib/playerClaims.ts", "src/lib/telegramConnect.ts", "src/app/api/claims/accept/route.ts", "src/app/api/claims/preview/route.ts"]) {
+      expect(stripComments(read(f)), f).not.toMatch(/console\./);
+    }
+    expect(stripComments(read("src/lib/playerClaims.ts"))).toMatch(/tokenHash: hashToken\(token\)/);
+    expect(stripComments(read("src/lib/telegramConnect.ts"))).toMatch(/codeHash: hashToken\(code\)/);
+  });
+
+  it("claiming touches only Player.userId — never Telegram links, history or memberships", () => {
+    const c = stripComments(read("src/lib/playerClaims.ts"));
+    expect(c).not.toMatch(/telegramUserLink|teamGeneration|telegramPoll|organizationMembership/);
+  });
+
+  it("organizer claim/unlink routes are URL-bound to the Group (tenant resolver), never the claimed-player check", () => {
+    for (const f of [
+      "src/app/api/admin/o/[organizationSlug]/g/[groupSlug]/players/[id]/claim/route.ts",
+      "src/app/api/admin/o/[organizationSlug]/g/[groupSlug]/players/[id]/account/route.ts",
+    ]) {
+      const c = stripComments(read(f));
+      expect(c, f).toContain("requireTenantContextForSlugs(");
+      expect(c, f).not.toContain("viewerCanViewGroup");
     }
   });
 });

@@ -1,5 +1,6 @@
 // import { NextRequest, NextResponse } from "next/server";
 // import { prisma } from "@/lib/prisma";
+import { redeemTelegramConnectCode } from "@/lib/telegramConnect";
 // import { toDateOnlyUTC } from "@/lib/dateOnly";
 
 
@@ -421,69 +422,31 @@ async function handleMessage(message: any) {
 //     return;
 //   }
 
+  // M6-C — secure self-linking for claimed Players: `/connect CODE`, or
+  // `/start CODE` from a t.me deep link. The code (short-lived, single-use,
+  // stored only as a hash) identifies the Player/Group; the sender's
+  // Telegram id is the identity being linked. Works in a private chat with
+  // the bot (recommended) or any chat — tenancy comes from the code only.
+  if (cmd === "/connect" || (cmd === "/start" && args[0])) {
+    if (from?.id === undefined || from?.id === null) return;
+    const result = await redeemTelegramConnectCode({ code: args[0] ?? "", telegramUserId: BigInt(from.id) });
+    const reply = result.ok
+      ? `✅ Connected your Telegram account to ${result.playerName} (${result.groupName}).`
+      : result.code === "TELEGRAM_LINKED_TO_OTHER_PLAYER"
+        ? "❌ This Telegram account is already linked to another player in that group. Ask the organizer."
+        : "❌ That code is invalid or has expired. Create a new one in Team Balance Pro (My teams).";
+    await telegram("sendMessage", { chat_id: chatId.toString(), text: reply });
+    return;
+  }
+
+  // M6-C — the former `/link <playerId>` (predictable id, wrote the unused
+  // legacy Player.telegramUserId column) is retired. It writes nothing.
   if (cmd === "/link") {
-    // /link 1234  (1234 is a short code you show in Admin next to player)
-    // We'll implement linking by "player id" instead (simpler + safer):
-    // /link <playerId>
-    const playerId = args[0];
-    if (!playerId) {
-      await telegram("sendMessage", {
-        chat_id: chatId.toString(),
-        text: "Usage: /link <playerId>\nAsk admin for your Player ID from the website.",
-      });
-      return;
-    }
-
-    // Same trusted-persisted-data model as /poll: resolve the issuing
-    // chat's Group before touching any Player. Without a registered,
-    // owned chat there is no safe Group to check the Player against.
-    const chat = await prisma.telegramChat.findUnique({
-      where: { chatId },
-      select: { groupId: true },
+    await telegram("sendMessage", {
+      chat_id: chatId.toString(),
+      text: "This command is no longer supported. To connect Telegram, open Team Balance Pro → My teams → Connect Telegram, or ask your organizer.",
     });
-    if (!chat || !chat.groupId) {
-      await telegram("sendMessage", {
-        chat_id: chatId.toString(),
-        text: "❌ Could not link. Check the playerId and try again.",
-      });
-      return;
-    }
-    const groupId = chat.groupId;
-
-    const telegramUserId = BigInt(from.id);
-    const username = from.username ? String(from.username) : null;
-
-    try {
-      // The target Player must belong to the same Group as the
-      // issuing chat — previously this was a global update by id, so
-      // a playerId from ANY tenant could be linked from ANY chat.
-      // Same generic failure message either way: never reveal whether
-      // a foreign-group player id exists.
-      const player = await prisma.player.findFirst({
-        where: { id: playerId, groupId },
-      });
-      if (!player) {
-        throw new Error("player not found in this group");
-      }
-
-      const updated = await prisma.player.update({
-        where: { id: playerId },
-        data: {
-          telegramUserId,
-          telegramUsername: username ?? undefined,
-        },
-      });
-
-      await telegram("sendMessage", {
-        chat_id: chatId.toString(),
-        text: `✅ Linked Telegram user to player: ${updated.firstName} ${updated.lastName}`,
-      });
-    } catch {
-      await telegram("sendMessage", {
-        chat_id: chatId.toString(),
-        text: "❌ Could not link. Check the playerId and try again.",
-      });
-    }
+    return;
   }
 
 }

@@ -12,7 +12,7 @@ function firstError(data: unknown): string {
   return field || d?.issues?.formErrors?.[0] || d?.error || "Sign up failed. Please try again.";
 }
 
-export default function SignupClient({ invite }: { invite: Invite }) {
+export default function SignupClient({ invite, next = null }: { invite: Invite; next?: string | null }) {
   const [name, setName] = useState("");
   const [email, setEmail] = useState(invite?.email ?? "");
   const [password, setPassword] = useState("");
@@ -36,7 +36,7 @@ export default function SignupClient({ invite }: { invite: Invite }) {
         body: JSON.stringify(
           invite
             ? { name, password, confirmPassword, inviteToken: invite.token }
-            : { name, email, password, confirmPassword }
+            : { name, email, password, confirmPassword, ...(next ? { next } : {}) }
         ),
       });
       const data = await res.json().catch(() => ({}));

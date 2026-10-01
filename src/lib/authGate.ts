@@ -17,6 +17,8 @@ export const PROTECTED_MATCHER = [
   "/api/invitations/:path*",
   "/api/account/:path*",
   "/account/:path*",
+  "/me/:path*",
+  "/api/claims/accept",
 ];
 
 export type AuthGateDecision =

@@ -39,6 +39,11 @@ export type Player = {
   rating: "FAIR" | "GOOD" | "VERY_GOOD" | "EXCELLENT";
   stamina: number;
   isActive: boolean;
+  // M6-C — booleans only (no account data): optional claimed account,
+  // outstanding claim link, linked Telegram identity.
+  accountClaimed?: boolean;
+  claimPending?: boolean;
+  telegramConnected?: boolean;
 };
 
 /** Today's date as YYYY-MM-DD in the browser's local calendar (the

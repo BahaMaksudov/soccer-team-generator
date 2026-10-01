@@ -18,6 +18,9 @@ const mockPlayerFindFirst = vi.fn();
 const mockPlayerUpdate = vi.fn();
 const mockAnswerUpsert = vi.fn();
 
+const mockRedeem = vi.fn();
+vi.mock("@/lib/telegramConnect", () => ({ redeemTelegramConnectCode: (...args: unknown[]) => mockRedeem(...args) }));
+
 vi.mock("@/lib/prisma", () => ({
   prisma: {
     telegramChat: {
@@ -112,65 +115,48 @@ describe("webhook /poll command — chat-based group resolution", () => {
   });
 });
 
-describe("webhook /link command — chat-based group resolution + player ownership", () => {
-  it("an unregistered/unowned chat sends the generic failure message and never touches Player", async () => {
-    mockChatFindUnique.mockResolvedValue(null);
+describe("webhook /link command — retired in M6-C (never writes anything)", () => {
+  it.each(["/link p1", "/link player-in-group-b", "/link"])("%s only replies with guidance; no Player/chat lookup or write", async (text) => {
+    mockChatFindUnique.mockResolvedValue({ groupId: "group-a" });
     (global.fetch as ReturnType<typeof vi.fn>).mockResolvedValue({ json: async () => ({ ok: true, result: {} }) });
 
-    const res = await POST(
-      webhookReq({
-        message: { text: "/link player-1", chat: { id: 555 }, from: { id: 1, username: "bob" } },
-      })
-    );
+    const res = await POST(webhookReq({ message: { text, chat: { id: 555 }, from: { id: 999, username: "bob" } } }));
     expect(res.status).toBe(200);
-
     expect(mockPlayerFindFirst).not.toHaveBeenCalled();
     expect(mockPlayerUpdate).not.toHaveBeenCalled();
-    expect(global.fetch).toHaveBeenCalledTimes(1);
-    const sentText = (global.fetch as ReturnType<typeof vi.fn>).mock.calls[0][0];
-    expect(String(sentText)).toContain("sendMessage");
+    expect(mockChatFindUnique).not.toHaveBeenCalled();
+    const body = JSON.parse((global.fetch as ReturnType<typeof vi.fn>).mock.calls.at(-1)![1].body);
+    expect(body.text).toContain("no longer supported");
+  });
+});
+
+describe("webhook /connect and /start CODE (M6-C)", () => {
+  const reply = () => JSON.parse((global.fetch as ReturnType<typeof vi.fn>).mock.calls.at(-1)![1].body).text as string;
+  beforeEach(() => {
+    (global.fetch as ReturnType<typeof vi.fn>).mockResolvedValue({ json: async () => ({ ok: true, result: {} }) });
   });
 
-  it("a playerId belonging to a foreign group is rejected with the SAME generic message as a nonexistent playerId — no existence leak", async () => {
-    mockChatFindUnique.mockResolvedValue({ groupId: "group-a" });
-    mockPlayerFindFirst.mockResolvedValue(null); // simulates: player exists in group-b
-    (global.fetch as ReturnType<typeof vi.fn>).mockResolvedValue({ json: async () => ({ ok: true, result: {} }) });
-
-    await POST(
-      webhookReq({
-        message: { text: "/link player-in-group-b", chat: { id: 555 }, from: { id: 1, username: "bob" } },
-      })
-    );
-
-    expect(mockPlayerFindFirst).toHaveBeenCalledWith(
-      expect.objectContaining({ where: { id: "player-in-group-b", groupId: "group-a" } })
-    );
-    expect(mockPlayerUpdate).not.toHaveBeenCalled();
-
-    const lastCallBody = JSON.parse(
-      (global.fetch as ReturnType<typeof vi.fn>).mock.calls.at(-1)![1].body
-    );
-    expect(lastCallBody.text).toBe("❌ Could not link. Check the playerId and try again.");
+  it("redeems the code for the SENDER's Telegram id and confirms", async () => {
+    mockRedeem.mockResolvedValue({ ok: true, playerName: "Doni Alpha", groupName: "Indoor Soccer", alreadyLinked: false });
+    await POST(webhookReq({ message: { text: "/connect AbCdEfGhIjKlMnOpQrStUv", chat: { id: 4242 }, from: { id: 4242 } } }));
+    expect(mockRedeem).toHaveBeenCalledWith({ code: "AbCdEfGhIjKlMnOpQrStUv", telegramUserId: 4242n });
+    expect(reply()).toBe("✅ Connected your Telegram account to Doni Alpha (Indoor Soccer).");
   });
 
-  it("a same-group player is linked successfully, writing Player.telegramUserId", async () => {
-    mockChatFindUnique.mockResolvedValue({ groupId: "group-a" });
-    mockPlayerFindFirst.mockResolvedValue({ id: "p1", firstName: "A", lastName: "B" });
-    mockPlayerUpdate.mockResolvedValue({ firstName: "A", lastName: "B" });
-    (global.fetch as ReturnType<typeof vi.fn>).mockResolvedValue({ json: async () => ({ ok: true, result: {} }) });
+  it("/start CODE (t.me deep link) is the same; bare /start does nothing", async () => {
+    mockRedeem.mockResolvedValue({ ok: false, code: "INVALID" });
+    await POST(webhookReq({ message: { text: "/start AbCdEfGhIjKlMnOpQrStUv", chat: { id: 1 }, from: { id: 1 } } }));
+    expect(mockRedeem).toHaveBeenCalledTimes(1);
+    expect(reply()).toContain("invalid or has expired");
+    vi.clearAllMocks();
+    await POST(webhookReq({ message: { text: "/start", chat: { id: 1 }, from: { id: 1 } } }));
+    expect(mockRedeem).not.toHaveBeenCalled();
+  });
 
-    await POST(
-      webhookReq({
-        message: { text: "/link p1", chat: { id: 555 }, from: { id: 999, username: "bob" } },
-      })
-    );
-
-    expect(mockPlayerUpdate).toHaveBeenCalledWith(
-      expect.objectContaining({
-        where: { id: "p1" },
-        data: expect.objectContaining({ telegramUserId: 999n, telegramUsername: "bob" }),
-      })
-    );
+  it("an identity already linked to another Player in that Group gets a safe message", async () => {
+    mockRedeem.mockResolvedValue({ ok: false, code: "TELEGRAM_LINKED_TO_OTHER_PLAYER" });
+    await POST(webhookReq({ message: { text: "/connect AbCdEfGhIjKlMnOpQrStUv", chat: { id: 1 }, from: { id: 1 } } }));
+    expect(reply()).toContain("already linked to another player");
   });
 });
 

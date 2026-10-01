@@ -90,7 +90,7 @@ describe("PATCH .../players/[id] — cross-tenant protection (Group-scoped mutat
     expect((await res.json()).firstName).toBe("Updated");
     expect(mockUpdateMany).toHaveBeenCalledWith({ where: { id: "pa1", groupId: "group-a" }, data: expect.any(Object) });
     // Read-back is Group-scoped too — never by id alone.
-    expect(mockFindFirst).toHaveBeenLastCalledWith({ where: { id: "pa1", groupId: "group-a" } });
+    expect(mockFindFirst.mock.lastCall?.[0].where).toEqual({ id: "pa1", groupId: "group-a" });
     expect(mockUpdate).not.toHaveBeenCalled();
   });
 

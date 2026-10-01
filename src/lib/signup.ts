@@ -4,6 +4,7 @@ import { emailSchema } from "@/lib/emailAddress";
 import { hashPassword, type AuthenticatedUser } from "@/lib/accounts";
 import { findUsableInvitation, type InvitationFailure } from "@/lib/invitations";
 import { deliverVerificationEmail, issueVerificationTokenInTx } from "@/lib/emailVerification";
+import { safeCallbackPath } from "@/lib/safeRedirect";
 
 /**
  * M5 — self-service sign-up. Kept separate from src/lib/accounts.ts
@@ -39,6 +40,7 @@ export async function registerAccount(input: {
   email?: string;
   password: string;
   inviteToken?: string;
+  next?: string;
 }): Promise<RegisterResult> {
   let email: string;
   let next: string | null = null;
@@ -49,6 +51,7 @@ export async function registerAccount(input: {
     next = `/invite/${input.inviteToken}`;
   } else {
     email = emailSchema.parse(input.email ?? "");
+    next = safeCallbackPath(input.next, "") || null;
   }
 
   const passwordHash = await hashPassword(input.password);

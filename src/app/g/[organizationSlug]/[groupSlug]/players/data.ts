@@ -1,6 +1,6 @@
 import { prisma } from "@/lib/prisma";
 import { resolvePublicGroup, type PublicGroupContext } from "@/lib/publicGroup";
-import { viewerIsOrganizationMember } from "@/lib/groupAccess";
+import { viewerCanViewGroup } from "@/lib/groupAccess";
 
 /**
  * Phase 2D.5C — resolver gate for the canonical public Players page.
@@ -22,8 +22,8 @@ export async function loadPublicGroupPlayersPageData(params: {
   const publicGroup = await resolvePublicGroup(
     { organizationSlug: params.organizationSlug, groupSlug: params.groupSlug },
     prisma,
-    // M6-A: non-PUBLIC Groups only for their organizers (fails closed otherwise).
-    { canViewNonPublic: viewerIsOrganizationMember }
+    // Non-PUBLIC Groups only for their organizers or claimed Players (fails closed otherwise).
+    { canViewNonPublic: viewerCanViewGroup }
   );
   if (!publicGroup) return null;
 

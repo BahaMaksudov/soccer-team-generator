@@ -15,7 +15,7 @@ require every future feature before launch.
 | M4 | Tenant Security & Isolation | COMPLETE |
 | M5 | SaaS Owner Accounts & Onboarding | COMPLETE |
 | M5.1 | Authentication Transition & Password Management | COMPLETE (legacy auth retired, `49f5a88`) |
-| M6 | Player Engagement & Messaging Foundation | IN PROGRESS — M6-A live (migration #14); M6-B implemented (migration #15) |
+| M6 | Player Engagement & Messaging Foundation | IN PROGRESS — M6-A/M6-B live (#14, #15); M6-C implemented (migration #16) |
 | M7 | AI Intelligence Layer | Planned |
 | M8 | Multi-Sport Architecture | Planned |
 | M9 | Match Experience & Player Engagement — scores, MVP, voting, attendance, statistics, history, leaderboards, achievements, shareable match experience | Planned |
@@ -43,11 +43,17 @@ Player profile.
 | **Telegram identity** | `TelegramUserLink` (Telegram `userId` → `playerId`, `groupId`); `TelegramPollAnswer` keyed by Telegram `userId`. | External identity; maps to a Player, not a User. |
 | **Future channel identities** | — | WhatsApp/email identities map to Players the same way (one link table per channel or a generic `ChannelIdentity`). |
 
-Known constraints to resolve before identities span Groups:
-`TelegramUserLink.userId` and `.playerId` are each globally `@unique`
-(one Telegram identity → one Player in one Group). Legacy
-`Player.telegramUserId/telegramUsername/telegramFirst/telegramLast`
-columns predate `TelegramUserLink` and are unused by the canonical flow.
+**Player ≠ User ≠ Telegram identity.** Each relationship is optional and
+independent: a Player may have a claimed User, a Telegram link, both, or
+neither. A claim never implies a Telegram identity and vice versa.
+
+Telegram identity is **Group-scoped** (M6-C): `TelegramUserLink` is
+unique per `(groupId, userId)` and per `playerId` — the same Telegram user
+can be one Player in each Group (soccer, volleyball, …), and inside one
+Group an identity maps to at most one Player and a Player to at most one
+identity. Legacy `Player.telegramUserId/telegramUsername/telegramFirst/
+telegramLast` columns are unused (the webhook `/link <playerId>` that wrote
+them is retired).
 
 ## M6 architecture decisions
 
@@ -156,6 +162,30 @@ columns predate `TelegramUserLink` and are unused by the canonical flow.
   never stored); PRIVATE → none.
 - Close poll and deliver teams are separate steps behind the one button.
 
+### M6-C — implemented (decisions as built)
+- **Player claim** (`PlayerClaim`, migration #16): OWNER/ADMIN issues a link
+  for an existing, unclaimed Player → `/claim#<token>` (fragment; SHA-256
+  stored; shown once; 7-day expiry; single-use; a new link revokes the
+  previous one). The page previews read-only; acceptance is an explicit
+  POST by a signed-in, **email-verified** User and sets `Player.userId`
+  only (no history, polls, answers, Telegram links or snapshots change).
+  One Player per User per Group; Players in many Groups allowed. Already
+  claimed → refused. Organizer **unlink** clears `Player.userId` only and is
+  recorded on the claim row (`unlinkedAt/By`), as are creator, acceptor and
+  revocation.
+- **Access**: a claimed Player may view its own Group's player-facing pages
+  even when LINK/PRIVATE (`viewerCanViewGroup`). It never grants organizer
+  access — Admin pages/APIs still require OrganizationMembership.
+- **/me (“My teams”)**: claimed Players across Groups with recent team
+  assignments (allow-listed fields only) and Telegram connect.
+- **Telegram /connect**: a claimed Player's account creates a 15-minute,
+  single-use, 128-bit code (`TelegramConnectCode`, SHA-256 stored) and sends
+  `/connect CODE` (or opens `t.me/<bot>?start=CODE` when
+  `TELEGRAM_BOT_USERNAME` is set). The bot links the sender's Telegram id to
+  that Player in its Group. Organizer linking still works unchanged; inside
+  a Group re-linking moves an identity, and a Player already linked to a
+  different identity gets a clear 409.
+
 - **M6-A — Identity & visibility foundation:** `Player.userId` (nullable,
   unused by UI except organizer unlink), `Group.visibility` + share links,
   player-facing allow-list DTOs, visibility enforcement on `/g` pages,
@@ -178,11 +208,12 @@ posts.
 ## Deferred backlog (still open)
 
 - Secure TelegramChat registration.
-- TelegramUserLink multi-group identity redesign (M6-C).
 - Drop the legacy TelegramPoll posting columns after M6-B bake-in.
 - Telegram 4096-character message handling.
-- Linking a Player already linked to another Telegram account fails with
-  a generic error (unique `playerId`) instead of a clear message.
+- Organizer "unlink Telegram identity" action (players can re-connect via
+  /connect; organizers can move an identity to another Player).
+- Configure `TELEGRAM_BOT_USERNAME` to enable the one-tap t.me deep link.
+- Drop the unused legacy `Player.telegram*` columns.
 - Upstash rate limiting not configured; password reset; multi-session
   revocation (M13).
 - Stale pre-2D.7 ops scripts (outside the repo; do not use).

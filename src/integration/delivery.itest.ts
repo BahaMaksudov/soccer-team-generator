@@ -82,7 +82,7 @@ async function signInAs(email: string) {
 
 async function seed() {
   await prisma.$executeRawUnsafe(
-    `TRUNCATE "MessageDelivery","GroupShareLink","EmailVerificationToken","OrganizationInvitation","TelegramPollAnswer","TelegramPoll","TelegramUserLink","TelegramChat","TeamGeneration","GroupSetting","Player","Group","OrganizationMembership","Organization","User","AppSetting" RESTART IDENTITY CASCADE`
+    `TRUNCATE "TelegramConnectCode","PlayerClaim","MessageDelivery","GroupShareLink","EmailVerificationToken","OrganizationInvitation","TelegramPollAnswer","TelegramPoll","TelegramUserLink","TelegramChat","TeamGeneration","GroupSetting","Player","Group","OrganizationMembership","Organization","User","AppSetting" RESTART IDENTITY CASCADE`
   );
   const verified = new Date("2026-10-01T00:00:00Z");
   for (const [suffix, orgId, groupId, chatId] of [["a", "org-a-id", "ga", 1001n], ["b", "org-b-id", "gb", 2001n]] as const) {

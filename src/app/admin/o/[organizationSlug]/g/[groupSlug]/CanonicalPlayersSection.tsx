@@ -11,6 +11,7 @@ import {
   type PlayerFormValues,
 } from "@/lib/canonicalAdminState";
 import CanonicalPlayerForm from "./CanonicalPlayerForm";
+import PlayerAccountCell from "./PlayerAccountCell";
 import type { Player } from "./CanonicalAdminWorkspace";
 
 /**
@@ -185,6 +186,7 @@ export default function CanonicalPlayersSection({
               <th>Rating</th>
               <th>Stamina</th>
               <th>Status</th>
+              <th title="Optional Team Balance Pro account (players never need one)">Account</th>
               <th></th>
             </tr>
           </thead>
@@ -209,6 +211,15 @@ export default function CanonicalPlayersSection({
                   <button className="underline text-xs" onClick={() => toggleActive(p)}>
                     {p.isActive ? "Active" : "Inactive"}
                   </button>
+                </td>
+                <td>
+                  <PlayerAccountCell
+                    organizationSlug={organizationSlug}
+                    groupSlug={groupSlug}
+                    player={p}
+                    onChanged={refreshPlayers}
+                    onMessage={onMessage}
+                  />
                 </td>
                 <td className="whitespace-nowrap">
                   {confirmDeleteId === p.id ? (
@@ -236,7 +247,7 @@ export default function CanonicalPlayersSection({
             ))}
             {players.length === 0 && (
               <tr>
-                <td colSpan={7} className="py-2 text-gray-500">
+                <td colSpan={8} className="py-2 text-gray-500">
                   No players yet.
                 </td>
               </tr>

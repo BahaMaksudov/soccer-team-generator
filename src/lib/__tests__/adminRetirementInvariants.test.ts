@@ -70,6 +70,8 @@ describe("flat operational Admin APIs are deleted", () => {
         canonical("generate"),
         canonical("players"),
         canonical("players/[id]"),
+        canonical("players/[id]/claim"), // M6-C
+        canonical("players/[id]/account"), // M6-C
         canonical("publish"),
         canonical("settings/balance-weights"),
         canonical("settings/team-name"),
@@ -267,10 +269,15 @@ describe("tenant-isolation hardening invariants (Phase 2D.6E.6C)", () => {
 describe("webhook independence", () => {
   const webhook = code.get(rel("src/app/api/telegram/webhook/route.ts"))!;
 
-  it("imports only next/server, prisma, and dateOnly", () => {
+  it("imports only next/server, prisma, dateOnly and (M6-C) the Telegram connect-code service", () => {
     expect([...webhook.matchAll(/^import .* from ["']([^"']+)["'];?$/gm)].map((m) => m[1]).sort()).toEqual(
-      ["@/lib/dateOnly", "@/lib/prisma", "next/server"].sort()
+      ["@/lib/dateOnly", "@/lib/prisma", "@/lib/telegramConnect", "next/server"].sort()
     );
+  });
+
+  it("M6-C: the retired /link command never writes a Player or the legacy telegramUserId column", () => {
+    const link = webhook.slice(webhook.indexOf('cmd === "/link"'), webhook.indexOf("async function handlePollAnswer"));
+    expect(link).not.toMatch(/prisma\.|telegramUserId|player\.update/);
   });
 
   it("never uses the Admin tenant resolvers or Admin APIs", () => {

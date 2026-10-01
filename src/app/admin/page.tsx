@@ -48,6 +48,9 @@ export default async function AdminEntryPage() {
       <div className="flex flex-wrap items-center justify-between gap-2">
         <h1 className="text-2xl font-semibold">Your workspaces</h1>
         <div className="flex flex-wrap items-center gap-3">
+          <Link className="text-sm underline" href="/me">
+            My teams
+          </Link>
           <Link className="text-sm underline" href="/account/security">
             Account
           </Link>

@@ -39,6 +39,9 @@ export const signupSchema = z
     password: passwordSchema,
     confirmPassword: z.string(),
     inviteToken: z.string().optional(),
+    // M6-C — internal path to continue to after email verification (e.g. a
+    // /claim#… link). Sanitized with safeCallbackPath before any use.
+    next: z.string().max(2048).optional(),
   })
   .superRefine((v, ctx) => {
     if (v.password !== v.confirmPassword) {

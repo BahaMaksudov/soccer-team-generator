@@ -1,19 +1,22 @@
 import Link from "next/link";
 import { getInvitationPreview } from "@/lib/invitations";
 import SignupClient from "./SignupClient";
+import { safeCallbackPath } from "@/lib/safeRedirect";
 
 /**
  * M5 — self-service sign-up. With ?invite=<token> the email is fixed to
  * the invitation's (read-only here, and ignored by the server anyway)
  * and the invitation is accepted as part of account creation.
  */
-type SearchParams = Promise<{ invite?: string | string[] }>;
+type SearchParams = Promise<{ invite?: string | string[]; next?: string | string[] }>;
 
 export default async function SignupPage({ searchParams }: { searchParams: SearchParams }) {
-  const raw = (await searchParams).invite;
+  const sp = await searchParams;
+  const raw = sp.invite;
   const inviteToken = typeof raw === "string" && raw ? raw : null;
+  const next = typeof sp.next === "string" ? safeCallbackPath(sp.next, "") : "";
 
-  if (!inviteToken) return <SignupClient invite={null} />;
+  if (!inviteToken) return <SignupClient invite={null} next={next || null} />;
 
   const preview = await getInvitationPreview(inviteToken);
   if (preview.status !== "valid") {

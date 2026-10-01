@@ -6,16 +6,35 @@ vi.mock("@/lib/tenantContext", async (importOriginal) => {
   return { ...actual, requireTenantContextForSlugs: (...args: unknown[]) => mockRequireTenantContextForSlugs(...args) };
 });
 
+// In-memory TelegramUserLink table (M6-C: unique (groupId, userId) and unique playerId).
+type Link = { id: string; userId: bigint; playerId: string; groupId: string };
+let links: Link[];
 const mockPlayerFindFirst = vi.fn();
-const mockLinkFindUnique = vi.fn();
-const mockLinkUpsert = vi.fn();
+const tx = {
+  telegramUserLink: {
+    findUnique: vi.fn(async ({ where }: { where: { groupId_userId?: { groupId: string; userId: bigint }; playerId?: string } }) => {
+      if (where.groupId_userId) {
+        const { groupId, userId } = where.groupId_userId;
+        return links.find((l) => l.groupId === groupId && l.userId === userId) ?? null;
+      }
+      return links.find((l) => l.playerId === where.playerId) ?? null;
+    }),
+    create: vi.fn(async ({ data }: { data: Omit<Link, "id"> }) => {
+      const row = { id: `l${links.length + 1}`, ...data };
+      links.push(row);
+      return row;
+    }),
+    update: vi.fn(async ({ where, data }: { where: { id: string }; data: Partial<Link> }) => {
+      const row = links.find((l) => l.id === where.id)!;
+      Object.assign(row, data);
+      return row;
+    }),
+  },
+};
 vi.mock("@/lib/prisma", () => ({
   prisma: {
     player: { findFirst: (...args: unknown[]) => mockPlayerFindFirst(...args) },
-    telegramUserLink: {
-      findUnique: (...args: unknown[]) => mockLinkFindUnique(...args),
-      upsert: (...args: unknown[]) => mockLinkUpsert(...args),
-    },
+    $transaction: (fn: (t: typeof tx) => unknown) => fn(tx),
   },
 }));
 
@@ -30,150 +49,85 @@ const CONTEXT_A = {
   groups: [GROUP_A],
   activeGroup: GROUP_A,
 };
-
-function ctx(organizationSlug: string, groupSlug: string) {
-  return { params: Promise.resolve({ organizationSlug, groupSlug }) };
-}
-
-function req(body: unknown) {
-  return new Request("http://localhost", { method: "POST", body: JSON.stringify(body) });
-}
+const ctx = (organizationSlug: string, groupSlug: string) => ({ params: Promise.resolve({ organizationSlug, groupSlug }) });
+const req = (body: unknown) => new Request("http://localhost", { method: "POST", body: JSON.stringify(body) });
 
 let fetchSpy: ReturnType<typeof vi.spyOn>;
 
 beforeEach(() => {
   vi.clearAllMocks();
+  links = [];
   fetchSpy = vi.spyOn(global, "fetch");
+  mockRequireTenantContextForSlugs.mockResolvedValue(CONTEXT_A);
+  mockPlayerFindFirst.mockImplementation(async ({ where }: { where: { id: string; groupId: string } }) =>
+    where.groupId === "group-a" && ["p1", "p2"].includes(where.id) ? { id: where.id, firstName: "A", lastName: "B" } : null
+  );
 });
 
-describe("POST canonical telegram/link — isolation", () => {
-  it("successfully links to an active-Group Player", async () => {
-    mockRequireTenantContextForSlugs.mockResolvedValue(CONTEXT_A);
-    mockPlayerFindFirst.mockResolvedValue({ id: "p1", firstName: "A", lastName: "B" });
-    mockLinkFindUnique.mockResolvedValue(null);
-    mockLinkUpsert.mockResolvedValue({ userId: 555n, playerId: "p1", groupId: "group-a" });
-
+describe("POST canonical telegram/link — Group-scoped identity (M6-C)", () => {
+  it("links a Telegram user to an active-Group Player, stamped with the URL-resolved Group", async () => {
     const res = await POST(req({ userId: "555", playerId: "p1" }), ctx("org-a", "group-a"));
     expect(res.status).toBe(200);
-
     expect(mockRequireTenantContextForSlugs).toHaveBeenCalledWith({ organizationSlug: "org-a", groupSlug: "group-a" });
-    const call = mockLinkUpsert.mock.calls[0][0];
-    expect(call.create).toEqual({ userId: 555n, playerId: "p1", groupId: "group-a" });
+    expect(links).toEqual([{ id: "l1", userId: 555n, playerId: "p1", groupId: "group-a" }]);
+    expect(tx.telegramUserLink.findUnique.mock.calls[0][0].where).toEqual({ groupId_userId: { groupId: "group-a", userId: 555n } });
   });
 
-  it("a foreign-Group Player is rejected with 404 BEFORE any mutation — player lookup scoped by groupId", async () => {
-    mockRequireTenantContextForSlugs.mockResolvedValue(CONTEXT_A);
-    mockPlayerFindFirst.mockResolvedValue(null); // simulates: playerId exists but belongs to group-b
-
-    const res = await POST(req({ userId: "555", playerId: "player-in-group-b" }), ctx("org-a", "group-a"));
-    expect(res.status).toBe(404);
-
-    expect(mockPlayerFindFirst).toHaveBeenCalledWith(
-      expect.objectContaining({ where: { id: "player-in-group-b", groupId: "group-a" } })
-    );
-    expect(mockLinkUpsert).not.toHaveBeenCalled();
+  it("the same Telegram user linked in ANOTHER Group is not a conflict and that link is never touched", async () => {
+    links = [{ id: "lb", userId: 555n, playerId: "pb1", groupId: "group-b" }];
+    const res = await POST(req({ userId: "555", playerId: "p1" }), ctx("org-a", "group-a"));
+    expect(res.status).toBe(200);
+    expect(links).toEqual([
+      { id: "lb", userId: 555n, playerId: "pb1", groupId: "group-b" },
+      { id: "l2", userId: 555n, playerId: "p1", groupId: "group-a" },
+    ]);
   });
 
-  it("TelegramUserLink rows are stamped with the URL-resolved active groupId", async () => {
-    mockRequireTenantContextForSlugs.mockResolvedValue(CONTEXT_A);
-    mockPlayerFindFirst.mockResolvedValue({ id: "p1", firstName: "A", lastName: "B" });
-    mockLinkFindUnique.mockResolvedValue(null);
-    mockLinkUpsert.mockResolvedValue({});
-
-    await POST(req({ userId: "555", playerId: "p1" }), ctx("org-a", "group-a"));
-
-    const call = mockLinkUpsert.mock.calls[0][0];
-    expect(call.create.groupId).toBe("group-a");
-    expect(call.update.groupId).toBe("group-a");
-  });
-
-  it("re-linking within the SAME Group is allowed, not rejected", async () => {
-    mockRequireTenantContextForSlugs.mockResolvedValue(CONTEXT_A);
-    mockPlayerFindFirst.mockResolvedValue({ id: "p2", firstName: "C", lastName: "D" });
-    mockLinkFindUnique.mockResolvedValue({ userId: 555n, playerId: "p1", groupId: "group-a" });
-    mockLinkUpsert.mockResolvedValue({});
-
+  it("re-linking within the SAME Group moves the identity to the chosen Player (never two links in one Group)", async () => {
+    links = [{ id: "la", userId: 555n, playerId: "p1", groupId: "group-a" }];
     const res = await POST(req({ userId: "555", playerId: "p2" }), ctx("org-a", "group-a"));
     expect(res.status).toBe(200);
-    expect(mockLinkUpsert).toHaveBeenCalled();
+    expect(links).toEqual([{ id: "la", userId: 555n, playerId: "p2", groupId: "group-a" }]);
   });
 
-  it("a Telegram identity already linked under a DIFFERENT Group returns the existing safe 409 and does not mutate", async () => {
-    mockRequireTenantContextForSlugs.mockResolvedValue(CONTEXT_A);
-    mockPlayerFindFirst.mockResolvedValue({ id: "p1", firstName: "A", lastName: "B" });
-    mockLinkFindUnique.mockResolvedValue({ userId: 555n, playerId: "p-old", groupId: "group-b" });
-
-    const res = await POST(req({ userId: "555", playerId: "p1" }), ctx("org-a", "group-a"));
-    expect(res.status).toBe(409);
-    expect(mockLinkUpsert).not.toHaveBeenCalled();
+  it("linking the same pair again is a no-op", async () => {
+    links = [{ id: "la", userId: 555n, playerId: "p1", groupId: "group-a" }];
+    expect((await POST(req({ userId: "555", playerId: "p1" }), ctx("org-a", "group-a"))).status).toBe(200);
+    expect(tx.telegramUserLink.create).not.toHaveBeenCalled();
+    expect(tx.telegramUserLink.update).not.toHaveBeenCalled();
   });
 
-  it("the foreign-Group refusal is generic: no Group/player/org metadata and no 'linked elsewhere' disclosure (Phase 2D.6E.6C)", async () => {
-    mockRequireTenantContextForSlugs.mockResolvedValue(CONTEXT_A);
-    mockPlayerFindFirst.mockResolvedValue({ id: "p1", firstName: "A", lastName: "B" });
-    mockLinkFindUnique.mockResolvedValue({ userId: 555n, playerId: "p-other-group", groupId: "group-b" });
-
+  it("a Player already linked to a DIFFERENT Telegram account gets a clear 409 and nothing changes", async () => {
+    links = [{ id: "la", userId: 777n, playerId: "p1", groupId: "group-a" }];
     const res = await POST(req({ userId: "555", playerId: "p1" }), ctx("org-a", "group-a"));
     expect(res.status).toBe(409);
-    const text = await res.text();
-    expect(text).toBe(JSON.stringify({ error: "This Telegram user cannot be linked." }));
-    expect(text).not.toMatch(/elsewhere|group-b|p-other-group|org-|Group B/i);
-    // No reassignment: the existing foreign link is never touched.
-    expect(mockLinkUpsert).not.toHaveBeenCalled();
+    expect(await res.json()).toEqual({ error: "This player is already linked to a different Telegram account." });
+    expect(links).toEqual([{ id: "la", userId: 777n, playerId: "p1", groupId: "group-a" }]);
+  });
+
+  it("a foreign-Group Player is rejected with 404 before any mutation — player lookup scoped by groupId", async () => {
+    const res = await POST(req({ userId: "555", playerId: "player-in-group-b" }), ctx("org-a", "group-a"));
+    expect(res.status).toBe(404);
+    expect(mockPlayerFindFirst).toHaveBeenCalledWith(expect.objectContaining({ where: { id: "player-in-group-b", groupId: "group-a" } }));
+    expect(links).toEqual([]);
   });
 
   it("a body groupId/organizationId cannot switch tenancy", async () => {
-    mockRequireTenantContextForSlugs.mockResolvedValue(CONTEXT_A);
-    mockPlayerFindFirst.mockResolvedValue({ id: "p1", firstName: "A", lastName: "B" });
-    mockLinkFindUnique.mockResolvedValue(null);
-    mockLinkUpsert.mockResolvedValue({});
-
-    await POST(
-      req({ userId: "555", playerId: "p1", groupId: "group-b", organizationId: "org-b" }),
-      ctx("org-a", "group-a")
-    );
-
-    expect(mockRequireTenantContextForSlugs).toHaveBeenCalledWith({ organizationSlug: "org-a", groupSlug: "group-a" });
+    await POST(req({ userId: "555", playerId: "p1", groupId: "group-b", organizationId: "org-b" }), ctx("org-a", "group-a"));
     expect(mockPlayerFindFirst.mock.calls[0][0].where.groupId).toBe("group-a");
-    expect(mockLinkUpsert.mock.calls[0][0].create.groupId).toBe("group-a");
+    expect(links[0].groupId).toBe("group-a");
   });
 
-  it("invalid tenant fails closed before any mutation", async () => {
-    mockRequireTenantContextForSlugs.mockRejectedValue(new TenantContextError("NO_GROUP"));
-
-    const res = await POST(req({ userId: "555", playerId: "p1" }), ctx("org-a", "not-real-group"));
-    expect(res.status).toBe(404);
+  it("invalid tenant fails closed (404) and unauthenticated is 401 — before any lookup or mutation", async () => {
+    mockRequireTenantContextForSlugs.mockRejectedValueOnce(new TenantContextError("NO_GROUP"));
+    expect((await POST(req({ userId: "555", playerId: "p1" }), ctx("org-a", "x"))).status).toBe(404);
+    mockRequireTenantContextForSlugs.mockRejectedValueOnce(new TenantContextError("UNAUTHENTICATED"));
+    expect((await POST(req({ userId: "555", playerId: "p1" }), ctx("org-a", "group-a"))).status).toBe(401);
     expect(mockPlayerFindFirst).not.toHaveBeenCalled();
-    expect(mockLinkUpsert).not.toHaveBeenCalled();
+    expect(links).toEqual([]);
   });
 
-  it("global TelegramUserLink.userId uniqueness behavior is unchanged — where clause is userId only, no groupId compound key", async () => {
-    mockRequireTenantContextForSlugs.mockResolvedValue(CONTEXT_A);
-    mockPlayerFindFirst.mockResolvedValue({ id: "p1", firstName: "A", lastName: "B" });
-    mockLinkFindUnique.mockResolvedValue(null);
-    mockLinkUpsert.mockResolvedValue({});
-
-    await POST(req({ userId: "555", playerId: "p1" }), ctx("org-a", "group-a"));
-
-    expect(mockLinkFindUnique).toHaveBeenCalledWith({ where: { userId: 555n } });
-    expect(mockLinkUpsert.mock.calls[0][0].where).toEqual({ userId: 555n });
-  });
-
-  it("propagates UNAUTHENTICATED as 401 without touching Player or TelegramUserLink", async () => {
-    mockRequireTenantContextForSlugs.mockRejectedValue(new TenantContextError("UNAUTHENTICATED"));
-    const res = await POST(req({ userId: "555", playerId: "p1" }), ctx("org-a", "group-a"));
-    expect(res.status).toBe(401);
-    expect(mockPlayerFindFirst).not.toHaveBeenCalled();
-  });
-});
-
-describe("POST canonical telegram/link — side-effect prohibition", () => {
   it("never calls the Telegram Bot API (no fetch)", async () => {
-    mockRequireTenantContextForSlugs.mockResolvedValue(CONTEXT_A);
-    mockPlayerFindFirst.mockResolvedValue({ id: "p1", firstName: "A", lastName: "B" });
-    mockLinkFindUnique.mockResolvedValue(null);
-    mockLinkUpsert.mockResolvedValue({});
-
     await POST(req({ userId: "555", playerId: "p1" }), ctx("org-a", "group-a"));
     expect(fetchSpy).not.toHaveBeenCalled();
   });
