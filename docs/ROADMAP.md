@@ -21,9 +21,11 @@ require every future feature before launch.
 | M6 | Player Engagement & Messaging Foundation | COMPLETE — M6-A/B/C live and production-verified (migrations #14–#16; prod `49ebde4`, 2026-10-01) |
 | M6.1 | Telegram Identity Management (remove/disconnect a Player's Telegram link) | COMPLETE — live (prod `841853d`, 2026-10-01), no migration |
 | M7 | Multi-Sport Foundation — sport registry, sport-neutral balancing engine, Add Group (migration #17) | COMPLETE — migration #17 deployed (`ff29508`), production data verified unchanged, basketball production smoke passed, first M7 generation metadata verified (2026-10-01) |
-| M8 | Balance Intelligence & AI — deterministic insights first, optional LLM layer | Planned |
+| M8-A | Deterministic Balance Intelligence — quality levels, roster notes, achievable role coverage, best single swap, Apply Swap (no LLM, no migration) | COMPLETE — shipped in the M8-A release (no migration, balance-v2 unchanged); manual browser smoke of Apply Swap pending |
+| M8-B | Optional LLM explanation | DEFERRED — deterministic explanations cover the M8 value; generative AI is better spent on recaps/communication (M9/M10.5) |
 | M9 | Match Experience & Player Engagement — self-service Telegram group connection, channel-neutral match lifecycle (Telegram first), results, MVP, recap, public match page, "Share to WhatsApp" | Planned |
 | M10 | WhatsApp & Expanded Communications — GroupChannel, primary channel, WhatsApp identity, Meta Cloud API, multi-channel delivery | Planned |
+| M10.5 | Organizer Agent & Match Automation — scheduled attendance → import → generate → analysis → organizer approval → publish/post; optional game-day updates (weather) | Planned |
 | M11 | Plans & Billing | Planned |
 | M12 | Product UX / Analytics / Branding | Planned |
 | M13 | Production Hardening | Planned |
@@ -303,14 +305,54 @@ them is retired).
   Any). The key is kept for compatibility — no migration, no data rename, no
   `american_football` key.
 
-## M8 — Balance Intelligence & AI (planned)
+## M8 — Balance Intelligence & AI
 
-- The deterministic engine stays authoritative; AI never generates teams.
-- M8-A (no LLM): template explanations from metrics/warnings, deterministic
-  swap search + `evaluateTeams` before/after, pre-generation roster checks.
-- M8-B (optional LLM): on-demand, cached explanations/recaps from a
-  pseudonymous allow-listed metrics payload; never in the Generate/Publish/
-  Telegram path; must degrade gracefully when the provider is unavailable.
+The deterministic engine stays authoritative; no LLM ever generates teams or
+judges fairness. **M8-A deliberately uses deterministic intelligence, not
+generative AI, for fairness decisions.**
+
+### M8-A — Deterministic Balance Intelligence (decisions as built)
+
+- `src/lib/balanceAnalysis.ts` analyzes teams AFTER `balance-v2` (the
+  generator is unchanged; soccer parity still 5,000/5,000). Pure,
+  deterministic, registry-driven (no sport or role is named in the code).
+- **Quality levels** (`balance-analysis-v1` constants, not Group settings),
+  from the team impact spread: EVEN < 4 · CLOSE 4–9 · UNEVEN ≥ 10. No
+  0–100 score or "% balanced".
+- **Roster quality vs assignment quality** are separate: role shortages
+  caused by the roster are roster notes (INFO; NOTICE when the sport's rule
+  warns — goalkeeper, setter, quarterback; Bigs are INFO), uneven team sizes
+  and unknown roles are INFO. Role coverage is judged against what is
+  achievable: min(teamCount, ⌊available ÷ perTeam⌋).
+- **Best single swap**: exhaustive cross-team pairs (12/2 → 36 … 30/5 → 360
+  candidates), never lowering any role rule's covered-team count; ranked by
+  impact spread → average-skill spread → stamina spread → same role → stable
+  order. Suggested only if it improves the spread by ≥ 5 AND improves the
+  level (UNEVEN→CLOSE/EVEN, CLOSE→EVEN).
+- **Apply Swap** (`POST …/generate/swap`): preview only — never publishes,
+  posts or changes Players/settings. The server re-reads the Group's Players,
+  sport and settings and applies the swap only if it is exactly the current
+  suggestion (else 409 with fresh analysis); same access as Generate.
+- **Deterministic explanation** sentences from the analysis with sport labels
+  ("Teams are closely matched.", "1 Setter available for 2 teams.",
+  "A single swap can make the teams more even."). Raw strength numbers only
+  under Details, never presented as a skill-level conversion. Admin only —
+  nothing on public pages.
+- **Persistence**: Generate returns `analysis`; Publish stores `metricsJson`
+  as `metrics-v2` (`metricsVersion`) with an `analysis` block
+  (`analysisVersion: balance-analysis-v1`: quality, spreads, team sizes,
+  roster notes, role coverage, improvable). Swap suggestions, player ids and
+  summary text are never stored. Pre-M7 (NULL) and M7 (unversioned =
+  metrics-v1) rows are read tolerantly and never backfilled. No migration.
+
+### M8-B — Optional LLM explanation (DEFERRED)
+
+Deterministic explanations deliver most of the value. Generative AI belongs
+where wording matters more than facts — match recaps, friendly
+communication, weather wording, Organizer Agent interaction — always fed by
+verified structured facts. If revisited: on-demand only, pseudonymous
+team-level payload, kill switch, timeout, cost cap, never in the Generate/
+Publish/Telegram path.
 
 ## M9 — channel-neutral match lifecycle (decisions recorded 2026-10-01)
 
@@ -397,6 +439,32 @@ delivery. No GroupChannel or WhatsApp work before then.
   participants, no interactive messages), so WhatsApp interaction is 1:1
   opt-in plus share links and web fallback pages.
 
+## M10.5 — Organizer Agent & Match Automation (planned)
+
+Works ABOVE the match lifecycle and channel architecture (M9/M10 first);
+never Telegram-specific:
+
+```text
+Organizer Agent → match lifecycle → approved communication → Telegram / WhatsApp / future channels
+```
+
+- **Scheduled match workflow** configured by OWNER/ADMIN, e.g. game Wednesday
+  8:00 PM; attendance poll Tuesday 8:00 AM; poll close/import Tuesday 8:00 PM;
+  generate after the attendance cutoff; team posting requires organizer
+  approval; optional game-day update Wednesday afternoon. Exact UI is future
+  work.
+- **Agent flow**: schedule → attendance poll → wait for cutoff → import
+  attendance → generate (balance-v2) → deterministic balance analysis →
+  prepare suggested teams → request OWNER/ADMIN approval → publish/post after
+  approval. **Human approval is the default**; autonomous publishing is not
+  designed (a future opt-in auto-publish would be evaluated separately).
+- **Game-day weather (optional)**: real weather for the match location and
+  time, e.g. "Rain is expected around kickoff. Don't forget a jacket or
+  umbrella." Invariant: **the weather provider is the factual source; AI only
+  words it** — AI never invents temperature, rain, snow, wind, storms or
+  forecasts. Organizer setting such as Game-day updates: OFF / INFORMATIONAL /
+  FUN.
+
 ## M9 requirement — Telegram-first, no-signup match lifecycle (confirmed 2026-10-01)
 
 Telegram is a first-class player interface. A Player who never creates a
@@ -452,6 +520,12 @@ posts.
   `/poll` command lacks organizer authorization in bound chats — any member
   of a bound chat can make the bot post an attendance poll. Gate it to
   organizers or retire it.
+- **Generation Variety / "More variety"** (found in the M8 review): Regenerate
+  rarely yields a different split (e.g. 4 distinct splits in 200 runs on a
+  realistic 14-player roster) because randomness only breaks exact ties.
+  Possible approach: role-safe, quality-neutral post-processing swaps outside
+  the generator. Changing generation itself would mean `balance-v3` and a
+  deliberate soccer-parity decision. Not in M8-A.
 - (M7 follow-up) Organizer rule-strength editor (Strong/Prefer/Off) for role
   rules; registry defaults apply until then.
 - (M7 follow-up) The site background image (`/SoccerTeam.jpg`) is
