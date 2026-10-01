@@ -20,7 +20,7 @@ require every future feature before launch.
 | M5.1 | Authentication Transition & Password Management | COMPLETE (legacy auth retired, `49f5a88`) |
 | M6 | Player Engagement & Messaging Foundation | COMPLETE — M6-A/B/C live and production-verified (migrations #14–#16; prod `49ebde4`, 2026-10-01) |
 | M6.1 | Telegram Identity Management (remove/disconnect a Player's Telegram link) | COMPLETE — live (prod `841853d`, 2026-10-01), no migration |
-| M7 | Multi-Sport Foundation — sport registry, sport-neutral balancing engine, Add Group (migration #17) | IMPLEMENTED — in review (not deployed) |
+| M7 | Multi-Sport Foundation — sport registry, sport-neutral balancing engine, Add Group (migration #17) | DEPLOYED — prod `ff29508`, migration #17 verified (2026-10-01); awaiting owner multi-sport smoke |
 | M8 | Balance Intelligence & AI — deterministic insights first, optional LLM layer | Planned |
 | M9 | Match Experience & Player Engagement — channel-neutral match lifecycle (Telegram first), results, MVP, recap, public match page, "Share to WhatsApp" | Planned |
 | M10 | WhatsApp & Expanded Communications — GroupChannel, primary channel, WhatsApp identity, Meta Cloud API, multi-channel delivery | Planned |
@@ -366,6 +366,10 @@ posts.
 ## Deferred backlog (still open)
 
 - Secure TelegramChat registration.
+- (Privacy review, M9/M13) The public players API
+  (`/api/public/[org]/[group]/players`) still returns internal Player ids
+  (no rating/stamina/identity). Review whether public/player-facing DTOs
+  should drop or replace them before M9 public match pages.
 - **Security (before broad commercial rollout):** the Telegram webhook's
   `/poll` command lacks organizer authorization in bound chats — any member
   of a bound chat can make the bot post an attendance poll. Gate it to
