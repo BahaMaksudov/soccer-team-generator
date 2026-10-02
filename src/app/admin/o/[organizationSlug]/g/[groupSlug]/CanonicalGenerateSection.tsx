@@ -21,6 +21,7 @@ import BalanceIntelligence from "./BalanceIntelligence";
 import type { BalanceAnalysis } from "@/lib/balanceAnalysis";
 import type { BalanceMetrics } from "@/lib/balanceEngine";
 import { applySwapBody } from "@/lib/balanceAnalysisUi";
+import { assignmentKey, teamsPanelState } from "@/lib/teamAssignment";
 
 /**
  * Phase 2D.6D.2 — canonical tenant-bound Generate preview.
@@ -44,7 +45,8 @@ import { applySwapBody } from "@/lib/balanceAnalysisUi";
  * Phase 2D.6D.5D — still Telegram-free. After a successful Publish it
  * reports the saved TeamGeneration ({ id, date }) up to the workspace
  * so the separate Close Poll & Post Teams action can target exactly
- * that row; Generate and Clear reset it to null.
+ * that row. (M9-A: it stays set after Regenerate/Clear/Apply Swap — the
+ * published teams remain published until a new Publish or a delete.)
  *
  * Phase 2D.6D.5E.3 — the Generate date is owned by the workspace (so a
  * Telegram poll import can set it); the "Published" badge is derived
@@ -74,9 +76,12 @@ export default function CanonicalGenerateSection({
   publishedGeneration,
   onPublishedGenerationChange,
   matchId,
+  initialPublishedTeams,
 }: {
   /** M9-A — Generate for a Match: the date is the Match's, Publish links the teams to it, and delete-by-date is hidden. */
   matchId?: string;
+  /** M9-A — the currently published teams (from the server), so a reload still shows them as published. */
+  initialPublishedTeams?: GeneratedTeam[] | null;
   organizationSlug: string;
   groupSlug: string;
   selectedIds: string[];
@@ -101,11 +106,29 @@ export default function CanonicalGenerateSection({
     [sport, players, selectedIds, teamCount]
   );
   const [publishing, setPublishing] = useState(false);
-  const published = publishedGeneration !== null;
+
+  // M9-A — PUBLISHED teams (persisted; what players see) are separate from the
+  // working PREVIEW. Generate/Regenerate, Apply Swap and Clear change only the
+  // preview; only Publish replaces the published teams. Which one is shown is
+  // decided from the actual assignments (src/lib/teamAssignment.ts).
+  const [publishedTeams, setPublishedTeams] = useState<GeneratedTeam[] | null>(initialPublishedTeams ?? null);
+  const initialKey = initialPublishedTeams ? assignmentKey(initialPublishedTeams) : null;
+  useEffect(() => {
+    if (initialPublishedTeams) setPublishedTeams(initialPublishedTeams);
+    // Only when the server's published assignment itself changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialKey]);
+  useEffect(() => {
+    if (!publishedGeneration) setPublishedTeams(null); // e.g. published teams deleted
+  }, [publishedGeneration]);
+  const published = publishedGeneration !== null && publishedTeams !== null;
+  // A preview for another date (legacy by-date flow) is not "the published version" of it.
+  const previewYmd = previewDate ? previewDate.slice(0, 10) : null;
+  const publishedForPreview = previewYmd && publishedGeneration && publishedGeneration.date !== previewYmd ? null : publishedTeams;
+  const panel = teamsPanelState(previewTeams, previewTeams ? publishedForPreview : publishedTeams);
 
   async function generate() {
     onMessage(null);
-    onPublishedGenerationChange(null);
     const res = await fetch(adminTenantApiPath({ organizationSlug, groupSlug, path: "/generate" }), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -121,7 +144,7 @@ export default function CanonicalGenerateSection({
     setPreviewWarnings(Array.isArray(data.warnings) ? data.warnings : []);
     setPreviewAnalysis(data.analysis ?? null);
     setPreviewMetrics(data.metrics ?? null);
-    onMessage("Preview generated. If it looks good, click Publish.");
+    onMessage(published ? "New preview generated. Players still see the published teams until you publish." : "Preview generated. If it looks good, click Publish.");
   }
 
   function clearPreview() {
@@ -130,8 +153,7 @@ export default function CanonicalGenerateSection({
     setPreviewWarnings([]);
     setPreviewAnalysis(null);
     setPreviewMetrics(null);
-    onPublishedGenerationChange(null);
-    onMessage("Preview cleared.");
+    onMessage(published ? "Preview cleared. The published teams are unchanged." : "Preview cleared.");
   }
 
   async function applySuggestedSwap() {
@@ -158,8 +180,6 @@ export default function CanonicalGenerateSection({
       setPreviewTeams(data.teams);
       setPreviewAnalysis(data.analysis ?? null);
       setPreviewMetrics(data.metrics ?? null);
-      // The preview now differs from anything published earlier.
-      onPublishedGenerationChange(null);
       onMessage("Swap applied to the preview. Publish when you're happy with the teams.");
     } finally {
       setApplyingSwap(false);
@@ -185,7 +205,8 @@ export default function CanonicalGenerateSection({
       return;
     }
     onPublishedGenerationChange(publishedGenerationFromPublishResponse(data, previewDate));
-    onMessage("✅ Published! The public page for this Group is updated.");
+    setPublishedTeams(previewTeams);
+    onMessage("✅ Published! The public page for this Group is updated. Nothing was sent to Telegram.");
   }
 
 
@@ -262,18 +283,18 @@ export default function CanonicalGenerateSection({
           disabled={selectedIds.length === 0}
           onClick={generate}
         >
-          Generate (Selected: {selectedIds.length})
+          {panel.generateLabel} (Selected: {selectedIds.length})
         </button>
         <button
           className="bg-sky-600 text-white rounded px-3 py-1 text-sm disabled:opacity-50 disabled:cursor-not-allowed"
-          disabled={!previewTeams || publishing}
+          disabled={!panel.canPublish || publishing}
           onClick={publish}
         >
           {publishing ? "Publishing…" : "Publish"}
         </button>
         {previewTeams && (
           <button className="bg-rose-600 text-white rounded px-3 py-1 text-sm" onClick={clearPreview}>
-            Clear
+            Clear Preview
           </button>
         )}
         {published && (
@@ -316,7 +337,17 @@ export default function CanonicalGenerateSection({
         />
       )}
 
-      {previewTeams && previewDate && <TeamPreview previewTeams={previewTeams} previewDate={previewDate} sportKey={sport.key} />}
+      {previewTeams && previewDate && (
+        <TeamPreview
+          variant={panel.mode === "published" ? "published" : panel.mode === "published_with_new_preview" ? "new_preview" : "preview"}
+          previewTeams={previewTeams}
+          previewDate={previewDate}
+          sportKey={sport.key}
+        />
+      )}
+      {publishedTeams && publishedGeneration && (!previewTeams || panel.mode === "published_with_new_preview" || (previewTeams && !publishedForPreview)) && (
+        <TeamPreview variant="published" previewTeams={publishedTeams} previewDate={publishedGeneration.date} sportKey={sport.key} />
+      )}
 
       {!matchId && (
       <div className="pt-3 border-t space-y-2">

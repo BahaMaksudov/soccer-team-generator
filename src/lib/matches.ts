@@ -58,6 +58,27 @@ function toSummary(m: { id: string; date: Date; startTime: string | null; locati
   };
 }
 
+/** Published snapshot → organizer-facing teams (only id, names and role key). */
+export function publishedTeamsOf(teamsJson: string): Array<{ teamNumber: number; players: Array<{ id: string; firstName: string; lastName: string; position: string }> }> {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(teamsJson);
+  } catch {
+    return [];
+  }
+  if (!Array.isArray(parsed)) return [];
+  const str = (v: unknown) => (typeof v === "string" ? v : "");
+  return parsed.flatMap((t: unknown) => {
+    const team = t as { teamNumber?: unknown; players?: unknown };
+    if (!team || typeof team.teamNumber !== "number") return [];
+    const players = (Array.isArray(team.players) ? team.players : []).flatMap((p: unknown) => {
+      const pl = p as Record<string, unknown>;
+      return pl && typeof pl.id === "string" ? [{ id: pl.id, firstName: str(pl.firstName), lastName: str(pl.lastName), position: str(pl.position) }] : [];
+    });
+    return [{ teamNumber: team.teamNumber, players }];
+  });
+}
+
 export async function findGroupMatch(context: TenantContext, matchId: string) {
   return prisma.match.findFirst({ where: { id: matchId, groupId: context.activeGroup.id }, select: { ...MATCH_SELECT, groupId: true } });
 }
@@ -136,7 +157,7 @@ export async function getMatchView(context: TenantContext, matchId: string): Pro
       select: { id: true, firstName: true, lastName: true, position: true, rating: true, stamina: true, isActive: true },
     }),
     prisma.attendanceResponse.findMany({ where: { matchId, groupId }, select: ATTENDANCE_SELECT }),
-    prisma.teamGeneration.findFirst({ where: { matchId, groupId }, select: { id: true, date: true, updatedAt: true } }),
+    prisma.teamGeneration.findFirst({ where: { matchId, groupId }, select: { id: true, date: true, updatedAt: true, teamsJson: true } }),
     prisma.telegramPoll.findFirst({
       where: { matchId, groupId, kind: "ATTENDANCE" },
       orderBy: { createdAt: "desc" },
@@ -185,7 +206,11 @@ export async function getMatchView(context: TenantContext, matchId: string): Pro
       match.attendanceClosedAt
     ),
     defaultSelection: defaultSelection(players, rows, match.attendanceClosedAt),
-    generation: generation ? { id: generation.id, date: formatYMDFromDate(generation.date), updatedAt: generation.updatedAt.toISOString() } : null,
+    // The PUBLISHED teams for this Match (organizer view: ids/names/roles only),
+    // so the workspace can tell them apart from a working preview after a reload.
+    generation: generation
+      ? { id: generation.id, date: formatYMDFromDate(generation.date), updatedAt: generation.updatedAt.toISOString(), teams: publishedTeamsOf(generation.teamsJson) }
+      : null,
     telegram: {
       connected: chatCount > 0,
       poll: poll ? { pollId: manager ? poll.pollId : null, closed: poll.isClosed, postedAt: poll.createdAt.toISOString() } : null,

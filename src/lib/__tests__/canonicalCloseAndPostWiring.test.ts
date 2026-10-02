@@ -68,11 +68,14 @@ describe("canonical Close Poll & Post Teams wiring", () => {
     expect(generate).toContain("onPublishedGenerationChange(publishedGenerationFromPublishResponse(data, previewDate))");
   });
 
-  it("Generate and Clear invalidate the current publishedGeneration", () => {
+  // M9-A (manual-smoke fix): the published teams stay published until a new
+  // Publish or a delete — regenerating/clearing a PREVIEW must not make the
+  // workspace forget them (Close & Post targets what players actually see).
+  it("Generate and Clear keep the current publishedGeneration (preview-only actions)", () => {
     const generateFn = generate.slice(generate.indexOf("async function generate()"), generate.indexOf("function clearPreview()"));
     const clearFn = generate.slice(generate.indexOf("function clearPreview()"), generate.indexOf("async function publish()"));
-    expect(generateFn).toContain("onPublishedGenerationChange(null)");
-    expect(clearFn).toContain("onPublishedGenerationChange(null)");
+    expect(generateFn).not.toContain("onPublishedGenerationChange(");
+    expect(clearFn).not.toContain("onPublishedGenerationChange(");
   });
 
   it("canonical Publish request stays Telegram-free (no pollId/closePoll/postToTelegram)", () => {

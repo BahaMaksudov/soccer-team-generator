@@ -415,6 +415,18 @@ Publish/Telegram path.
   `src/lib/matchSelection.ts`), so overrides, cleared overrides, Telegram/web
   answers and sync all update it; an adjustment is dropped only when that
   player's effective attendance changes.
+- **Manual-smoke fix (published vs preview):** the Teams panel keeps the
+  PUBLISHED teams (from the TeamGeneration snapshot, returned by the Match
+  view so they survive reload) separate from the unsaved WORKING PREVIEW.
+  Generate/Regenerate, Apply Swap, Clear Preview and selection/attendance
+  changes never write TeamGeneration or the public page — only Publish does
+  (overwrite of the same row, no duplicates), and Publish never sends. The
+  button reads "Regenerate" once teams exist; Publish is offered only for a
+  preview whose assignment differs structurally (`src/lib/teamAssignment.ts`:
+  order-insensitive within a team, a moved player counts). "Post Updated
+  Teams to Telegram" appears only when durable MessageDelivery hashes say the
+  published teams changed since the last post. M9-A remains open pending the
+  manual smoke.
 
 ## M9 — channel-neutral match lifecycle (decisions recorded 2026-10-01)
 

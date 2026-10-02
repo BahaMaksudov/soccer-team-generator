@@ -121,7 +121,9 @@ describe("canonical Delete Published Teams", () => {
   });
 
   it("the Published badge is derived from publishedGeneration (cleared by delete)", () => {
-    expect(generate).toContain("const published = publishedGeneration !== null;");
+    // M9-A: also requires the published teams (which a delete clears via publishedGeneration → null).
+    expect(generate).toContain("const published = publishedGeneration !== null && publishedTeams !== null;");
+    expect(generate).toContain("if (!publishedGeneration) setPublishedTeams(null);");
     expect(generate).not.toContain("setPublished(");
   });
 });

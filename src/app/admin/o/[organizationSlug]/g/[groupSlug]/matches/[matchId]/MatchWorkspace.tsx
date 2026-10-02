@@ -31,7 +31,7 @@ type MatchView = {
   roster: RosterPlayer[];
   counts: { PLAYING: number; MAYBE: number; NOT_PLAYING: number; NO_RESPONSE: number };
   defaultSelection: string[];
-  generation: { id: string; date: string } | null;
+  generation: { id: string; date: string; updatedAt: string; teams: Array<{ teamNumber: number; players: Array<{ id: string; firstName: string; lastName: string; position: string }> }> } | null;
   telegram: { connected: boolean; poll: { pollId: string | null; closed: boolean; postedAt: string } | null; unlinkedVoters: number; pollDelivery: { status: string; sentAt: string | null } | null };
 };
 
@@ -63,6 +63,8 @@ export default function MatchWorkspace({
   const [chats, setChats] = useState<Array<{ ref: number; title: string }>>([]);
   const [chatRef, setChatRef] = useState<number | null>(null);
   const [edit, setEdit] = useState<{ date: string; startTime: string; locationName: string } | null>(null);
+  // Telegram state of the PUBLISHED teams, from durable MessageDelivery content hashes (server).
+  const [teamsDelivery, setTeamsDelivery] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     const res = await fetch(api(""), { cache: "no-store" });
@@ -79,6 +81,26 @@ export default function MatchWorkspace({
   useEffect(() => {
     load();
   }, [load]);
+
+  // After a Publish (new generation id) re-read the Match so the published teams come from the server.
+  const publishedId = published?.id ?? null;
+  useEffect(() => {
+    if (publishedId && view?.generation?.id !== publishedId) load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [publishedId]);
+
+  const pollId = view?.telegram.poll?.pollId ?? null;
+  const generationKey = view?.generation ? `${view.generation.id}:${view.generation.updatedAt}` : null;
+  const loadTeamsDelivery = useCallback(async () => {
+    if (!view?.canManage || !pollId || !view.generation) return setTeamsDelivery(null);
+    const q = new URLSearchParams({ pollId, teamGenerationId: view.generation.id });
+    const res = await fetch(`${adminTenantApiPath({ organizationSlug, groupSlug, path: "/telegram/delivery" })}?${q}`, { cache: "no-store" });
+    setTeamsDelivery(res.ok ? (await res.json()).state ?? null : null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [view?.canManage, pollId, generationKey, organizationSlug, groupSlug]);
+  useEffect(() => {
+    loadTeamsDelivery();
+  }, [loadTeamsDelivery]);
 
   useEffect(() => {
     if (!view?.canManage) return;
@@ -130,7 +152,8 @@ export default function MatchWorkspace({
         body: JSON.stringify({ pollId: view.telegram.poll.pollId, teamGenerationId: published.id, intent }),
       });
       const data = await res.json().catch(() => ({}));
-      setMessage(res.ok ? "Teams posted to Telegram." : data?.error ?? "Could not post the teams.");
+      setMessage(res.ok ? (data.status === "already_posted" ? "These teams were already posted — nothing was sent again." : "Teams posted to Telegram.") : data?.error ?? "Could not post the teams.");
+      await loadTeamsDelivery();
     } finally {
       setBusy(false);
     }
@@ -293,15 +316,25 @@ export default function MatchWorkspace({
           publishedGeneration={published}
           onPublishedGenerationChange={setPublished}
           matchId={m.id}
+          initialPublishedTeams={view.generation?.teams ?? null}
         />
         {published && (
           <div className="border rounded-lg p-3 text-sm space-y-2">
             <div className="text-emerald-700">Teams saved for this match.</div>
             {view.canManage &&
               (view.telegram.poll?.pollId ? (
-                <button type="button" className="bg-sky-600 text-white rounded px-3 py-1 disabled:opacity-60" disabled={busy} onClick={() => postTeams("post")}>
-                  Post Teams to Telegram
-                </button>
+                teamsDelivery === "posted" ? (
+                  <div className="text-gray-600">These published teams were posted to Telegram.</div>
+                ) : (
+                  <button
+                    type="button"
+                    className="bg-sky-600 text-white rounded px-3 py-1 disabled:opacity-60"
+                    disabled={busy}
+                    onClick={() => postTeams(teamsDelivery === "updated_available" ? "post_updated" : "post")}
+                  >
+                    {teamsDelivery === "updated_available" ? "Post Updated Teams to Telegram" : "Post Teams to Telegram"}
+                  </button>
+                )
               ) : (
                 <div className="text-gray-600">To post teams to Telegram, post this match&apos;s attendance poll first.</div>
               ))}

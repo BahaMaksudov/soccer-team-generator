@@ -37,6 +37,10 @@ import * as tgChatsRoute from "@/app/api/admin/o/[organizationSlug]/g/[groupSlug
 import * as selfAttendanceRoute from "@/app/api/account/matches/[matchId]/attendance/route";
 import * as publicPlayersRoute from "@/app/api/public/[organizationSlug]/[groupSlug]/players/route";
 import * as webhookRoute from "@/app/api/telegram/webhook/route";
+import * as swapRoute from "@/app/api/admin/o/[organizationSlug]/g/[groupSlug]/generate/swap/route";
+import * as deliveryRoute from "@/app/api/admin/o/[organizationSlug]/g/[groupSlug]/telegram/delivery/route";
+import { loadPublicGroupHomeData } from "@/app/g/[organizationSlug]/[groupSlug]/data";
+import { assignmentKey } from "@/lib/teamAssignment";
 
 const A = { organizationSlug: "org-a", groupSlug: "group-a" };
 const B = { organizationSlug: "org-b", groupSlug: "group-b" };
@@ -549,6 +553,72 @@ describe("default selection follows every attendance change (manual-smoke regres
     await selfAttendanceRoute.POST(json("POST", { status: "PLAYING" }), { params: Promise.resolve({ matchId: id }) }); // ga-p3 via web
     await signInAs("owner@example.test");
     expect((await view(id)).defaultSelection).toEqual(["ga-p1", "ga-p2", "ga-p3", "ga-p4", "ga-p6"]);
+  });
+});
+
+describe("published teams vs working preview (manual-smoke regression)", () => {
+  type T = { teamNumber: number; players: Array<{ id: string }> };
+  const publicTeams = async () => {
+    const home = await loadPublicGroupHomeData(A);
+    const latest = home!.items[0] as unknown as { teams: Array<{ teamNumber: number; players: Array<{ firstName: string; lastName: string }> }> };
+    return JSON.stringify(latest.teams.map((t) => [t.teamNumber, t.players.map((p) => `${p.firstName} ${p.lastName}`).sort()]).sort());
+  };
+  const namesOf = (teams: T[]) =>
+    JSON.stringify(teams.map((t) => [t.teamNumber, t.players.map((p) => (p as unknown as { firstName: string; lastName: string })).map((p) => `${p.firstName} ${p.lastName}`).sort()]).sort());
+
+  it("publish A → regenerate B (+ swap) keeps A published and public; publish B replaces it; nothing is sent; reload shows the published teams", async () => {
+    await signInAs("owner@example.test");
+    const id = (await createMatch({ date: "2026-10-12" })).data.match.id;
+    await postPoll(id);
+    const pollId = (await prisma.telegramPoll.findFirstOrThrow({ where: { matchId: id } })).pollId;
+    const deliveriesBefore = await prisma.messageDelivery.count();
+    const sendsBefore = sends("sendMessage").length;
+    const ids = ["ga-p1", "ga-p2", "ga-p3", "ga-p4", "ga-p5", "ga-p6"];
+    const gen = async () => (await generateRoute.POST(json("POST", { teamCount: 2, date: "2026-10-12", selectedIds: ids }), g(A))).json();
+
+    const a = await gen();
+    expect((await publishRoute.POST(json("POST", { date: a.date, teams: a.teams, matchId: id }), g(A))).status).toBe(200);
+    const genRow = await prisma.teamGeneration.findFirstOrThrow({ where: { matchId: id } });
+    const publishedA = { teamsJson: genRow.teamsJson, updatedAt: genRow.updatedAt.getTime() };
+    expect(await publicTeams()).toBe(namesOf(a.teams));
+
+    // Reload: the Match view returns the published teams (A), so they are recognized as published.
+    expect(assignmentKey((await view(id)).generation.teams)).toBe(assignmentKey(a.teams));
+
+    // Regenerate until we get a different assignment B (preview only).
+    let b = await gen();
+    for (let i = 0; i < 30 && assignmentKey(b.teams) === assignmentKey(a.teams); i++) b = await gen();
+    expect(assignmentKey(b.teams)).not.toBe(assignmentKey(a.teams));
+    if (b.analysis?.bestSwap) {
+      const swapped = await swapRoute.POST(json("POST", { teams: b.teams.map((t: T) => ({ teamNumber: t.teamNumber, playerIds: t.players.map((p) => p.id) })), swap: { playerA: b.analysis.bestSwap.playerA, playerB: b.analysis.bestSwap.playerB } }), g(A));
+      expect(swapped.status).toBe(200);
+      b = { ...b, teams: (await swapped.json()).teams };
+    }
+    // Generate/Regenerate/Apply Swap wrote nothing: A is still the published row and still public.
+    const still = await prisma.teamGeneration.findFirstOrThrow({ where: { matchId: id } });
+    expect({ teamsJson: still.teamsJson, updatedAt: still.updatedAt.getTime() }).toEqual(publishedA);
+    expect(await prisma.teamGeneration.count()).toBe(1);
+    expect(await publicTeams()).toBe(namesOf(a.teams));
+
+    // Telegram label state comes from durable delivery records.
+    const status = async () => (await (await deliveryRoute.GET(new Request(`http://itest.local/?pollId=${pollId}&teamGenerationId=${genRow.id}`), g(A))).json()).state;
+    expect(await status()).toBe("not_posted");
+    expect((await closePostRoute.POST(json("POST", { pollId, teamGenerationId: genRow.id }), g(A))).status).toBe(200); // explicit post of A
+    expect(await status()).toBe("posted");
+
+    // Publish B → replaces A (same row, no duplicate); public shows B; still nothing sent automatically.
+    const sendsAfterPostA = sends("sendMessage").length;
+    expect((await publishRoute.POST(json("POST", { date: b.date, teams: b.teams, matchId: id }), g(A))).status).toBe(200);
+    expect(await prisma.teamGeneration.count()).toBe(1);
+    const rowB = await prisma.teamGeneration.findFirstOrThrow({ where: { matchId: id } });
+    expect(rowB.id).toBe(genRow.id);
+    expect(JSON.parse(rowB.metricsJson!).analysis.analysisVersion).toBe("balance-analysis-v1");
+    expect(await publicTeams()).toBe(namesOf(b.teams));
+    expect(assignmentKey((await view(id)).generation.teams)).toBe(assignmentKey(b.teams));
+    expect(sends("sendMessage").length).toBe(sendsAfterPostA);
+    expect(await status()).toBe("updated_available"); // → "Post Updated Teams to Telegram"
+    expect(await prisma.messageDelivery.count()).toBe(deliveriesBefore + 1); // only the explicit post
+    expect(sendsAfterPostA - sendsBefore).toBe(1);
   });
 });
 

@@ -4,14 +4,25 @@ import { roleLabel } from "@/lib/sports";
 import { formatLongDateOnly } from "@/lib/dateOnly";
 import type { GeneratedTeam } from "../types";
 
-/** Renders the not-yet-published preview. Purely presentational —
- * previewTeams/previewDate stay page-owned (generate/publish/clear all
- * write them). */
+/** Renders a team assignment. Purely presentational — previewTeams/
+ * previewDate stay page-owned (generate/publish/clear all write them).
+ * M9-A: `variant` says WHAT is shown, decided from the actual assignments
+ * (src/lib/teamAssignment.ts), never from button clicks:
+ *   preview      an unpublished preview (nothing published yet)
+ *   new_preview  an unpublished preview that differs from the published teams
+ *   published    the published teams (what players see) */
+const VARIANT = {
+  preview: { title: "Preview — not published", tip: <>If it looks good, click <b>Publish</b>.</> },
+  new_preview: { title: "New preview — not published", tip: <>Players still see the published teams until you click <b>Publish</b>.</> },
+  published: { title: "Published teams", tip: <>Players see these teams. Posting to Telegram is a separate step.</> },
+} as const;
 export default function TeamPreview({
   previewTeams,
   previewDate,
   sportKey,
+  variant = "preview",
 }: {
+  variant?: keyof typeof VARIANT;
   previewTeams: GeneratedTeam[];
   previewDate: string;
   /** M7 — role labels come from the Group's sport. */
@@ -22,7 +33,7 @@ export default function TeamPreview({
       <div className="p-4 bg-gradient-to-r from-slate-50 to-white border-b">
         <div className="flex items-start justify-between gap-3">
           <div>
-            <div className="font-semibold text-slate-900">Preview (not published yet)</div>
+            <div className="font-semibold text-slate-900">{VARIANT[variant].title}</div>
             <div className="text-xs text-slate-500 mt-1">
               Date:{" "}
               {/* Date-only: formatted from UTC calendar parts, never the
@@ -32,7 +43,7 @@ export default function TeamPreview({
           </div>
 
           <div className="text-xs text-slate-500">
-            Tip: If it looks good, click <b>Publish</b>.
+            {VARIANT[variant].tip}
           </div>
         </div>
       </div>
