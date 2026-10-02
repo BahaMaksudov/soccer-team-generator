@@ -137,18 +137,18 @@ describe("GET /api/public/[organizationSlug]/[groupSlug]/players — two-group t
 });
 
 describe("GET /api/public/[organizationSlug]/[groupSlug]/players — public DTO", () => {
-  it("returns only id, firstName, lastName, position, isActive — never groupId, rating, or stamina", async () => {
+  it("returns only firstName, lastName, position, isActive — never the Player id (M9-A), groupId, rating, or stamina", async () => {
     mockOrgFindUnique.mockResolvedValue(ORG_A);
     mockGroupFindUnique.mockResolvedValue(GROUP_A);
     mockPlayerFindMany.mockResolvedValue([
-      { id: "a1", firstName: "Alice", lastName: "A", position: "MIDFIELDER", isActive: true },
+      { firstName: "Alice", lastName: "A", position: "MIDFIELDER", isActive: true },
     ]);
 
     const res = await GET(new Request("http://localhost"), ctx("new-england-eagles", "indoor-soccer"));
     const json = await res.json();
 
     expect(json).toEqual([
-      { id: "a1", firstName: "Alice", lastName: "A", position: "MIDFIELDER", isActive: true },
+      { firstName: "Alice", lastName: "A", position: "MIDFIELDER", isActive: true },
     ]);
 
     // Assert the Prisma `select` itself never requests these fields —
@@ -156,12 +156,12 @@ describe("GET /api/public/[organizationSlug]/[groupSlug]/players — public DTO"
     // response happens not to include them.
     const call = mockPlayerFindMany.mock.calls[0][0];
     expect(call.select).toEqual({
-      id: true,
       firstName: true,
       lastName: true,
       position: true,
       isActive: true,
     });
+    expect(call.select.id).toBeUndefined();
     expect(call.select.groupId).toBeUndefined();
     expect(call.select.rating).toBeUndefined();
     expect(call.select.stamina).toBeUndefined();

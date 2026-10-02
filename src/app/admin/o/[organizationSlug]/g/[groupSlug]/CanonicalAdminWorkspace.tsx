@@ -11,6 +11,8 @@ import CanonicalGenerateSection from "./CanonicalGenerateSection";
 import CanonicalSettingsSection from "./CanonicalSettingsSection";
 import CanonicalVisibilitySection from "./CanonicalVisibilitySection";
 import CanonicalTelegramSection from "./CanonicalTelegramSection";
+import CanonicalMatchesSection from "./CanonicalMatchesSection";
+import CommunicationChannelsSection from "./CommunicationChannelsSection";
 
 /**
  * Phase 2D.6D.2 — canonical tenant-bound Admin workspace: Player
@@ -64,9 +66,12 @@ export default function CanonicalAdminWorkspace({
   organizationSlug,
   groupSlug,
   sport,
+  canManage,
 }: {
   organizationSlug: string;
   groupSlug: string;
+  /** M9-A — OWNER/ADMIN: Telegram, channels and provider identity controls are shown only to them. */
+  canManage: boolean;
   /** M7 — the Group's sport (roles, labels, rules); plain serializable data. */
   sport: SportClientView;
 }) {
@@ -140,7 +145,10 @@ export default function CanonicalAdminWorkspace({
     <div>
       {message && <div className="text-sm text-blue-700 mt-2">{message}</div>}
 
+      <CanonicalMatchesSection organizationSlug={organizationSlug} groupSlug={groupSlug} />
+
       <CanonicalPlayersSection
+        canManage={canManage}
         organizationSlug={organizationSlug}
         groupSlug={groupSlug}
         players={players}
@@ -175,13 +183,22 @@ export default function CanonicalAdminWorkspace({
 
       <CanonicalVisibilitySection organizationSlug={organizationSlug} groupSlug={groupSlug} />
 
-      <CanonicalTelegramSection
-        organizationSlug={organizationSlug}
-        groupSlug={groupSlug}
-        players={players}
-        onImportedPoll={applyImportedPoll}
-        publishedGeneration={publishedGeneration}
-      />
+      {canManage ? (
+        <>
+          <CommunicationChannelsSection organizationSlug={organizationSlug} groupSlug={groupSlug} />
+          <CanonicalTelegramSection
+            organizationSlug={organizationSlug}
+            groupSlug={groupSlug}
+            players={players}
+            onImportedPoll={applyImportedPoll}
+            publishedGeneration={publishedGeneration}
+          />
+        </>
+      ) : (
+        <div className="border rounded-xl p-4 mt-4 text-sm text-gray-600">
+          Telegram and communication channels are managed by the group&apos;s owners and admins.
+        </div>
+      )}
     </div>
   );
 }

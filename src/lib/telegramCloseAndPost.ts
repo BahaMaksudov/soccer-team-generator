@@ -1,3 +1,4 @@
+import { managersOnlyResponse } from "@/lib/tenantRoute";
 import { prisma } from "@/lib/prisma";
 import { NextResponse } from "next/server";
 import type { Prisma } from "@prisma/client";
@@ -105,6 +106,7 @@ type PollRow = {
   question: string;
   pollDate: Date | null;
   isClosed: boolean;
+  matchId?: string | null;
 };
 
 const lockPoll = (tx: Prisma.TransactionClient, pollId: string) =>
@@ -194,7 +196,7 @@ async function validatePostTarget(
   // poll, generation and destination chat — all scoped to the active Group (foreign == missing)
   const poll = await prisma.telegramPoll.findFirst({
     where: { pollId, groupId: activeGroupId },
-    select: { pollId: true, chatId: true, messageId: true, question: true, pollDate: true, isClosed: true },
+    select: { pollId: true, chatId: true, messageId: true, question: true, pollDate: true, isClosed: true, matchId: true },
   });
   if (!poll) return fail("Poll not found", 404);
 
@@ -305,6 +307,9 @@ function stateResponse(state: DeliveryState, closeStatus: CloseStatus | null, te
 }
 
 export async function closePollAndPostTeamsForContext(context: TenantContext, req: Request): Promise<NextResponse> {
+  // M9-A — Telegram (provider identity / external sends) is OWNER/ADMIN only.
+  const denied = managersOnlyResponse(context);
+  if (denied) return denied;
   const activeGroupId = context.activeGroup.id;
 
   const raw = await req.json().catch(() => null);
@@ -364,6 +369,8 @@ export async function closePollAndPostTeamsForContext(context: TenantContext, re
             destination: poll.chatId.toString(),
             telegramPollId: pollId,
             teamGenerationId: current.teamGenerationId,
+            // M9-A — Match-linked polls make the teams post auditable per Match.
+            matchId: poll.matchId ?? null,
             contentHash: current.contentHash,
             status: "SENDING",
             claimedAt: now,
@@ -513,6 +520,9 @@ export async function closePollAndPostTeamsForContext(context: TenantContext, re
  * actions that are safe in it. Never returns provider payloads.
  */
 export async function getTeamsDeliveryStatusForContext(context: TenantContext, req: Request): Promise<NextResponse> {
+  // M9-A — Telegram (provider identity / external sends) is OWNER/ADMIN only.
+  const denied = managersOnlyResponse(context);
+  if (denied) return denied;
   const url = new URL(req.url);
   const pollId = url.searchParams.get("pollId") ?? "";
   const teamGenerationId = url.searchParams.get("teamGenerationId") ?? "";
@@ -566,6 +576,9 @@ export async function getTeamsDeliveryStatusForContext(context: TenantContext, r
  * the Telegram chat. Never sends anything.
  */
 export async function markTeamsDeliverySentForContext(context: TenantContext, req: Request): Promise<NextResponse> {
+  // M9-A — Telegram (provider identity / external sends) is OWNER/ADMIN only.
+  const denied = managersOnlyResponse(context);
+  if (denied) return denied;
   const raw = await req.json().catch(() => null);
   const parsed = telegramDeliveryActionSchema.safeParse(raw ?? {});
   if (!parsed.success) return NextResponse.json(zodErrorResponse(parsed.error), { status: 400 });

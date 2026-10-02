@@ -76,6 +76,7 @@ export default async function CanonicalAdminHome({ params }: { params: Params })
         organizationSlug={context.organization.slug}
         groupSlug={context.activeGroup.slug}
         sport={sportClientView(sport ?? other)}
+        canManage={context.membership.role === "OWNER" || context.membership.role === "ADMIN"}
       />
     </div>
   );

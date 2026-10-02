@@ -18,8 +18,8 @@ import { findSport, roleLabel } from "@/lib/sports";
  * browser never asserts ownership.
  */
 
+// M9-A — the public API carries no internal ids; rows are keyed by position.
 type Player = {
-  id: string;
   firstName: string;
   lastName: string;
   /** M7: sport-scoped role key. */
@@ -91,8 +91,8 @@ export default function CanonicalPlayersClient({
               </thead>
 
               <tbody>
-                {rows.map((p) => (
-                  <tr key={p.id} className="border-t hover:bg-slate-50">
+                {rows.map((p, i) => (
+                  <tr key={`${i}-${p.lastName}-${p.firstName}`} className="border-t hover:bg-slate-50">
                     <td className="p-3">{p.fullName}</td>
                     <td className="p-3">{roleLabel(sportKey, p.position)}</td>
                     <td className="p-3">

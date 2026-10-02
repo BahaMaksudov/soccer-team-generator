@@ -229,6 +229,8 @@ import { redeemTelegramConnectCode } from "@/lib/telegramConnect";
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { toDateOnlyUTC } from "@/lib/dateOnly";
+import { applyTelegramAttendanceAnswer } from "@/lib/telegramAttendance";
+import { bindReplyText, isBindCode, migrateTelegramChat, redeemTelegramBindCode } from "@/lib/telegramChannels";
 
 
 function nextMondayDate(base = new Date()) {
@@ -289,85 +291,39 @@ async function handleMessage(message: any) {
   const cmd = text.split(" ")[0].replace(/@\w+$/, "");
   const args = text.split(" ").slice(1);
 
-  if (text === "/chatid") {
-    const chatId = message.chat.id;
-    const title =
-    message.chat.title ||
-      [message.chat.first_name, message.chat.last_name].filter(Boolean).join(" ") ||
-      "Unknown chat";
+  // M9-A — a bound group upgraded to a supergroup gets a new chat id; keep the binding.
+  if (message.migrate_to_chat_id) {
+    await migrateTelegramChat(message.chat.id, message.migrate_to_chat_id);
+    return;
+  }
 
-    // Diagnostic-only (Phase 2D.3a): this command displays the chat's
-    // Telegram ID but MUST NOT create or modify a TelegramChat row.
-    // A bare /chatid message carries no trusted Group ownership
-    // signal — anyone can add the bot to any chat and type this — so
-    // it can no longer be treated as tenant registration. Trusted
-    // chat→Group registration is deferred (see §J of the Phase 2D.3a
-    // report); this command is not that mechanism.
+  // M9-A — /chatid is retired: groups are connected from Team Balance Pro
+  // (Communication Channels) with a one-time code. No chat id is revealed.
+  if (cmd === "/chatid") {
     await telegram("sendMessage", {
-      chat_id: chatId,
-      text: `Chat ID: ${chatId}\nTitle: ${title}`,
+      chat_id: chatId.toString(),
+      text: "To connect this group, open Team Balance Pro → your group → Communication Channels → Connect Telegram Group.",
     });
+    return;
+  }
 
-    return NextResponse.json({ ok: true });
+  // M9-A — self-service group connection: "/start@bot g_…" (startgroup deep
+  // link) or "/connectgroup@bot g_…". Requires a Telegram chat administrator.
+  if ((cmd === "/connectgroup" || cmd === "/start") && isBindCode(args[0])) {
+    const result = await redeemTelegramBindCode({ code: args[0], chat: message.chat, fromId: from?.id, senderChat: message.sender_chat ?? null });
+    await telegram("sendMessage", { chat_id: chatId.toString(), text: bindReplyText(result) });
+    return;
+  }
+  if (cmd === "/connectgroup") {
+    await telegram("sendMessage", { chat_id: chatId.toString(), text: bindReplyText({ ok: false, code: "INVALID" }) });
+    return;
   }
   
+  // M9-A — /poll is retired: anyone in a group could trigger it. Attendance
+  // polls are created only by OWNER/ADMIN in Team Balance Pro (a Match →
+  // "Post poll to Telegram"). Creates nothing here.
   if (cmd === "/poll") {
-    // The webhook has no session, so the only trustworthy tenant
-    // signal is data we already persisted for this chatId. Resolve
-    // ownership BEFORE calling sendPoll — an unregistered/unowned
-    // chat must not get a poll sent to it, and must not silently
-    // attribute the poll to whatever Group happens to exist.
-    const chat = await prisma.telegramChat.findUnique({
-      where: { chatId },
-      select: { groupId: true },
-    });
-    if (!chat || !chat.groupId) {
-      // Fail closed: no trusted Group to attribute this poll to.
-      return;
-    }
-    const groupId = chat.groupId;
-
-    // Create a standard poll
-    const nextMon = nextMondayDate(new Date());
-    const question = `Who is playing on ${formatMDYY(nextMon)}?`;
-    const options = ["✅ Playing", "❌ Not playing"];
-
-    const resp = await telegram("sendPoll", {
-      chat_id: chatId.toString(),
-      question,
-      options,
-      is_anonymous: false,
-      allows_multiple_answers: false,
-    });
-
-    // ✅ store the same date the poll question shows
-    const pollDate = toDateOnlyUTC(nextMon);
-
-    // Store poll in DB
-    const poll = resp.poll;
-    await prisma.telegramPoll.upsert({
-      where: { pollId: poll.id },
-      update: {
-        chatId,
-        messageId: BigInt(resp.message_id),
-        question: poll.question,
-        optionsJson: JSON.stringify(poll.options),
-        isClosed: Boolean(poll.is_closed),
-        pollDate,
-        groupId,
-      },
-      create: {
-        pollId: poll.id,
-        chatId,
-        messageId: BigInt(resp.message_id),
-        question: poll.question,
-        optionsJson: JSON.stringify(poll.options),
-        isClosed: Boolean(poll.is_closed),
-        pollDate,
-        groupId,
-      },
-    });
-
+    await telegram("sendMessage", { chat_id: chatId.toString(), text: "Create attendance polls from Team Balance Pro." });
     return;
   }
   
@@ -454,6 +410,7 @@ async function handleMessage(message: any) {
 async function handlePollAnswer(pollAnswer: any) {
   const pollId: string = pollAnswer.poll_id;
   const user = pollAnswer.user || {};
+  if (user.id === undefined || user.id === null) return; // anonymous voter (voter_chat): nothing to attribute
   const userId = BigInt(user.id);
   const optionIds: number[] = Array.isArray(pollAnswer.option_ids) ? pollAnswer.option_ids : [];
 
@@ -463,7 +420,7 @@ async function handlePollAnswer(pollAnswer: any) {
   // this vote to, so fail closed rather than defaulting to any Group.
   const poll = await prisma.telegramPoll.findUnique({
     where: { pollId },
-    select: { groupId: true },
+    select: { groupId: true, matchId: true, kind: true },
   });
   if (!poll || !poll.groupId) {
     return;
@@ -489,8 +446,14 @@ async function handlePollAnswer(pollAnswer: any) {
       groupId,
     },
   });
-}
 
+  // M9-A — live attendance for Match-linked attendance polls (same mapping as
+  // the explicit sync). Unlinked voters stay provider-only.
+  if (poll.matchId && poll.kind === "ATTENDANCE") {
+    const matchId = poll.matchId;
+    await prisma.$transaction((tx) => applyTelegramAttendanceAnswer(tx, { matchId, groupId, telegramUserId: userId, optionIds, at: new Date() }));
+  }
+}
 async function handlePoll(poll: any) {
   // Optional: track closed/open status
   await prisma.telegramPoll.updateMany({

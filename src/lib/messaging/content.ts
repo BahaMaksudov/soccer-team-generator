@@ -10,6 +10,28 @@ import { playerDisplayName } from "@/lib/playerFacing";
 /** Option 0 means "playing" — import relies on this index (telegramFormat.isPlayingVote). */
 export const POLL_OPTIONS = ["✅ Playing", "❌ Not playing"] as const;
 
+/**
+ * M9-A — Match-linked attendance polls add "Maybe" at index 2 (appended, so
+ * indexes 0/1 keep their meaning for legacy two-option polls and import).
+ */
+export const ATTENDANCE_POLL_OPTIONS = [...POLL_OPTIONS, "🤔 Maybe"] as const;
+
+/** "20:00" → "8:00 PM" (display only). */
+export function formatStartTime(hhmm: string | null | undefined): string | null {
+  const m = /^(\d{2}):(\d{2})$/.exec(hhmm ?? "");
+  if (!m) return null;
+  const h = Number(m[1]);
+  return `${((h + 11) % 12) + 1}:${m[2]} ${h < 12 ? "AM" : "PM"}`;
+}
+
+/** M9-A — attendance poll for a Match (Telegram question limit: 300 characters). */
+export function attendancePollContent(match: { date: string; startTime?: string | null; locationName?: string | null }): PollContent {
+  const time = formatStartTime(match.startTime);
+  let question = `Who is playing on ${formatPollQuestionDate(match.date)}${time ? ` at ${time}` : ""}${match.locationName ? ` — ${match.locationName}` : ""}?`;
+  if (question.length > 300) question = `${question.slice(0, 298)}…?`;
+  return { kind: "poll", question, options: [...ATTENDANCE_POLL_OPTIONS] };
+}
+
 export type PollContent = { kind: "poll"; question: string; options: string[] };
 export type TextContent = {
   kind: "text";

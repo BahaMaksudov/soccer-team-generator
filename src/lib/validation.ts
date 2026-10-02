@@ -79,10 +79,41 @@ export const applySwapSchema = z.object({
   swap: z.object({ playerA: z.string().min(1), playerB: z.string().min(1) }),
 });
 
+// ---------------------------------------------------------------
+// M9-A — Matches and attendance. Group/organization never come from the body.
+// ---------------------------------------------------------------
+const ymd = z.string().trim().regex(/^\d{4}-\d{2}-\d{2}$/, "Choose a date.");
+const hhmm = z.string().trim().regex(/^([01]\d|2[0-3]):[0-5]\d$/, "Use a time like 20:00.");
+const attendanceStatus = z.enum(["PLAYING", "NOT_PLAYING", "MAYBE"]);
+
+export const matchCreateSchema = z.object({
+  date: ymd,
+  startTime: hhmm.optional().or(z.literal("")),
+  locationName: z.string().trim().max(80, "Location is too long.").optional(),
+});
+
+export const matchUpdateSchema = z.object({
+  date: ymd.optional(),
+  startTime: hhmm.optional().or(z.literal("")).nullable(),
+  locationName: z.string().trim().max(80, "Location is too long.").optional().nullable(),
+  status: z.enum(["SCHEDULED", "COMPLETED", "CANCELED"]).optional(),
+});
+
+/** Organizer override: a status sets it, null clears it. */
+export const attendanceOverrideSchema = z.object({ playerId: z.string().min(1), status: attendanceStatus.nullable() });
+export const attendanceSelfSchema = z.object({ status: attendanceStatus });
+export const attendanceClosedSchema = z.object({ closed: z.boolean() });
+export const attendancePollSchema = z.object({
+  chatRef: z.number().int().positive(),
+  intent: z.enum(["post", "post_updated", "retry_uncertain"]).optional().default("post"),
+});
+
 export const publishTeamsSchema = z.object({
   date: z.string().trim().min(1, "Date is required."),
   teams: z.array(publishTeamSchema).min(1, "Teams are required."),
   pollId: z.string().trim().optional().default(""),
+  // M9-A — publish for this Match (validated server-side: same Group and date).
+  matchId: z.string().trim().min(1).optional(),
   closePoll: z.boolean().optional(),
   postToTelegram: z.boolean().optional(),
 });

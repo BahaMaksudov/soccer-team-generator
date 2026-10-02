@@ -34,8 +34,8 @@ export async function GET(_req: Request, { params }: { params: Params }) {
   const players = await prisma.player.findMany({
     where: { groupId: publicGroup.group.id },
     orderBy: [{ lastName: "asc" }, { firstName: "asc" }],
+    // M9-A — public allow-list: no internal Player id (or rating/stamina/identity).
     select: {
-      id: true,
       firstName: true,
       lastName: true,
       position: true,

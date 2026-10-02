@@ -135,7 +135,7 @@ export async function publishTeamsForContext(context: TenantContext, req: Reques
     return NextResponse.json(zodErrorResponse(parsed.error), { status: 400 });
   }
 
-  const { date: dateStr, teams, pollId } = parsed.data;
+  const { date: dateStr, teams, pollId, matchId } = parsed.data;
 
   // Reject BEFORE any TeamGeneration write: Publish never performs
   // Telegram poll actions, and silently ignoring a caller that asks for
@@ -180,6 +180,33 @@ export async function publishTeamsForContext(context: TenantContext, req: Reques
 
   const normalizedDate = toDateOnlyUTC(dateStr);
 
+  // M9-A — publishing for a Match: the Match must be this Group's and on the
+  // same date. TeamGeneration is still unique per (Group, date), so if that
+  // date's teams already belong to ANOTHER Match (two Matches on one day) the
+  // publish is refused rather than re-associated (known transitional
+  // limitation). Legacy by-date publishes (no matchId) keep any link as is.
+  if (matchId) {
+    const match = await prisma.match.findFirst({ where: { id: matchId, groupId: activeGroupId }, select: { id: true, date: true } });
+    if (!match) return NextResponse.json({ error: "Match not found" }, { status: 404 });
+    if (match.date.getTime() !== normalizedDate.getTime()) {
+      return NextResponse.json({ error: "The teams date must be the match date." }, { status: 400 });
+    }
+    const [sameDate, linked] = await Promise.all([
+      prisma.teamGeneration.findUnique({ where: { groupId_date: { groupId: activeGroupId, date: normalizedDate } }, select: { id: true, matchId: true } }),
+      prisma.teamGeneration.findFirst({ where: { matchId, groupId: activeGroupId }, select: { id: true } }),
+    ]);
+    if (sameDate?.matchId && sameDate.matchId !== matchId) {
+      return NextResponse.json(
+        { error: "Teams for another match on this date are already published. Only one match per day can have saved teams for now.", code: "SAME_DAY_MATCH_TEAMS" },
+        { status: 409 }
+      );
+    }
+    if (linked && linked.id !== sameDate?.id) {
+      return NextResponse.json({ error: "This match already has teams saved for a different date. Delete them first.", code: "MATCH_TEAMS_OTHER_DATE" }, { status: 409 });
+    }
+  }
+  const matchLink = matchId ? { matchId } : {};
+
   // ---------------------------------------------------------------
   // Phase 2D.2b: TeamGeneration is uniquely constrained on
   // (groupId, date). The compound selector's `groupId` is always
@@ -192,8 +219,8 @@ export async function publishTeamsForContext(context: TenantContext, req: Reques
   try {
     saved = await prisma.teamGeneration.upsert({
       where: { groupId_date: { groupId: activeGroupId, date: normalizedDate } },
-      update: { teamsJson: JSON.stringify(snapshotTeams), ...metadata },
-      create: { date: normalizedDate, teamsJson: JSON.stringify(snapshotTeams), groupId: activeGroupId, ...metadata },
+      update: { teamsJson: JSON.stringify(snapshotTeams), ...metadata, ...matchLink },
+      create: { date: normalizedDate, teamsJson: JSON.stringify(snapshotTeams), groupId: activeGroupId, ...metadata, ...matchLink },
     });
   } catch (e: unknown) {
     const message = e instanceof Error ? e.message : "Failed to save published teams.";

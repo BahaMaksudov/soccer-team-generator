@@ -77,7 +77,8 @@ describe("canonical Close Poll & Post Teams wiring", () => {
 
   it("canonical Publish request stays Telegram-free (no pollId/closePoll/postToTelegram)", () => {
     const publishFn = generate.slice(generate.indexOf("async function publish()"));
-    expect(publishFn).toContain("JSON.stringify({ date: previewDate, teams: previewTeams })");
+    // M9-A: a Match-mode publish adds only the matchId (validated server-side) — still no Telegram fields.
+    expect(publishFn).toContain("JSON.stringify(matchId ? { date: previewDate, teams: previewTeams, matchId } : { date: previewDate, teams: previewTeams })");
     expect(stripComments(generate)).not.toMatch(/pollId|closePoll|postToTelegram/);
   });
 

@@ -73,7 +73,10 @@ export default function CanonicalGenerateSection({
   onMessage,
   publishedGeneration,
   onPublishedGenerationChange,
+  matchId,
 }: {
+  /** M9-A — Generate for a Match: the date is the Match's, Publish links the teams to it, and delete-by-date is hidden. */
+  matchId?: string;
   organizationSlug: string;
   groupSlug: string;
   selectedIds: string[];
@@ -173,7 +176,7 @@ export default function CanonicalGenerateSection({
     const res = await fetch(adminTenantApiPath({ organizationSlug, groupSlug, path: "/publish" }), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ date: previewDate, teams: previewTeams }),
+      body: JSON.stringify(matchId ? { date: previewDate, teams: previewTeams, matchId } : { date: previewDate, teams: previewTeams }),
     });
     const data = await res.json().catch(() => ({}));
     setPublishing(false);
@@ -233,15 +236,17 @@ export default function CanonicalGenerateSection({
       </p>
 
       <div className="flex flex-wrap items-end gap-3">
-        <div>
-          <label className="block text-xs">Date</label>
-          <input
-            type="date"
-            className="border rounded px-2 py-1 text-sm"
-            value={date}
-            onChange={(e) => onDateChange(e.target.value)}
-          />
-        </div>
+        {!matchId && (
+          <div>
+            <label className="block text-xs">Date</label>
+            <input
+              type="date"
+              className="border rounded px-2 py-1 text-sm"
+              value={date}
+              onChange={(e) => onDateChange(e.target.value)}
+            />
+          </div>
+        )}
         <div>
           <label className="block text-xs">Number of teams</label>
           <input
@@ -313,6 +318,7 @@ export default function CanonicalGenerateSection({
 
       {previewTeams && previewDate && <TeamPreview previewTeams={previewTeams} previewDate={previewDate} sportKey={sport.key} />}
 
+      {!matchId && (
       <div className="pt-3 border-t space-y-2">
         <div className="text-sm font-medium">Delete Published Teams</div>
         <div className="text-xs text-gray-500">
@@ -368,6 +374,7 @@ export default function CanonicalGenerateSection({
         </div>
         {deleteMsg && <div className="text-sm text-blue-700">{deleteMsg}</div>}
       </div>
+      )}
     </div>
   );
 }

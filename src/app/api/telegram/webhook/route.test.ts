@@ -66,53 +66,26 @@ afterEach(() => {
   global.fetch = originalFetch;
 });
 
-describe("webhook /poll command — chat-based group resolution", () => {
-  it("an unregistered chat (no TelegramChat row) never triggers sendPoll and never writes a TelegramPoll", async () => {
-    mockChatFindUnique.mockResolvedValue(null);
+describe("webhook /poll command — retired in M9-A (creates nothing)", () => {
+  const okFetch = () => (global.fetch as ReturnType<typeof vi.fn>).mockResolvedValue({ json: async () => ({ ok: true, result: {} }) });
 
-    const res = await POST(
-      webhookReq({
-        message: { text: "/poll", chat: { id: 555 }, from: { id: 1 } },
-      })
-    );
-    expect(res.status).toBe(200);
-
-    expect(mockChatFindUnique).toHaveBeenCalledWith(
-      expect.objectContaining({ where: { chatId: 555n } })
-    );
-    expect(global.fetch).not.toHaveBeenCalled();
-    expect(mockPollUpsert).not.toHaveBeenCalled();
-  });
-
-  it("a registered chat with a null groupId (never backfilled) also fails closed — no default fallback group", async () => {
-    mockChatFindUnique.mockResolvedValue({ groupId: null });
-
-    await POST(webhookReq({ message: { text: "/poll", chat: { id: 555 }, from: { id: 1 } } }));
-
-    expect(global.fetch).not.toHaveBeenCalled();
-    expect(mockPollUpsert).not.toHaveBeenCalled();
-  });
-
-  it("a registered, owned chat resolves its groupId, calls sendPoll, and stamps that groupId on the poll upsert", async () => {
-    mockChatFindUnique.mockResolvedValue({ groupId: "group-a" });
-    (global.fetch as ReturnType<typeof vi.fn>).mockResolvedValue({
-      json: async () => ({
-        ok: true,
-        result: {
-          message_id: 42,
-          poll: { id: "poll-xyz", question: "Who is playing?", options: [], is_closed: false },
-        },
-      }),
+  for (const [label, chat] of [
+    ["an unregistered chat", null],
+    ["a registered chat of a Group", { groupId: "group-a" }],
+  ] as const) {
+    it(`${label}: no poll, no Match, no attendance — only a guidance reply`, async () => {
+      mockChatFindUnique.mockResolvedValue(chat);
+      okFetch();
+      const res = await POST(webhookReq({ message: { text: "/poll", chat: { id: 555 }, from: { id: 1 } } }));
+      expect(res.status).toBe(200);
+      expect(mockPollUpsert).not.toHaveBeenCalled();
+      expect(mockChatFindUnique).not.toHaveBeenCalled();
+      expect(global.fetch).toHaveBeenCalledTimes(1);
+      const [url, init] = (global.fetch as ReturnType<typeof vi.fn>).mock.calls[0];
+      expect(String(url)).toMatch(/\/sendMessage$/);
+      expect(JSON.parse(init.body).text).toBe("Create attendance polls from Team Balance Pro.");
     });
-    mockPollUpsert.mockResolvedValue({ pollId: "poll-xyz" });
-
-    await POST(webhookReq({ message: { text: "/poll", chat: { id: 555 }, from: { id: 1 } } }));
-
-    expect(global.fetch).toHaveBeenCalledTimes(1);
-    const call = mockPollUpsert.mock.calls[0][0];
-    expect(call.create.groupId).toBe("group-a");
-    expect(call.update.groupId).toBe("group-a");
-  });
+  }
 });
 
 describe("webhook /link command — retired in M6-C (never writes anything)", () => {
@@ -202,57 +175,17 @@ describe("webhook poll_answer — poll-based group resolution", () => {
   });
 });
 
-describe("webhook /chatid command — diagnostic only, never mutates TelegramChat (Phase 2D.3a)", () => {
-  it("an unknown chat: replies with the chat id, but never creates/upserts a TelegramChat row", async () => {
+describe("webhook /chatid command — retired in M9-A (no chat id is revealed)", () => {
+  it("replies with connection guidance, never the chat id, and touches no data", async () => {
     (global.fetch as ReturnType<typeof vi.fn>).mockResolvedValue({ json: async () => ({ ok: true, result: {} }) });
-
-    const res = await POST(
-      webhookReq({
-        message: { text: "/chatid", chat: { id: 777, title: "New Group" }, from: { id: 1 } },
-      })
-    );
+    const res = await POST(webhookReq({ message: { text: "/chatid", chat: { id: 777, title: "New Group" }, from: { id: 1 } } }));
     expect(res.status).toBe(200);
-
-    expect(mockChatUpsert).not.toHaveBeenCalled();
-    expect(mockChatFindUnique).not.toHaveBeenCalled();
-
-    expect(global.fetch).toHaveBeenCalledTimes(1);
     const body = JSON.parse((global.fetch as ReturnType<typeof vi.fn>).mock.calls[0][1].body);
-    expect(body.text).toContain("777");
-    expect(body.text).not.toMatch(/registered/i);
-  });
-
-  it("an already-registered chat: /chatid still replies, but does not read or modify the existing row", async () => {
-    (global.fetch as ReturnType<typeof vi.fn>).mockResolvedValue({ json: async () => ({ ok: true, result: {} }) });
-
-    await POST(
-      webhookReq({
-        message: { text: "/chatid", chat: { id: 555, title: "Indoor Soccer" }, from: { id: 1 } },
-      })
-    );
-
-    expect(mockChatUpsert).not.toHaveBeenCalled();
-    expect(mockChatFindUnique).not.toHaveBeenCalled();
-  });
-
-  it("no Group lookup or default-Group fallback occurs anywhere in the /chatid path", async () => {
-    (global.fetch as ReturnType<typeof vi.fn>).mockResolvedValue({ json: async () => ({ ok: true, result: {} }) });
-
-    await POST(
-      webhookReq({
-        message: { text: "/chatid", chat: { id: 888 }, from: { id: 1 } },
-      })
-    );
-
-    // No prisma call of any kind is made for /chatid — proven by every
-    // mocked model method across this file remaining untouched.
-    expect(mockChatUpsert).not.toHaveBeenCalled();
-    expect(mockChatFindUnique).not.toHaveBeenCalled();
-    expect(mockPollFindUnique).not.toHaveBeenCalled();
-    expect(mockPollUpsert).not.toHaveBeenCalled();
-    expect(mockPlayerFindFirst).not.toHaveBeenCalled();
-    expect(mockPlayerUpdate).not.toHaveBeenCalled();
-    expect(mockAnswerUpsert).not.toHaveBeenCalled();
+    expect(body.text).not.toContain("777");
+    expect(body.text).toContain("Communication Channels");
+    for (const m of [mockChatUpsert, mockChatFindUnique, mockPollFindUnique, mockPollUpsert, mockPlayerFindFirst, mockPlayerUpdate, mockAnswerUpsert]) {
+      expect(m).not.toHaveBeenCalled();
+    }
   });
 });
 

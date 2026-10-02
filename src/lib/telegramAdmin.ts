@@ -1,3 +1,4 @@
+import { managersOnlyResponse } from "@/lib/tenantRoute";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { NextResponse } from "next/server";
@@ -44,6 +45,9 @@ import { pollContent, renderTelegramPoll } from "@/lib/messaging";
  */
 
 export async function listTelegramChatsForContext(context: TenantContext): Promise<NextResponse> {
+  // M9-A — Telegram (provider identity / external sends) is OWNER/ADMIN only.
+  const denied = managersOnlyResponse(context);
+  if (denied) return denied;
   const chats = await prisma.telegramChat.findMany({
     where: { groupId: context.activeGroup.id },
     orderBy: { updatedAt: "desc" },
@@ -59,6 +63,9 @@ export async function listTelegramChatsForContext(context: TenantContext): Promi
 }
 
 export async function listTelegramPollsForContext(context: TenantContext, req: Request): Promise<NextResponse> {
+  // M9-A — Telegram (provider identity / external sends) is OWNER/ADMIN only.
+  const denied = managersOnlyResponse(context);
+  if (denied) return denied;
   const url = new URL(req.url);
   const includeClosed = url.searchParams.get("includeClosed") === "1";
 
@@ -117,6 +124,9 @@ export async function listTelegramPollsForContext(context: TenantContext, req: R
 }
 
 export async function listUnlinkedTelegramUsersForContext(context: TenantContext): Promise<NextResponse> {
+  // M9-A — Telegram (provider identity / external sends) is OWNER/ADMIN only.
+  const denied = managersOnlyResponse(context);
+  if (denied) return denied;
   const activeGroupId = context.activeGroup.id;
 
   const users = await prisma.telegramPollAnswer.findMany({
@@ -151,6 +161,9 @@ export async function listUnlinkedTelegramUsersForContext(context: TenantContext
 }
 
 export async function createTelegramPollForContext(context: TenantContext, req: Request): Promise<NextResponse> {
+  // M9-A — Telegram (provider identity / external sends) is OWNER/ADMIN only.
+  const denied = managersOnlyResponse(context);
+  if (denied) return denied;
   const activeGroupId = context.activeGroup.id;
 
   const body = await req.json().catch(() => ({}));
@@ -241,6 +254,9 @@ export async function createTelegramPollForContext(context: TenantContext, req: 
 }
 
 export async function importTelegramPollForContext(context: TenantContext, req: Request): Promise<NextResponse> {
+  // M9-A — Telegram (provider identity / external sends) is OWNER/ADMIN only.
+  const denied = managersOnlyResponse(context);
+  if (denied) return denied;
   const activeGroupId = context.activeGroup.id;
 
   const body = await req.json().catch(() => null);

@@ -61,6 +61,38 @@ enum MessageChannel {
 
 enum MessageEventType {
   TEAMS_PUBLISHED
+  // M9-A — explicit "Post attendance poll" for a Match (reserved before sendPoll).
+  ATTENDANCE_POLL_POSTED
+}
+
+// M9-A — Match lifecycle. Only these states are stored; attendance open/
+// closed, teams ready/published etc. are derived from the data.
+enum MatchStatus {
+  SCHEDULED
+  COMPLETED
+  CANCELED
+}
+
+// M9-A — channel-neutral attendance. MAYBE is never "confirmed".
+enum AttendanceStatus {
+  PLAYING
+  NOT_PLAYING
+  MAYBE
+}
+
+// M9-A — where the participant's own (latest) response came from. Organizer
+// overrides are stored separately (AttendanceResponse.override*). WHATSAPP
+// arrives with M10.
+enum AttendanceSource {
+  WEB
+  TELEGRAM
+}
+
+// M9-A — what a Telegram poll is for. Legacy polls read as ATTENDANCE; MVP
+// polls arrive with M9-B.
+enum TelegramPollKind {
+  ATTENDANCE
+  MVP
 }
 
 //   SENDING   — reserved before the external send (one at a time per poll).
@@ -110,6 +142,11 @@ model User {
   // never an authorization source — OrganizationMembership is).
   invitationsCreated  OrganizationInvitation[] @relation("InvitationCreatedBy")
   invitationsAccepted OrganizationInvitation[] @relation("InvitationAcceptedBy")
+
+  // M9-A — audit only.
+  matchesCreated        Match[]                @relation("MatchCreatedBy")
+  attendanceOverrides   AttendanceResponse[]   @relation("AttendanceOverrideBy")
+  telegramChatBindCodes TelegramChatBindCode[]
 }
 
 model Organization {
@@ -203,16 +240,20 @@ model Group {
 
   organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
 
-  players              Player[]
-  teamGenerations      TeamGeneration[]
-  settings             GroupSetting[]
-  telegramChats        TelegramChat[]
-  telegramPolls        TelegramPoll[]
-  telegramLinks        TelegramUserLink[]
-  shareLinks           GroupShareLink[]
-  deliveries           MessageDelivery[]
-  playerClaims         PlayerClaim[]
-  telegramConnectCodes TelegramConnectCode[]
+  players               Player[]
+  teamGenerations       TeamGeneration[]
+  settings              GroupSetting[]
+  telegramChats         TelegramChat[]
+  telegramPolls         TelegramPoll[]
+  telegramLinks         TelegramUserLink[]
+  shareLinks            GroupShareLink[]
+  deliveries            MessageDelivery[]
+  playerClaims          PlayerClaim[]
+  telegramConnectCodes  TelegramConnectCode[]
+  // M9-A
+  matches               Match[]
+  attendanceResponses   AttendanceResponse[]
+  telegramChatBindCodes TelegramChatBindCode[]
 
   @@unique([organizationId, slug])
 }
@@ -270,9 +311,14 @@ model MessageDelivery {
   createdBy      User?           @relation("DeliveryCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
   resolvedBy     User?           @relation("DeliveryResolvedBy", fields: [resolvedByUserId], references: [id], onDelete: SetNull)
 
+  // M9-A — the Match this communication belongs to (NULL for legacy rows).
+  matchId String?
+  match   Match?  @relation(fields: [matchId], references: [id], onDelete: SetNull)
+
   @@index([groupId])
   @@index([telegramPollId, channel])
   @@index([teamGenerationId])
+  @@index([matchId, eventType, channel])
 }
 
 // M6-C — organizer-issued, single-use link that lets ONE person link their
@@ -381,6 +427,7 @@ model Player {
 
   claims               PlayerClaim[]
   telegramConnectCodes TelegramConnectCode[]
+  attendanceResponses  AttendanceResponse[]
 
   @@unique([groupId, userId])
   @@index([userId])
@@ -412,6 +459,13 @@ model TeamGeneration {
   group   Group  @relation(fields: [groupId], references: [id], onDelete: Restrict)
 
   deliveries MessageDelivery[]
+
+  // M9-A — the Match these teams belong to (NULL for legacy/by-date
+  // generations; never backfilled). One generation per Match. Note: the
+  // (groupId, date) uniqueness above is unchanged, so two same-day Matches
+  // cannot both have persisted teams yet (known transitional limitation).
+  matchId String? @unique
+  match   Match?  @relation(fields: [matchId], references: [id], onDelete: SetNull)
 
   @@unique([groupId, date])
 }
@@ -457,6 +511,14 @@ model TelegramPoll {
   group   Group  @relation(fields: [groupId], references: [id], onDelete: Restrict)
 
   deliveries MessageDelivery[]
+
+  // M9-A — Telegram adapter for channel-neutral attendance. NULL for legacy
+  // polls (never backfilled); legacy polls read as ATTENDANCE.
+  matchId String?
+  match   Match?           @relation(fields: [matchId], references: [id], onDelete: SetNull)
+  kind    TelegramPollKind @default(ATTENDANCE)
+
+  @@index([matchId])
 }
 
 model TelegramPollAnswer {
@@ -516,4 +578,79 @@ model TelegramChat {
   // archive its tenant data first.
   groupId String
   group   Group  @relation(fields: [groupId], references: [id], onDelete: Restrict)
+}
+
+// M9-A — a scheduled game of one Group. Identity is the id, NOT the date: a
+// Group may have several Matches on the same day. The date is a date-only
+// value (UTC midnight, like TeamGeneration.date) interpreted in the Group's
+// timezone; startTime is optional local "HH:MM". locationName is a plain
+// label (no address/coordinates).
+model Match {
+  id                 String      @id @default(cuid())
+  groupId            String
+  date               DateTime
+  startTime          String?
+  locationName       String?
+  status             MatchStatus @default(SCHEDULED)
+  attendanceClosedAt DateTime?
+  createdByUserId    String?
+  createdAt          DateTime    @default(now())
+  updatedAt          DateTime    @updatedAt
+
+  group         Group                @relation(fields: [groupId], references: [id], onDelete: Restrict)
+  createdBy     User?                @relation("MatchCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
+  attendance    AttendanceResponse[]
+  generation    TeamGeneration?
+  telegramPolls TelegramPoll[]
+  deliveries    MessageDelivery[]
+
+  @@index([groupId])
+  @@index([groupId, date])
+}
+
+// M9-A — one row per (Match, Player). Keeps BOTH the participant's own latest
+// response (web or a linked Telegram vote) and an organizer override; the
+// effective status is override ?? participant (src/lib/attendance.ts). No
+// provider identities (Telegram ids) are stored here.
+model AttendanceResponse {
+  id                     String            @id @default(cuid())
+  matchId                String
+  groupId                String
+  playerId               String
+  participantStatus      AttendanceStatus?
+  participantSource      AttendanceSource?
+  participantRespondedAt DateTime?
+  overrideStatus         AttendanceStatus?
+  overrideByUserId       String?
+  overrideAt             DateTime?
+  createdAt              DateTime          @default(now())
+  updatedAt              DateTime          @updatedAt
+
+  match      Match  @relation(fields: [matchId], references: [id], onDelete: Cascade)
+  group      Group  @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  player     Player @relation(fields: [playerId], references: [id], onDelete: Cascade)
+  overrideBy User?  @relation("AttendanceOverrideBy", fields: [overrideByUserId], references: [id], onDelete: SetNull)
+
+  @@unique([matchId, playerId])
+  @@index([groupId])
+}
+
+// M9-A — one-time proof that an OWNER/ADMIN wants to connect a Telegram
+// group to this Group: 15-minute, single-use, stored only as a SHA-256 hash
+// (code format "g_" + 128-bit base64url). Redeemed in the Telegram group by a
+// verified Telegram chat administrator.
+model TelegramChatBindCode {
+  id              String    @id @default(cuid())
+  groupId         String
+  codeHash        String    @unique
+  expiresAt       DateTime
+  createdByUserId String?
+  usedAt          DateTime?
+  usedChatTitle   String?
+  createdAt       DateTime  @default(now())
+
+  group     Group @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  createdBy User? @relation(fields: [createdByUserId], references: [id], onDelete: SetNull)
+
+  @@index([groupId])
 }

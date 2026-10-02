@@ -16,7 +16,10 @@ export default function PlayerTelegramCell({
   player,
   onChanged,
   onMessage,
+  canManage = true,
 }: {
+  /** M9-A — MEMBER sees the status only (no identity actions). */
+  canManage?: boolean;
   organizationSlug: string;
   groupSlug: string;
   player: Player;
@@ -65,9 +68,11 @@ export default function PlayerTelegramCell({
   return (
     <span className="text-xs">
       Connected{" "}
-      <button type="button" className="underline" onClick={() => setConfirming(true)}>
-        Remove Telegram link
-      </button>
+      {canManage && (
+        <button type="button" className="underline" onClick={() => setConfirming(true)}>
+          Remove Telegram link
+        </button>
+      )}
     </span>
   );
 }

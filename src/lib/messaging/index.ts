@@ -1,5 +1,5 @@
 export type { MessagingEvent, MessagingEventType, TeamsForMessage } from "./events";
-export { POLL_OPTIONS, pollContent, teamsContent, formatPollQuestionDate, type PollContent, type TextContent } from "./content";
+export { POLL_OPTIONS, ATTENDANCE_POLL_OPTIONS, pollContent, attendancePollContent, formatStartTime, teamsContent, formatPollQuestionDate, type PollContent, type TextContent } from "./content";
 export { renderTelegramHtml, renderTelegramPoll } from "./telegram";
 export { playerFacingViewUrl } from "./links";
 

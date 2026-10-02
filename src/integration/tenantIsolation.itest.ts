@@ -368,6 +368,11 @@ describe("Phase 2D.7 — PostgreSQL enforces groupId NOT NULL on every tenant-ow
       // M6-C: claim links / connect codes are access artifacts that go with their Group.
       PlayerClaim_groupId_fkey: "c/c",
       TelegramConnectCode_groupId_fkey: "c/c",
+      // M9-A: Matches are tenant history (protected); attendance rows and
+      // Telegram bind codes go with their Group (Match RESTRICT protects it).
+      Match_groupId_fkey: "r/c",
+      AttendanceResponse_groupId_fkey: "c/c",
+      TelegramChatBindCode_groupId_fkey: "c/c",
     });
   });
 

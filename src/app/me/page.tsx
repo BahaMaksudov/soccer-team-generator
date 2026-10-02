@@ -4,6 +4,8 @@ import { requireSessionAccount, TenantContextError } from "@/lib/tenantContext";
 import { formatLongDateOnly } from "@/lib/dateOnly";
 import { loadMyPlayers } from "./data";
 import ConnectTelegram from "./ConnectTelegram";
+import MyAttendance from "./MyAttendance";
+import { formatStartTime } from "@/lib/messaging/content";
 import { findSport } from "@/lib/sports";
 
 /**
@@ -53,6 +55,21 @@ export default async function MyTeamsPage() {
               </div>
               <div className="text-sm">Player: {p.displayName}</div>
             </div>
+            {p.nextMatch && (
+              <div className="border rounded-lg p-3 space-y-2">
+                <div className="text-sm font-medium">
+                  Next match: {formatLongDateOnly(p.nextMatch.date)}
+                  {p.nextMatch.startTime ? ` · ${formatStartTime(p.nextMatch.startTime)}` : ""}
+                  {p.nextMatch.locationName ? ` · ${p.nextMatch.locationName}` : ""}
+                </div>
+                <MyAttendance matchId={p.nextMatch.id} status={p.nextMatch.myStatus} byOrganizer={p.nextMatch.myStatusByOrganizer} />
+                {p.nextMatch.myTeam && (
+                  <div className="text-sm">
+                    My team: Team #{p.nextMatch.myTeam.teamNumber} — <span className="text-gray-700">{p.nextMatch.myTeam.teammates.join(", ")}</span>
+                  </div>
+                )}
+              </div>
+            )}
             {p.recent.length === 0 ? (
               <div className="text-sm text-gray-500">No published teams with you yet.</div>
             ) : (

@@ -48,6 +48,7 @@ export default function CanonicalPlayersSection({
   onMessage,
   refreshPlayers,
   sport,
+  canManage = true,
 }: {
   organizationSlug: string;
   groupSlug: string;
@@ -60,6 +61,8 @@ export default function CanonicalPlayersSection({
   refreshPlayers: () => Promise<void> | void;
   /** M7 — the Group's sport (role options/labels). */
   sport: SportClientView;
+  /** M9-A — Telegram identity controls are OWNER/ADMIN only. */
+  canManage?: boolean;
 }) {
   const playersUrl = adminTenantApiPath({ organizationSlug, groupSlug, path: "/players" });
   const playerUrl = (id: string) => adminTenantApiPath({ organizationSlug, groupSlug, path: `/players/${id}` });
@@ -247,6 +250,7 @@ export default function CanonicalPlayersSection({
                 </td>
                 <td>
                   <PlayerTelegramCell
+                    canManage={canManage}
                     organizationSlug={organizationSlug}
                     groupSlug={groupSlug}
                     player={p}

@@ -83,3 +83,17 @@ export function requireJsonRequest(req: Request): NextResponse | null {
   }
   return null;
 }
+
+/**
+ * M9-A — OWNER/ADMIN-only operations (external sends, provider identity,
+ * channel configuration). Returns the same generic 404 as every other tenant
+ * failure for MEMBER (no capability leak), or null when allowed.
+ */
+export function managersOnlyResponse(context: { membership: { role: string } }): NextResponse | null {
+  return context.membership.role === "OWNER" || context.membership.role === "ADMIN"
+    ? null
+    : NextResponse.json({ error: "NOT_FOUND" }, { status: 404 });
+}
+
+export const isManager = (context: { membership: { role: string } }) =>
+  context.membership.role === "OWNER" || context.membership.role === "ADMIN";

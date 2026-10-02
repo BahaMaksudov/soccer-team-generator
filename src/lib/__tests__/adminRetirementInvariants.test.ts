@@ -72,6 +72,14 @@ describe("flat operational Admin APIs are deleted", () => {
       [
         canonical("generate"),
         canonical("generate/swap"), // M8-A: Apply Swap (preview only)
+        canonical("matches"), // M9-A
+        canonical("matches/[matchId]"),
+        canonical("matches/[matchId]/attendance"),
+        canonical("matches/[matchId]/attendance/close"),
+        canonical("matches/[matchId]/attendance/sync"),
+        canonical("matches/[matchId]/poll"),
+        canonical("channels/telegram"),
+        canonical("channels/telegram/[ref]"),
         canonical("players"),
         canonical("players/[id]"),
         canonical("players/[id]/claim"), // M6-C
@@ -274,9 +282,9 @@ describe("tenant-isolation hardening invariants (Phase 2D.6E.6C)", () => {
 describe("webhook independence", () => {
   const webhook = code.get(rel("src/app/api/telegram/webhook/route.ts"))!;
 
-  it("imports only next/server, prisma, dateOnly and (M6-C) the Telegram connect-code service", () => {
+  it("imports only next/server, prisma, dateOnly, the connect-code service and (M9-A) the attendance/channel adapters", () => {
     expect([...webhook.matchAll(/^import .* from ["']([^"']+)["'];?$/gm)].map((m) => m[1]).sort()).toEqual(
-      ["@/lib/dateOnly", "@/lib/prisma", "@/lib/telegramConnect", "next/server"].sort()
+      ["@/lib/dateOnly", "@/lib/prisma", "@/lib/telegramConnect", "@/lib/telegramAttendance", "@/lib/telegramChannels", "next/server"].sort()
     );
   });
 
@@ -289,8 +297,10 @@ describe("webhook independence", () => {
     expect(webhook).not.toMatch(/requireTenantContext|listAccessibleTenants|\/api\/admin|admin\/components|legacy-workspace/);
   });
 
-  it("resolves tenancy from persisted TelegramChat/TelegramPoll ownership", () => {
-    expect(webhook).toMatch(/telegramChat\.findUnique\(\{\s*where: \{ chatId \}/);
+  it("resolves tenancy from persisted TelegramPoll ownership; chats are bound only via a verified bind code (M9-A)", () => {
     expect(webhook).toMatch(/telegramPoll\.findUnique\(/);
+    expect(webhook).toContain("redeemTelegramBindCode(");
+    // The webhook itself never creates/updates a TelegramChat row or a TelegramPoll (/poll is retired).
+    expect(webhook).not.toMatch(/telegramChat\.(create|upsert|update)|telegramPoll\.(create|upsert)/);
   });
 });
