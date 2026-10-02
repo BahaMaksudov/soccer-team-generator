@@ -410,6 +410,11 @@ Publish/Telegram path.
 - **Privacy:** the public players API no longer returns internal Player ids.
 - **/me**: a claimed player sees the next Match, sets their own attendance,
   and sees their team once published for it.
+- **Manual-smoke fix:** the Match Teams selection is derived on every refresh
+  (effective PLAYING ± the organizer's explicit checkbox adjustments,
+  `src/lib/matchSelection.ts`), so overrides, cleared overrides, Telegram/web
+  answers and sync all update it; an adjustment is dropped only when that
+  player's effective attendance changes.
 
 ## M9 — channel-neutral match lifecycle (decisions recorded 2026-10-01)
 

@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { adminTenantApiPath } from "@/lib/adminTenantApi";
 import { formatLongDateOnly } from "@/lib/dateOnly";
 import { formatStartTime } from "@/lib/messaging/content";
@@ -8,6 +8,7 @@ import type { PublishedGeneration } from "@/lib/closeAndPostUi";
 import type { SportClientView } from "@/lib/sports";
 import CanonicalGenerateSection from "../../CanonicalGenerateSection";
 import type { Player } from "../../CanonicalAdminWorkspace";
+import { computeSelection, NO_ADJUSTMENTS, reconcileAdjustments, toggleSelection, type EffectiveStatuses, type SelectionAdjustments } from "@/lib/matchSelection";
 
 /**
  * M9-A — the organizer's Match workspace. Sections, not a wizard:
@@ -53,24 +54,30 @@ export default function MatchWorkspace({
   const [notFound, setNotFound] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const [selected, setSelected] = useState<Record<string, boolean>>({});
+  // Selection = attendance-derived default (server: effective PLAYING) ± the
+  // organizer's explicit adjustments (src/lib/matchSelection.ts). Re-derived on
+  // every refresh, so attendance changes are always reflected.
+  const [adjustments, setAdjustments] = useState<SelectionAdjustments>(NO_ADJUSTMENTS);
+  const lastStatuses = useRef<EffectiveStatuses | null>(null);
   const [published, setPublished] = useState<PublishedGeneration | null>(null);
   const [chats, setChats] = useState<Array<{ ref: number; title: string }>>([]);
   const [chatRef, setChatRef] = useState<number | null>(null);
   const [edit, setEdit] = useState<{ date: string; startTime: string; locationName: string } | null>(null);
 
-  const load = useCallback(async (resetSelection = false) => {
+  const load = useCallback(async () => {
     const res = await fetch(api(""), { cache: "no-store" });
     if (res.status === 404) return setNotFound(true);
     if (!res.ok) return;
     const data: MatchView = await res.json();
+    const statuses: EffectiveStatuses = Object.fromEntries(data.roster.map((p) => [p.id, p.attendance.status]));
+    setAdjustments((adj) => reconcileAdjustments(lastStatuses.current, statuses, adj));
+    lastStatuses.current = statuses;
     setView(data);
-    if (resetSelection) setSelected(Object.fromEntries(data.defaultSelection.map((id) => [id, true])));
     if (data.generation) setPublished({ id: data.generation.id, date: data.generation.date });
   }, [api]);
 
   useEffect(() => {
-    load(true);
+    load();
   }, [load]);
 
   useEffect(() => {
@@ -130,7 +137,9 @@ export default function MatchWorkspace({
   }
 
   const players = useMemo(() => (view?.roster ?? []).map(({ attendance: _a, ...p }) => p as Player), [view]);
-  const selectedIds = useMemo(() => Object.entries(selected).filter(([, v]) => v).map(([id]) => id), [selected]);
+  const defaultIds = useMemo(() => view?.defaultSelection ?? [], [view]);
+  const selectedIds = useMemo(() => computeSelection(defaultIds, adjustments), [defaultIds, adjustments]);
+  const selectedSet = useMemo(() => new Set(selectedIds), [selectedIds]);
 
   if (notFound) return <div className="text-sm text-gray-600">Match not found.</div>;
   if (!view) return <div className="text-sm text-gray-500">Loading…</div>;
@@ -266,7 +275,7 @@ export default function MatchWorkspace({
         <div className="flex flex-wrap gap-2 text-sm">
           {view.roster.filter((p) => p.isActive).map((p) => (
             <label key={p.id} className={`border rounded-full px-2 py-0.5 flex items-center gap-1 ${p.attendance.status === "MAYBE" ? "border-amber-300" : ""}`}>
-              <input type="checkbox" checked={!!selected[p.id]} onChange={() => setSelected((s) => ({ ...s, [p.id]: !s[p.id] }))} />
+              <input type="checkbox" checked={selectedSet.has(p.id)} onChange={() => setAdjustments((adj) => toggleSelection(defaultIds, adj, p.id))} />
               {p.firstName} {p.lastName}
               {p.attendance.status === "MAYBE" && <span className="text-xs text-amber-700">maybe</span>}
             </label>

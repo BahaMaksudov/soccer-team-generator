@@ -529,6 +529,29 @@ describe("Generate, publish and post for a Match", () => {
   });
 });
 
+describe("default selection follows every attendance change (manual-smoke regression)", () => {
+  it("override, clear-revealing-PLAYING, Telegram and web PLAYING all appear in defaultSelection after refresh", async () => {
+    await signInAs("owner@example.test");
+    const id = (await createMatch()).data.match.id;
+    await postPoll(id);
+    const pollId = (await prisma.telegramPoll.findFirstOrThrow({ where: { matchId: id } })).pollId;
+    await overrideRoute.POST(json("POST", { playerId: "ga-p5", status: "PLAYING" }), gm(A, id));
+    await vote(pollId, 111, [0]);
+    expect((await view(id)).defaultSelection).toEqual(["ga-p1", "ga-p5"]);
+    for (const pid of ["ga-p2", "ga-p6"]) await overrideRoute.POST(json("POST", { playerId: pid, status: "PLAYING" }), gm(A, id));
+    expect((await view(id)).defaultSelection).toEqual(["ga-p1", "ga-p2", "ga-p5", "ga-p6"]);
+    await overrideRoute.POST(json("POST", { playerId: "ga-p5", status: "MAYBE" }), gm(A, id));
+    await vote(pollId, 444, [0]); // ga-p4 PLAYING via Telegram
+    await overrideRoute.POST(json("POST", { playerId: "ga-p4", status: "NOT_PLAYING" }), gm(A, id));
+    expect((await view(id)).defaultSelection).toEqual(["ga-p1", "ga-p2", "ga-p6"]);
+    await overrideRoute.POST(json("POST", { playerId: "ga-p4", status: null }), gm(A, id)); // reveals Telegram PLAYING
+    await signInAs("player@example.test");
+    await selfAttendanceRoute.POST(json("POST", { status: "PLAYING" }), { params: Promise.resolve({ matchId: id }) }); // ga-p3 via web
+    await signInAs("owner@example.test");
+    expect((await view(id)).defaultSelection).toEqual(["ga-p1", "ga-p2", "ga-p3", "ga-p4", "ga-p6"]);
+  });
+});
+
 describe("network safety", () => {
   it("no non-Telegram network call happened", () => {
     expect(otherNetworkCalls).toBe(0);
