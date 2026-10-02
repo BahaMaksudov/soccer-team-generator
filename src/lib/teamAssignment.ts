@@ -49,5 +49,28 @@ export function teamsPanelState(preview: readonly TeamLike[] | null, published: 
     generateLabel: mode === "none" ? "Generate" : "Regenerate",
     canPublish: mode === "preview" || mode === "published_with_new_preview",
     canClearPreview: preview !== null,
+    /** Only ONE full team table is shown: the preview when one exists, else the published teams. */
+    showPublishedTable: preview === null && published !== null,
+    /** "Published" only when the displayed teams ARE the published ones; never implies an unpublished preview is published. */
+    badge: mode === "published" ? "Published" : mode === "published_with_new_preview" ? "Published version exists" : null,
+    /** Compact note instead of a second (old) table while a different preview is being evaluated. */
+    publishedVersionNote: mode === "published_with_new_preview",
+    /**
+     * Telegram team posting is offered only when nothing unpublished is on screen.
+     * The post itself always uses the canonical published TeamGeneration (by id,
+     * server-side) — never the preview.
+     */
+    canPostPublishedTeams: published !== null && !unpublishedPreviewOnScreen(mode),
   };
+}
+
+export type TeamsPanelState = ReturnType<typeof teamsPanelState>;
+
+/**
+ * True while an unpublished preview (one that differs from the published
+ * teams) is on screen: Telegram team posting is hidden then, so a preview can
+ * never look like what will be sent.
+ */
+export function unpublishedPreviewOnScreen(mode: TeamsPanelMode): boolean {
+  return mode === "preview" || mode === "published_with_new_preview";
 }

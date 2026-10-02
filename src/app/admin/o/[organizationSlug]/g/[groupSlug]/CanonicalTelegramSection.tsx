@@ -83,7 +83,10 @@ export default function CanonicalTelegramSection({
   players,
   onImportedPoll,
   publishedGeneration,
+  previewPending = false,
 }: {
+  /** M9-A — an unpublished preview is open in Generate: hide team posting (it always sends the published teams). */
+  previewPending?: boolean;
   organizationSlug: string;
   groupSlug: string;
   players: Player[];
@@ -524,6 +527,11 @@ export default function CanonicalTelegramSection({
         </div>
         {!publishedGeneration ? (
           <div className="text-sm text-gray-500">Generate and Publish teams above first.</div>
+        ) : previewPending ? (
+          <div className="text-sm text-gray-500">
+            An unpublished preview is open above. Telegram always posts the published teams — publish or clear the
+            preview first.
+          </div>
         ) : polls.length === 0 ? (
           <div className="text-sm text-gray-500">No polls available.</div>
         ) : (
@@ -570,7 +578,7 @@ export default function CanonicalTelegramSection({
           </div>
         )}
 
-        {closePostEnabled && delivery && (
+        {closePostEnabled && delivery && !previewPending && (
           <div className="space-y-2 text-sm">
             <div>
               Telegram status: <span className="font-medium">{deliveryStatusLabel(delivery.state)}</span>

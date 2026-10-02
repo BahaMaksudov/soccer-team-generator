@@ -9,6 +9,7 @@
  * Guarded local TEST database only. Telegram is a programmable stub; any
  * other network call is counted and forbidden.
  */
+import { formatTeamsHtml } from "@/lib/telegramFormat";
 import { describe, it, expect, vi, beforeAll, beforeEach, afterAll } from "vitest";
 import bcrypt from "bcrypt";
 
@@ -603,7 +604,16 @@ describe("published teams vs working preview (manual-smoke regression)", () => {
     // Telegram label state comes from durable delivery records.
     const status = async () => (await (await deliveryRoute.GET(new Request(`http://itest.local/?pollId=${pollId}&teamGenerationId=${genRow.id}`), g(A))).json()).state;
     expect(await status()).toBe("not_posted");
-    expect((await closePostRoute.POST(json("POST", { pollId, teamGenerationId: genRow.id }), g(A))).status).toBe(200); // explicit post of A
+    // Explicit post while preview B is still open: it sends the canonical published A, never the preview.
+    expect((await closePostRoute.POST(json("POST", { pollId, teamGenerationId: genRow.id }), g(A))).status).toBe(200);
+    const team1Block = (teams: unknown) => {
+      const html = formatTeamsHtml("x", teams as never);
+      return html.slice(html.indexOf("Team #1"), html.indexOf("Team #2"));
+    };
+    const postedText = String(sends("sendMessage").at(-1)?.body.text ?? "");
+    expect(postedText).toContain(team1Block(JSON.parse(publishedA.teamsJson)));
+    expect(team1Block(b.teams)).not.toBe(team1Block(a.teams));
+    expect(postedText).not.toContain(team1Block(b.teams));
     expect(await status()).toBe("posted");
 
     // Publish B → replaces A (same row, no duplicate); public shows B; still nothing sent automatically.

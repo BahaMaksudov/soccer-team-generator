@@ -6,6 +6,7 @@ import { formatLongDateOnly } from "@/lib/dateOnly";
 import { formatStartTime } from "@/lib/messaging/content";
 import type { PublishedGeneration } from "@/lib/closeAndPostUi";
 import type { SportClientView } from "@/lib/sports";
+import { unpublishedPreviewOnScreen, type TeamsPanelMode } from "@/lib/teamAssignment";
 import CanonicalGenerateSection from "../../CanonicalGenerateSection";
 import type { Player } from "../../CanonicalAdminWorkspace";
 import { computeSelection, NO_ADJUSTMENTS, reconcileAdjustments, toggleSelection, type EffectiveStatuses, type SelectionAdjustments } from "@/lib/matchSelection";
@@ -65,6 +66,9 @@ export default function MatchWorkspace({
   const [edit, setEdit] = useState<{ date: string; startTime: string; locationName: string } | null>(null);
   // Telegram state of the PUBLISHED teams, from durable MessageDelivery content hashes (server).
   const [teamsDelivery, setTeamsDelivery] = useState<string | null>(null);
+  // M9-A — Telegram team posting is hidden while an unpublished preview is on screen;
+  // the post itself always sends the canonical published TeamGeneration (by id).
+  const [panelMode, setPanelMode] = useState<TeamsPanelMode>("none");
 
   const load = useCallback(async () => {
     const res = await fetch(api(""), { cache: "no-store" });
@@ -317,8 +321,9 @@ export default function MatchWorkspace({
           onPublishedGenerationChange={setPublished}
           matchId={m.id}
           initialPublishedTeams={view.generation?.teams ?? null}
+          onPanelModeChange={setPanelMode}
         />
-        {published && (
+        {published && !unpublishedPreviewOnScreen(panelMode) && (
           <div className="border rounded-lg p-3 text-sm space-y-2">
             <div className="text-emerald-700">Teams saved for this match.</div>
             {view.canManage &&

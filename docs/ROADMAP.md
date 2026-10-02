@@ -427,6 +427,12 @@ Publish/Telegram path.
   Teams to Telegram" appears only when durable MessageDelivery hashes say the
   published teams changed since the last post. M9-A remains open pending the
   manual smoke.
+- **UX rule:** Published = canonical player-visible teams; Preview = the
+  organizer's working copy. One full team table is shown at a time — while a
+  different preview is open, the published teams are summarised as "A
+  published version already exists". Communication actions always target the
+  canonical published version, never an unpublished preview, and Telegram
+  team posting is hidden while such a preview is open.
 
 ## M9 — channel-neutral match lifecycle (decisions recorded 2026-10-01)
 

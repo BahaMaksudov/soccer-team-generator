@@ -6,6 +6,7 @@ import { applyImportedPlayerSelection } from "@/lib/telegramImportSelection";
 import type { PublishedGeneration } from "@/lib/closeAndPostUi";
 import { applySelectAllActive, pruneSelection } from "@/lib/canonicalAdminState";
 import type { SportClientView } from "@/lib/sports";
+import { unpublishedPreviewOnScreen, type TeamsPanelMode } from "@/lib/teamAssignment";
 import CanonicalPlayersSection from "./CanonicalPlayersSection";
 import CanonicalGenerateSection from "./CanonicalGenerateSection";
 import CanonicalSettingsSection from "./CanonicalSettingsSection";
@@ -84,6 +85,8 @@ export default function CanonicalAdminWorkspace({
   // response). Close Poll & Post Teams is only offered for it; a new
   // Generate/Clear resets it. Local component state only.
   const [publishedGeneration, setPublishedGeneration] = useState<PublishedGeneration | null>(null);
+  // M9-A — while an unpublished preview is open, Telegram team posting is hidden.
+  const [panelMode, setPanelMode] = useState<TeamsPanelMode>("none");
   // Phase 2D.6D.5E.3 — Generate date lifted here so a Telegram poll
   // import can set it from the poll's persisted pollDate.
   const [generateDate, setGenerateDate] = useState<string>(todayYMD);
@@ -172,6 +175,7 @@ export default function CanonicalAdminWorkspace({
         onMessage={setMessage}
         publishedGeneration={publishedGeneration}
         onPublishedGenerationChange={setPublishedGeneration}
+        onPanelModeChange={setPanelMode}
       />
 
       <CanonicalSettingsSection
@@ -192,6 +196,7 @@ export default function CanonicalAdminWorkspace({
             players={players}
             onImportedPoll={applyImportedPoll}
             publishedGeneration={publishedGeneration}
+            previewPending={unpublishedPreviewOnScreen(panelMode)}
           />
         </>
       ) : (

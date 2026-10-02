@@ -21,7 +21,7 @@ import BalanceIntelligence from "./BalanceIntelligence";
 import type { BalanceAnalysis } from "@/lib/balanceAnalysis";
 import type { BalanceMetrics } from "@/lib/balanceEngine";
 import { applySwapBody } from "@/lib/balanceAnalysisUi";
-import { assignmentKey, teamsPanelState } from "@/lib/teamAssignment";
+import { assignmentKey, teamsPanelState, type TeamsPanelMode } from "@/lib/teamAssignment";
 
 /**
  * Phase 2D.6D.2 — canonical tenant-bound Generate preview.
@@ -77,7 +77,10 @@ export default function CanonicalGenerateSection({
   onPublishedGenerationChange,
   matchId,
   initialPublishedTeams,
+  onPanelModeChange,
 }: {
+  /** M9-A — lets the page hide Telegram team posting while an unpublished preview is on screen. */
+  onPanelModeChange?: (mode: TeamsPanelMode) => void;
   /** M9-A — Generate for a Match: the date is the Match's, Publish links the teams to it, and delete-by-date is hidden. */
   matchId?: string;
   /** M9-A — the currently published teams (from the server), so a reload still shows them as published. */
@@ -126,6 +129,10 @@ export default function CanonicalGenerateSection({
   const previewYmd = previewDate ? previewDate.slice(0, 10) : null;
   const publishedForPreview = previewYmd && publishedGeneration && publishedGeneration.date !== previewYmd ? null : publishedTeams;
   const panel = teamsPanelState(previewTeams, previewTeams ? publishedForPreview : publishedTeams);
+  useEffect(() => {
+    onPanelModeChange?.(panel.mode);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [panel.mode]);
 
   async function generate() {
     onMessage(null);
@@ -297,9 +304,14 @@ export default function CanonicalGenerateSection({
             Clear Preview
           </button>
         )}
-        {published && (
+        {published && panel.badge === "Published" && (
           <span className="text-xs px-2 py-1 rounded-full border bg-emerald-50 text-emerald-700 border-emerald-200">
             Published
+          </span>
+        )}
+        {published && panel.badge === "Published version exists" && (
+          <span className="text-xs px-2 py-1 rounded-full border bg-gray-50 text-gray-600 border-gray-200">
+            Published version exists
           </span>
         )}
       </div>
@@ -345,7 +357,15 @@ export default function CanonicalGenerateSection({
           sportKey={sport.key}
         />
       )}
-      {publishedTeams && publishedGeneration && (!previewTeams || panel.mode === "published_with_new_preview" || (previewTeams && !publishedForPreview)) && (
+      {/* M9-A — one full table at a time: while a different preview is open, the
+          published teams are summarised here instead of shown as a second table. */}
+      {panel.publishedVersionNote && (
+        <div className="text-sm text-gray-700 bg-gray-50 border rounded px-3 py-2">
+          ✓ A published version already exists. Players still see the published teams until you click Publish;
+          publishing this preview replaces them.
+        </div>
+      )}
+      {publishedTeams && publishedGeneration && (panel.showPublishedTable || (previewTeams && !publishedForPreview)) && (
         <TeamPreview variant="published" previewTeams={publishedTeams} previewDate={publishedGeneration.date} sportKey={sport.key} />
       )}
 
