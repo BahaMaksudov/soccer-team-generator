@@ -21,9 +21,10 @@ require every future feature before launch.
 | M6 | Player Engagement & Messaging Foundation | COMPLETE — M6-A/B/C live and production-verified (migrations #14–#16; prod `49ebde4`, 2026-10-01) |
 | M6.1 | Telegram Identity Management (remove/disconnect a Player's Telegram link) | COMPLETE — live (prod `841853d`, 2026-10-01), no migration |
 | M7 | Multi-Sport Foundation — sport registry, sport-neutral balancing engine, Add Group (migration #17) | COMPLETE — migration #17 deployed (`ff29508`), production data verified unchanged, basketball production smoke passed, first M7 generation metadata verified (2026-10-01) |
-| M8-A | Deterministic Balance Intelligence — quality levels, roster notes, achievable role coverage, best single swap, Apply Swap (no LLM, no migration) | COMPLETE — shipped in the M8-A release (no migration, balance-v2 unchanged); manual browser smoke of Apply Swap pending |
+| M8-A | Deterministic Balance Intelligence — quality levels, roster notes, achievable role coverage, best single swap, Apply Swap (no LLM, no migration) | COMPLETE — deployed (`3f5f368`) and manually production-smoke-tested |
 | M8-B | Optional LLM explanation | DEFERRED — deterministic explanations cover the M8 value; generative AI is better spent on recaps/communication (M9/M10.5) |
-| M9 | Match Experience & Player Engagement — self-service Telegram group connection, channel-neutral match lifecycle (Telegram first), results, MVP, recap, public match page, "Share to WhatsApp" | Planned |
+| M9-A | Match, Attendance & Telegram Foundation — Matches, channel-neutral attendance, Generate/Publish for a Match, Telegram attendance adapter, self-service Telegram connection, OWNER/ADMIN send boundary, public player-id privacy, /me next match (migration #18) | IMPLEMENTED — deploying; manual authenticated/Telegram smoke pending |
+| M9-B | Results, MVP, Recap, public match page, Share to WhatsApp | Planned (next) |
 | M10 | WhatsApp & Expanded Communications — GroupChannel, primary channel, WhatsApp identity, Meta Cloud API, multi-channel delivery | Planned |
 | M10.5 | Organizer Agent & Match Automation — scheduled attendance → import → generate → analysis → organizer approval → publish/post; optional game-day updates (weather) | Planned |
 | M11 | Plans & Billing | Planned |
@@ -354,6 +355,62 @@ verified structured facts. If revisited: on-demand only, pseudonymous
 team-level payload, kill switch, timeout, cost cap, never in the Generate/
 Publish/Telegram path.
 
+## M9-A — Match, Attendance & Telegram Foundation (decisions as built)
+
+- **Match** (`Match`): id-identified (several Matches per Group per day are
+  allowed), date-only `date` + optional local `startTime` ("HH:MM", Group
+  timezone) + optional `locationName` (label only — no address/coordinates;
+  M10.5 adds geodata). Stored status only SCHEDULED / COMPLETED / CANCELED;
+  attendance-open/teams-ready/published are derived. No backfill: legacy
+  generations/polls keep `matchId = NULL` and the by-date flow still works.
+- **Attendance** (`AttendanceResponse`, unique Match+Player): PLAYING /
+  NOT_PLAYING / MAYBE. Keeps the participant's own latest response (WEB from
+  `/me`, or a linked TELEGRAM vote — latest wins) AND an organizer override
+  (authoritative until "Clear override"); effective = override ?? participant
+  (`src/lib/attendance.ts`, the only precedence code). MAYBE is never
+  confirmed: Generate-from-Match preselects only PLAYING. "Close attendance"
+  stores a timestamp; later answers are recorded and flagged late. No Telegram
+  ids in core attendance; no automatic cutoff (M10.5).
+- **Teams for a Match**: the existing Generate → M8 Balance → Apply Swap →
+  Publish, with Publish carrying `matchId` (same Group and date, validated).
+  `TeamGeneration.matchId` is nullable/unique. **Known transitional
+  limitation:** TeamGeneration is still unique per (Group, date), so only one
+  Match per day can have saved teams; a second same-day Match's publish is
+  refused (409) — never re-linked or overwritten.
+- **Telegram attendance adapter**: Match polls are `TelegramPoll` rows with
+  `matchId` and `kind = ATTENDANCE` (MVP reserved for M9-B) and options
+  ✅ Playing / ❌ Not playing / 🤔 Maybe (indexes 0/1 unchanged for legacy
+  polls). The webhook syncs linked voters live; unlinked voters stay
+  provider-only (a count is shown). "Sync Telegram attendance" replays stored
+  answers through the same mapping without overwriting newer answers.
+- **Post poll to Telegram** (OWNER/ADMIN) is idempotent through
+  `MessageDelivery` (`ATTENDANCE_POLL_POSTED`, `matchId`): reserve → send →
+  finalize under a per-Match lock; same content already SENT is a no-op,
+  changed match details need "post updated", UNCERTAIN is never retried
+  blindly. Team posts from a Match reuse Close & Post and record `matchId`.
+- **Self-service Telegram connection** (Communication Channels, OWNER/ADMIN):
+  one-time `g_` code (15 min, single use, SHA-256 only) →
+  `t.me/<bot>?startgroup=<code>` (Telegram delivers `/start@<bot> <code>`) or
+  `/connectgroup@<bot> <code>` (addressed form reaches privacy-mode bots) → the
+  sender must be a non-anonymous administrator of that Telegram group
+  (`getChatAdministrators`) → the chat binds to exactly that Group. A chat
+  bound to another Group is refused without revealing it. Disconnect keeps
+  history; reconnect needs a new code; supergroup migration keeps the binding.
+  UI shows titles, never raw chat ids. Ops-script binding is legacy only.
+- **Retired:** Telegram `/poll` (anyone in a chat could post polls; now a
+  guidance reply, creates nothing) and `/chatid` (no ids revealed).
+- **Permissions:** MEMBER keeps internal operations (Matches, attendance,
+  Generate, Apply Swap, Publish). OWNER/ADMIN only: anything that sends
+  externally, Telegram identity data, and channel configuration — every
+  Telegram endpoint (chats, polls, voters, import, create poll, close & post,
+  delivery status/mark-sent) answers MEMBER with the generic 404 server-side,
+  and the UI hides those controls.
+- **Publish ≠ Send** is structural: no-send services (Generate, Apply Swap,
+  Publish, Match save, attendance) never import send code (static tests).
+- **Privacy:** the public players API no longer returns internal Player ids.
+- **/me**: a claimed player sees the next Match, sets their own attendance,
+  and sees their team once published for it.
+
 ## M9 — channel-neutral match lifecycle (decisions recorded 2026-10-01)
 
 The lifecycle belongs to Team Balance Pro, not to Telegram; Telegram is the
@@ -511,15 +568,9 @@ posts.
 
 ## Deferred backlog (still open)
 
-- Secure TelegramChat registration.
-- (Privacy review, M9/M13) The public players API
-  (`/api/public/[org]/[group]/players`) still returns internal Player ids
-  (no rating/stamina/identity). Review whether public/player-facing DTOs
-  should drop or replace them before M9 public match pages.
-- **Security (before broad commercial rollout):** the Telegram webhook's
-  `/poll` command lacks organizer authorization in bound chats — any member
-  of a bound chat can make the bot post an attendance poll. Gate it to
-  organizers or retire it.
+- **Same-day Match teams (M9-A transitional limitation):** TeamGeneration is
+  unique per (Group, date); allow per-Match generations (e.g. uniqueness on
+  matchId for Match-linked rows) when doubleheaders need saved teams.
 - **Generation Variety / "More variety"** (found in the M8 review): Regenerate
   rarely yields a different split (e.g. 4 distinct splits in 200 runs on a
   realistic 14-player roster) because randomness only breaks exact ties.
@@ -532,13 +583,6 @@ posts.
   soccer-themed; replace with a neutral visual in M12.
 - Legacy pre-allow-list TeamGeneration snapshots contain Telegram fields;
   public/metrics code never reads them raw. Consider a reviewed scrub (M13).
-- (M6.1 follow-up, non-blocking hardening) MEMBER can still call the
-  read-only unlinked-voter endpoint (`telegram/users`), which returns Telegram
-  usernames/ids, although MEMBER can no longer link voters. Evaluate
-  restricting organizer identity-management data to OWNER/ADMIN.
-- (M6.1 follow-up, non-blocking UX) MEMBER still sees the Telegram "Link"
-  action (and Players-row identity controls) that end in a 404; hide/disable
-  organizer identity mutation controls when the current role cannot use them.
 - Drop the legacy TelegramPoll posting columns after M6-B bake-in.
 - Telegram 4096-character message handling.
 - Drop the unused legacy `Player.telegram*` columns.
@@ -546,3 +590,14 @@ posts.
   revocation (M13).
 - Stale pre-2D.7 ops scripts (outside the repo; do not use).
 - Vercel Prisma advisory-lock (P1002) deploy risk.
+
+## Resolved in M9-A
+
+- Secure TelegramChat registration → self-service connection with a one-time
+  code and Telegram-admin verification.
+- Telegram `/poll` organizer authorization → `/poll` retired.
+- MEMBER Telegram identity visibility → all Telegram endpoints OWNER/ADMIN
+  (server-enforced 404).
+- MEMBER Link/Remove action visibility → hidden for MEMBER.
+- Publish ≠ Send → enforced structurally and by tests.
+- Public Player id privacy → removed from the public players API.
