@@ -24,9 +24,9 @@ require every future feature before launch.
 | M8-A | Deterministic Balance Intelligence — quality levels, roster notes, achievable role coverage, best single swap, Apply Swap (no LLM, no migration) | COMPLETE — deployed (`3f5f368`) and manually production-smoke-tested |
 | M8-B | Optional LLM explanation | DEFERRED — deterministic explanations cover the M8 value; generative AI is better spent on recaps/communication (M9/M10.5) |
 | M9-A | Match, Attendance & Telegram Foundation — Matches, channel-neutral attendance, Generate/Publish for a Match, Telegram attendance adapter, self-service Telegram connection, OWNER/ADMIN send boundary, public player-id privacy, /me next match (migration #18) | COMPLETE — production manual validation passed (prod `64233ba`, 2026-10-02) |
-| M9-B | Telegram Channel Scope & Match Identity — per-Match TeamGeneration identity, chat ↔ Player scope, channel-scoped attendance UX, disconnect/reconnect hardening | IMPLEMENTED — deployed with migration #19 (prod `805339b`, 2026-10-03); targeted manual validation pending |
-| M9-C | Match Player Experience — match-scoped player page, visibility-aware access, "View teams online" → exact Match, player-safe Match DTO, optional claim CTA | Planned (next) |
-| M9-D | Result, MVP & Recap — explicit result publication, MVP vote/announcement, recap, Share to WhatsApp | Planned |
+| M9-B | Telegram Channel Scope & Match Identity — per-Match TeamGeneration identity, chat ↔ Player scope, channel-scoped attendance UX, disconnect/reconnect hardening | COMPLETE — deployed with migration #19 (prod `805339b`, 2026-10-03) |
+| M9-C | Match Player Experience — match-scoped player page, visibility-aware access, "View teams online" → exact Match, player-safe Match DTO, optional sign-in CTA | COMPLETE — deployed without migration (prod `5a66485`, 2026-10-03) |
+| M9-D | Result, MVP & Recap — explicit result publication, MVP vote/announcement, recap, Share to WhatsApp | Planned (next) |
 | M10 | WhatsApp & Expanded Communications — GroupChannel, primary channel, WhatsApp identity, Meta Cloud API, multi-channel delivery | Planned |
 | M10.5 | Organizer Agent & Match Automation — scheduled attendance → import → generate → analysis → organizer approval → publish/post; optional game-day updates (weather) | Planned |
 | M11 | Plans & Billing | Planned |
@@ -541,6 +541,44 @@ Telegram chats; one chat contains only a subset of the roster):
   A new bind code expires the Group's older unused codes. Sends use
   connected chats only.
 
+## M9-C — Match Player Experience (decisions as built, 2026-10-03)
+
+- **The Match URL is canonical for Match-based published teams:**
+  `/g/[org]/[group]/m/[matchId]` (`src/lib/matchPage.ts`). The server
+  resolves org → Group → Match (the Match must be that Group's); every
+  failure is the same 404. The Group history page stays for legacy/by-date
+  teams and browsing.
+- **Access follows Group visibility** (no new tokens, no migration):
+  PUBLIC → anyone; PRIVATE → signed-in organization members (OWNER/ADMIN/
+  MEMBER) or a Player of the Group claimed by the signed-in User
+  (`resolveGroupForViewer`); LINK → `/share/m/[matchId]#<token>` with the
+  Group's existing revocable, hash-only GroupShareLink (token only in the
+  URL fragment, POSTed to `/api/share/match`; no-store, noindex) — the
+  canonical URL also works there for members / claimed Players. A share link
+  never opens a PRIVATE Group. Match pages are noindex and send no Referer.
+- **Telegram identity is NOT browser authentication.** A link click proves
+  nothing about who clicked; no page trusts a Telegram id/username from the
+  URL. TelegramUserLink stays bot identity (and a future account-linking
+  path, e.g. a verified Telegram login/Mini App evaluated separately).
+- **DTO** (`PlayerMatchView`, allow-list): group/org name, sport label,
+  date, start time, venue, status, team numbers, player display names and
+  role labels. No Player/User ids, ratings, stamina, metrics/analysis,
+  Telegram data or delivery data. Teams come only from the Match's
+  published TeamGeneration (never a preview, "latest" or by date);
+  "Teams have not been published yet." otherwise; canceled/completed states.
+- **"View teams online"** for Match teams links to THAT Match (the posted
+  generation's matchId): PUBLIC → canonical URL; LINK → the organizer's
+  current share link re-used as `/share/m/<id>#token` (validated active for
+  the Group; posting never mints credentials); PRIVATE → no link (unchanged).
+  Legacy teams keep the Group page. The delivery content hash still excludes
+  the link, so the URL change does not make posted teams look "updated".
+- Organizer Match view shows the player page; `/me` links to the next
+  Match page. Optional "Sign in" line for anonymous viewers (no claim flow
+  from the page — claims stay organizer-issued).
+- Remaining id exposure (M13): the Group history/print pages still use
+  TeamGeneration ids in print links; Match ids are the URL identifier.
+  No public surface exposes Player ids.
+
 ## Lovable / Product UX Redesign Backlog (recorded 2026-10-03, for M12)
 
 Functional-but-plain UI is intentional until the M12 redesign (with
@@ -562,6 +600,10 @@ Lovable). Not to be polished piecemeal:
 - Mobile/responsive layout of tables and controls.
 - Card design, colors, typography, backgrounds (soccer-themed background
   image), branding.
+- (M9-C) Player Match page: plain card/table, no navigation between Match,
+  Group history, Matches list and Players; no "my team" highlight; sign-in
+  line styling; LINK-group share-link paste field in the Match workspace is a
+  bare input; onboarding/claim journey from a Match page.
 
 ## M9 — channel-neutral match lifecycle (decisions recorded 2026-10-01)
 
