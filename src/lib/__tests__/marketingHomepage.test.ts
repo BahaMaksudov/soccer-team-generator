@@ -27,7 +27,7 @@ import MarketingHomePage, { metadata } from "@/app/page";
 import RootLayout from "@/app/layout";
 import { NextRequest } from "next/server";
 import { middleware, config as middlewareConfig } from "@/middleware";
-import { CHROME_HEADER, MARKETING_CHROME, chromeModeFromHeader, isRedesignedPath } from "@/lib/chrome";
+import { CHROME_HEADER, REDESIGN_CHROME, chromeModeFromHeader, isRedesignedPath } from "@/lib/chrome";
 
 const root = process.cwd();
 const read = (f: string) => fs.readFileSync(path.join(root, f), "utf8");
@@ -150,7 +150,7 @@ describe("chrome isolation: decided on the server; every other route keeps the o
   };
 
   it("the marketing tag (set by middleware for / only) renders the page without the old background, header or footer", async () => {
-    const html = await renderLayout(MARKETING_CHROME);
+    const html = await renderLayout(REDESIGN_CHROME);
     expect(html).toMatch(/<body class="min-h-screen text-slate-900 relative overflow-x-hidden"><p>PAGE<\/p><\/body>/);
     expect(html).not.toMatch(/SoccerTeam|<header|<footer/);
     expect(settings.getTeamName).not.toHaveBeenCalled();
@@ -161,33 +161,40 @@ describe("chrome isolation: decided on the server; every other route keeps the o
   );
   it("any other tag value is ignored (legacy chrome)", async () => {
     expectLegacyChrome(await renderLayout("yes"));
-    expect(chromeModeFromHeader("Marketing")).toBe("legacy");
+    expect(chromeModeFromHeader("Redesign")).toBe("legacy");
+    expect(chromeModeFromHeader("marketing")).toBe("legacy");
   });
-  it("only / is a redesigned path (no tenant, session, cookie or storage input)", () => {
-    expect(isRedesignedPath("/")).toBe(true);
-    for (const p of ["/login", "/signup", "/g/o/g", "/players", "", null, undefined]) expect(isRedesignedPath(p), String(p)).toBe(false);
+  it("only / and the auth screens are redesigned paths (no tenant, session, cookie or storage input)", () => {
+    for (const p of ["/", "/login", "/signup", "/verify-email", "/verify-email/abc"]) expect(isRedesignedPath(p), p).toBe(true);
+    for (const p of ["/g/o/g", "/players", "/login/x", "/signup2", "/verify-emailx", "/admin", "/me", "/onboarding", "/account/security", "/share/m/x", "", null, undefined])
+      expect(isRedesignedPath(p), String(p)).toBe(false);
     const code = read("src/lib/chrome.ts").replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, "");
     expect(code).not.toMatch(/import|cookies|localStorage|session|tenant|fetch\(/i);
   });
-  it("middleware tags / with the marketing header WITHOUT auth-gating it", async () => {
-    expect(middlewareConfig.matcher).toContain("/");
-    const res = await middleware(new NextRequest("http://localhost/"));
-    expect(res.status).toBe(200);
-    expect(res.headers.get("location")).toBeNull();
-    expect(res.headers.get(`x-middleware-request-${CHROME_HEADER}`)).toBe(MARKETING_CHROME);
+  it.each(["/", "/login?callbackUrl=%2Fadmin", "/signup?invite=x", "/verify-email", "/verify-email/tok?next=%2Fme"])(
+    "middleware tags %s with the redesign header WITHOUT auth-gating it",
+    async (url) => {
+      const res = await middleware(new NextRequest(`http://localhost${url}`));
+      expect(res.status).toBe(200);
+      expect(res.headers.get("location")).toBeNull();
+      expect(res.headers.get(`x-middleware-request-${CHROME_HEADER}`)).toBe(REDESIGN_CHROME);
+    }
+  );
+  it("the static middleware matcher covers exactly the redesigned paths", () => {
+    for (const p of ["/", "/login", "/signup", "/verify-email/:path*"]) expect(middlewareConfig.matcher).toContain(p);
   });
   it("the chrome markup is the pre-UI-1 root-layout markup moved verbatim into a SERVER component", () => {
     const src = read("src/components/LegacyChrome.tsx");
     expect(src).not.toContain('"use client"');
     expect(src).not.toMatch(/usePathname/);
     const layout = read("src/app/layout.tsx");
-    expect(layout).toContain('{mode === "marketing" ? children : <LegacyChrome teamName={teamName}>{children}</LegacyChrome>}');
+    expect(layout).toContain('{mode === "redesign" ? children : <LegacyChrome teamName={teamName}>{children}</LegacyChrome>}');
     expect(layout).toContain("<ChromeBoundaryGuard mode={mode} />");
   });
   it("a client-side navigation across the boundary reloads so the server picks the chrome", () => {
     const guard = read("src/components/ChromeBoundaryGuard.tsx");
     expect(guard).toContain('"use client"');
-    expect(guard).toContain('isRedesignedPath(pathname) !== (mode === "marketing")) window.location.reload()');
+    expect(guard).toContain('isRedesignedPath(pathname) !== (mode === "redesign")) window.location.reload()');
   });
 });
 

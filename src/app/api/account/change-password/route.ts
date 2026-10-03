@@ -27,6 +27,9 @@ export async function POST(req: Request) {
 
     const result = await changePassword(account.id, parsed.data);
     if (!result.ok) {
+      if (result.code === "NO_PASSWORD") {
+        return NextResponse.json({ error: "This account signs in with Google and has no password to change." }, { status: 400 });
+      }
       if (result.code === "CURRENT_PASSWORD_INCORRECT") {
         return NextResponse.json({ error: "Current password is incorrect." }, { status: 400 });
       }

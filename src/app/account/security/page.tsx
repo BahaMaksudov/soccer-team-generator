@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
 import { requireSessionAccount, TenantContextError } from "@/lib/tenantContext";
+import { accountHasPassword } from "@/lib/changePassword";
 import ChangePasswordForm from "./ChangePasswordForm";
 
 /**
@@ -10,8 +11,11 @@ import ChangePasswordForm from "./ChangePasswordForm";
  */
 export default async function AccountSecurityPage() {
   let email: string;
+  let hasPassword: boolean;
   try {
-    email = (await requireSessionAccount()).email;
+    const account = await requireSessionAccount();
+    email = account.email;
+    hasPassword = await accountHasPassword(account.id);
   } catch (e) {
     if (e instanceof TenantContextError) redirect("/login?callbackUrl=%2Faccount%2Fsecurity");
     throw e;
@@ -31,7 +35,12 @@ export default async function AccountSecurityPage() {
       </p>
       <section className="space-y-3">
         <h2 className="font-semibold">Change password</h2>
-        <ChangePasswordForm />
+        {hasPassword ? (
+          <ChangePasswordForm />
+        ) : (
+          // UI-2 — Google-only account: there is no password to change.
+          <p className="text-sm text-gray-600">You sign in with Google. This account has no password.</p>
+        )}
       </section>
     </div>
   );

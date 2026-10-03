@@ -101,9 +101,9 @@ export default async function RootLayout({ children }: { children: React.ReactNo
   return (
     <html lang="en" className={`${displayFont.variable} ${bodyFont.variable}`}>
       <body className="min-h-screen text-slate-900 relative overflow-x-hidden">
-        {/* UI-1 — old global chrome for every route except the redesigned marketing homepage. */}
+        {/* UI-1/UI-2 — old global chrome for every route except the redesigned homepage and auth screens. */}
         <ChromeBoundaryGuard mode={mode} />
-        {mode === "marketing" ? children : <LegacyChrome teamName={teamName}>{children}</LegacyChrome>}
+        {mode === "redesign" ? children : <LegacyChrome teamName={teamName}>{children}</LegacyChrome>}
       </body>
     </html>
   );

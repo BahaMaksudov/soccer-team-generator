@@ -1,6 +1,9 @@
 "use client";
 
 import { useState } from "react";
+import { Loader2 } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { FormAlert, SuccessNote } from "@/components/auth/parts";
 
 export default function VerifyEmailButton({ token, next }: { token: string; next: string | null }) {
   const [err, setErr] = useState<string | null>(null);
@@ -33,15 +36,15 @@ export default function VerifyEmailButton({ token, next }: { token: string; next
   }
 
   return (
-    <div className="space-y-2">
-      {err && <div className="text-sm text-red-600" role="alert">{err}</div>}
+    <div className="space-y-3">
+      {err && <FormAlert>{err}</FormAlert>}
       {done ? (
-        <div className="text-sm text-green-700">Email verified. Continuing…</div>
+        <SuccessNote>Email verified. Continuing…</SuccessNote>
       ) : (
-        <button type="button" onClick={verify} disabled={loading}
-          className="bg-black text-white rounded-md px-4 py-2 text-sm disabled:opacity-60">
-          {loading ? "Verifying..." : "Verify email"}
-        </button>
+        <Button size="xl" className="w-full" onClick={verify} disabled={loading} aria-busy={loading}>
+          {loading && <Loader2 className="size-4 animate-spin" aria-hidden="true" />}
+          {loading ? "Verifying…" : "Verify email"}
+        </Button>
       )}
     </div>
   );

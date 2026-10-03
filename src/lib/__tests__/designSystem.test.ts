@@ -113,7 +113,7 @@ describe("UI primitives are presentation-only", () => {
     const cnSrc = read("src/lib/cn.ts");
     expect([...cnSrc.matchAll(/from\s+["']([^"']+)["']/g)].map((m) => m[1]).sort()).toEqual(["clsx", "tailwind-merge"]);
   });
-  it("only the redesigned pages use the primitives (UI-0 is opt-in; UI-1 = the marketing homepage)", () => {
+  it("only the redesigned pages use the primitives (UI-0 is opt-in; UI-1 = homepage, UI-2 = auth screens)", () => {
     const users: string[] = [];
     const walk = (d: string) => {
       for (const e of fs.readdirSync(d, { withFileTypes: true })) {
@@ -125,7 +125,21 @@ describe("UI primitives are presentation-only", () => {
       }
     };
     walk(path.join(root, "src"));
-    expect(users.sort()).toEqual(["src/app/page.tsx", "src/components/marketing/MarketingHeader.tsx", "src/components/marketing/parts.tsx"].sort());
+    expect(users.sort()).toEqual(
+      [
+        "src/app/page.tsx",
+        "src/components/marketing/MarketingHeader.tsx",
+        "src/components/marketing/parts.tsx",
+        "src/app/signup/page.tsx",
+        "src/app/verify-email/page.tsx",
+        "src/app/verify-email/ResendVerification.tsx",
+        "src/app/verify-email/[token]/page.tsx",
+        "src/app/verify-email/[token]/VerifyEmailButton.tsx",
+        "src/components/auth/AuthLayout.tsx",
+        "src/components/auth/fields.tsx",
+        "src/components/auth/parts.tsx",
+      ].sort()
+    );
   });
 });
 

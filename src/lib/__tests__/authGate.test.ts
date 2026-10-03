@@ -25,7 +25,8 @@ describe("authGateDecision (middleware)", () => {
   });
 
   it("middleware protects exactly the documented paths (admin pages/APIs, onboarding, invitation acceptance)", () => {
-    // UI-1 — "/" is also matched, but only to tag the public marketing homepage (never gated).
-    expect(config.matcher).toEqual(["/", ...PROTECTED_MATCHER]);
+    // UI-1/UI-2 — the redesigned public pages are also matched, but only to tag
+    // them for the new chrome (never gated; see src/lib/chrome.ts).
+    expect(config.matcher).toEqual(["/", "/login", "/signup", "/verify-email/:path*", ...PROTECTED_MATCHER]);
   });
 });

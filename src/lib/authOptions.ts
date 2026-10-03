@@ -1,8 +1,12 @@
 import CredentialsProvider from "next-auth/providers/credentials";
+import GoogleProvider from "next-auth/providers/google";
 import type { NextAuthOptions } from "next-auth";
 import { checkLoginRateLimit } from "@/lib/rateLimit";
 import { authenticateCredentials, normalizeEmail } from "@/lib/accounts";
 import { safeAuthRedirect } from "@/lib/safeRedirect";
+import { GOOGLE_PROVIDER_ID, googleAuthConfig, googleSessionUser, resolveGoogleSignIn } from "@/lib/googleAuth";
+
+const google = googleAuthConfig();
 
 /**
  * M5 — database-backed Credentials login (src/lib/accounts.ts). The
@@ -11,6 +15,10 @@ import { safeAuthRedirect } from "@/lib/safeRedirect";
  * re-read from OrganizationMembership on every request
  * (src/lib/tenantContext.ts), so role changes or removed memberships
  * take effect immediately instead of living on in a long-lived token.
+ *
+ * UI-2 — optional Google sign-in, registered only when GOOGLE_CLIENT_ID and
+ * GOOGLE_CLIENT_SECRET are set. It resolves to the same canonical User
+ * (src/lib/googleAuth.ts) and the same identity-only token.
  */
 export const authOptions: NextAuthOptions = {
   providers: [
@@ -34,11 +42,23 @@ export const authOptions: NextAuthOptions = {
         return authenticateCredentials(email, password);
       },
     }),
+    ...(google ? [GoogleProvider({ clientId: google.clientId, clientSecret: google.clientSecret })] : []),
   ],
   session: { strategy: "jwt" },
-  pages: { signIn: "/login" },
+  // OAuth errors (and refused Google sign-ins) land on /login?error=<code>.
+  pages: { signIn: "/login", error: "/login" },
   callbacks: {
-    jwt({ token, user }) {
+    async signIn({ account, profile }) {
+      if (account?.provider !== GOOGLE_PROVIDER_ID) return true;
+      const result = await resolveGoogleSignIn(profile);
+      return result.ok ? true : `/login?error=${result.code}`;
+    },
+    async jwt({ token, user, account, profile }) {
+      if (user && account?.provider === GOOGLE_PROVIDER_ID) {
+        // Never the Google subject id or picture: the canonical User only.
+        const dbUser = await googleSessionUser(profile);
+        return { uid: dbUser.id, sub: dbUser.id, email: dbUser.email, name: dbUser.name };
+      }
       if (user) {
         token.uid = user.id;
         token.email = user.email;

@@ -1,6 +1,8 @@
 "use client";
 
 import { useState } from "react";
+import { Loader2 } from "lucide-react";
+import { Button } from "@/components/ui/button";
 
 export default function ResendVerification({ next }: { next: string | null }) {
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
@@ -29,12 +31,16 @@ export default function ResendVerification({ next }: { next: string | null }) {
   }
 
   return (
-    <div className="space-y-2">
-      <button type="button" onClick={resend} disabled={loading}
-        className="border rounded-md px-4 py-2 text-sm disabled:opacity-60">
-        {loading ? "Sending..." : "Resend verification email"}
-      </button>
-      {msg && <div className={`text-sm ${msg.ok ? "text-green-700" : "text-red-600"}`}>{msg.text}</div>}
+    <div className="space-y-3">
+      <Button variant="outline" size="xl" className="w-full" onClick={resend} disabled={loading} aria-busy={loading}>
+        {loading && <Loader2 className="size-4 animate-spin" aria-hidden="true" />}
+        {loading ? "Sending…" : "Resend verification email"}
+      </Button>
+      {msg && (
+        <p role={msg.ok ? "status" : "alert"} className={`text-center text-sm ${msg.ok ? "text-primary" : "text-destructive"}`}>
+          {msg.text}
+        </p>
+      )}
     </div>
   );
 }
