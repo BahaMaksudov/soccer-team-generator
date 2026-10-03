@@ -9,6 +9,7 @@ import type { SportClientView } from "@/lib/sports";
 import { unpublishedPreviewOnScreen, type TeamsPanelMode } from "@/lib/teamAssignment";
 import { visibleRosterIds } from "@/lib/matchRosterScope";
 import PostGameSection, { type PostGameView } from "./PostGameSection";
+import { MATCH_TELEGRAM_GROUP_SELECTOR_ID } from "@/lib/postGameUi";
 import CanonicalGenerateSection from "../../CanonicalGenerateSection";
 import type { Player } from "../../CanonicalAdminWorkspace";
 import { computeSelection, NO_ADJUSTMENTS, reconcileAdjustments, toggleSelection, type EffectiveStatuses, type SelectionAdjustments } from "@/lib/matchSelection";
@@ -267,7 +268,7 @@ export default function MatchWorkspace({
           {m.attendanceClosed && <span className="text-xs border rounded-full px-2">Attendance closed</span>}
         </div>
 
-        <div className="flex flex-wrap items-center gap-2 text-sm">
+        <div className="flex flex-wrap items-center gap-2 text-sm" id={MATCH_TELEGRAM_GROUP_SELECTOR_ID}>
           <button type="button" className="border rounded px-3 py-1" disabled={busy} onClick={() => call("/attendance/close", { closed: !m.attendanceClosed }, m.attendanceClosed ? "Attendance reopened." : "Attendance closed.")}>
             {m.attendanceClosed ? "Reopen attendance" : "Close attendance"}
           </button>
@@ -465,7 +466,17 @@ export default function MatchWorkspace({
       {view.postGame && (
         <section className="border rounded-xl p-4 space-y-3">
           <div className="font-semibold">After the game</div>
-          <PostGameSection pg={view.postGame} canManage={view.canManage} busy={busy} act={(body, ok) => call("/post-game", body, ok)} />
+          <PostGameSection
+            pg={view.postGame}
+            canManage={view.canManage}
+            busy={busy}
+            act={(body, ok) => call("/post-game", body, ok)}
+            request={async (body) => {
+              const res = await fetch(api("/post-game"), { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+              return { ok: res.ok, data: await res.json().catch(() => ({})) };
+            }}
+            notify={setMessage}
+          />
         </section>
       )}
     </div>

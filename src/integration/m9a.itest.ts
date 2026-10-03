@@ -60,6 +60,7 @@ import * as shareMatchRoute from "@/app/api/share/match/route";
 import * as postGameRoute from "@/app/api/admin/o/[organizationSlug]/g/[groupSlug]/matches/[matchId]/post-game/route";
 import { loadMatchForViewer } from "@/lib/matchPage";
 import { generateToken } from "@/lib/secureToken";
+import { generateRecapDraft, syncedRecapText, AI_DRAFT_READY_MESSAGE } from "@/lib/postGameUi";
 
 const A = { organizationSlug: "org-a", groupSlug: "group-a" };
 const B = { organizationSlug: "org-b", groupSlug: "group-b" };
@@ -1598,5 +1599,69 @@ describe("M9-D — no automatic sends, canceled Matches, access modes, same-day"
     expect([pa.recap!.text, pb.recap!.text]).toEqual(["Recap A", "Recap B"]);
     expect(await prisma.messageDelivery.count({ where: { matchId: a, eventType: "MATCH_RESULT_POSTED" } })).toBe(1);
     expect(await prisma.messageDelivery.count({ where: { matchId: b, eventType: "MATCH_RESULT_POSTED" } })).toBe(1);
+  });
+});
+
+describe("M9-D production-validation fix — AI draft reaches the textarea", () => {
+  it("first generation (no recap row yet): route returns the draft → client handler sets it → view reload keeps it; nothing saved/published/sent", async () => {
+    vi.stubEnv("OPENAI_API_KEY", "sk-itest");
+    vi.stubEnv("OPENAI_BASE_URL", "https://ai.itest/v1");
+    aiText = "What a game! Team 1 took it 5–3 ⚽";
+    const id = await playedMatch();
+    await pg(id, { action: "save_result", scores: [{ teamNumber: 1, score: 5 }, { teamNumber: 2, score: 3 }] });
+    await pg(id, { action: "publish_result" });
+    const before = (await postGameOf(id)).recap;
+    expect(before).toBeNull();
+
+    // Client state model: textarea text + last server value (exactly what PostGameSection keeps).
+    let text = "";
+    let lastServer: string | null | undefined = before?.content;
+    const messages: Array<string | null> = [];
+    const result = await generateRecapDraft({
+      request: async (body) => {
+        const res = await pg(id, body);
+        return { ok: res.ok, data: await res.json() };
+      },
+      setDraft: (t) => (text = t),
+      notify: (m) => messages.push(m),
+      setError: () => {},
+    });
+    expect(result).toBe("draft");
+    expect(text).toBe("What a game! Team 1 took it 5–3 ⚽");
+    expect(messages.at(-1)).toBe(AI_DRAFT_READY_MESSAGE);
+
+    // Any later reload of the view (e.g. after another action) must not wipe the draft.
+    const after = (await postGameOf(id)).recap;
+    expect(after).toMatchObject({ content: null, published: false, hasAiDraft: true });
+    text = syncedRecapText(text, lastServer, after.content);
+    lastServer = after.content;
+    expect(text).toBe("What a game! Team 1 took it 5–3 ⚽");
+
+    // Review only: no canonical recap, nothing published, nothing sent; result unchanged; no MVP state.
+    const row = await prisma.matchRecap.findUniqueOrThrow({ where: { matchId: id } });
+    expect(row).toMatchObject({ content: null, source: null, publishedAt: null });
+    expect(tgCalls.filter((c) => c.method === "sendMessage" || c.method === "sendPoll")).toHaveLength(0);
+    expect((await prisma.matchResult.findUniqueOrThrow({ where: { matchId: id } })).scoresJson).toBe(JSON.stringify([{ teamNumber: 1, score: 5 }, { teamNumber: 2, score: 3 }]));
+    expect(await prisma.matchMvp.count({ where: { matchId: id } })).toBe(0);
+    session = null;
+    expect((await pageView(id))!.recap).toBeNull();
+
+    // Then the organizer saves it explicitly → source AI; the synced textarea keeps the saved text.
+    await signInAs("owner@example.test");
+    expect((await pgJson(id, { action: "save_recap", content: text })).body.source).toBe("AI");
+    const saved = (await postGameOf(id)).recap.content;
+    expect(syncedRecapText(text, lastServer, saved)).toBe("What a game! Team 1 took it 5–3 ⚽");
+  });
+
+  it("MVP card data for the production state: result published, no Telegram group selected, nothing started", async () => {
+    await signInAs("owner@example.test");
+    const id = (await createMatch()).data.match.id;
+    await publishFor(id, teamsOf([["ga-p1", "ga-p2"], ["ga-p3", "ga-p4"]]));
+    await pg(id, { action: "save_result", scores: [{ teamNumber: 1, score: 5 }, { teamNumber: 2, score: 3 }] });
+    await pg(id, { action: "publish_result" });
+    const p = await postGameOf(id);
+    expect(p).toMatchObject({ result: { published: true }, mvp: null, messages: { destinationConnected: false } });
+    expect((await pgJson(id, { action: "start_mvp" })).body.error).toBe("Choose a connected Telegram group for this match first.");
+    expect((await pgJson(id, { action: "publish_mvp" })).body.error).toBe("Close the MVP vote first."); // no poll-less organizer selection
   });
 });
