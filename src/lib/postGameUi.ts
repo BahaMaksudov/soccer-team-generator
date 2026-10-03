@@ -131,40 +131,31 @@ export function mvpMethodSwitchable(pg: MvpView): boolean {
 /** DOM id of the Match's Telegram-group selector (Attendance section), for "Choose Telegram group". */
 export const MATCH_TELEGRAM_GROUP_SELECTOR_ID = "match-telegram-group";
 
-export type ReadinessItem = { key: "result" | "mvp" | "recap"; label: string; included: boolean; note: string | null };
+/** A score field's normalized value: a non-negative integer (≤ 999), or null when empty/invalid. */
+export function normalizeScore(raw: string | undefined): number | null {
+  const t = (raw ?? "").trim();
+  if (!/^\d{1,3}$/.test(t)) return null;
+  return Number(t);
+}
 
 /**
- * What "Post Match Summary" WILL send — published data only. Saved-but-
- * unpublished items are named explicitly so nothing is excluded silently.
- * The Publish Recap shortcut (same publish_recap action) is offered to
- * OWNER/ADMIN when a saved recap is not yet published. Nothing here
- * publishes or sends by itself.
+ * Result editor dirty state. No saved result → "Save Result". A saved result
+ * whose fields still equal it (compared as numbers, so "05" == 5) → no action
+ * ("Saved"). Any difference → "Save Changes". The server stays authoritative
+ * for validation.
  */
-export function summaryReadiness(
-  pg: {
-    result: { published: boolean } | null;
-    mvp: { published: boolean; closed?: boolean; method?: MvpMethod | null; selection?: { playerId: string } | null } | null;
-    recap: { content: string | null; published: boolean } | null;
-    messages: { summary: string | null } | null;
-  },
-  canManage: boolean
-): { items: ReadinessItem[]; publishRecapShortcut: boolean; summaryChanged: boolean } {
-  const mvpNote = pg.mvp?.published
-    ? null
-    : pg.mvp?.method === "ORGANIZER_SELECTION" && pg.mvp.selection
-      ? "selected, not published"
-      : pg.mvp?.closed
-        ? "vote closed, not published"
-        : "not published";
-  const recapSaved = Boolean(pg.recap?.content);
-  const recapNote = pg.recap?.published ? null : recapSaved ? "saved, not published" : "not published";
-  return {
-    items: [
-      { key: "result", label: "Final result", included: Boolean(pg.result?.published), note: pg.result?.published ? null : "not published" },
-      { key: "mvp", label: "Player of the Match", included: Boolean(pg.mvp?.published), note: mvpNote },
-      { key: "recap", label: "Match recap", included: Boolean(pg.recap?.published), note: recapNote },
-    ],
-    publishRecapShortcut: canManage && recapSaved && !pg.recap?.published,
-    summaryChanged: pg.messages?.summary === "updated_available",
-  };
+export function resultEditorState(
+  teamNumbers: number[],
+  saved: Array<{ teamNumber: number; score: number }> | null,
+  local: Record<number, string | undefined>
+): { action: "SAVE_RESULT" | "SAVE_CHANGES" | null; valid: boolean; dirty: boolean } {
+  const values = teamNumbers.map((n) => normalizeScore(local[n]));
+  const valid = values.every((v) => v !== null);
+  if (!saved) return { action: "SAVE_RESULT", valid, dirty: values.some((v) => v !== null) };
+  const savedBy = new Map(saved.map((s) => [s.teamNumber, s.score]));
+  const dirty = teamNumbers.some((n, i) => values[i] !== savedBy.get(n));
+  return { action: dirty ? "SAVE_CHANGES" : null, valid, dirty };
 }
+
+// M9-D — Match Summary readiness lives in a neutral module shared by the UI and the server.
+export { summaryReadiness, type ReadinessItem, type SummaryReadiness } from "@/lib/matchSummaryReadiness";

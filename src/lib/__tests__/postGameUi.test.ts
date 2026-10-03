@@ -237,3 +237,52 @@ describe("Match Summary readiness", () => {
     expect(summaryReadiness(base, true).summaryChanged).toBe(false);
   });
 });
+
+// ------------------------------------------------------------------ result editor dirty state + Match Summary only
+import { normalizeScore, resultEditorState } from "@/lib/postGameUi";
+
+describe("Result editor dirty state", () => {
+  const teams = [1, 2];
+  const saved = [{ teamNumber: 1, score: 5 }, { teamNumber: 2, score: 3 }];
+  it("1: no saved result → Save Result (enabled only when every score is valid)", () => {
+    expect(resultEditorState(teams, null, {})).toEqual({ action: "SAVE_RESULT", valid: false, dirty: false });
+    expect(resultEditorState(teams, null, { 1: "5", 2: "3" })).toEqual({ action: "SAVE_RESULT", valid: true, dirty: true });
+  });
+  it("2: saved and unchanged → no action (\"Saved\")", () => {
+    expect(resultEditorState(teams, saved, { 1: "5", 2: "3" })).toEqual({ action: null, valid: true, dirty: false });
+  });
+  it("3/6: a changed score (published or not) → Save Changes", () => {
+    expect(resultEditorState(teams, saved, { 1: "6", 2: "3" })).toEqual({ action: "SAVE_CHANGES", valid: true, dirty: true });
+    expect(resultEditorState(teams, saved, { 1: "", 2: "3" })).toEqual({ action: "SAVE_CHANGES", valid: false, dirty: true });
+  });
+  it("4/F: reverting to the saved values clears the dirty state; numbers are compared normalized", () => {
+    expect(resultEditorState(teams, saved, { 1: "05", 2: " 3 " }).action).toBeNull();
+    expect(resultEditorState(teams, saved, { 1: "5", 2: "3" }).dirty).toBe(false);
+  });
+  it("5: after a successful save the saved values equal the fields again → Saved", () => {
+    const after = [{ teamNumber: 1, score: 6 }, { teamNumber: 2, score: 3 }];
+    expect(resultEditorState(teams, after, { 1: "6", 2: "3" }).action).toBeNull();
+  });
+  it("normalizeScore: non-negative integers up to 999 only", () => {
+    expect([normalizeScore("0"), normalizeScore("07"), normalizeScore("999")]).toEqual([0, 7, 999]);
+    for (const bad of ["", " ", "-1", "1.5", "1000", "abc", undefined]) expect(normalizeScore(bad)).toBeNull();
+  });
+});
+
+describe("Post-game Telegram: Match Summary is the only post action (wiring)", () => {
+  const src = fs.readFileSync(path.join(process.cwd(), "src/app/admin/o/[organizationSlug]/g/[groupSlug]/matches/[matchId]/PostGameSection.tsx"), "utf8");
+  const server = fs.readFileSync(path.join(process.cwd(), "src/lib/postGame.ts"), "utf8");
+  it("11–14: no Result / Player of the Match / Recap post buttons; one Match Summary post button", () => {
+    expect(src.match(/<PostButton /g)).toHaveLength(1);
+    expect(src).toContain('<PostButton state={m.summary} label="Match Summary"');
+    expect(src).not.toMatch(/kind: "(result|mvp|recap)"|Post (Updated )?(Result|Recap|Player of the Match) to Telegram|label="(Result|Recap|Player of the Match)"/);
+    expect(src).toContain("Save Changes");
+    expect(src).toContain("resultEditorState(");
+  });
+  it("the server accepts only the summary kind and posts only MATCH_SUMMARY_POSTED; the Player Vote poll stays", () => {
+    expect(server).not.toMatch(/"MATCH_RESULT_POSTED"|"MVP_ANNOUNCED"|"MATCH_RECAP_POSTED"/);
+    expect(server).toContain('"MATCH_SUMMARY_POSTED"');
+    expect(server).toContain('callTelegram("sendPoll"');
+    expect(fs.readFileSync(path.join(process.cwd(), "src/lib/validation.ts"), "utf8")).toContain('kind: z.enum(["summary"])');
+  });
+});

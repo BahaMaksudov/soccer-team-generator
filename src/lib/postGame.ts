@@ -7,9 +7,11 @@ import { formatYMDFromDate } from "@/lib/telegramFormat";
 import { findSport } from "@/lib/sports";
 import { postGameSchema, zodErrorResponse } from "@/lib/validation";
 import { contentHashOf, STALE_SENDING_MS } from "@/lib/messaging/deliveryState";
-import { renderTelegramHtml, renderTelegramPoll } from "@/lib/messaging/telegram";
-import { mvpAnnouncementContent, mvpPollContent, MVP_POLL_MAX_OPTIONS, recapContent, type TextContent } from "@/lib/messaging/content";
-import { renderResultMessage, renderSummaryMessage, type PostGameFacts } from "@/lib/messaging/postGameMessages";
+import { renderTelegramPoll } from "@/lib/messaging/telegram";
+import { mvpPollContent, MVP_POLL_MAX_OPTIONS } from "@/lib/messaging/content";
+import { renderSummaryMessage, type PostGameFacts } from "@/lib/messaging/postGameMessages";
+import { summaryReadiness, type SummaryReadiness } from "@/lib/matchSummaryReadiness";
+import type { z } from "zod";
 import { sportMessaging } from "@/lib/sports";
 import { callTelegram, TelegramApiRejectionError } from "@/lib/telegramApi";
 import { resolveViewUrl } from "@/lib/telegramCloseAndPost";
@@ -237,14 +239,7 @@ function recapFactsOf(m: LoadedMatch, sportKey: string): RecapFacts | null {
   });
 }
 
-type MessageKind = "result" | "mvp" | "recap" | "summary";
 type OutgoingMessage = { html: string; contentHash: string; acceptedHashes: string[] };
-
-const hashOf = (content: TextContent) => contentHashOf(renderTelegramHtml({ ...content, link: null }));
-const fromTextContent = (content: TextContent): OutgoingMessage => {
-  const contentHash = hashOf(content);
-  return { html: renderTelegramHtml(content), contentHash, acceptedHashes: [contentHash] };
-};
 
 function factsOf(m: LoadedMatch, sportKey: string): PostGameFacts {
   return {
@@ -256,35 +251,38 @@ function factsOf(m: LoadedMatch, sportKey: string): PostGameFacts {
 }
 
 /**
- * The explicit Telegram post for one kind — ONLY canonical PUBLISHED data.
- * The summary needs a published result; a published MVP / recap is
- * included when present, drafts and unpublished selections never are.
+ * The Match Summary — THE only post-game Telegram message (M9-D
+ * consolidation): ONLY canonical PUBLISHED data. Needs a published result;
+ * a published Player of the Match / recap is included when present; drafts,
+ * saved-but-unpublished recaps and unpublished selections never are.
  */
-function messageContent(m: LoadedMatch, kind: MessageKind, viewUrl: string | null, sportKey: string): OutgoingMessage | string {
-  const date = formatYMDFromDate(m.date);
-  if (kind === "result" || kind === "summary") {
-    if (!m.result?.publishedAt) return kind === "summary" ? "Publish the result before posting the match summary." : "Publish the result first.";
-    if (kind === "result") return renderResultMessage(factsOf(m, sportKey), viewUrl);
-    const recap = m.recap?.publishedAt && m.recap.content ? m.recap.content : null;
-    return renderSummaryMessage({ ...factsOf(m, sportKey), mvpNames: mvpNames(m), recap }, viewUrl);
-  }
-  if (kind === "mvp") {
-    const names = mvpNames(m);
-    if (names.length === 0) return "Publish the MVP first.";
-    return fromTextContent(mvpAnnouncementContent({ names, viewUrl }));
-  }
-  if (!m.recap?.publishedAt || !m.recap.content) return "Publish the recap first.";
-  return fromTextContent(recapContent({ date, text: m.recap.content, viewUrl }));
+function summaryMessage(m: LoadedMatch, viewUrl: string | null, sportKey: string): OutgoingMessage | string {
+  if (!m.result?.publishedAt) return "Publish the result before posting the match summary.";
+  const recap = m.recap?.publishedAt && m.recap.content ? m.recap.content : null;
+  return renderSummaryMessage({ ...factsOf(m, sportKey), mvpNames: mvpNames(m), recap }, viewUrl);
 }
-
-const EVENT_OF = { result: "MATCH_RESULT_POSTED", mvp: "MVP_ANNOUNCED", recap: "MATCH_RECAP_POSTED", summary: "MATCH_SUMMARY_POSTED" } as const;
 
 // ------------------------------------------------------------------ actions
 
+export type PostGameCommand = z.infer<typeof postGameSchema>;
+
+/** HTTP entry: parse + validate, then the canonical operation. */
 export async function postGameAction(context: TenantContext, matchId: string, req: Request): Promise<NextResponse> {
   const parsed = postGameSchema.safeParse((await req.json().catch(() => null)) ?? {});
   if (!parsed.success) return NextResponse.json(zodErrorResponse(parsed.error), { status: 400 });
-  const body = parsed.data;
+  return runPostGameAction(context, matchId, parsed.data);
+}
+
+/**
+ * THE authoritative post-game operations (save/publish result, start/close
+ * vote, save/reset/publish Player of the Match, generate/save/publish recap,
+ * post Match Summary). The organizer UI and any future agent/automation call
+ * this same function with the same TenantContext authorization — there is no
+ * separate "agent" implementation. Nothing here cascades: each command does
+ * exactly one thing, and only "start_mvp" / "post_message" talk to Telegram.
+ */
+export async function runPostGameAction(context: TenantContext, matchId: string, command: PostGameCommand): Promise<NextResponse> {
+  const body = command;
   const groupId = context.activeGroup.id;
   // Telegram actions and the organizer's own Player-of-the-Match selection are OWNER/ADMIN.
   const managersOnly =
@@ -511,9 +509,9 @@ export async function postGameAction(context: TenantContext, matchId: string, re
       if (!destination) return fail("Choose a connected Telegram group for this match first.");
       const view = await resolveViewUrl(context, body.shareUrl, m.id);
       if (!view.ok) return view.response;
-      const content = messageContent(m, body.kind, view.url, context.activeGroup.sportKey);
+      const content = summaryMessage(m, view.url, context.activeGroup.sportKey);
       if (typeof content === "string") return fail(content);
-      const decision = await reserveDelivery(context, m.id, EVENT_OF[body.kind], destination, content.contentHash, body.intent, content.acceptedHashes);
+      const decision = await reserveDelivery(context, m.id, "MATCH_SUMMARY_POSTED", destination, content.contentHash, body.intent, content.acceptedHashes);
       if (decision.kind === "respond") return decision.response;
       const sent = await sendReserved(decision.deliveryId, () =>
         callTelegram("sendMessage", { chat_id: destination, text: content.html, parse_mode: "HTML", disable_web_page_preview: true })
@@ -567,17 +565,14 @@ export async function postGameView(context: TenantContext, matchId: string) {
   }
 
   const destination = manager ? await matchDestination(groupId, m.telegramChatId) : null;
-  const hash = (kind: MessageKind) => {
-    const c = messageContent(m, kind, null, context.activeGroup.sportKey);
+  const summaryHashes = (() => {
+    const c = summaryMessage(m, null, context.activeGroup.sportKey);
     return typeof c === "string" ? null : c.acceptedHashes;
-  };
+  })();
   const messages = manager
     ? {
         destinationConnected: destination !== null,
-        result: await messageState(groupId, m.id, "MATCH_RESULT_POSTED", destination, hash("result")),
-        mvp: await messageState(groupId, m.id, "MVP_ANNOUNCED", destination, hash("mvp")),
-        recap: await messageState(groupId, m.id, "MATCH_RECAP_POSTED", destination, hash("recap")),
-        summary: await messageState(groupId, m.id, "MATCH_SUMMARY_POSTED", destination, hash("summary")),
+        summary: await messageState(groupId, m.id, "MATCH_SUMMARY_POSTED", destination, summaryHashes),
         mvpPoll: await messageState(groupId, m.id, "MVP_POLL_POSTED", destination, null),
       }
     : null;
@@ -606,5 +601,30 @@ export function publishedPostGame(m: { result: { scoresJson: string; publishedAt
     result: scores ? { teams: scores.map((s) => ({ teamNumber: s.teamNumber, score: s.score })), winnerTeamNumber: leaders.length === 1 ? leaders[0].teamNumber : null, draw: leaders.length > 1 } : null,
     mvp: m.mvp?.publishedAt && m.mvp.winnerPlayerIds.length ? { names: m.mvp.winnerPlayerIds.map((id) => names.get(id) ?? "Player"), shared: m.mvp.winnerPlayerIds.length > 1 } : null,
     recap: m.recap?.publishedAt && m.recap.content ? { text: m.recap.content } : null,
+  };
+}
+
+/**
+ * Match Summary readiness — the same rules the organizer panel shows, for any
+ * server-side caller (e.g. a future agent deciding whether to ASK the
+ * organizer to post). Read-only: never publishes or sends.
+ */
+export async function getMatchSummaryReadiness(
+  context: TenantContext,
+  matchId: string
+): Promise<(SummaryReadiness & { resultPublished: boolean; destinationConnected: boolean; deliveryState: string | null; canPost: boolean }) | null> {
+  const view = await postGameView(context, matchId);
+  if (!view) return null;
+  const manager = isManager(context);
+  const readiness = summaryReadiness(view, manager);
+  const resultPublished = view.result?.published ?? false;
+  const destinationConnected = view.messages?.destinationConnected ?? false;
+  const deliveryState = view.messages?.summary ?? null;
+  return {
+    ...readiness,
+    resultPublished,
+    destinationConnected,
+    deliveryState,
+    canPost: manager && !view.canceled && resultPublished && destinationConnected && deliveryState !== "posted" && deliveryState !== "sending",
   };
 }

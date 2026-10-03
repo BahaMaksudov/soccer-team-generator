@@ -62,6 +62,8 @@ import { loadMatchForViewer } from "@/lib/matchPage";
 import { generateToken } from "@/lib/secureToken";
 import { generateRecapDraft, syncedRecapText, AI_DRAFT_READY_MESSAGE, summaryReadiness } from "@/lib/postGameUi";
 import { legacyResultHash } from "@/lib/messaging/postGameMessages";
+import { getMatchSummaryReadiness, runPostGameAction } from "@/lib/postGame";
+import { requireTenantContextForSlugs } from "@/lib/tenantContext";
 
 const A = { organizationSlug: "org-a", groupSlug: "group-a" };
 const B = { organizationSlug: "org-b", groupSlug: "group-b" };
@@ -1271,12 +1273,12 @@ describe("M9-D — result", () => {
 
     await signInAs("member@example.test"); // Match editing role semantics: MEMBER may save
     expect((await pg(id, { action: "save_result", scores: [{ teamNumber: 2, score: 5 }, { teamNumber: 1, score: 7 }] })).status).toBe(200);
-    expect((await pgJson(id, { action: "post_message", kind: "result" })).status).toBe(404); // Telegram is OWNER/ADMIN
+    expect((await pgJson(id, { action: "post_message", kind: "summary" })).status).toBe(404); // Telegram is OWNER/ADMIN
     session = null;
     expect((await pageView(id))!.result).toBeNull(); // draft is invisible
     await signInAs("owner@example.test");
     expect((await postGameOf(id)).result).toEqual({ scores: [{ teamNumber: 1, score: 7 }, { teamNumber: 2, score: 5 }], published: false });
-    expect((await pgJson(id, { action: "post_message", kind: "result" })).body.error).toBe("Publish the result first.");
+    expect((await pgJson(id, { action: "post_message", kind: "summary" })).body.error).toBe("Publish the result before posting the match summary.");
 
     expect((await pg(id, { action: "publish_result" })).status).toBe(200);
     session = null;
@@ -1285,12 +1287,12 @@ describe("M9-D — result", () => {
     expect(tgCalls).toHaveLength(0); // save + publish sent nothing
 
     await signInAs("owner@example.test");
-    expect((await pgJson(id, { action: "post_message", kind: "result" })).body.state).toBe("posted");
+    expect((await pgJson(id, { action: "post_message", kind: "summary" })).body.state).toBe("posted");
     expect(msgs()).toHaveLength(1);
-    expect(String(msgs()[0].body.text)).toContain("🏁 FINAL SCORE");
+    expect(String(msgs()[0].body.text)).toContain("🏁 MATCH COMPLETE");
     expect(String(msgs()[0].body.text)).toContain("⚽ Team 1  7 — 5  Team 2");
     expect(String(msgs()[0].body.text)).toContain(`${BASE}/g/org-a/group-a/m/${id}`);
-    expect((await pgJson(id, { action: "post_message", kind: "result" })).body.state).toBe("already_posted"); // dedupe
+    expect((await pgJson(id, { action: "post_message", kind: "summary" })).body.state).toBe("already_posted"); // dedupe
     expect(msgs()).toHaveLength(1);
 
     // Correction: stays published, the page shows it, Telegram is NOT updated automatically.
@@ -1299,11 +1301,11 @@ describe("M9-D — result", () => {
     expect((await pageView(id))!.result!.teams[1].score).toBe(6);
     await signInAs("owner@example.test");
     expect(msgs()).toHaveLength(1);
-    expect((await postGameOf(id)).messages.result).toBe("updated_available");
-    expect((await pgJson(id, { action: "post_message", kind: "result" })).body.state).toBe("updated_available");
-    expect((await pgJson(id, { action: "post_message", kind: "result", intent: "post_updated" })).body.state).toBe("posted");
+    expect((await postGameOf(id)).messages.summary).toBe("updated_available");
+    expect((await pgJson(id, { action: "post_message", kind: "summary" })).body.state).toBe("updated_available");
+    expect((await pgJson(id, { action: "post_message", kind: "summary", intent: "post_updated" })).body.state).toBe("posted");
     expect(String(msgs()[1].body.text)).toContain("⚽ Team 1  7 — 6  Team 2");
-    expect(await prisma.messageDelivery.count({ where: { matchId: id, eventType: "MATCH_RESULT_POSTED", status: "SENT" } })).toBe(2);
+    expect(await prisma.messageDelivery.count({ where: { matchId: id, eventType: "MATCH_SUMMARY_POSTED", status: "SENT" } })).toBe(2);
   });
 
   it("draw; retry/recovery: a rejected post is FAILED and retryable; an ambiguous one needs an explicit retry", async () => {
@@ -1314,12 +1316,12 @@ describe("M9-D — result", () => {
     expect((await pageView(id))!.result).toMatchObject({ draw: true, winnerTeamNumber: null });
     await signInAs("owner@example.test");
     sendMessageMode = "reject";
-    expect((await pgJson(id, { action: "post_message", kind: "result" })).body.state).toBe("failed");
+    expect((await pgJson(id, { action: "post_message", kind: "summary" })).body.state).toBe("failed");
     sendMessageMode = "ambiguous";
-    expect((await pgJson(id, { action: "post_message", kind: "result" })).body.state).toBe("uncertain");
+    expect((await pgJson(id, { action: "post_message", kind: "summary" })).body.state).toBe("uncertain");
     sendMessageMode = "ok";
-    expect((await pgJson(id, { action: "post_message", kind: "result" })).body.state).toBe("uncertain"); // never retried blindly
-    expect((await pgJson(id, { action: "post_message", kind: "result", intent: "retry_uncertain" })).body.state).toBe("posted");
+    expect((await pgJson(id, { action: "post_message", kind: "summary" })).body.state).toBe("uncertain"); // never retried blindly
+    expect((await pgJson(id, { action: "post_message", kind: "summary", intent: "retry_uncertain" })).body.state).toBe("posted");
     expect(String(msgs().at(-1)!.body.text)).toContain("🤝 Draw");
   });
 
@@ -1395,7 +1397,7 @@ describe("M9-D — MVP voting", () => {
     expect(msgs()).toHaveLength(before); // no automatic announcement
 
     await signInAs("owner@example.test");
-    expect((await pgJson(id, { action: "post_message", kind: "mvp" })).body.state).toBe("posted"); // 26: explicit
+    expect((await pgJson(id, { action: "post_message", kind: "summary" })).body.state).toBe("posted"); // 26: explicit
     expect(String(msgs().at(-1)!.body.text)).toContain("Player of the Match");
     expect(String(msgs().at(-1)!.body.text)).toContain("A1 Player");
     expect(String(msgs().at(-1)!.body.text)).not.toMatch(/vote[sd]?\s*\d|\d+\s*votes/i);
@@ -1502,13 +1504,13 @@ describe("M9-D — recap", () => {
     await signInAs("owner@example.test");
     expect(msgs()).toHaveLength(0); // 38: generate/save/publish sent nothing
 
-    expect((await pgJson(id, { action: "post_message", kind: "recap" })).body.state).toBe("posted"); // 39
+    expect((await pgJson(id, { action: "post_message", kind: "summary" })).body.state).toBe("posted"); // 39
     expect(String(msgs().at(-1)!.body.text)).toContain("See you next week!");
     expect(String(msgs().at(-1)!.body.text)).toContain(`/m/${id}`);
     await pg(id, { action: "save_recap", content: "Corrected recap." });
     expect(msgs()).toHaveLength(1);
-    expect((await postGameOf(id)).messages.recap).toBe("updated_available"); // 40
-    expect((await pgJson(id, { action: "post_message", kind: "recap", intent: "post_updated" })).body.state).toBe("posted");
+    expect((await postGameOf(id)).messages.summary).toBe("updated_available"); // 40
+    expect((await pgJson(id, { action: "post_message", kind: "summary", intent: "post_updated" })).body.state).toBe("posted");
     expect(String(msgs().at(-1)!.body.text)).toContain("Corrected recap.");
   });
 });
@@ -1534,7 +1536,7 @@ describe("M9-D — no automatic sends, canceled Matches, access modes, same-day"
     await pg(id, { action: "save_recap", content: "Fun game, Team 1 won 7–5!" });
     await pg(id, { action: "publish_recap" });
     expect(count()).toEqual({ messages: 0, polls: 1 });
-    expect(await prisma.messageDelivery.count({ where: { matchId: id, eventType: { in: ["MATCH_RESULT_POSTED", "MVP_ANNOUNCED", "MATCH_RECAP_POSTED"] } } })).toBe(0);
+    expect(await prisma.messageDelivery.count({ where: { matchId: id, eventType: { in: ["MATCH_RESULT_POSTED", "MVP_ANNOUNCED", "MATCH_RECAP_POSTED", "MATCH_SUMMARY_POSTED"] } } })).toBe(0);
   });
 
   it("53/54: a canceled Match cannot record a result, start MVP or generate/save a recap", async () => {
@@ -1589,17 +1591,17 @@ describe("M9-D — no automatic sends, canceled Matches, access modes, same-day"
     await pg(b, { action: "save_recap", content: "Recap B" });
     await pg(a, { action: "publish_recap" });
     await pg(b, { action: "publish_recap" });
-    await pg(a, { action: "post_message", kind: "result" });
+    await pg(a, { action: "post_message", kind: "summary" });
     expect(String(msgs().at(-1)!.body.text)).toContain(`/m/${a}`);
-    await pg(b, { action: "post_message", kind: "result" });
+    await pg(b, { action: "post_message", kind: "summary" });
     expect(String(msgs().at(-1)!.body.text)).toContain(`/m/${b}`);
     expect(String(msgs().at(-1)!.body.text)).toContain("⚽ Team 1  0 — 4  Team 2");
     session = null;
     const [pa, pb] = [(await pageView(a))!, (await pageView(b))!];
     expect([pa.result!.winnerTeamNumber, pb.result!.winnerTeamNumber]).toEqual([1, 2]);
     expect([pa.recap!.text, pb.recap!.text]).toEqual(["Recap A", "Recap B"]);
-    expect(await prisma.messageDelivery.count({ where: { matchId: a, eventType: "MATCH_RESULT_POSTED" } })).toBe(1);
-    expect(await prisma.messageDelivery.count({ where: { matchId: b, eventType: "MATCH_RESULT_POSTED" } })).toBe(1);
+    expect(await prisma.messageDelivery.count({ where: { matchId: a, eventType: "MATCH_SUMMARY_POSTED" } })).toBe(1);
+    expect(await prisma.messageDelivery.count({ where: { matchId: b, eventType: "MATCH_SUMMARY_POSTED" } })).toBe(1);
   });
 });
 
@@ -1728,9 +1730,9 @@ describe("M9-D enhancement — Player of the Match: Organizer Selection (and met
     expect((await pgJson(id, { action: "generate_recap" })).status).toBe(200);
     expect(JSON.parse(aiRequests.at(-1)!.input as string).mvp).toEqual(["A3 Player"]);
     expect(String(aiRequests.at(-1)!.input)).not.toMatch(/ORGANIZER|ga-p3|method/);
-    expect((await pgJson(id, { action: "post_message", kind: "mvp" })).body.error).toContain("Telegram group"); // no group → nothing sent
+    expect((await pgJson(id, { action: "post_message", kind: "summary" })).body.error).toContain("Telegram group"); // no group → nothing sent
     await selectChat(id, await chatRef());
-    expect((await pgJson(id, { action: "post_message", kind: "mvp" })).body.state).toBe("posted");
+    expect((await pgJson(id, { action: "post_message", kind: "summary" })).body.state).toBe("posted");
     expect(sends("sendMessage")).toHaveLength(1);
     expect(String(sends("sendMessage")[0].body.text)).toContain("A3 Player");
     expect(sends("sendPoll")).toHaveLength(0);
@@ -1888,7 +1890,7 @@ describe("M9-D — Post Match Summary to Telegram", () => {
     expect(await summaries(id)).toHaveLength(3);
   });
 
-  it("8: result + recap without MVP; individual posts still work separately", async () => {
+  it("8: result + recap without MVP; individual post-game posts no longer exist (Match Summary only)", async () => {
     const id = await summaryMatch();
     await pg(id, { action: "save_recap", content: "Bragging rights to Team 1! ⚽" });
     await pg(id, { action: "publish_recap" });
@@ -1896,10 +1898,8 @@ describe("M9-D — Post Match Summary to Telegram", () => {
     const text = String(msgs().at(-1)!.body.text);
     expect(text).toContain("<b>📝 Match Recap</b>\nBragging rights to Team 1! ⚽");
     expect(text).not.toContain("Player of the Match");
-    expect((await pgJson(id, { action: "post_message", kind: "result" })).body.state).toBe("posted");
-    expect(String(msgs().at(-1)!.body.text)).toContain("🏁 FINAL SCORE");
-    expect((await pgJson(id, { action: "post_message", kind: "recap" })).body.state).toBe("posted");
-    expect(msgs()).toHaveLength(3);
+    for (const kind of ["result", "mvp", "recap"]) expect((await pgJson(id, { action: "post_message", kind })).status, kind).toBe(400);
+    expect(msgs()).toHaveLength(1);
   });
 
   it("18/19: MEMBER cannot post; another Group's owner cannot reach the Match; result must be published; a chat must be selected", async () => {
@@ -1964,49 +1964,48 @@ describe("M9-D — Telegram readiness fixes (production sequences)", () => {
 
   it("Part 5 / 7–9: post 5–3 → posted (no button); same 5–3 again → still posted; 6–3 → updated (no auto-send); post update → posted", async () => {
     const id = await prodMatch();
-    expect((await state(id)).result).toBe("not_posted");
-    expect((await pgJson(id, { action: "post_message", kind: "result" })).body.state).toBe("posted");
-    expect((await state(id)).result).toBe("posted");
+    expect((await state(id)).summary).toBe("not_posted");
+    expect((await pgJson(id, { action: "post_message", kind: "summary" })).body.state).toBe("posted");
+    expect((await state(id)).summary).toBe("posted");
     await pg(id, { action: "save_result", scores: [{ teamNumber: 1, score: 5 }, { teamNumber: 2, score: 3 }] });
     await pg(id, { action: "publish_result" });
-    expect((await state(id)).result).toBe("posted");
-    expect((await pgJson(id, { action: "post_message", kind: "result" })).body.state).toBe("already_posted");
+    expect((await state(id)).summary).toBe("posted");
+    expect((await pgJson(id, { action: "post_message", kind: "summary" })).body.state).toBe("already_posted");
     await pg(id, { action: "save_result", scores: [{ teamNumber: 1, score: 6 }, { teamNumber: 2, score: 3 }] });
-    expect((await state(id)).result).toBe("updated_available");
+    expect((await state(id)).summary).toBe("updated_available");
     expect(msgs()).toHaveLength(1); // nothing sent automatically
-    expect((await pgJson(id, { action: "post_message", kind: "result", intent: "post_updated" })).body.state).toBe("posted");
+    expect((await pgJson(id, { action: "post_message", kind: "summary", intent: "post_updated" })).body.state).toBe("posted");
     expect(msgs()).toHaveLength(2);
     expect(String(msgs()[1].body.text)).toContain("⚽ Team 1  6 — 3  Team 2");
-    expect((await state(id)).result).toBe("posted");
+    expect((await state(id)).summary).toBe("posted");
   });
 
-  it("14: a SENT result delivery from the pre-scoreboard format (legacy hash) counts as posted for the same result — and is not rewritten", async () => {
+  it("14: historical individual deliveries (e.g. a pre-scoreboard result post) stay untouched and do not affect the Match Summary", async () => {
     const id = await prodMatch("2026-10-05");
     const dest = (await prisma.telegramChat.findFirstOrThrow({ where: { groupId: "ga" } })).chatId.toString();
     const legacy = await prisma.messageDelivery.create({
       data: { groupId: "ga", matchId: id, eventType: "MATCH_RESULT_POSTED", channel: "TELEGRAM", destination: dest, contentHash: legacyResultHash({ date: "2026-10-05", scores: [{ teamNumber: 1, score: 5 }, { teamNumber: 2, score: 3 }] }), status: "SENT", claimedAt: new Date(), sentAt: new Date() },
     });
     expect(legacy.contentHash.slice(0, 12)).toBe("1f6253505817");
-    expect((await state(id)).result).toBe("posted");
-    expect((await pgJson(id, { action: "post_message", kind: "result" })).body.state).toBe("already_posted");
-    expect(msgs()).toHaveLength(0);
+    expect((await state(id)).summary).toBe("not_posted");
+    expect((await pgJson(id, { action: "post_message", kind: "summary" })).body.state).toBe("posted");
+    expect(msgs()).toHaveLength(1);
     expect(await prisma.messageDelivery.findUniqueOrThrow({ where: { id: legacy.id } })).toEqual(legacy); // untouched
-    await pg(id, { action: "save_result", scores: [{ teamNumber: 1, score: 5 }, { teamNumber: 2, score: 4 }] });
-    expect((await state(id)).result).toBe("updated_available"); // a real change still asks for an update
+    expect((await state(id)).summary).toBe("posted");
   });
 
   it("10/11: FAILED is never 'posted' (plain retry); UNCERTAIN needs the explicit recovery retry", async () => {
     const id = await prodMatch();
     sendMessageMode = "reject";
-    await pg(id, { action: "post_message", kind: "result" });
-    expect((await state(id)).result).toBe("failed");
+    await pg(id, { action: "post_message", kind: "summary" });
+    expect((await state(id)).summary).toBe("failed");
     sendMessageMode = "ambiguous";
-    await pg(id, { action: "post_message", kind: "result" });
-    expect((await state(id)).result).toBe("uncertain");
+    await pg(id, { action: "post_message", kind: "summary" });
+    expect((await state(id)).summary).toBe("uncertain");
     sendMessageMode = "ok";
-    expect((await pgJson(id, { action: "post_message", kind: "result" })).body.state).toBe("uncertain");
-    expect((await pgJson(id, { action: "post_message", kind: "result", intent: "retry_uncertain" })).body.state).toBe("posted");
-    expect((await state(id)).result).toBe("posted");
+    expect((await pgJson(id, { action: "post_message", kind: "summary" })).body.state).toBe("uncertain");
+    expect((await pgJson(id, { action: "post_message", kind: "summary", intent: "retry_uncertain" })).body.state).toBe("posted");
+    expect((await state(id)).summary).toBe("posted");
   });
 
   it("Part 4 / 4–6, 15: summary without the saved recap → publish recap (no send) → updated → post update → posted with result + MVP + recap", async () => {
@@ -2051,14 +2050,67 @@ describe("M9-D — Telegram readiness fixes (production sequences)", () => {
   it("16/17: same-day and cross-Group isolation of result/summary states; MEMBER cannot post", async () => {
     const a = await prodMatch("2026-10-10", "18:00");
     const b = await prodMatch("2026-10-10", "21:00");
-    await pg(a, { action: "post_message", kind: "result" });
     await pg(a, { action: "post_message", kind: "summary" });
-    expect([(await state(a)).result, (await state(a)).summary]).toEqual(["posted", "posted"]);
-    expect([(await state(b)).result, (await state(b)).summary]).toEqual(["not_posted", "not_posted"]);
+    expect((await state(a)).summary).toBe("posted");
+    expect((await state(b)).summary).toBe("not_posted");
     await signInAs("member@example.test");
-    expect((await pg(b, { action: "post_message", kind: "result" })).status).toBe(404);
+    expect((await pg(b, { action: "post_message", kind: "summary" })).status).toBe(404);
     await signInAs("owner-b@example.test");
     expect((await pg(b, { action: "post_message", kind: "summary" }, B)).status).toBe(404);
-    expect(msgs()).toHaveLength(2);
+    expect(msgs()).toHaveLength(1);
+  });
+});
+
+describe("M9 post-game streamlining — published change → stale summary; agent boundary", () => {
+  async function postedMatch() {
+    await signInAs("owner@example.test");
+    const id = (await createMatch({ date: "2026-10-12", startTime: "20:00", locationName: "Forekicks" })).data.match.id;
+    await publishFor(id, teamsOf([["ga-p1", "ga-p2"], ["ga-p3", "ga-p4"]]));
+    await selectChat(id, await chatRef());
+    await pg(id, { action: "save_result", scores: [{ teamNumber: 1, score: 5 }, { teamNumber: 2, score: 3 }] });
+    await pg(id, { action: "publish_result" });
+    expect((await pgJson(id, { action: "post_message", kind: "summary" })).body.state).toBe("posted");
+    return id;
+  }
+
+  it("6–10: Save Changes on a published result sends nothing, stays published, makes the summary stale; the updated summary posts once, then it is posted again", async () => {
+    const id = await postedMatch();
+    const before = msgs().length;
+    expect((await pgJson(id, { action: "save_result", scores: [{ teamNumber: 1, score: 6 }, { teamNumber: 2, score: 3 }] })).body).toEqual({ ok: true, published: true });
+    expect(msgs()).toHaveLength(before); // 7
+    session = null;
+    expect((await pageView(id))!.result!.teams[0].score).toBe(6); // published correction
+    await signInAs("owner@example.test");
+    expect((await postGameOf(id)).messages.summary).toBe("updated_available"); // 8
+    expect((await pgJson(id, { action: "post_message", kind: "summary", intent: "post_updated" })).body.state).toBe("posted");
+    expect(msgs()).toHaveLength(before + 1); // 9
+    expect(String(msgs().at(-1)!.body.text)).toContain("⚽ Team 1  6 — 3  Team 2");
+    expect((await postGameOf(id)).messages.summary).toBe("posted"); // 10
+    expect((await pgJson(id, { action: "post_message", kind: "summary" })).body.state).toBe("already_posted"); // 24
+    expect(msgs()).toHaveLength(before + 1);
+  });
+
+  it("agent boundary: the same authoritative operations run without HTTP (typed commands + readiness), with the same authorization", async () => {
+    await signInAs("owner@example.test");
+    const id = (await createMatch({ date: "2026-10-12", startTime: "20:00" })).data.match.id;
+    await publishFor(id, teamsOf([["ga-p1", "ga-p2"], ["ga-p3", "ga-p4"]]));
+    const ctx = await requireTenantContextForSlugs(A);
+    let r = await getMatchSummaryReadiness(ctx, id);
+    expect(r).toMatchObject({ resultPublished: false, canPost: false });
+    expect((await runPostGameAction(ctx, id, { action: "save_result", scores: [{ teamNumber: 1, score: 2 }, { teamNumber: 2, score: 1 }] })).status).toBe(200);
+    expect((await runPostGameAction(ctx, id, { action: "publish_result" })).status).toBe(200);
+    expect((await runPostGameAction(ctx, id, { action: "save_recap", content: "Thanks all!" })).status).toBe(200);
+    r = await getMatchSummaryReadiness(ctx, id);
+    expect(r).toMatchObject({ resultPublished: true, destinationConnected: false, canPost: false, publishRecapShortcut: true });
+    expect(r!.items.find((i) => i.key === "recap")).toMatchObject({ included: false, note: "saved, not published" });
+    await selectChat(id, await chatRef());
+    expect((await getMatchSummaryReadiness(ctx, id))!.canPost).toBe(true);
+    expect(tgCalls).toHaveLength(0); // readiness and data commands never send
+    // Same authorization for non-HTTP callers: a MEMBER context cannot post.
+    await signInAs("member@example.test");
+    const memberCtx = await requireTenantContextForSlugs(A);
+    expect((await runPostGameAction(memberCtx, id, { action: "post_message", kind: "summary", intent: "post" })).status).toBe(404);
+    expect((await getMatchSummaryReadiness(memberCtx, id))!.canPost).toBe(false);
+    expect(tgCalls).toHaveLength(0);
   });
 });

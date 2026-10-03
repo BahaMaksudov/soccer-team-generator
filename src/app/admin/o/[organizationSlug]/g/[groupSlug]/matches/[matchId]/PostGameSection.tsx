@@ -8,6 +8,7 @@ import {
   mvpMethodSwitchable,
   mvpStage,
   needsReplaceConfirmation,
+  resultEditorState,
   summaryReadiness,
   syncedRecapText,
   type MvpMethod,
@@ -45,7 +46,8 @@ export type PostGameView = {
   recap: { content: string | null; source: string | null; published: boolean; hasAiDraft: boolean } | null;
   standardRecap: string | null;
   aiConfigured: boolean;
-  messages: { destinationConnected: boolean; result: MessageState; mvp: MessageState; recap: MessageState; summary: MessageState; mvpPoll: MessageState } | null;
+  // M9-D — Match Summary is the only post-game Telegram message (plus the Player Vote poll).
+  messages: { destinationConnected: boolean; summary: MessageState; mvpPoll: MessageState } | null;
 };
 
 type Act = (body: Record<string, unknown>, ok: string) => Promise<{ ok: boolean; data: Record<string, unknown> }>;
@@ -144,12 +146,11 @@ export default function PostGameSection({
     else if (kind === "ai") void runGenerate();
     else applyStandardRecap();
   };
-  const post = (kind: "result" | "mvp" | "recap" | "summary") => (intent: string) =>
-    act({ action: "post_message", kind, intent }, kind === "summary" ? "Match summary posted to Telegram." : "Posted to Telegram.");
+  const postSummary = (intent: string) => act({ action: "post_message", kind: "summary", intent }, "Match summary posted to Telegram.");
+  const editor = resultEditorState(pg.teamNumbers, pg.result?.scores ?? null, scores);
 
   return (
     <div className="space-y-4">
-      {tg && !m.destinationConnected && <div className="text-xs text-amber-700">Choose a connected Telegram group for this match (Attendance section) to post to Telegram.</div>}
 
       {/* Result */}
       <div className="border rounded-lg p-3 space-y-2 text-sm">
@@ -162,21 +163,30 @@ export default function PostGameSection({
             </label>
           ))}
         </div>
-        <div className="flex flex-wrap gap-2">
-          <button
-            type="button"
-            className="border rounded px-3 py-1"
-            disabled={busy || pg.teamNumbers.some((n) => scores[n] === undefined || scores[n] === "")}
-            onClick={() => act({ action: "save_result", scores: pg.teamNumbers.map((n) => ({ teamNumber: n, score: Number(scores[n]) })) }, pg.result?.published ? "Result corrected. Telegram was not updated." : "Result saved (not published).")}
-          >
-            Save Result
-          </button>
-          {pg.result && !pg.result.published && (
+        <div className="flex flex-wrap gap-2 items-center">
+          {editor.action ? (
+            <button
+              type="button"
+              className="border rounded px-3 py-1 disabled:opacity-60"
+              disabled={busy || !editor.valid}
+              onClick={() =>
+                act(
+                  { action: "save_result", scores: pg.teamNumbers.map((n) => ({ teamNumber: n, score: Number(scores[n]) })) },
+                  pg.result?.published ? "Result changes saved. Telegram was not updated." : "Result saved (not published)."
+                )
+              }
+            >
+              {editor.action === "SAVE_CHANGES" ? "Save Changes" : "Save Result"}
+            </button>
+          ) : (
+            <span className="text-xs text-gray-600">Saved.</span>
+          )}
+          {editor.action === "SAVE_CHANGES" && <span className="text-xs text-amber-700">Unsaved changes</span>}
+          {pg.result && !pg.result.published && !editor.dirty && (
             <button type="button" className="bg-emerald-600 text-white rounded px-3 py-1" disabled={busy} onClick={() => act({ action: "publish_result" }, "Result published on the match page. Nothing was sent.")}>
               Publish Result
             </button>
           )}
-          {tg && pg.result?.published && m.destinationConnected && <PostButton state={m.result} label="Result" disabled={busy} onPost={post("result")} />}
         </div>
       </div>
 
@@ -325,8 +335,7 @@ export default function PostGameSection({
               Published: {pg.mvp.winners.join(", ")}
               {pg.mvp.method === "ORGANIZER_SELECTION" ? " (organizer selection)" : pg.mvp.decision === "ORGANIZER_TIEBREAK" ? " (organizer tie-break)" : ""}
             </div>
-            {tg && m.destinationConnected && <PostButton state={m.mvp} label="Player of the Match" disabled={busy} onPost={post("mvp")} />}
-            {tg && !m.destinationConnected && <div className="text-xs text-gray-600">Select a connected Telegram group for this match to announce it.</div>}
+            <div className="text-xs text-gray-500">It is sent to Telegram with the Match Summary below.</div>
           </div>
         )}
       </div>
@@ -388,7 +397,6 @@ export default function PostGameSection({
                   Publish Recap
                 </button>
               )}
-              {tg && pg.recap?.published && m.destinationConnected && <PostButton state={m.recap} label="Recap" disabled={busy} onPost={post("recap")} />}
             </div>
           </>
         )}
@@ -427,7 +435,7 @@ export default function PostGameSection({
             ) : (
               <>
                 {readiness.summaryChanged && <div className="text-xs text-amber-700">The published Match Summary has changed.</div>}
-                <PostButton state={m.summary} label="Match Summary" disabled={busy} primary onPost={post("summary")} />
+                <PostButton state={m.summary} label="Match Summary" disabled={busy} primary onPost={postSummary} />
               </>
             )}
           </>
