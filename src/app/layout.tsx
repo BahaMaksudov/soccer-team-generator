@@ -69,8 +69,16 @@
 
 
 import "./globals.css";
+import { Archivo, Manrope } from "next/font/google";
 import SiteHeader from "@/components/SiteHeader";
 import { getTeamName } from "@/lib/settings";
+
+// UI-0 — design-system fonts, self-hosted by next/font at build time (no
+// runtime Google Fonts request). Only the CSS VARIABLES are attached to
+// <html>; nothing uses them until a redesigned component opts in via the
+// display/body font-family utilities, so existing pages are unchanged.
+const displayFont = Archivo({ subsets: ["latin"], weight: ["600", "700", "800", "900"], variable: "--font-tbp-display", display: "swap" });
+const bodyFont = Manrope({ subsets: ["latin"], weight: ["400", "500", "600", "700"], variable: "--font-tbp-body", display: "swap" });
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
@@ -86,7 +94,7 @@ export default async function RootLayout({ children }: { children: React.ReactNo
   const teamName = await getTeamName();
 
   return (
-    <html lang="en">
+    <html lang="en" className={`${displayFont.variable} ${bodyFont.variable}`}>
       <body className="min-h-screen text-slate-900 relative overflow-x-hidden">
         <div
           className="fixed inset-0 -z-10 bg-center bg-cover"
