@@ -70,7 +70,10 @@
 
 import "./globals.css";
 import { Archivo, Manrope } from "next/font/google";
-import SiteHeader from "@/components/SiteHeader";
+import { headers } from "next/headers";
+import LegacyChrome from "@/components/LegacyChrome";
+import ChromeBoundaryGuard from "@/components/ChromeBoundaryGuard";
+import { CHROME_HEADER, chromeModeFromHeader } from "@/lib/chrome";
 import { getTeamName } from "@/lib/settings";
 
 // UI-0 — design-system fonts, self-hosted by next/font at build time (no
@@ -91,31 +94,16 @@ export const metadata = {
 };
 
 export default async function RootLayout({ children }: { children: React.ReactNode }) {
-  const teamName = await getTeamName();
+  // UI-1 — server-side chrome decision from the middleware tag (src/lib/chrome.ts).
+  const mode = chromeModeFromHeader((await headers()).get(CHROME_HEADER));
+  const teamName = mode === "legacy" ? await getTeamName() : "";
 
   return (
     <html lang="en" className={`${displayFont.variable} ${bodyFont.variable}`}>
       <body className="min-h-screen text-slate-900 relative overflow-x-hidden">
-        <div
-          className="fixed inset-0 -z-10 bg-center bg-cover"
-          style={{
-            backgroundImage: "url('/SoccerTeam.jpg')",
-            opacity: 0.85,
-          }}
-        />
-
-        <div className="fixed inset-0 -z-10 bg-white/70" />
-
-        {/* ✅ pass the actual string */}
-        <SiteHeader teamName={teamName} />
-
-        <main className="max-w-6xl mx-auto px-4 py-6">{children}</main>
-
-        <footer className="border-t bg-white/80 mt-12 print:hidden">
-          <div className="max-w-6xl mx-auto px-4 py-6 text-sm text-slate-600">
-            © {new Date().getFullYear()} Team Balance Pro
-          </div>
-        </footer>
+        {/* UI-1 — old global chrome for every route except the redesigned marketing homepage. */}
+        <ChromeBoundaryGuard mode={mode} />
+        {mode === "marketing" ? children : <LegacyChrome teamName={teamName}>{children}</LegacyChrome>}
       </body>
     </html>
   );

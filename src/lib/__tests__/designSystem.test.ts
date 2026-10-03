@@ -88,10 +88,11 @@ describe("fonts", () => {
     expect(tailwind.theme.extend.fontFamily.body[0]).toBe("var(--font-tbp-body)");
     expect(layout).not.toMatch(/fonts\.googleapis|fonts\.gstatic/); // no runtime Google Fonts request
   });
-  it("the existing body chrome is unchanged (background, SiteHeader, footer)", () => {
+  it("the existing body chrome is unchanged (background, SiteHeader, footer — in LegacyChrome since UI-1)", () => {
     expect(layout).toContain('<body className="min-h-screen text-slate-900 relative overflow-x-hidden">');
-    expect(layout).toContain("url('/SoccerTeam.jpg')");
-    expect(layout).toContain("<SiteHeader teamName={teamName} />");
+    const chrome = read("src/components/LegacyChrome.tsx");
+    expect(chrome).toContain("url('/SoccerTeam.jpg')");
+    expect(chrome).toContain("<SiteHeader teamName={teamName} />");
     expect(layout).not.toMatch(/displayFont\.className|bodyFont\.className/); // fonts are not applied anywhere yet
   });
 });
@@ -112,7 +113,7 @@ describe("UI primitives are presentation-only", () => {
     const cnSrc = read("src/lib/cn.ts");
     expect([...cnSrc.matchAll(/from\s+["']([^"']+)["']/g)].map((m) => m[1]).sort()).toEqual(["clsx", "tailwind-merge"]);
   });
-  it("no existing page or component has adopted the new primitives yet (UI-0 is opt-in)", () => {
+  it("only the redesigned pages use the primitives (UI-0 is opt-in; UI-1 = the marketing homepage)", () => {
     const users: string[] = [];
     const walk = (d: string) => {
       for (const e of fs.readdirSync(d, { withFileTypes: true })) {
@@ -124,7 +125,7 @@ describe("UI primitives are presentation-only", () => {
       }
     };
     walk(path.join(root, "src"));
-    expect(users).toEqual([]);
+    expect(users.sort()).toEqual(["src/app/page.tsx", "src/components/marketing/MarketingHeader.tsx", "src/components/marketing/parts.tsx"].sort());
   });
 });
 
