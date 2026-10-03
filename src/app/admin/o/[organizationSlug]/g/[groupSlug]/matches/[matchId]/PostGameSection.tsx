@@ -44,15 +44,15 @@ export type PostGameView = {
   recap: { content: string | null; source: string | null; published: boolean; hasAiDraft: boolean } | null;
   standardRecap: string | null;
   aiConfigured: boolean;
-  messages: { destinationConnected: boolean; result: MessageState; mvp: MessageState; recap: MessageState; mvpPoll: MessageState } | null;
+  messages: { destinationConnected: boolean; result: MessageState; mvp: MessageState; recap: MessageState; summary: MessageState; mvpPoll: MessageState } | null;
 };
 
 type Act = (body: Record<string, unknown>, ok: string) => Promise<{ ok: boolean; data: Record<string, unknown> }>;
 /** Plain POST to the post-game endpoint: no view reload, no generic status message. */
 type Request = (body: Record<string, unknown>) => Promise<{ ok: boolean; data: Record<string, unknown> }>;
 
-function PostButton({ state, label, onPost, disabled }: { state: MessageState; label: string; onPost: (intent: string) => void; disabled: boolean }) {
-  if (state === "posted") return <span className="text-xs text-gray-600">Posted to Telegram.</span>;
+function PostButton({ state, label, onPost, disabled, primary }: { state: MessageState; label: string; onPost: (intent: string) => void; disabled: boolean; primary?: boolean }) {
+  if (state === "posted") return <span className="text-xs text-gray-600">{primary ? `${label} posted to Telegram.` : "Posted to Telegram."}</span>;
   if (state === "sending") return <span className="text-xs text-gray-600">Posting…</span>;
   const intent = state === "updated_available" ? "post_updated" : state === "uncertain" ? "retry_uncertain" : "post";
   const text = state === "updated_available" ? `Post Updated ${label} to Telegram` : state === "uncertain" ? `Retry posting ${label} (check the group first)` : `Post ${label} to Telegram`;
@@ -142,7 +142,8 @@ export default function PostGameSection({
     else if (kind === "ai") void runGenerate();
     else applyStandardRecap();
   };
-  const post = (kind: "result" | "mvp" | "recap") => (intent: string) => act({ action: "post_message", kind, intent }, "Posted to Telegram.");
+  const post = (kind: "result" | "mvp" | "recap" | "summary") => (intent: string) =>
+    act({ action: "post_message", kind, intent }, kind === "summary" ? "Match summary posted to Telegram." : "Posted to Telegram.");
 
   return (
     <div className="space-y-4">
@@ -387,6 +388,26 @@ export default function PostGameSection({
               )}
               {tg && pg.recap?.published && m.destinationConnected && <PostButton state={m.recap} label="Recap" disabled={busy} onPost={post("recap")} />}
             </div>
+          </>
+        )}
+      </div>
+
+      {/* Match Summary — the preferred single post (published data only; sending is separate from publishing) */}
+      <div className="border-2 border-sky-200 rounded-lg p-3 space-y-2 text-sm">
+        <div className="font-medium">Match Summary</div>
+        <div className="text-xs text-gray-600">Send the published result, Player of the Match and recap together in one Telegram message.</div>
+        {!pg.result?.published ? (
+          <div className="text-xs text-gray-600">Publish the result before posting the match summary.</div>
+        ) : !canManage || !m ? (
+          <div className="text-xs text-gray-600">An owner or admin posts the match summary to Telegram.</div>
+        ) : !m.destinationConnected ? (
+          <div className="text-xs text-gray-600">Select a connected Telegram group for this match to post the summary.</div>
+        ) : (
+          <>
+            <div className="text-xs text-gray-500">
+              Includes: result{pg.mvp?.published ? ", Player of the Match" : ""}{pg.recap?.published ? ", recap" : ""}. Unpublished items are not sent.
+            </div>
+            <PostButton state={m.summary} label="Match Summary" disabled={busy} primary onPost={post("summary")} />
           </>
         )}
       </div>

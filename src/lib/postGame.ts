@@ -8,7 +8,9 @@ import { findSport } from "@/lib/sports";
 import { postGameSchema, zodErrorResponse } from "@/lib/validation";
 import { contentHashOf, STALE_SENDING_MS } from "@/lib/messaging/deliveryState";
 import { renderTelegramHtml, renderTelegramPoll } from "@/lib/messaging/telegram";
-import { mvpAnnouncementContent, mvpPollContent, MVP_POLL_MAX_OPTIONS, recapContent, resultContent, type TextContent } from "@/lib/messaging/content";
+import { mvpAnnouncementContent, mvpPollContent, MVP_POLL_MAX_OPTIONS, recapContent, type TextContent } from "@/lib/messaging/content";
+import { renderResultMessage, renderSummaryMessage, type PostGameFacts } from "@/lib/messaging/postGameMessages";
+import { sportMessaging } from "@/lib/sports";
 import { callTelegram, TelegramApiRejectionError } from "@/lib/telegramApi";
 import { resolveViewUrl } from "@/lib/telegramCloseAndPost";
 import { aiConfigured } from "@/lib/ai/openai";
@@ -225,23 +227,44 @@ function recapFactsOf(m: LoadedMatch, sportKey: string): RecapFacts | null {
   });
 }
 
-function messageContent(m: LoadedMatch, kind: "result" | "mvp" | "recap", viewUrl: string | null): TextContent | string {
+type MessageKind = "result" | "mvp" | "recap" | "summary";
+type OutgoingMessage = { html: string; contentHash: string };
+
+const hashOf = (content: TextContent) => contentHashOf(renderTelegramHtml({ ...content, link: null }));
+const fromTextContent = (content: TextContent): OutgoingMessage => ({ html: renderTelegramHtml(content), contentHash: hashOf(content) });
+
+function factsOf(m: LoadedMatch, sportKey: string): PostGameFacts {
+  return {
+    date: formatYMDFromDate(m.date),
+    sportEmoji: sportMessaging(sportKey).emoji,
+    scores: parseScores(m.result?.scoresJson),
+    venue: m.locationName?.trim() || null,
+  };
+}
+
+/**
+ * The explicit Telegram post for one kind — ONLY canonical PUBLISHED data.
+ * The summary needs a published result; a published MVP / recap is
+ * included when present, drafts and unpublished selections never are.
+ */
+function messageContent(m: LoadedMatch, kind: MessageKind, viewUrl: string | null, sportKey: string): OutgoingMessage | string {
   const date = formatYMDFromDate(m.date);
-  if (kind === "result") {
-    if (!m.result?.publishedAt) return "Publish the result first.";
-    return resultContent({ date, scores: parseScores(m.result.scoresJson), viewUrl });
+  if (kind === "result" || kind === "summary") {
+    if (!m.result?.publishedAt) return kind === "summary" ? "Publish the result before posting the match summary." : "Publish the result first.";
+    if (kind === "result") return renderResultMessage(factsOf(m, sportKey), viewUrl);
+    const recap = m.recap?.publishedAt && m.recap.content ? m.recap.content : null;
+    return renderSummaryMessage({ ...factsOf(m, sportKey), mvpNames: mvpNames(m), recap }, viewUrl);
   }
   if (kind === "mvp") {
     const names = mvpNames(m);
     if (names.length === 0) return "Publish the MVP first.";
-    return mvpAnnouncementContent({ names, viewUrl });
+    return fromTextContent(mvpAnnouncementContent({ names, viewUrl }));
   }
   if (!m.recap?.publishedAt || !m.recap.content) return "Publish the recap first.";
-  return recapContent({ date, text: m.recap.content, viewUrl });
+  return fromTextContent(recapContent({ date, text: m.recap.content, viewUrl }));
 }
 
-const EVENT_OF = { result: "MATCH_RESULT_POSTED", mvp: "MVP_ANNOUNCED", recap: "MATCH_RECAP_POSTED" } as const;
-const hashOf = (content: TextContent) => contentHashOf(renderTelegramHtml({ ...content, link: null }));
+const EVENT_OF = { result: "MATCH_RESULT_POSTED", mvp: "MVP_ANNOUNCED", recap: "MATCH_RECAP_POSTED", summary: "MATCH_SUMMARY_POSTED" } as const;
 
 // ------------------------------------------------------------------ actions
 
@@ -475,12 +498,12 @@ export async function postGameAction(context: TenantContext, matchId: string, re
       if (!destination) return fail("Choose a connected Telegram group for this match first.");
       const view = await resolveViewUrl(context, body.shareUrl, m.id);
       if (!view.ok) return view.response;
-      const content = messageContent(m, body.kind, view.url);
+      const content = messageContent(m, body.kind, view.url, context.activeGroup.sportKey);
       if (typeof content === "string") return fail(content);
-      const decision = await reserveDelivery(context, m.id, EVENT_OF[body.kind], destination, hashOf(content), body.intent);
+      const decision = await reserveDelivery(context, m.id, EVENT_OF[body.kind], destination, content.contentHash, body.intent);
       if (decision.kind === "respond") return decision.response;
       const sent = await sendReserved(decision.deliveryId, () =>
-        callTelegram("sendMessage", { chat_id: destination, text: renderTelegramHtml(content), parse_mode: "HTML", disable_web_page_preview: true })
+        callTelegram("sendMessage", { chat_id: destination, text: content.html, parse_mode: "HTML", disable_web_page_preview: true })
       );
       if (!sent.ok) return sent.response;
       await prisma.messageDelivery.update({ where: { id: decision.deliveryId }, data: { status: "SENT", sentAt: new Date(), providerMessageId: String(sent.sent.message_id) } });
@@ -531,9 +554,9 @@ export async function postGameView(context: TenantContext, matchId: string) {
   }
 
   const destination = manager ? await matchDestination(groupId, m.telegramChatId) : null;
-  const hash = (kind: "result" | "mvp" | "recap") => {
-    const c = messageContent(m, kind, null);
-    return typeof c === "string" ? null : hashOf(c);
+  const hash = (kind: MessageKind) => {
+    const c = messageContent(m, kind, null, context.activeGroup.sportKey);
+    return typeof c === "string" ? null : c.contentHash;
   };
   const messages = manager
     ? {
@@ -541,6 +564,7 @@ export async function postGameView(context: TenantContext, matchId: string) {
         result: await messageState(groupId, m.id, "MATCH_RESULT_POSTED", destination, hash("result")),
         mvp: await messageState(groupId, m.id, "MVP_ANNOUNCED", destination, hash("mvp")),
         recap: await messageState(groupId, m.id, "MATCH_RECAP_POSTED", destination, hash("recap")),
+        summary: await messageState(groupId, m.id, "MATCH_SUMMARY_POSTED", destination, hash("summary")),
         mvpPoll: await messageState(groupId, m.id, "MVP_POLL_POSTED", destination, null),
       }
     : null;

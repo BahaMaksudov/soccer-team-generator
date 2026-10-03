@@ -1286,8 +1286,8 @@ describe("M9-D — result", () => {
     await signInAs("owner@example.test");
     expect((await pgJson(id, { action: "post_message", kind: "result" })).body.state).toBe("posted");
     expect(msgs()).toHaveLength(1);
-    expect(String(msgs()[0].body.text)).toContain("Final Result");
-    expect(String(msgs()[0].body.text)).toContain("Team 1: 7");
+    expect(String(msgs()[0].body.text)).toContain("🏁 FINAL SCORE");
+    expect(String(msgs()[0].body.text)).toContain("⚽ Team 1  7 — 5  Team 2");
     expect(String(msgs()[0].body.text)).toContain(`${BASE}/g/org-a/group-a/m/${id}`);
     expect((await pgJson(id, { action: "post_message", kind: "result" })).body.state).toBe("already_posted"); // dedupe
     expect(msgs()).toHaveLength(1);
@@ -1301,7 +1301,7 @@ describe("M9-D — result", () => {
     expect((await postGameOf(id)).messages.result).toBe("updated_available");
     expect((await pgJson(id, { action: "post_message", kind: "result" })).body.state).toBe("updated_available");
     expect((await pgJson(id, { action: "post_message", kind: "result", intent: "post_updated" })).body.state).toBe("posted");
-    expect(String(msgs()[1].body.text)).toContain("Team 2: 6");
+    expect(String(msgs()[1].body.text)).toContain("⚽ Team 1  7 — 6  Team 2");
     expect(await prisma.messageDelivery.count({ where: { matchId: id, eventType: "MATCH_RESULT_POSTED", status: "SENT" } })).toBe(2);
   });
 
@@ -1319,7 +1319,7 @@ describe("M9-D — result", () => {
     sendMessageMode = "ok";
     expect((await pgJson(id, { action: "post_message", kind: "result" })).body.state).toBe("uncertain"); // never retried blindly
     expect((await pgJson(id, { action: "post_message", kind: "result", intent: "retry_uncertain" })).body.state).toBe("posted");
-    expect(String(msgs().at(-1)!.body.text)).toContain("draw");
+    expect(String(msgs().at(-1)!.body.text)).toContain("🤝 Draw");
   });
 
   it("9/10: cross-tenant and same-day isolation", async () => {
@@ -1592,7 +1592,7 @@ describe("M9-D — no automatic sends, canceled Matches, access modes, same-day"
     expect(String(msgs().at(-1)!.body.text)).toContain(`/m/${a}`);
     await pg(b, { action: "post_message", kind: "result" });
     expect(String(msgs().at(-1)!.body.text)).toContain(`/m/${b}`);
-    expect(String(msgs().at(-1)!.body.text)).toContain("Team 2: 4");
+    expect(String(msgs().at(-1)!.body.text)).toContain("⚽ Team 1  0 — 4  Team 2");
     session = null;
     const [pa, pb] = [(await pageView(a))!, (await pageView(b))!];
     expect([pa.result!.winnerTeamNumber, pb.result!.winnerTeamNumber]).toEqual([1, 2]);
@@ -1816,5 +1816,135 @@ describe("M9-D enhancement — Regenerate AI Recap (server side)", () => {
     expect(tgCalls.filter((c) => c.method === "sendMessage" || c.method === "sendPoll")).toHaveLength(0);
     expect(await prisma.matchMvp.count({ where: { matchId: id } })).toBe(0);
     expect((await prisma.matchResult.findUniqueOrThrow({ where: { matchId: id } })).scoresJson).toBe(JSON.stringify([{ teamNumber: 1, score: 5 }, { teamNumber: 2, score: 3 }]));
+  });
+});
+
+describe("M9-D — Post Match Summary to Telegram", () => {
+  /** Published teams T1=[p1,p2], T2=[p3,p4]; venue "Forekicks"; Group A chat selected; result 5–3 published. */
+  async function summaryMatch(date = "2026-10-12", startTime = "20:00") {
+    await signInAs("owner@example.test");
+    const id = (await createMatch({ date, startTime, locationName: "Forekicks" })).data.match.id;
+    await publishFor(id, teamsOf([["ga-p1", "ga-p2"], ["ga-p3", "ga-p4"]]), date);
+    await selectChat(id, await chatRef());
+    await pg(id, { action: "save_result", scores: [{ teamNumber: 1, score: 5 }, { teamNumber: 2, score: 3 }] });
+    await pg(id, { action: "publish_result" });
+    return id;
+  }
+  const postSummary = (id: string, extra: Record<string, unknown> = {}, grp = A) => pgJson(id, { action: "post_message", kind: "summary", ...extra }, grp);
+  const summaries = (id: string) => prisma.messageDelivery.findMany({ where: { matchId: id, eventType: "MATCH_SUMMARY_POSTED" } });
+
+  it("6/13/14/15/17/24: result-only summary — exactly one message and one delivery; repeat is a no-op; nothing is published; PUBLIC link", async () => {
+    vi.stubEnv("APP_BASE_URL", BASE);
+    const id = await summaryMatch();
+    // Drafts exist but are NOT published → must not be sent.
+    await pg(id, { action: "save_mvp_selection", playerId: "ga-p3" });
+    await pg(id, { action: "save_recap", content: "Draft recap — not published." });
+    const before = await prisma.matchMvp.findUniqueOrThrow({ where: { matchId: id } });
+    expect((await postSummary(id)).body.state).toBe("posted");
+    expect(msgs()).toHaveLength(1);
+    const text = String(msgs()[0].body.text);
+    expect(text).toContain("🏁 MATCH COMPLETE");
+    expect(text).toContain("⚽ Team 1  5 — 3  Team 2");
+    expect(text).toContain("🏆 Team 1 wins!");
+    expect(text).toContain("📍 Forekicks");
+    expect(text).toContain(`href="${BASE}/g/org-a/group-a/m/${id}"`);
+    expect(text).not.toMatch(/Player of the Match|A3 Player|Match Recap|Draft recap/); // 10/11: unpublished excluded
+    expect(await summaries(id)).toHaveLength(1);
+    expect((await postSummary(id)).body.state).toBe("already_posted");
+    expect(msgs()).toHaveLength(1);
+    expect(await summaries(id)).toHaveLength(1);
+    // 17: posting published nothing.
+    expect(await prisma.matchMvp.findUniqueOrThrow({ where: { matchId: id } })).toEqual(before);
+    expect(await prisma.matchRecap.findUniqueOrThrow({ where: { matchId: id } })).toMatchObject({ publishedAt: null });
+    expect((await postGameOf(id)).messages.summary).toBe("posted");
+  });
+
+  it("7/8/9/12/16: MVP and recap appear once published; each published change asks for an explicit updated post", async () => {
+    const id = await summaryMatch();
+    await pg(id, { action: "save_mvp_selection", playerId: "ga-p3" });
+    await pg(id, { action: "publish_mvp" });
+    await postSummary(id);
+    expect(String(msgs().at(-1)!.body.text)).toContain("<b>⭐ Player of the Match</b>\nA3 Player"); // 7
+    expect(String(msgs().at(-1)!.body.text)).not.toContain("Match Recap");
+
+    await pg(id, { action: "save_recap", content: "Team 1 takes it, 5–3! 🏆" });
+    expect((await postGameOf(id)).messages.summary).toBe("posted"); // unpublished recap doesn't change it
+    await pg(id, { action: "publish_recap" });
+    expect((await postGameOf(id)).messages.summary).toBe("updated_available"); // 16
+    expect((await postSummary(id)).body.state).toBe("updated_available"); // never auto-sent
+    expect(msgs()).toHaveLength(1);
+    expect((await postSummary(id, { intent: "post_updated" })).body.state).toBe("posted");
+    const all = String(msgs().at(-1)!.body.text);
+    expect(all).toContain("A3 Player"); // 9
+    expect(all).toContain("<b>📝 Match Recap</b>\nTeam 1 takes it, 5–3! 🏆"); // 12
+    expect(all.indexOf("Player of the Match")).toBeLessThan(all.indexOf("Match Recap"));
+
+    await pg(id, { action: "save_result", scores: [{ teamNumber: 1, score: 6 }, { teamNumber: 2, score: 3 }] }); // published correction
+    expect((await postGameOf(id)).messages.summary).toBe("updated_available");
+    await pg(id, { action: "save_recap", content: "Team 1 takes it, 6–3! 🏆" });
+    expect((await postSummary(id, { intent: "post_updated" })).body.state).toBe("posted");
+    expect(String(msgs().at(-1)!.body.text)).toContain("⚽ Team 1  6 — 3  Team 2");
+    expect(await summaries(id)).toHaveLength(3);
+  });
+
+  it("8: result + recap without MVP; individual posts still work separately", async () => {
+    const id = await summaryMatch();
+    await pg(id, { action: "save_recap", content: "Bragging rights to Team 1! ⚽" });
+    await pg(id, { action: "publish_recap" });
+    await postSummary(id);
+    const text = String(msgs().at(-1)!.body.text);
+    expect(text).toContain("<b>📝 Match Recap</b>\nBragging rights to Team 1! ⚽");
+    expect(text).not.toContain("Player of the Match");
+    expect((await pgJson(id, { action: "post_message", kind: "result" })).body.state).toBe("posted");
+    expect(String(msgs().at(-1)!.body.text)).toContain("🏁 FINAL SCORE");
+    expect((await pgJson(id, { action: "post_message", kind: "recap" })).body.state).toBe("posted");
+    expect(msgs()).toHaveLength(3);
+  });
+
+  it("18/19: MEMBER cannot post; another Group's owner cannot reach the Match; result must be published; a chat must be selected", async () => {
+    await signInAs("owner@example.test");
+    const id = (await createMatch()).data.match.id;
+    await publishFor(id, teamsOf([["ga-p1"], ["ga-p2"]]));
+    await pg(id, { action: "save_result", scores: [{ teamNumber: 1, score: 1 }, { teamNumber: 2, score: 0 }] });
+    expect((await postSummary(id)).body.error).toBe("Choose a connected Telegram group for this match first.");
+    await selectChat(id, await chatRef());
+    expect((await postSummary(id)).body.error).toBe("Publish the result before posting the match summary.");
+    await pg(id, { action: "publish_result" });
+    await signInAs("member@example.test");
+    expect((await postSummary(id)).status).toBe(404);
+    await signInAs("owner-b@example.test");
+    expect((await postSummary(id, {}, B)).status).toBe(404);
+    expect(tgCalls.filter((c) => c.method === "sendMessage")).toHaveLength(0);
+    expect(await summaries(id)).toHaveLength(0);
+  });
+
+  it("20: same-day Matches post their own summaries and links", async () => {
+    vi.stubEnv("APP_BASE_URL", BASE);
+    const a = await summaryMatch("2026-10-10", "18:00");
+    const b = await summaryMatch("2026-10-10", "21:00");
+    await pg(b, { action: "save_result", scores: [{ teamNumber: 1, score: 2 }, { teamNumber: 2, score: 2 }] });
+    await postSummary(a);
+    expect(String(msgs().at(-1)!.body.text)).toContain(`/m/${a}`);
+    await postSummary(b);
+    const tb = String(msgs().at(-1)!.body.text);
+    expect(tb).toContain(`/m/${b}`);
+    expect(tb).toContain("⚽ Team 1  2 — 2  Team 2");
+    expect(tb).toContain("🤝 Draw");
+    expect(await summaries(a)).toHaveLength(1);
+    expect(await summaries(b)).toHaveLength(1);
+  });
+
+  it("22/23: PRIVATE → no link; LINK → the secure /share/m/<id>#token link (from the organizer's current share link)", async () => {
+    vi.stubEnv("APP_BASE_URL", BASE);
+    const id = await summaryMatch();
+    await setVisibility("ga", "LINK");
+    const { token } = await shareLink("ga");
+    await postSummary(id, { shareUrl: `${BASE}/share#${token}` });
+    expect(String(msgs().at(-1)!.body.text)).toContain(`${BASE}/share/m/${id}#${token}`);
+    await setVisibility("ga", "PRIVATE");
+    await pg(id, { action: "save_result", scores: [{ teamNumber: 1, score: 5 }, { teamNumber: 2, score: 4 }] });
+    await postSummary(id, { intent: "post_updated", shareUrl: `${BASE}/share#${token}` });
+    expect(String(msgs().at(-1)!.body.text)).not.toMatch(/https?:\/\//);
+    expect(String(msgs().at(-1)!.body.text)).not.toContain(token);
   });
 });

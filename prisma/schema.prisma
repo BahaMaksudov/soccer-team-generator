@@ -68,6 +68,8 @@ enum MessageEventType {
   MATCH_RESULT_POSTED
   MVP_ANNOUNCED
   MATCH_RECAP_POSTED
+  // M9-D — the combined "Post Match Summary" (published result + optional MVP + recap).
+  MATCH_SUMMARY_POSTED
 }
 
 // M9-D — where an MVP vote came from (provider-neutral; WHATSAPP in M10).

@@ -88,19 +88,6 @@ export function mvpPollContent(params: { date: string; names: string[] }): PollC
   };
 }
 
-export function resultContent(params: { date: string; scores: Array<{ teamNumber: number; score: number }>; viewUrl: string | null }): TextContent {
-  const sorted = [...params.scores].sort((a, b) => a.teamNumber - b.teamNumber);
-  const top = Math.max(...sorted.map((s) => s.score));
-  const leaders = sorted.filter((s) => s.score === top);
-  return {
-    kind: "text",
-    title: `\u{1F3C1} Final Result — ${formatPollQuestionDate(params.date)}`,
-    body: leaders.length === 1 ? `Team ${leaders[0].teamNumber} wins!` : "It's a draw!",
-    sections: [{ heading: "Score", items: sorted.map((s) => `Team ${s.teamNumber}: ${s.score}`) }],
-    link: params.viewUrl ? { label: "View match", url: params.viewUrl } : null,
-  };
-}
-
 export function mvpAnnouncementContent(params: { names: string[]; viewUrl: string | null }): TextContent {
   return {
     kind: "text",

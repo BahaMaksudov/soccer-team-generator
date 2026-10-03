@@ -129,7 +129,7 @@ export const postGameSchema = z.discriminatedUnion("action", [
   z.object({ action: z.literal("generate_recap") }),
   z.object({ action: z.literal("save_recap"), content: z.string().max(5000) }),
   z.object({ action: z.literal("publish_recap") }),
-  z.object({ action: z.literal("post_message"), kind: z.enum(["result", "mvp", "recap"]), intent: postIntent, shareUrl: z.string().trim().max(500).optional() }),
+  z.object({ action: z.literal("post_message"), kind: z.enum(["result", "mvp", "recap", "summary"]), intent: postIntent, shareUrl: z.string().trim().max(500).optional() }),
 ]);
 
 /** M9-B — select (number) or clear (null) a Match's Telegram chat by its opaque ref. */
