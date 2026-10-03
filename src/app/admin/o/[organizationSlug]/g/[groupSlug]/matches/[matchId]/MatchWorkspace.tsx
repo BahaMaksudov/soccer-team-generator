@@ -8,6 +8,7 @@ import type { PublishedGeneration } from "@/lib/closeAndPostUi";
 import type { SportClientView } from "@/lib/sports";
 import { unpublishedPreviewOnScreen, type TeamsPanelMode } from "@/lib/teamAssignment";
 import { visibleRosterIds } from "@/lib/matchRosterScope";
+import PostGameSection, { type PostGameView } from "./PostGameSection";
 import CanonicalGenerateSection from "../../CanonicalGenerateSection";
 import type { Player } from "../../CanonicalAdminWorkspace";
 import { computeSelection, NO_ADJUSTMENTS, reconcileAdjustments, toggleSelection, type EffectiveStatuses, type SelectionAdjustments } from "@/lib/matchSelection";
@@ -37,6 +38,7 @@ type MatchView = {
   // M9-B — selected chat's default player scope (ids only); chats/selection/suggestions are OWNER/ADMIN only.
   scope: { chatSelected: boolean; playerIds: string[] };
   playerPage: { path: string; visibility: "PUBLIC" | "LINK" | "PRIVATE" };
+  postGame: PostGameView | null;
   telegram: {
     connected: boolean;
     chats: Array<{ ref: number; title: string }>;
@@ -458,6 +460,14 @@ export default function MatchWorkspace({
           </div>
         )}
       </section>
+
+      {/* M9-D — Result / MVP / Recap */}
+      {view.postGame && (
+        <section className="border rounded-xl p-4 space-y-3">
+          <div className="font-semibold">After the game</div>
+          <PostGameSection pg={view.postGame} canManage={view.canManage} busy={busy} act={(body, ok) => call("/post-game", body, ok)} />
+        </section>
+      )}
     </div>
   );
 }

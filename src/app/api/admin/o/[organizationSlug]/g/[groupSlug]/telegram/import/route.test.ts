@@ -71,7 +71,7 @@ describe("POST canonical telegram/import — isolation", () => {
     await POST(req({ pollId: "poll-1" }), ctx("org-a", "group-a"));
 
     expect(mockPollFindFirst).toHaveBeenCalledWith(
-      expect.objectContaining({ where: { pollId: "poll-1", groupId: "group-a" } })
+      expect.objectContaining({ where: { pollId: "poll-1", groupId: "group-a", kind: "ATTENDANCE" } })
     );
   });
 

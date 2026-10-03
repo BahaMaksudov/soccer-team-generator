@@ -14,6 +14,7 @@ import {
 } from "@/lib/validation";
 import { scopePlayerIds, suggestedPlayerIds } from "@/lib/telegramChatScope";
 import { canonicalMatchPath } from "@/lib/matchPaths";
+import { postGameView } from "@/lib/postGame";
 import { countAttendance, defaultSelection, effectiveAttendance, recordParticipantResponse, type AttendanceRow } from "@/lib/attendance";
 
 /**
@@ -228,6 +229,8 @@ export async function getMatchView(context: TenantContext, matchId: string): Pro
       ? { id: generation.id, date: formatYMDFromDate(generation.date), updatedAt: generation.updatedAt.toISOString(), teams: publishedTeamsOf(generation.teamsJson) }
       : null,
     scope: { chatSelected: selectedChat !== null, playerIds: scopeIds },
+    // M9-D — result / MVP / recap (organizer view; aggregate MVP counts only).
+    postGame: await postGameView(context, matchId),
     // M9-C — the player-facing Match page (no token: LINK Groups share it via the Group's share link).
     playerPage: {
       path: canonicalMatchPath(context.organization.slug, context.activeGroup.slug, matchId),

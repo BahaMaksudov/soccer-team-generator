@@ -14,6 +14,10 @@
  * share link / PRIVATE via membership or claim), allow-listed DTO, published
  * teams only, same-day isolation and match-specific Telegram links.
  *
+ * M9-D (appended below): result save/publish/post, MVP voting via Telegram
+ * (eligibility, self-votes, changes, withdrawals, ties), AI recap with a
+ * FAKE provider (privacy, failures, fallback), SAVE ≠ PUBLISH ≠ SEND.
+ *
  * Guarded local TEST database only. Telegram is a programmable stub; any
  * other network call is counted and forbidden.
  */
@@ -53,6 +57,7 @@ import { assignmentKey } from "@/lib/teamAssignment";
 import * as chatScopeRoute from "@/app/api/admin/o/[organizationSlug]/g/[groupSlug]/channels/telegram/[ref]/players/route";
 import * as matchChatRoute from "@/app/api/admin/o/[organizationSlug]/g/[groupSlug]/matches/[matchId]/telegram-chat/route";
 import * as shareMatchRoute from "@/app/api/share/match/route";
+import * as postGameRoute from "@/app/api/admin/o/[organizationSlug]/g/[groupSlug]/matches/[matchId]/post-game/route";
 import { loadMatchForViewer } from "@/lib/matchPage";
 import { generateToken } from "@/lib/secureToken";
 
@@ -70,11 +75,22 @@ type Call = { method: string; body: Record<string, unknown> };
 let tgCalls: Call[] = [];
 let otherNetworkCalls = 0;
 let sendPollMode: "ok" | "reject" | "ambiguous" = "ok";
+// M9-D — programmable sendMessage outcome and a FAKE OpenAI endpoint (never the real one).
+let sendMessageMode: "ok" | "reject" | "ambiguous" = "ok";
+let aiMode: "ok" | "timeout" | "429" | "500" | "empty" = "ok";
+let aiText = "";
+let aiRequests: Array<Record<string, unknown>> = [];
 let admins: Array<{ status: string; user: { id: number } }> = [];
 let pollSeq = 0;
 const originalFetch = global.fetch;
 async function fakeFetch(url: unknown, init?: RequestInit): Promise<Response> {
   const u = String(url);
+  if (u.startsWith("https://ai.itest/")) {
+    aiRequests.push(JSON.parse(String(init?.body ?? "{}")));
+    if (aiMode === "timeout") throw Object.assign(new Error("aborted"), { name: "AbortError" });
+    if (aiMode === "429" || aiMode === "500") return { ok: false, status: Number(aiMode), json: async () => ({}) } as unknown as Response;
+    return { ok: true, status: 200, json: async () => ({ choices: [{ message: { content: aiMode === "empty" ? "" : aiText } }] }) } as unknown as Response;
+  }
   if (!u.startsWith("https://api.telegram.org/bot")) {
     otherNetworkCalls++;
     throw new Error("network access is forbidden in integration tests");
@@ -90,6 +106,8 @@ async function fakeFetch(url: unknown, init?: RequestInit): Promise<Response> {
     return ok({ message_id: 100 + pollSeq, poll: { id: `tg-poll-${pollSeq}` } });
   }
   if (method === "getChatAdministrators") return ok(admins);
+  if (method === "sendMessage" && sendMessageMode === "reject") return { ok: true, status: 200, json: async () => ({ ok: false, error_code: 400, description: "Bad Request" }) } as unknown as Response;
+  if (method === "sendMessage" && sendMessageMode === "ambiguous") throw new TypeError("fetch failed");
   return ok({ message_id: 1 });
 }
 const sends = (method: string) => tgCalls.filter((c) => c.method === method);
@@ -176,6 +194,10 @@ beforeEach(async () => {
   session = null;
   tgCalls = [];
   sendPollMode = "ok";
+  sendMessageMode = "ok";
+  aiMode = "ok";
+  aiText = "";
+  aiRequests = [];
   admins = [{ status: "creator", user: { id: 900 } }, { status: "administrator", user: { id: 901 } }];
   vi.stubEnv("TELEGRAM_BOT_TOKEN", "test-bot-token");
   vi.stubEnv("TELEGRAM_WEBHOOK_SECRET", WEBHOOK_SECRET);
@@ -1001,6 +1023,10 @@ describe("M9-C — PUBLIC Match page", () => {
         { teamNumber: 1, players: [{ name: "A1 Player", role: "Goalkeeper" }, { name: "A2 Player", role: "Forward" }] },
         { teamNumber: 2, players: [{ name: "A3 Player", role: "Forward" }, { name: "A4 Player", role: "Forward" }] },
       ],
+      // M9-D — nothing post-game is published yet.
+      result: null,
+      mvp: null,
+      recap: null,
     });
     expect(JSON.stringify(v)).not.toMatch(FORBIDDEN);
     // Publish B → the page shows B.
@@ -1195,5 +1221,373 @@ describe("M9-C — Telegram 'View teams online' targets the exact Match", () => 
     const id = (await createMatch()).data.match.id;
     const v = await view(id);
     expect(v.playerPage).toEqual({ path: `/g/org-a/group-a/m/${id}`, visibility: "PUBLIC" });
+  });
+});
+
+// =================================================================== M9-D
+const pg = (matchId: string, body: Record<string, unknown>, grp = A) => postGameRoute.POST(json("POST", body), gm(grp, matchId));
+const pgJson = async (matchId: string, body: Record<string, unknown>, grp = A) => {
+  const res = await pg(matchId, body, grp);
+  return { status: res.status, body: await res.json() };
+};
+const postGameOf = async (matchId: string) => (await view(matchId)).postGame;
+const msgs = () => sends("sendMessage");
+/** A Match with published teams T1 = [p1, p2], T2 = [p3, p4] and the Group A chat selected. */
+async function playedMatch(date = "2026-10-12", startTime = "20:00") {
+  await signInAs("owner@example.test");
+  const id = (await createMatch({ date, startTime })).data.match.id;
+  await publishFor(id, teamsOf([["ga-p1", "ga-p2"], ["ga-p3", "ga-p4"]]), date);
+  await selectChat(id, await chatRef());
+  return id;
+}
+async function startMvp(id: string) {
+  await pg(id, { action: "save_result", scores: [{ teamNumber: 1, score: 7 }, { teamNumber: 2, score: 5 }] });
+  await pg(id, { action: "publish_result" });
+  expect((await pg(id, { action: "start_mvp" })).status).toBe(201);
+  return (await prisma.telegramPoll.findFirstOrThrow({ where: { matchId: id, kind: "MVP" } })).pollId;
+}
+const OPTION = { p1: 0, p2: 1, p3: 2, p4: 3 } as const;
+
+describe("M9-D — result", () => {
+  it("1–8: save (draft, hidden, no send) → publish (visible, COMPLETED, no send) → explicit post → edit keeps it published → explicit updated post; validation; MEMBER may save, not post", async () => {
+    vi.stubEnv("APP_BASE_URL", BASE);
+    const id = await playedMatch();
+    for (const bad of [
+      [{ teamNumber: 1, score: -1 }, { teamNumber: 2, score: 5 }],
+      [{ teamNumber: 1, score: 1.5 }, { teamNumber: 2, score: 5 }],
+      [{ teamNumber: 1, score: 7 }, { teamNumber: 3, score: 5 }],
+      [{ teamNumber: 1, score: 7 }, { teamNumber: 2, score: 5 }, { teamNumber: 3, score: 1 }],
+      [{ teamNumber: 1, score: 1000 }, { teamNumber: 2, score: 5 }],
+    ]) expect((await pg(id, { action: "save_result", scores: bad })).status, JSON.stringify(bad)).toBe(400);
+
+    await signInAs("member@example.test"); // Match editing role semantics: MEMBER may save
+    expect((await pg(id, { action: "save_result", scores: [{ teamNumber: 2, score: 5 }, { teamNumber: 1, score: 7 }] })).status).toBe(200);
+    expect((await pgJson(id, { action: "post_message", kind: "result" })).status).toBe(404); // Telegram is OWNER/ADMIN
+    session = null;
+    expect((await pageView(id))!.result).toBeNull(); // draft is invisible
+    await signInAs("owner@example.test");
+    expect((await postGameOf(id)).result).toEqual({ scores: [{ teamNumber: 1, score: 7 }, { teamNumber: 2, score: 5 }], published: false });
+    expect((await pgJson(id, { action: "post_message", kind: "result" })).body.error).toBe("Publish the result first.");
+
+    expect((await pg(id, { action: "publish_result" })).status).toBe(200);
+    session = null;
+    expect((await pageView(id))!.result).toEqual({ teams: [{ teamNumber: 1, score: 7 }, { teamNumber: 2, score: 5 }], winnerTeamNumber: 1, draw: false });
+    expect((await prisma.match.findUniqueOrThrow({ where: { id } })).status).toBe("COMPLETED");
+    expect(tgCalls).toHaveLength(0); // save + publish sent nothing
+
+    await signInAs("owner@example.test");
+    expect((await pgJson(id, { action: "post_message", kind: "result" })).body.state).toBe("posted");
+    expect(msgs()).toHaveLength(1);
+    expect(String(msgs()[0].body.text)).toContain("Final Result");
+    expect(String(msgs()[0].body.text)).toContain("Team 1: 7");
+    expect(String(msgs()[0].body.text)).toContain(`${BASE}/g/org-a/group-a/m/${id}`);
+    expect((await pgJson(id, { action: "post_message", kind: "result" })).body.state).toBe("already_posted"); // dedupe
+    expect(msgs()).toHaveLength(1);
+
+    // Correction: stays published, the page shows it, Telegram is NOT updated automatically.
+    expect((await pgJson(id, { action: "save_result", scores: [{ teamNumber: 1, score: 7 }, { teamNumber: 2, score: 6 }] })).body.published).toBe(true);
+    session = null;
+    expect((await pageView(id))!.result!.teams[1].score).toBe(6);
+    await signInAs("owner@example.test");
+    expect(msgs()).toHaveLength(1);
+    expect((await postGameOf(id)).messages.result).toBe("updated_available");
+    expect((await pgJson(id, { action: "post_message", kind: "result" })).body.state).toBe("updated_available");
+    expect((await pgJson(id, { action: "post_message", kind: "result", intent: "post_updated" })).body.state).toBe("posted");
+    expect(String(msgs()[1].body.text)).toContain("Team 2: 6");
+    expect(await prisma.messageDelivery.count({ where: { matchId: id, eventType: "MATCH_RESULT_POSTED", status: "SENT" } })).toBe(2);
+  });
+
+  it("draw; retry/recovery: a rejected post is FAILED and retryable; an ambiguous one needs an explicit retry", async () => {
+    const id = await playedMatch();
+    await pg(id, { action: "save_result", scores: [{ teamNumber: 1, score: 5 }, { teamNumber: 2, score: 5 }] });
+    await pg(id, { action: "publish_result" });
+    session = null;
+    expect((await pageView(id))!.result).toMatchObject({ draw: true, winnerTeamNumber: null });
+    await signInAs("owner@example.test");
+    sendMessageMode = "reject";
+    expect((await pgJson(id, { action: "post_message", kind: "result" })).body.state).toBe("failed");
+    sendMessageMode = "ambiguous";
+    expect((await pgJson(id, { action: "post_message", kind: "result" })).body.state).toBe("uncertain");
+    sendMessageMode = "ok";
+    expect((await pgJson(id, { action: "post_message", kind: "result" })).body.state).toBe("uncertain"); // never retried blindly
+    expect((await pgJson(id, { action: "post_message", kind: "result", intent: "retry_uncertain" })).body.state).toBe("posted");
+    expect(String(msgs().at(-1)!.body.text)).toContain("draw");
+  });
+
+  it("9/10: cross-tenant and same-day isolation", async () => {
+    const a = await playedMatch("2026-10-10", "18:00");
+    const b = await playedMatch("2026-10-10", "21:00");
+    await pg(a, { action: "save_result", scores: [{ teamNumber: 1, score: 3 }, { teamNumber: 2, score: 1 }] });
+    await pg(b, { action: "save_result", scores: [{ teamNumber: 1, score: 0 }, { teamNumber: 2, score: 2 }] });
+    await pg(a, { action: "publish_result" });
+    session = null;
+    expect((await pageView(a))!.result!.winnerTeamNumber).toBe(1);
+    expect((await pageView(b))!.result).toBeNull(); // B still a draft
+    await signInAs("owner-b@example.test");
+    expect((await pg(a, { action: "publish_result" }, B)).status).toBe(404); // A's Match via B's URL
+    expect((await pg(b, { action: "save_result", scores: [{ teamNumber: 1, score: 9 }, { teamNumber: 2, score: 9 }] }, B)).status).toBe(404);
+    expect((await prisma.matchResult.findUniqueOrThrow({ where: { matchId: b } })).scoresJson).toContain('"score":2');
+  });
+});
+
+describe("M9-D — MVP voting", () => {
+  it("11–22, 25: candidates = published participants; eligibility, self-vote, changes, withdrawal, malformed; attendance isolated; close; deterministic winner; publish; no auto announcement", async () => {
+    const id = await playedMatch();
+    expect((await pgJson(id, { action: "start_mvp" })).body.error).toContain("Publish the final result");
+    await prisma.telegramUserLink.createMany({ data: [{ userId: 333n, playerId: "ga-p3", groupId: "ga" }, { userId: 555n, playerId: "ga-p5", groupId: "ga" }] });
+    const pollId = await startMvp(id);
+    expect(sends("sendPoll")).toHaveLength(1);
+    expect(sends("sendPoll")[0].body).toMatchObject({ options: ["A1 Player", "A2 Player", "A3 Player", "A4 Player"], is_anonymous: false, allows_multiple_answers: false });
+    expect((await pgJson(id, { action: "start_mvp" })).body.state).toBe("already_posted"); // idempotent
+    expect(sends("sendPoll")).toHaveLength(1);
+    expect(await prisma.telegramPoll.findUniqueOrThrow({ where: { pollId } })).toMatchObject({ kind: "MVP", matchId: id });
+
+    await vote(pollId, 111, [OPTION.p3]); // p1 → p3 ✓
+    await vote(pollId, 222, [OPTION.p2]); // p2 → self ✗
+    await vote(pollId, 555, [OPTION.p1]); // p5 not a participant ✗
+    await vote(pollId, 999, [OPTION.p1]); // unlinked ✗
+    await vote(pollId, 444, [OPTION.p3]); // p4 → p3 ✓
+    await vote(pollId, 444, [OPTION.p1]); // p4 changes → p1 (replaces)
+    await vote(pollId, 333, [OPTION.p1]); // p3 → p1 ✓
+    await vote(pollId, 333, []); // p3 withdraws
+    await vote(pollId, 222, [OPTION.p1, OPTION.p3]); // malformed multi-select ✗
+    await vote(pollId, 222, [42]); // out of range ✗
+    let m = (await postGameOf(id)).mvp;
+    expect(m).toMatchObject({ started: true, open: true, validVotes: 2, eligibleVoters: 4 });
+    expect(m.candidates.map((c: { votes: number }) => c.votes)).toEqual([1, 0, 1, 0]); // p1:1 (from p4), p3:1 (from p1)
+    expect(await prisma.matchMvpVote.count({ where: { matchId: id } })).toBe(2);
+    expect(stringify(await view(id))).not.toMatch(/\b(111|222|333|444|555|999)\b/); // no voter identities
+
+    // Attendance answers never become MVP votes, and MVP answers never touch attendance.
+    expect(await prisma.attendanceResponse.count({ where: { matchId: id } })).toBe(0);
+    await postPoll(id);
+    const attendancePoll = (await prisma.telegramPoll.findFirstOrThrow({ where: { matchId: id, kind: "ATTENDANCE" } })).pollId;
+    await vote(attendancePoll, 222, [0]);
+    expect(await prisma.matchMvpVote.count({ where: { matchId: id } })).toBe(2);
+    expect(await prisma.attendanceResponse.count({ where: { matchId: id } })).toBe(1);
+
+    // p2 breaks the tie → p1 leads; close (stopPoll, no message); late answers are ignored.
+    await vote(pollId, 222, [OPTION.p1]);
+    const before = msgs().length;
+    expect((await pgJson(id, { action: "close_mvp" })).body.state).toBe("closed");
+    expect(sends("stopPoll")).toHaveLength(1);
+    expect(msgs()).toHaveLength(before);
+    await vote(pollId, 111, [OPTION.p1]);
+    await vote(pollId, 444, []);
+    m = (await postGameOf(id)).mvp;
+    expect(m).toMatchObject({ closed: true, validVotes: 3, leaders: ["ga-p1"] });
+
+    session = null;
+    expect((await pageView(id))!.mvp).toBeNull(); // not published yet
+    await signInAs("member@example.test"); // publishing data follows Match editing
+    expect((await pgJson(id, { action: "publish_mvp" })).body.decision).toBe("VOTES");
+    session = null;
+    expect((await pageView(id))!.mvp).toEqual({ names: ["A1 Player"], shared: false });
+    expect(msgs()).toHaveLength(before); // no automatic announcement
+
+    await signInAs("owner@example.test");
+    expect((await pgJson(id, { action: "post_message", kind: "mvp" })).body.state).toBe("posted"); // 26: explicit
+    expect(String(msgs().at(-1)!.body.text)).toContain("Player of the Match");
+    expect(String(msgs().at(-1)!.body.text)).toContain("A1 Player");
+    expect(String(msgs().at(-1)!.body.text)).not.toMatch(/vote[sd]?\s*\d|\d+\s*votes/i);
+  });
+
+  it("23: a tie is never resolved silently — co-MVPs or a recorded organizer tie-break; picks must be tied leaders", async () => {
+    await prisma.telegramUserLink.create({ data: { userId: 333n, playerId: "ga-p3", groupId: "ga" } });
+    const id = await playedMatch();
+    const pollId = await startMvp(id);
+    await vote(pollId, 111, [OPTION.p3]);
+    await vote(pollId, 333, [OPTION.p1]);
+    await pg(id, { action: "close_mvp" });
+    expect((await postGameOf(id)).mvp.leaders.sort()).toEqual(["ga-p1", "ga-p3"]);
+    expect((await pgJson(id, { action: "publish_mvp" })).body).toMatchObject({ code: "TIED" });
+    expect((await pgJson(id, { action: "publish_mvp", tieBreak: { mode: "pick", playerId: "ga-p2" } })).status).toBe(400);
+    expect((await pgJson(id, { action: "publish_mvp", tieBreak: { mode: "co" } })).body.decision).toBe("CO_MVP");
+    session = null;
+    expect((await pageView(id))!.mvp).toEqual({ names: ["A1 Player", "A3 Player"], shared: true });
+    await signInAs("owner@example.test");
+    expect((await pgJson(id, { action: "publish_mvp", tieBreak: { mode: "pick", playerId: "ga-p3" } })).body.decision).toBe("ORGANIZER_TIEBREAK");
+    expect(await prisma.matchMvp.findUniqueOrThrow({ where: { matchId: id } })).toMatchObject({ winnerPlayerIds: ["ga-p3"], decision: "ORGANIZER_TIEBREAK" });
+  });
+
+  it("poll option limit: > 10 participants requires an explicit shortlist of participants (nobody silently dropped); 27: cross-tenant/role checks", async () => {
+    await signInAs("owner@example.test");
+    for (let i = 1; i <= 6; i++) await prisma.player.create({ data: { id: `ga-x${i}`, groupId: "ga", firstName: `X${i}`, lastName: "Player", position: "FORWARD", rating: "GOOD", stamina: 3 } });
+    const id = (await createMatch()).data.match.id;
+    await publishFor(id, teamsOf([["ga-p1", "ga-p2", "ga-p3", "ga-x1", "ga-x2", "ga-x3"], ["ga-p4", "ga-p5", "ga-p6", "ga-x4", "ga-x5", "ga-x6"]]));
+    await pg(id, { action: "save_result", scores: [{ teamNumber: 1, score: 1 }, { teamNumber: 2, score: 0 }] });
+    await pg(id, { action: "publish_result" });
+    expect((await pgJson(id, { action: "start_mvp" })).body.error).toContain("Telegram group"); // no chat selected
+    await selectChat(id, await chatRef());
+    expect((await pgJson(id, { action: "start_mvp" })).body.code).toBe("SHORTLIST_REQUIRED");
+    expect((await pgJson(id, { action: "start_mvp", candidateIds: ["ga-p1", "gb-p1"] })).status).toBe(404); // other Group's Player
+    expect(sends("sendPoll")).toHaveLength(0);
+    await signInAs("member@example.test");
+    expect((await pg(id, { action: "start_mvp", candidateIds: ["ga-p1", "ga-x6"] })).status).toBe(404); // Telegram is OWNER/ADMIN
+    await signInAs("owner-b@example.test");
+    expect((await pg(id, { action: "start_mvp", candidateIds: ["ga-p1", "ga-x6"] }, B)).status).toBe(404);
+    await signInAs("admin@example.test");
+    expect((await pg(id, { action: "start_mvp", candidateIds: ["ga-p1", "ga-x6", "ga-p4"] })).status).toBe(201);
+    expect(sends("sendPoll")[0].body.options).toEqual(["A1 Player", "X6 Player", "A4 Player"]);
+    expect((await pgJson(id, { action: "start_mvp", candidateIds: ["ga-p1", "ga-p2"] })).status).toBe(409); // candidates are fixed
+  });
+});
+
+describe("M9-D — recap", () => {
+  it("28–40: AI not configured → standard fallback; FAKE AI with sanitized facts only; review/save sources; draft hidden; publish; explicit post; edit needs explicit update", async () => {
+    vi.stubEnv("APP_BASE_URL", BASE);
+    await prisma.player.update({ where: { id: "ga-p1" }, data: { userId: (await prisma.user.findUniqueOrThrow({ where: { email: "other@example.test" } })).id } });
+    const id = await playedMatch();
+    expect((await pgJson(id, { action: "generate_recap" })).body.error).toContain("Publish the final result");
+    const pollId = await startMvp(id);
+    await vote(pollId, 222, [OPTION.p1]);
+    await pg(id, { action: "close_mvp" });
+    await pg(id, { action: "publish_mvp" });
+    const standard = "Team 1 beat Team 2, 7–5. Player of the Match: A1 Player. Thanks to everyone who played!";
+    expect((await postGameOf(id)).standardRecap).toBe(standard); // 28
+
+    vi.stubEnv("OPENAI_API_KEY", "");
+    const notConfigured = await pgJson(id, { action: "generate_recap" });
+    expect(notConfigured).toMatchObject({ status: 503, body: { code: "NOT_CONFIGURED", fallback: standard } });
+    expect(aiRequests).toHaveLength(0);
+
+    vi.stubEnv("OPENAI_API_KEY", "sk-itest");
+    vi.stubEnv("OPENAI_BASE_URL", "https://ai.itest/v1");
+    vi.stubEnv("OPENAI_MODEL", "itest-model");
+    for (const [mode, code] of [["timeout", "TIMEOUT"], ["429", "RATE_LIMITED"], ["500", "PROVIDER_ERROR"], ["empty", "EMPTY"]] as const) {
+      aiMode = mode;
+      expect(await pgJson(id, { action: "generate_recap" }), mode).toMatchObject({ status: 503, body: { code, fallback: standard } });
+    }
+    aiMode = "ok";
+    aiText = "<b>What a night!</b> Team 1 won 7–5 and A1 Player was Player of the Match 🏆";
+    const gen = await pgJson(id, { action: "generate_recap" });
+    expect(gen).toMatchObject({ status: 200, body: { text: "What a night! Team 1 won 7–5 and A1 Player was Player of the Match 🏆" } });
+    // 29: the provider got the verified facts only.
+    const sent = aiRequests.at(-1)!;
+    expect(sent.model).toBe("itest-model");
+    const userMsg = (sent.messages as Array<{ role: string; content: string }>).find((x) => x.role === "user")!.content;
+    expect(JSON.parse(userMsg)).toEqual({ sport: "Soccer", date: "2026-10-12", venue: null, teams: [{ name: "Team 1", score: 7 }, { name: "Team 2", score: 5 }], outcome: { kind: "WIN", winner: "Team 1" }, scoreLine: "7–5", mvp: ["A1 Player"], participants: 4 });
+    // The facts payload carries no private data; the whole request carries no ids, emails, Telegram ids or the key.
+    expect(userMsg).not.toMatch(/ga-p\d|other@|example\.test|rating|stamina|GOOD|EXCELLENT|FAIR|111|222|userId|telegram/i);
+    expect(JSON.stringify(sent)).not.toMatch(/ga-p\d|other@|example\.test|\b111\b|\b222\b|sk-itest|userId/);
+    expect((await prisma.matchRecap.findUniqueOrThrow({ where: { matchId: id } })).content).toBeNull(); // generating saves nothing canonical
+    expect(tgCalls.filter((c) => c.method === "sendMessage")).toHaveLength(0);
+
+    const text = gen.body.text as string;
+    expect((await pgJson(id, { action: "save_recap", content: text })).body.source).toBe("AI");
+    expect((await pgJson(id, { action: "save_recap", content: `${text} See you next week!` })).body.source).toBe("AI_EDITED");
+    expect((await pgJson(id, { action: "save_recap", content: standard })).body.source).toBe("DETERMINISTIC");
+    expect((await pgJson(id, { action: "save_recap", content: "x".repeat(1201) })).status).toBe(400);
+    expect((await pgJson(id, { action: "save_recap", content: "   " })).status).toBe(400);
+    await pg(id, { action: "save_recap", content: `${text} See you next week!` });
+    session = null;
+    expect((await pageView(id))!.recap).toBeNull(); // 35: draft hidden
+    await signInAs("owner@example.test");
+    expect((await pg(id, { action: "publish_recap" })).status).toBe(200);
+    session = null;
+    const page = (await pageView(id))!;
+    expect(page.recap).toEqual({ text: `${text} See you next week!` }); // 37
+    expect(JSON.stringify(page)).not.toMatch(/generated|source|AI_EDITED|itest-model|decision|votes|ga-p\d|publishedBy/);
+    await signInAs("owner@example.test");
+    expect(msgs()).toHaveLength(0); // 38: generate/save/publish sent nothing
+
+    expect((await pgJson(id, { action: "post_message", kind: "recap" })).body.state).toBe("posted"); // 39
+    expect(String(msgs().at(-1)!.body.text)).toContain("See you next week!");
+    expect(String(msgs().at(-1)!.body.text)).toContain(`/m/${id}`);
+    await pg(id, { action: "save_recap", content: "Corrected recap." });
+    expect(msgs()).toHaveLength(1);
+    expect((await postGameOf(id)).messages.recap).toBe("updated_available"); // 40
+    expect((await pgJson(id, { action: "post_message", kind: "recap", intent: "post_updated" })).body.state).toBe("posted");
+    expect(String(msgs().at(-1)!.body.text)).toContain("Corrected recap.");
+  });
+});
+
+describe("M9-D — no automatic sends, canceled Matches, access modes, same-day", () => {
+  it("47: SAVE/PUBLISH/CLOSE/GENERATE never send; only Start MVP (one poll) and explicit posts do", async () => {
+    vi.stubEnv("OPENAI_API_KEY", "sk-itest");
+    vi.stubEnv("OPENAI_BASE_URL", "https://ai.itest/v1");
+    aiText = "Fun game, Team 1 won 7–5!";
+    await prisma.telegramUserLink.create({ data: { userId: 333n, playerId: "ga-p3", groupId: "ga" } });
+    const id = await playedMatch();
+    const count = () => ({ messages: sends("sendMessage").length, polls: sends("sendPoll").length });
+    await pg(id, { action: "save_result", scores: [{ teamNumber: 1, score: 7 }, { teamNumber: 2, score: 5 }] });
+    await pg(id, { action: "publish_result" });
+    expect(count()).toEqual({ messages: 0, polls: 0 });
+    await pg(id, { action: "start_mvp" });
+    expect(count()).toEqual({ messages: 0, polls: 1 });
+    const pollId = (await prisma.telegramPoll.findFirstOrThrow({ where: { matchId: id, kind: "MVP" } })).pollId;
+    await vote(pollId, 333, [OPTION.p1]);
+    await pg(id, { action: "close_mvp" });
+    await pg(id, { action: "publish_mvp" });
+    await pg(id, { action: "generate_recap" });
+    await pg(id, { action: "save_recap", content: "Fun game, Team 1 won 7–5!" });
+    await pg(id, { action: "publish_recap" });
+    expect(count()).toEqual({ messages: 0, polls: 1 });
+    expect(await prisma.messageDelivery.count({ where: { matchId: id, eventType: { in: ["MATCH_RESULT_POSTED", "MVP_ANNOUNCED", "MATCH_RECAP_POSTED"] } } })).toBe(0);
+  });
+
+  it("53/54: a canceled Match cannot record a result, start MVP or generate/save a recap", async () => {
+    const id = await playedMatch();
+    await pg(id, { action: "save_result", scores: [{ teamNumber: 1, score: 1 }, { teamNumber: 2, score: 0 }] });
+    await pg(id, { action: "publish_result" });
+    await matchRoute.PATCH(json("PATCH", { status: "CANCELED" }), gm(A, id));
+    for (const body of [
+      { action: "save_result", scores: [{ teamNumber: 1, score: 2 }, { teamNumber: 2, score: 0 }] },
+      { action: "start_mvp" },
+      { action: "generate_recap" },
+      { action: "save_recap", content: "We played!" },
+    ]) expect((await pgJson(id, body)).body.error, body.action).toContain("canceled");
+    expect(tgCalls).toHaveLength(0);
+    expect(aiRequests).toHaveLength(0);
+  });
+
+  it("44–47: published post-game data follows the M9-C access rules (LINK token, PRIVATE membership) and the allow-list", async () => {
+    const id = await playedMatch();
+    await pg(id, { action: "save_result", scores: [{ teamNumber: 1, score: 2 }, { teamNumber: 2, score: 1 }] });
+    await pg(id, { action: "publish_result" });
+    await pg(id, { action: "save_recap", content: "Thanks all!" });
+    await pg(id, { action: "publish_recap" });
+    await setVisibility("ga", "LINK");
+    const { token } = await shareLink("ga");
+    session = null;
+    expect(await pageView(id)).toBeNull();
+    const viaLink = await shareView(token, id);
+    expect(viaLink.body).toMatchObject({ result: { winnerTeamNumber: 1 }, recap: { text: "Thanks all!" }, mvp: null });
+    expect(JSON.stringify(viaLink.body)).not.toMatch(FORBIDDEN);
+    await setVisibility("ga", "PRIVATE");
+    expect((await shareView(token, id)).status).toBe(404);
+    await signInAs("player@example.test");
+    expect((await pageView(id))!.recap).toEqual({ text: "Thanks all!" });
+  });
+
+  it("61: same-day Matches keep separate results, MVP votes, recaps, deliveries and pages", async () => {
+    vi.stubEnv("APP_BASE_URL", BASE);
+    const a = await playedMatch("2026-10-10", "18:00");
+    const b = await playedMatch("2026-10-10", "21:00");
+    const pollA = await startMvp(a);
+    await pg(b, { action: "save_result", scores: [{ teamNumber: 1, score: 0 }, { teamNumber: 2, score: 4 }] });
+    await pg(b, { action: "publish_result" });
+    expect((await pg(b, { action: "start_mvp" })).status).toBe(201);
+    const pollB = (await prisma.telegramPoll.findFirstOrThrow({ where: { matchId: b, kind: "MVP" } })).pollId;
+    await vote(pollA, 111, [OPTION.p3]);
+    await vote(pollB, 111, [OPTION.p4]);
+    expect(await prisma.matchMvpVote.findMany({ where: { voterPlayerId: "ga-p1" }, orderBy: { matchId: "asc" }, select: { matchId: true, candidatePlayerId: true } })).toEqual(
+      [{ matchId: a, candidatePlayerId: "ga-p3" }, { matchId: b, candidatePlayerId: "ga-p4" }].sort((x, y) => (x.matchId < y.matchId ? -1 : 1))
+    );
+    await pg(a, { action: "save_recap", content: "Recap A" });
+    await pg(b, { action: "save_recap", content: "Recap B" });
+    await pg(a, { action: "publish_recap" });
+    await pg(b, { action: "publish_recap" });
+    await pg(a, { action: "post_message", kind: "result" });
+    expect(String(msgs().at(-1)!.body.text)).toContain(`/m/${a}`);
+    await pg(b, { action: "post_message", kind: "result" });
+    expect(String(msgs().at(-1)!.body.text)).toContain(`/m/${b}`);
+    expect(String(msgs().at(-1)!.body.text)).toContain("Team 2: 4");
+    session = null;
+    const [pa, pb] = [(await pageView(a))!, (await pageView(b))!];
+    expect([pa.result!.winnerTeamNumber, pb.result!.winnerTeamNumber]).toEqual([1, 2]);
+    expect([pa.recap!.text, pb.recap!.text]).toEqual(["Recap A", "Recap B"]);
+    expect(await prisma.messageDelivery.count({ where: { matchId: a, eventType: "MATCH_RESULT_POSTED" } })).toBe(1);
+    expect(await prisma.messageDelivery.count({ where: { matchId: b, eventType: "MATCH_RESULT_POSTED" } })).toBe(1);
   });
 });

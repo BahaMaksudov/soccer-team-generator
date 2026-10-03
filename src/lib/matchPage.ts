@@ -4,6 +4,7 @@ import { resolveGroupForViewer } from "@/lib/groupAccess";
 import { findSport, roleLabel } from "@/lib/sports";
 import { playerDisplayName, toPlayerFacingTeams } from "@/lib/playerFacing";
 import { formatYMDFromDate } from "@/lib/telegramFormat";
+import { publishedPostGame } from "@/lib/postGame";
 
 /**
  * M9-C — the player-facing Match page (canonical online destination of a
@@ -35,6 +36,10 @@ export type PlayerMatchView = {
   teamsPublished: boolean;
   /** Display-only: no Player ids, ratings, stamina, metrics or identities. */
   teams: Array<{ teamNumber: number; players: Array<{ name: string; role: string }> }>;
+  /** M9-D — PUBLISHED post-game data only (drafts, votes, voters and AI metadata never appear). */
+  result: { teams: Array<{ teamNumber: number; score: number }>; winnerTeamNumber: number | null; draw: boolean } | null;
+  mvp: { names: string[]; shared: boolean } | null;
+  recap: { text: string } | null;
 };
 
 /** Allow-list DTO, built field by field. `groupId` is already authorized by the caller. */
@@ -45,7 +50,16 @@ async function buildPlayerMatchView(
   if (typeof matchId !== "string" || matchId.length === 0 || matchId.length > 64) return null;
   const match = await prisma.match.findFirst({
     where: { id: matchId, groupId: group.id },
-    select: { date: true, startTime: true, locationName: true, status: true, generation: { select: { teamsJson: true, groupId: true } } },
+    select: {
+      date: true,
+      startTime: true,
+      locationName: true,
+      status: true,
+      generation: { select: { teamsJson: true, groupId: true } },
+      result: { select: { scoresJson: true, publishedAt: true } },
+      mvp: { select: { winnerPlayerIds: true, publishedAt: true } },
+      recap: { select: { content: true, publishedAt: true } },
+    },
   });
   if (!match) return null;
   const teamName = await prisma.groupSetting.findUnique({ where: { groupId_key: { groupId: group.id, key: "teamName" } }, select: { value: true } });
@@ -66,6 +80,7 @@ async function buildPlayerMatchView(
     match: { date: formatYMDFromDate(match.date), startTime: match.startTime, locationName: match.locationName, status: match.status },
     teamsPublished: generation !== null,
     teams,
+    ...publishedPostGame(match, generation?.teamsJson ?? null),
   };
 }
 

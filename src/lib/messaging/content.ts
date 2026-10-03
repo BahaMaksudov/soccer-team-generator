@@ -36,6 +36,8 @@ export type PollContent = { kind: "poll"; question: string; options: string[] };
 export type TextContent = {
   kind: "text";
   title: string;
+  /** M9-D — optional plain-text paragraph(s) after the title (absent for teams: their rendering is unchanged). */
+  body?: string;
   sections: Array<{ heading: string; items: string[] }>;
   link: { label: string; url: string } | null;
 };
@@ -67,5 +69,54 @@ export function teamsContent(event: Extract<MessagingEvent, { type: "TEAMS_PUBLI
       items: (Array.isArray(t.players) ? t.players : []).map((p) => playerDisplayName(p ?? {})),
     })),
     link: event.viewUrl ? { label: "View teams online", url: event.viewUrl } : null,
+  };
+}
+
+// ------------------------------------------------------------------ M9-D
+// Deterministic post-game messages. Only verified, published facts; sport-
+// neutral wording; no vote totals. The link (if any) is never part of the
+// content hash (callers hash the body rendered WITHOUT the link).
+
+/** Telegram: 1–100 characters per option; ≤ 10 options (the conservative documented maximum). */
+export const MVP_POLL_MAX_OPTIONS = 10;
+
+export function mvpPollContent(params: { date: string; names: string[] }): PollContent {
+  return {
+    kind: "poll",
+    question: `🏆 Player of the Match — ${formatPollQuestionDate(params.date)}?`,
+    options: params.names.map((n) => (n.length > 100 ? `${n.slice(0, 99)}…` : n)),
+  };
+}
+
+export function resultContent(params: { date: string; scores: Array<{ teamNumber: number; score: number }>; viewUrl: string | null }): TextContent {
+  const sorted = [...params.scores].sort((a, b) => a.teamNumber - b.teamNumber);
+  const top = Math.max(...sorted.map((s) => s.score));
+  const leaders = sorted.filter((s) => s.score === top);
+  return {
+    kind: "text",
+    title: `\u{1F3C1} Final Result — ${formatPollQuestionDate(params.date)}`,
+    body: leaders.length === 1 ? `Team ${leaders[0].teamNumber} wins!` : "It's a draw!",
+    sections: [{ heading: "Score", items: sorted.map((s) => `Team ${s.teamNumber}: ${s.score}`) }],
+    link: params.viewUrl ? { label: "View match", url: params.viewUrl } : null,
+  };
+}
+
+export function mvpAnnouncementContent(params: { names: string[]; viewUrl: string | null }): TextContent {
+  return {
+    kind: "text",
+    title: params.names.length > 1 ? "\u{1F3C6} Players of the Match" : "\u{1F3C6} Player of the Match",
+    body: "Thanks for voting!",
+    sections: [{ heading: params.names.length > 1 ? "Co-MVPs" : "MVP", items: params.names }],
+    link: params.viewUrl ? { label: "View match", url: params.viewUrl } : null,
+  };
+}
+
+export function recapContent(params: { date: string; text: string; viewUrl: string | null }): TextContent {
+  return {
+    kind: "text",
+    title: `\u{1F4DD} Match Recap — ${formatPollQuestionDate(params.date)}`,
+    body: params.text,
+    sections: [],
+    link: params.viewUrl ? { label: "View match", url: params.viewUrl } : null,
   };
 }

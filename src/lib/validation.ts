@@ -103,6 +103,33 @@ export const matchUpdateSchema = z.object({
 export const attendanceOverrideSchema = z.object({ playerId: z.string().min(1), status: attendanceStatus.nullable() });
 export const attendanceSelfSchema = z.object({ status: attendanceStatus });
 export const attendanceClosedSchema = z.object({ closed: z.boolean() });
+/**
+ * M9-D — post-game actions of a Match (one endpoint, discriminated by
+ * `action`). Scores: generic non-negative integers per published team
+ * (multi-sport; no sport-specific rules).
+ */
+const postIntent = z.enum(["post", "post_updated", "retry_uncertain"]).optional().default("post");
+export const postGameSchema = z.discriminatedUnion("action", [
+  z.object({
+    action: z.literal("save_result"),
+    scores: z
+      .array(z.object({ teamNumber: z.number().int().min(1).max(50), score: z.number().int().min(0, "Scores can't be negative.").max(999, "That score is too high.") }))
+      .min(2)
+      .max(50),
+  }),
+  z.object({ action: z.literal("publish_result") }),
+  z.object({ action: z.literal("start_mvp"), candidateIds: z.array(z.string().trim().min(1)).min(2).max(10).optional(), intent: postIntent }),
+  z.object({ action: z.literal("close_mvp") }),
+  z.object({
+    action: z.literal("publish_mvp"),
+    tieBreak: z.union([z.object({ mode: z.literal("co") }), z.object({ mode: z.literal("pick"), playerId: z.string().trim().min(1) })]).optional(),
+  }),
+  z.object({ action: z.literal("generate_recap") }),
+  z.object({ action: z.literal("save_recap"), content: z.string().max(5000) }),
+  z.object({ action: z.literal("publish_recap") }),
+  z.object({ action: z.literal("post_message"), kind: z.enum(["result", "mvp", "recap"]), intent: postIntent, shareUrl: z.string().trim().max(500).optional() }),
+]);
+
 /** M9-B — select (number) or clear (null) a Match's Telegram chat by its opaque ref. */
 export const matchTelegramChatSchema = z.object({ chatRef: z.number().int().positive().nullable() });
 /** M9-B — one Player in a Telegram chat's default scope. */

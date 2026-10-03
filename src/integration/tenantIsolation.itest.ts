@@ -376,6 +376,11 @@ describe("Phase 2D.7 — PostgreSQL enforces groupId NOT NULL on every tenant-ow
       // M9-B: a chat's default player scope is curation data that goes with
       // its Group (and with its chat/Player via composite FKs).
       TelegramChatPlayer_groupId_fkey: "c/c",
+      // M9-D: post-game rows belong to a Match (RESTRICT on Match protects the Group).
+      MatchResult_groupId_fkey: "c/c",
+      MatchMvp_groupId_fkey: "c/c",
+      MatchMvpVote_groupId_fkey: "c/c",
+      MatchRecap_groupId_fkey: "c/c",
     });
   });
 

@@ -15,6 +15,7 @@ const escapeAttr = (s: string) => escapeHtml(s).replaceAll('"', "&quot;");
 /** Telegram Bot API sendMessage text with parse_mode=HTML. */
 export function renderTelegramHtml(content: TextContent): string {
   const lines: string[] = [`<b>${escapeHtml(content.title)}</b>`, ""];
+  if (content.body) lines.push(escapeHtml(content.body), "");
   for (const section of content.sections) {
     lines.push(`<b>${escapeHtml(section.heading)}</b>`);
     for (const item of section.items) lines.push(`• ${escapeHtml(item)}`);

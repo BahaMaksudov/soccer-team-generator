@@ -82,6 +82,7 @@ describe("flat operational Admin APIs are deleted", () => {
         canonical("channels/telegram/[ref]"),
         canonical("channels/telegram/[ref]/players"), // M9-B
         canonical("matches/[matchId]/telegram-chat"), // M9-B
+        canonical("matches/[matchId]/post-game"), // M9-D
         canonical("players"),
         canonical("players/[id]"),
         canonical("players/[id]/claim"), // M6-C
@@ -228,14 +229,19 @@ describe("Telegram delivery invariant", () => {
     expect(filesMatching(/formatTeamsHtml\(/).filter((f) => f !== rel("src/lib/telegramFormat.ts"))).toEqual([
       rel("src/lib/telegramCloseAndPost.ts"),
     ]);
-    expect(filesMatching(/["']stopPoll["']/)).toEqual([rel("src/lib/telegramCloseAndPost.ts")]);
+    // M9-D — closing a Match's MVP vote also stops its Telegram poll (an explicit OWNER/ADMIN action).
+    expect(filesMatching(/["']stopPoll["']/)).toEqual([rel("src/lib/postGame.ts"), rel("src/lib/telegramCloseAndPost.ts")].sort());
     expect(filesMatching(/teamsPostStatus/)).toEqual([rel("src/lib/telegramCloseAndPost.ts")]);
   });
 
-  it("sendMessage is used only by Close/Post (teams) and the webhook (bot command replies)", () => {
+  it("sendMessage is used only by Close/Post (teams), the explicit post-game posts (M9-D) and the webhook (bot command replies)", () => {
     expect(filesMatching(/["']sendMessage["']/)).toEqual(
-      [rel("src/app/api/telegram/webhook/route.ts"), rel("src/lib/telegramCloseAndPost.ts")].sort()
+      [rel("src/app/api/telegram/webhook/route.ts"), rel("src/lib/postGame.ts"), rel("src/lib/telegramCloseAndPost.ts")].sort()
     );
+    // M9-D — in postGame.ts the only sendMessage is the explicit "post_message" action.
+    const postGame = code.get(rel("src/lib/postGame.ts"))!;
+    expect(postGame.match(/["']sendMessage["']/g)).toHaveLength(1);
+    expect(postGame.slice(postGame.indexOf('case "post_message"'))).toContain('"sendMessage"');
     const webhook = code.get(rel("src/app/api/telegram/webhook/route.ts"))!;
     expect(webhook).not.toMatch(/formatTeamsHtml|teamsJson|teamGeneration/);
   });
@@ -288,7 +294,7 @@ describe("webhook independence", () => {
 
   it("imports only next/server, prisma, dateOnly, the connect-code service and (M9-A) the attendance/channel adapters", () => {
     expect([...webhook.matchAll(/^import .* from ["']([^"']+)["'];?$/gm)].map((m) => m[1]).sort()).toEqual(
-      ["@/lib/dateOnly", "@/lib/prisma", "@/lib/telegramConnect", "@/lib/telegramAttendance", "@/lib/telegramChannels", "next/server"].sort()
+      ["@/lib/dateOnly", "@/lib/prisma", "@/lib/telegramConnect", "@/lib/telegramAttendance", "@/lib/telegramChannels", "@/lib/telegramMvp", "next/server"].sort()
     );
   });
 

@@ -25,6 +25,20 @@ export default function PlayerMatchCard({ view, signInHref }: { view: PlayerMatc
         {match.status === "COMPLETED" && <div className="text-sm text-gray-600">This match is completed.</div>}
       </div>
 
+      {/* M9-D — only PUBLISHED post-game data is in the view. */}
+      {view.result && (
+        <div className="rounded-2xl border bg-white shadow-sm p-5 space-y-1">
+          <div className="font-semibold">Final Result</div>
+          {view.result.teams.map((t) => (
+            <div key={t.teamNumber} className="flex justify-between max-w-xs">
+              <span>Team {t.teamNumber}</span>
+              <span className="font-semibold">{t.score}</span>
+            </div>
+          ))}
+          <div className="text-sm text-gray-600">{view.result.draw ? "Draw" : `Team ${view.result.winnerTeamNumber} won`}</div>
+        </div>
+      )}
+
       {!view.teamsPublished ? (
         <div className="rounded-2xl border bg-white shadow-sm p-5 text-gray-600">Teams have not been published yet.</div>
       ) : (
@@ -48,6 +62,20 @@ export default function PlayerMatchCard({ view, signInHref }: { view: PlayerMatc
               ))}
             </tbody>
           </table>
+        </div>
+      )}
+
+      {view.mvp && (
+        <div className="rounded-2xl border bg-white shadow-sm p-5">
+          <div className="font-semibold">{view.mvp.shared ? "Players of the Match" : "Player of the Match"}</div>
+          <div>🏆 {view.mvp.names.join(", ")}</div>
+        </div>
+      )}
+
+      {view.recap && (
+        <div className="rounded-2xl border bg-white shadow-sm p-5 space-y-1">
+          <div className="font-semibold">Match Recap</div>
+          <p className="whitespace-pre-line text-gray-800">{view.recap.text}</p>
         </div>
       )}
 

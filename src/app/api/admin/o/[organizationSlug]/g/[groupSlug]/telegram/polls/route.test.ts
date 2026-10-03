@@ -69,7 +69,7 @@ describe("GET canonical telegram/polls — read isolation", () => {
     await GET(reqWithQuery(), ctx("org-a", "group-a"));
 
     const call = mockPollFindMany.mock.calls[0][0];
-    expect(call.where).toEqual({ groupId: "group-a", isClosed: false });
+    expect(call.where).toEqual({ groupId: "group-a", kind: "ATTENDANCE", isClosed: false });
     expect(mockRequireTenantContextForSlugs).toHaveBeenCalledWith({ organizationSlug: "org-a", groupSlug: "group-a" });
   });
 
@@ -79,7 +79,7 @@ describe("GET canonical telegram/polls — read isolation", () => {
     await GET(reqWithQuery("?includeClosed=1"), ctx("org-a", "group-a"));
 
     const call = mockPollFindMany.mock.calls[0][0];
-    expect(call.where).toEqual({ groupId: "group-a" });
+    expect(call.where).toEqual({ groupId: "group-a", kind: "ATTENDANCE" });
   });
 
   it("chat-title enrichment is derived only from already-scoped poll results, never independently queried by tenant", async () => {
@@ -135,13 +135,13 @@ describe("GET canonical telegram/polls — read isolation", () => {
     mockRequireTenantContextForSlugs.mockResolvedValue({ ...CONTEXT_A, activeGroup: GROUP_A_SAME_SLUG });
     await GET(reqWithQuery(), ctx("org-a", "indoor-soccer"));
     expect(mockPollFindMany).toHaveBeenLastCalledWith(
-      expect.objectContaining({ where: { groupId: "group-a", isClosed: false } })
+      expect.objectContaining({ where: { groupId: "group-a", kind: "ATTENDANCE", isClosed: false } })
     );
 
     mockRequireTenantContextForSlugs.mockResolvedValue({ ...CONTEXT_B, activeGroup: GROUP_B_SAME_SLUG });
     await GET(reqWithQuery(), ctx("org-b", "indoor-soccer"));
     expect(mockPollFindMany).toHaveBeenLastCalledWith(
-      expect.objectContaining({ where: { groupId: "group-b", isClosed: false } })
+      expect.objectContaining({ where: { groupId: "group-b", kind: "ATTENDANCE", isClosed: false } })
     );
   });
 

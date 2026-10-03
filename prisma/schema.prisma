@@ -63,6 +63,35 @@ enum MessageEventType {
   TEAMS_PUBLISHED
   // M9-A — explicit "Post attendance poll" for a Match (reserved before sendPoll).
   ATTENDANCE_POLL_POSTED
+  // M9-D — explicit post-game messages of a Match (each organizer-triggered).
+  MVP_POLL_POSTED
+  MATCH_RESULT_POSTED
+  MVP_ANNOUNCED
+  MATCH_RECAP_POSTED
+}
+
+// M9-D — where an MVP vote came from (provider-neutral; WHATSAPP in M10).
+enum MvpVoteSource {
+  TELEGRAM
+  WEB
+}
+
+// M9-D — how the published MVP was decided. VOTES = a unique top vote count;
+// CO_MVP = a tie published as co-MVPs; ORGANIZER_TIEBREAK = the organizer
+// picked one Player from the tied set (recorded, never presented as a vote win).
+enum MvpDecision {
+  VOTES
+  CO_MVP
+  ORGANIZER_TIEBREAK
+}
+
+// M9-D — provenance of the recap text. AI = unchanged AI output; AI_EDITED =
+// the organizer edited AI output; DETERMINISTIC = the built-in fact recap.
+enum RecapSource {
+  DETERMINISTIC
+  AI
+  AI_EDITED
+  MANUAL
 }
 
 // M9-A — Match lifecycle. Only these states are stored; attendance open/
@@ -156,6 +185,14 @@ model User {
   telegramChatBindCodes      TelegramChatBindCode[]
   // M9-B — audit only.
   telegramChatPlayersCreated TelegramChatPlayer[]   @relation("ChatPlayerCreatedBy")
+  // M9-D — audit only.
+  resultsPublished           MatchResult[]          @relation("ResultPublishedBy")
+  resultsUpdated             MatchResult[]          @relation("ResultUpdatedBy")
+  mvpsOpened                 MatchMvp[]             @relation("MvpOpenedBy")
+  mvpsPublished              MatchMvp[]             @relation("MvpPublishedBy")
+  recapsGenerated            MatchRecap[]           @relation("RecapGeneratedBy")
+  recapsPublished            MatchRecap[]           @relation("RecapPublishedBy")
+  recapsUpdated              MatchRecap[]           @relation("RecapUpdatedBy")
 }
 
 model Organization {
@@ -265,6 +302,11 @@ model Group {
   telegramChatBindCodes TelegramChatBindCode[]
   // M9-B
   telegramChatPlayers   TelegramChatPlayer[]
+  // M9-D
+  matchResults          MatchResult[]
+  matchMvps             MatchMvp[]
+  matchMvpVotes         MatchMvpVote[]
+  matchRecaps           MatchRecap[]
 
   @@unique([organizationId, slug])
 }
@@ -440,6 +482,8 @@ model Player {
   telegramConnectCodes TelegramConnectCode[]
   attendanceResponses  AttendanceResponse[]
   telegramChatPlayers  TelegramChatPlayer[]
+  mvpVotesCast         MatchMvpVote[]        @relation("MvpVoter")
+  mvpVotesReceived     MatchMvpVote[]        @relation("MvpCandidate")
 
   @@unique([groupId, userId])
   // Composite target for TelegramChatPlayer's (playerId, groupId) FK.
@@ -663,10 +707,122 @@ model Match {
   generation    TeamGeneration?
   telegramPolls TelegramPoll[]
   deliveries    MessageDelivery[]
+  // M9-D — post-game (each Match-keyed, at most one; never Telegram-owned).
+  result        MatchResult?
+  mvp           MatchMvp?
+  mvpVotes      MatchMvpVote[]
+  recap         MatchRecap?
 
   @@index([groupId])
   @@index([groupId, date])
   @@index([telegramChatId])
+}
+
+// M9-D — the factual final result of a Match (entered by an organizer; AI
+// never sets or changes it). `scoresJson` = [{ teamNumber, score }] for EVERY
+// team of the Match's published teams (team identity = the published
+// snapshot's teamNumber; future team names hang off the same key). Saved =
+// organizer-only draft; publishedAt set = visible on the Match page. Editing
+// a published result keeps it published (a correction); Telegram is never
+// updated automatically (MessageDelivery content hash → "Post Updated").
+model MatchResult {
+  id                String    @id @default(cuid())
+  groupId           String
+  matchId           String    @unique
+  scoresJson        String
+  publishedAt       DateTime?
+  publishedByUserId String?
+  updatedByUserId   String?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  group       Group @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  match       Match @relation(fields: [matchId], references: [id], onDelete: Cascade)
+  publishedBy User? @relation("ResultPublishedBy", fields: [publishedByUserId], references: [id], onDelete: SetNull)
+  updatedBy   User? @relation("ResultUpdatedBy", fields: [updatedByUserId], references: [id], onDelete: SetNull)
+
+  @@index([groupId])
+}
+
+// M9-D — MVP voting of a Match. Candidates are Players of the Match's
+// PUBLISHED teams (snapshot ids); `candidatePlayerIds` is ordered = the poll's
+// option order (option index → Player). Voting is open while openedAt is set
+// and closedAt is not. Winners are decided deterministically from the votes at
+// publish (ties: co-MVPs or an organizer tie-break, recorded in `decision`).
+model MatchMvp {
+  id                 String       @id @default(cuid())
+  groupId            String
+  matchId            String       @unique
+  candidatePlayerIds String[]
+  openedAt           DateTime?
+  openedByUserId     String?
+  closedAt           DateTime?
+  winnerPlayerIds    String[]
+  decision           MvpDecision?
+  publishedAt        DateTime?
+  publishedByUserId  String?
+  createdAt          DateTime     @default(now())
+  updatedAt          DateTime     @updatedAt
+
+  group       Group @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  match       Match @relation(fields: [matchId], references: [id], onDelete: Cascade)
+  openedBy    User? @relation("MvpOpenedBy", fields: [openedByUserId], references: [id], onDelete: SetNull)
+  publishedBy User? @relation("MvpPublishedBy", fields: [publishedByUserId], references: [id], onDelete: SetNull)
+
+  @@index([groupId])
+}
+
+// M9-D — ONE current MVP vote per voting Player of a Match (latest valid
+// answer wins; a retracted answer deletes it). Only participants of the
+// published teams vote, never for themselves (enforced server-side).
+// Provider-neutral: Telegram answers are mapped TelegramUserLink → Player.
+// Composite FKs keep voter and candidate inside the Match's Group.
+model MatchMvpVote {
+  id                String        @id @default(cuid())
+  groupId           String
+  matchId           String
+  voterPlayerId     String
+  candidatePlayerId String
+  source            MvpVoteSource
+  createdAt         DateTime      @default(now())
+  updatedAt         DateTime      @updatedAt
+
+  group     Group  @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  match     Match  @relation(fields: [matchId], references: [id], onDelete: Cascade)
+  voter     Player @relation("MvpVoter", fields: [voterPlayerId, groupId], references: [id, groupId], onDelete: Cascade)
+  candidate Player @relation("MvpCandidate", fields: [candidatePlayerId, groupId], references: [id, groupId], onDelete: Cascade)
+
+  @@unique([matchId, voterPlayerId])
+  @@index([groupId])
+  @@index([candidatePlayerId])
+}
+
+// M9-D — the Match recap (plain text). `content` is the organizer's canonical
+// text (draft until publishedAt); `generatedContent` keeps the latest AI
+// output so the source (AI vs AI_EDITED) is decided server-side. AI never
+// publishes or sends; only verified facts go to the AI provider.
+model MatchRecap {
+  id                String       @id @default(cuid())
+  groupId           String
+  matchId           String       @unique
+  content           String?
+  source            RecapSource?
+  generatedContent  String?
+  generatedAt       DateTime?
+  generatedByUserId String?
+  publishedAt       DateTime?
+  publishedByUserId String?
+  updatedByUserId   String?
+  createdAt         DateTime     @default(now())
+  updatedAt         DateTime     @updatedAt
+
+  group       Group @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  match       Match @relation(fields: [matchId], references: [id], onDelete: Cascade)
+  generatedBy User? @relation("RecapGeneratedBy", fields: [generatedByUserId], references: [id], onDelete: SetNull)
+  publishedBy User? @relation("RecapPublishedBy", fields: [publishedByUserId], references: [id], onDelete: SetNull)
+  updatedBy   User? @relation("RecapUpdatedBy", fields: [updatedByUserId], references: [id], onDelete: SetNull)
+
+  @@index([groupId])
 }
 
 // M9-A — one row per (Match, Player). Keeps BOTH the participant's own latest

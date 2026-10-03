@@ -194,8 +194,9 @@ async function validatePostTarget(
   const fail = (error: string, status: number) => ({ ok: false as const, response: NextResponse.json({ error }, { status }) });
 
   // poll, generation and destination chat — all scoped to the active Group (foreign == missing)
+  // M9-D — teams are posted against ATTENDANCE polls only (never an MVP poll).
   const poll = await prisma.telegramPoll.findFirst({
-    where: { pollId, groupId: activeGroupId },
+    where: { pollId, groupId: activeGroupId, kind: "ATTENDANCE" },
     select: { pollId: true, chatId: true, messageId: true, question: true, pollDate: true, isClosed: true, matchId: true },
   });
   if (!poll) return fail("Poll not found", 404);
@@ -249,7 +250,7 @@ async function validatePostTarget(
  * PUBLIC → canonical page; LINK → only an explicitly supplied, ACTIVE
  * share link of this same Group; PRIVATE → none.
  */
-async function resolveViewUrl(
+export async function resolveViewUrl(
   context: TenantContext,
   shareUrl: string | undefined,
   // M9-C — the Match of the POSTED generation (never inferred); null for legacy by-date teams.

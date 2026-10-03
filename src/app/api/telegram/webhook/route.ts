@@ -230,6 +230,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { toDateOnlyUTC } from "@/lib/dateOnly";
 import { applyTelegramAttendanceAnswer } from "@/lib/telegramAttendance";
+import { applyTelegramMvpAnswer } from "@/lib/telegramMvp";
 import { bindReplyText, isBindCode, markTelegramChatBotRemoved, migrateTelegramChat, redeemTelegramBindCode } from "@/lib/telegramChannels";
 
 
@@ -458,6 +459,11 @@ async function handlePollAnswer(pollAnswer: any) {
   if (poll.matchId && poll.kind === "ATTENDANCE") {
     const matchId = poll.matchId;
     await prisma.$transaction((tx) => applyTelegramAttendanceAnswer(tx, { matchId, groupId, telegramUserId: userId, optionIds, at: new Date() }));
+  }
+  // M9-D — MVP polls feed ONLY the official MVP vote (never attendance).
+  if (poll.matchId && poll.kind === "MVP") {
+    const matchId = poll.matchId;
+    await prisma.$transaction((tx) => applyTelegramMvpAnswer(tx, { matchId, groupId, telegramUserId: userId, optionIds }));
   }
 }
 async function handlePoll(poll: any) {

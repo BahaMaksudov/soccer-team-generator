@@ -73,6 +73,8 @@ export async function listTelegramPollsForContext(context: TenantContext, req: R
   const polls = await prisma.telegramPoll.findMany({
     where: {
       groupId: context.activeGroup.id,
+      // M9-D — MVP polls are never attendance sources (import/close & post).
+      kind: "ATTENDANCE",
       ...(includeClosed ? {} : { isClosed: false }),
     },
     orderBy: { createdAt: "desc" },
@@ -273,7 +275,7 @@ export async function importTelegramPollForContext(context: TenantContext, req: 
   // The poll being imported must belong to the caller's active Group.
   // 404, not 403 — never reveal that a foreign poll exists.
   const poll = await prisma.telegramPoll.findFirst({
-    where: { pollId, groupId: activeGroupId },
+    where: { pollId, groupId: activeGroupId, kind: "ATTENDANCE" },
     select: { pollId: true },
   });
   if (!poll) {
