@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from "vitest";
-import { buildRecapFacts, contradictsFacts, deterministicRecap, generateAiRecap, RECAP_SYSTEM_PROMPT, sanitizeRecapText, type RecapFacts } from "@/lib/recap";
-import { AiError, DEFAULT_OPENAI_MODEL, openAiCompleter } from "@/lib/ai/openai";
+import { buildRecapFacts, contradictsFacts, deterministicRecap, generateAiRecap, RECAP_MAX_OUTPUT_TOKENS, RECAP_SYSTEM_PROMPT, sanitizeRecapText, type RecapFacts } from "@/lib/recap";
+import { AiError, DEFAULT_OPENAI_MODEL, extractResponseText, openAiCompleter } from "@/lib/ai/openai";
 
 /** M9-D — recap facts, deterministic recap and the AI language layer (no live AI calls). */
 
@@ -94,7 +94,7 @@ describe("generateAiRecap — mocked provider (never live)", () => {
   it("success: the provider receives only the facts JSON", async () => {
     const complete = vi.fn(async () => "What a night! Team 1 took it 7–5 and Bahrom M was Player of the Match ⚽");
     expect(await generateAiRecap(FACTS, complete)).toEqual({ ok: true, text: "What a night! Team 1 took it 7–5 and Bahrom M was Player of the Match ⚽" });
-    expect(complete).toHaveBeenCalledWith({ system: RECAP_SYSTEM_PROMPT, user: JSON.stringify(FACTS), maxTokens: 300 });
+    expect(complete).toHaveBeenCalledWith({ system: RECAP_SYSTEM_PROMPT, user: JSON.stringify(FACTS), maxTokens: RECAP_MAX_OUTPUT_TOKENS });
   });
   it.each([
     ["timeout", async (): Promise<string> => { throw new AiError("TIMEOUT"); }, "TIMEOUT"],
@@ -102,6 +102,7 @@ describe("generateAiRecap — mocked provider (never live)", () => {
     ["provider error", async (): Promise<string> => { throw new AiError("PROVIDER_ERROR"); }, "PROVIDER_ERROR"],
     ["unexpected throw", async (): Promise<string> => { throw new Error("boom"); }, "PROVIDER_ERROR"],
     ["not configured", async (): Promise<string> => { throw new AiError("NOT_CONFIGURED"); }, "NOT_CONFIGURED"],
+    ["incomplete response", async (): Promise<string> => { throw new AiError("INCOMPLETE"); }, "INCOMPLETE"],
     ["empty output", async (): Promise<string> => "   ", "EMPTY"],
     ["overlong output", async (): Promise<string> => "x".repeat(1201), "TOO_LONG"],
     ["changed score", async (): Promise<string> => "Team 1 won 9–1!", "INCONSISTENT"],
@@ -112,7 +113,39 @@ describe("generateAiRecap — mocked provider (never live)", () => {
   });
 });
 
-describe("openAiCompleter — server-side HTTP client (mocked fetch)", () => {
+const completed = (text: string) => ({
+  id: "resp_1",
+  status: "completed",
+  output: [
+    { type: "reasoning", id: "rs_1", summary: [] },
+    { type: "message", role: "assistant", content: [{ type: "output_text", text, annotations: [] }] },
+  ],
+});
+
+describe("extractResponseText — Responses API output", () => {
+  it("joins the output_text parts of assistant message items; ignores reasoning items", () => {
+    expect(extractResponseText(completed("Great game!"))).toBe("Great game!");
+    expect(
+      extractResponseText({ status: "completed", output: [{ type: "message", content: [{ type: "output_text", text: "A " }, { type: "output_text", text: "B" }] }] })
+    ).toBe("A B");
+  });
+  it.each([
+    ["incomplete (e.g. max_output_tokens)", { status: "incomplete", incomplete_details: { reason: "max_output_tokens" }, output: [] }, "INCOMPLETE"],
+    ["failed", { status: "failed", error: null, output: [] }, "PROVIDER_ERROR"],
+    ["error object", { status: "completed", error: { code: "server_error" }, output: [] }, "PROVIDER_ERROR"],
+    ["refusal only", { status: "completed", output: [{ type: "message", content: [{ type: "refusal", refusal: "no" }] }] }, "EMPTY"],
+    ["reasoning only", { status: "completed", output: [{ type: "reasoning", summary: [] }] }, "EMPTY"],
+    ["blank text", completed("   "), "EMPTY"],
+    ["no output array", { status: "completed" }, "INVALID"],
+    ["unknown status", { status: "queued", output: [] }, "INVALID"],
+    ["not an object", null, "INVALID"],
+    ["chat-completions shape", { choices: [{ message: { content: "x" } }] }, "INVALID"],
+  ] as const)("%s → AiError %s", (_n, body, code) => {
+    expect(() => extractResponseText(body)).toThrow(expect.objectContaining({ code }));
+  });
+});
+
+describe("openAiCompleter — Responses API over HTTP (mocked fetch)", () => {
   const ok = (body: unknown, status = 200) => ({ ok: status < 400, status, json: async () => body }) as unknown as Response;
   const input = { system: "s", user: "u", maxTokens: 10 };
 
@@ -121,23 +154,42 @@ describe("openAiCompleter — server-side HTTP client (mocked fetch)", () => {
     await expect(openAiCompleter({}, f as never)(input)).rejects.toMatchObject({ code: "NOT_CONFIGURED" });
     expect(f).not.toHaveBeenCalled();
   });
-  it("posts to the configured model with the key only in the Authorization header", async () => {
-    const f = vi.fn(async () => ok({ choices: [{ message: { content: "hi" } }] }));
+  it("POST /v1/responses: model, instructions + facts input, bounded output, low reasoning, plain text, no tools, not stored; key only in the header", async () => {
+    const f = vi.fn(async () => ok(completed("hi")));
     expect(await openAiCompleter({ OPENAI_API_KEY: "sk-test" }, f as never)(input)).toBe("hi");
     const [url, init] = f.mock.calls[0] as unknown as [string, RequestInit];
-    expect(url).toBe("https://api.openai.com/v1/chat/completions");
+    expect(url).toBe("https://api.openai.com/v1/responses");
     expect((init.headers as Record<string, string>).Authorization).toBe("Bearer sk-test");
-    expect(JSON.parse(String(init.body)).model).toBe(DEFAULT_OPENAI_MODEL);
+    const body = JSON.parse(String(init.body));
+    expect(body).toEqual({
+      model: DEFAULT_OPENAI_MODEL,
+      instructions: "s",
+      input: "u",
+      max_output_tokens: 10,
+      reasoning: { effort: "low" },
+      text: { format: { type: "text" } },
+      store: false,
+    });
+    expect(DEFAULT_OPENAI_MODEL).toBe("gpt-6-luna");
+    expect(body).not.toHaveProperty("tools");
+    expect(body).not.toHaveProperty("messages");
     expect(String(init.body)).not.toContain("sk-test");
-    await openAiCompleter({ OPENAI_API_KEY: "sk-test", OPENAI_MODEL: "custom-model", OPENAI_BASE_URL: "https://proxy.example/v1/" }, f as never)(input);
-    expect((f.mock.calls[1] as unknown as [string])[0]).toBe("https://proxy.example/v1/chat/completions");
-    expect(JSON.parse(String((f.mock.calls[1] as unknown as [string, RequestInit])[1].body)).model).toBe("custom-model");
   });
-  it("429 → RATE_LIMITED, 500 → PROVIDER_ERROR, malformed → INVALID, network → PROVIDER_ERROR; errors never carry the key", async () => {
+  it("OPENAI_MODEL / OPENAI_REASONING_EFFORT / OPENAI_BASE_URL are configurable ('off' omits reasoning)", async () => {
+    const f = vi.fn(async () => ok(completed("hi")));
+    await openAiCompleter({ OPENAI_API_KEY: "k", OPENAI_MODEL: "custom-model", OPENAI_REASONING_EFFORT: "minimal", OPENAI_BASE_URL: "https://proxy.example/v1/" }, f as never)(input);
+    const [url, init] = f.mock.calls[0] as unknown as [string, RequestInit];
+    expect(url).toBe("https://proxy.example/v1/responses");
+    expect(JSON.parse(String(init.body))).toMatchObject({ model: "custom-model", reasoning: { effort: "minimal" } });
+    await openAiCompleter({ OPENAI_API_KEY: "k", OPENAI_REASONING_EFFORT: "off" }, f as never)(input);
+    expect(JSON.parse(String((f.mock.calls[1] as unknown as [string, RequestInit])[1].body))).not.toHaveProperty("reasoning");
+  });
+  it("429 → RATE_LIMITED, 500 → PROVIDER_ERROR, incomplete → INCOMPLETE, malformed → INVALID, network → PROVIDER_ERROR; errors never carry the key", async () => {
     const env = { OPENAI_API_KEY: "sk-secret" };
     await expect(openAiCompleter(env, (async () => ok({}, 429)) as never)(input)).rejects.toMatchObject({ code: "RATE_LIMITED" });
     await expect(openAiCompleter(env, (async () => ok({ error: "sk-secret" }, 500)) as never)(input)).rejects.toMatchObject({ code: "PROVIDER_ERROR", message: "PROVIDER_ERROR" });
-    await expect(openAiCompleter(env, (async () => ok({ choices: [] })) as never)(input)).rejects.toMatchObject({ code: "INVALID" });
+    await expect(openAiCompleter(env, (async () => ok({ status: "incomplete", output: [] })) as never)(input)).rejects.toMatchObject({ code: "INCOMPLETE" });
+    await expect(openAiCompleter(env, (async () => ({ ok: true, status: 200, json: async () => { throw new SyntaxError("bad json"); } }) as unknown as Response) as never)(input)).rejects.toMatchObject({ code: "INVALID" });
     await expect(openAiCompleter(env, (async () => { throw new TypeError("fetch failed"); }) as never)(input)).rejects.toMatchObject({ code: "PROVIDER_ERROR" });
   });
   it("a slow provider is aborted after the bounded timeout → TIMEOUT", async () => {

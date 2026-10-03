@@ -77,7 +77,7 @@ let otherNetworkCalls = 0;
 let sendPollMode: "ok" | "reject" | "ambiguous" = "ok";
 // M9-D — programmable sendMessage outcome and a FAKE OpenAI endpoint (never the real one).
 let sendMessageMode: "ok" | "reject" | "ambiguous" = "ok";
-let aiMode: "ok" | "timeout" | "429" | "500" | "empty" = "ok";
+let aiMode: "ok" | "timeout" | "429" | "500" | "empty" | "incomplete" = "ok";
 let aiText = "";
 let aiRequests: Array<Record<string, unknown>> = [];
 let admins: Array<{ status: string; user: { id: number } }> = [];
@@ -89,7 +89,14 @@ async function fakeFetch(url: unknown, init?: RequestInit): Promise<Response> {
     aiRequests.push(JSON.parse(String(init?.body ?? "{}")));
     if (aiMode === "timeout") throw Object.assign(new Error("aborted"), { name: "AbortError" });
     if (aiMode === "429" || aiMode === "500") return { ok: false, status: Number(aiMode), json: async () => ({}) } as unknown as Response;
-    return { ok: true, status: 200, json: async () => ({ choices: [{ message: { content: aiMode === "empty" ? "" : aiText } }] }) } as unknown as Response;
+    if (!u.endsWith("/responses")) throw new Error("only the Responses API is expected");
+    if (aiMode === "incomplete") return { ok: true, status: 200, json: async () => ({ status: "incomplete", incomplete_details: { reason: "max_output_tokens" }, output: [] }) } as unknown as Response;
+    const text = aiMode === "empty" ? "" : aiText;
+    return {
+      ok: true,
+      status: 200,
+      json: async () => ({ status: "completed", output: [{ type: "reasoning", summary: [] }, { type: "message", role: "assistant", content: [{ type: "output_text", text }] }] }),
+    } as unknown as Response;
   }
   if (!u.startsWith("https://api.telegram.org/bot")) {
     otherNetworkCalls++;
@@ -1454,7 +1461,7 @@ describe("M9-D — recap", () => {
     vi.stubEnv("OPENAI_API_KEY", "sk-itest");
     vi.stubEnv("OPENAI_BASE_URL", "https://ai.itest/v1");
     vi.stubEnv("OPENAI_MODEL", "itest-model");
-    for (const [mode, code] of [["timeout", "TIMEOUT"], ["429", "RATE_LIMITED"], ["500", "PROVIDER_ERROR"], ["empty", "EMPTY"]] as const) {
+    for (const [mode, code] of [["timeout", "TIMEOUT"], ["429", "RATE_LIMITED"], ["500", "PROVIDER_ERROR"], ["empty", "EMPTY"], ["incomplete", "INCOMPLETE"]] as const) {
       aiMode = mode;
       expect(await pgJson(id, { action: "generate_recap" }), mode).toMatchObject({ status: 503, body: { code, fallback: standard } });
     }
@@ -1465,7 +1472,9 @@ describe("M9-D — recap", () => {
     // 29: the provider got the verified facts only.
     const sent = aiRequests.at(-1)!;
     expect(sent.model).toBe("itest-model");
-    const userMsg = (sent.messages as Array<{ role: string; content: string }>).find((x) => x.role === "user")!.content;
+    expect(sent).toMatchObject({ store: false, reasoning: { effort: "low" }, text: { format: { type: "text" } } });
+    expect(sent).not.toHaveProperty("tools");
+    const userMsg = sent.input as string;
     expect(JSON.parse(userMsg)).toEqual({ sport: "Soccer", date: "2026-10-12", venue: null, teams: [{ name: "Team 1", score: 7 }, { name: "Team 2", score: 5 }], outcome: { kind: "WIN", winner: "Team 1" }, scoreLine: "7–5", mvp: ["A1 Player"], participants: 4 });
     // The facts payload carries no private data; the whole request carries no ids, emails, Telegram ids or the key.
     expect(userMsg).not.toMatch(/ga-p\d|other@|example\.test|rating|stamina|GOOD|EXCELLENT|FAIR|111|222|userId|telegram/i);

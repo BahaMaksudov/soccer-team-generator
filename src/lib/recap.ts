@@ -12,6 +12,8 @@ import { AiError, openAiCompleter, type AiErrorCode, type ChatCompleter } from "
  */
 
 export const RECAP_MAX_LENGTH = 1200;
+/** Responses API max_output_tokens for one recap (reasoning + visible text). */
+export const RECAP_MAX_OUTPUT_TOKENS = 1000;
 
 export type RecapFacts = {
   sport: string;
@@ -116,6 +118,7 @@ const FAILURE_MESSAGE: Record<RecapFailCode, string> = {
   PROVIDER_ERROR: "The AI service had a problem. Try again, or use the standard recap.",
   EMPTY: "The AI returned nothing usable. Try again, or use the standard recap.",
   INVALID: "The AI returned nothing usable. Try again, or use the standard recap.",
+  INCOMPLETE: "The AI recap was cut off. Try again, or use the standard recap.",
   TOO_LONG: "The AI recap was too long. Try again, or use the standard recap.",
   INCONSISTENT: "The AI recap did not match the result. Try again, or use the standard recap.",
 };
@@ -125,7 +128,8 @@ export async function generateAiRecap(facts: RecapFacts, complete: ChatCompleter
   const fail = (code: RecapFailCode): AiRecapResult => ({ ok: false, code, message: FAILURE_MESSAGE[code] });
   let raw: string;
   try {
-    raw = await complete({ system: RECAP_SYSTEM_PROMPT, user: JSON.stringify(facts), maxTokens: 300 });
+    // max_output_tokens covers reasoning + text; the visible recap is still capped at RECAP_MAX_LENGTH characters.
+    raw = await complete({ system: RECAP_SYSTEM_PROMPT, user: JSON.stringify(facts), maxTokens: RECAP_MAX_OUTPUT_TOKENS });
   } catch (e) {
     return fail(e instanceof AiError ? e.code : "PROVIDER_ERROR");
   }

@@ -612,8 +612,11 @@ call the same functions.
   aggregate counts only (never who voted for whom). MVP polls never feed
   attendance and attendance polls never feed MVP.
 - **Recap:** deterministic fact recap always available. AI (optional,
-  server-only `src/lib/ai/openai.ts`; `OPENAI_API_KEY`, `OPENAI_MODEL`
-  default `gpt-4o-mini`, `OPENAI_BASE_URL`; 15 s timeout) receives ONLY an
+  server-only `src/lib/ai/openai.ts`, OpenAI **Responses API**
+  `POST /v1/responses` — no tools, `store: false`, low reasoning effort,
+  `max_output_tokens` 1000; `OPENAI_API_KEY`, `OPENAI_MODEL` default
+  `gpt-6-luna`; 15 s timeout; incomplete/failed/refused/empty/malformed
+  responses fall back) receives ONLY an
   allow-listed facts object (`buildRecapFacts`: sport, date, venue, team
   labels + scores, winner/draw computed by the app, published MVP names,
   participant count). Output is sanitized to plain text, ≤ 1,200 chars and
