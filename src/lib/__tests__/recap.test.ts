@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { buildRecapFacts, contradictsFacts, deterministicRecap, generateAiRecap, RECAP_MAX_OUTPUT_TOKENS, RECAP_SYSTEM_PROMPT, sanitizeRecapText, type RecapFacts } from "@/lib/recap";
+import { buildRecapFacts, contradictsFacts, deterministicRecap, generateAiRecap, RECAP_MAX_OUTPUT_TOKENS, RECAP_SYSTEM_PROMPT, sanitizeRecapText, unsupportedClaims, type RecapFacts } from "@/lib/recap";
 import { AiError, DEFAULT_OPENAI_MODEL, extractResponseText, openAiCompleter } from "@/lib/ai/openai";
 
 /** M9-D — recap facts, deterministic recap and the AI language layer (no live AI calls). */
@@ -83,11 +83,15 @@ describe("AI output validation", () => {
     expect(contradictsFacts("Team 2 fell 5-7.", FACTS)).toBe(false);
     expect(contradictsFacts("Team 1 won 8–5!", FACTS)).toBe(true);
   });
-  it("the system prompt forbids invention, score/MVP changes and insults", () => {
-    for (const rule of ["ONLY the facts", "Do NOT invent", "goals", "assists", "saves", "weather", "injuries", "quotes", "statistics", "Never change", "Player of the Match", "No insults", "at most two emojis"]) {
-      expect(RECAP_SYSTEM_PROMPT).toContain(rule);
-    }
-  });
+  it("the system prompt: match-day voice personality + strict factual boundary", () => {
+    const p = RECAP_SYSTEM_PROMPT;
+    expect(p).toContain("You are the match-day voice of Team Balance Pro");
+    for (const tone of ["Fun, energetic, playful and conversational", "friendly banter", "Never corporate, robotic or database-like", "insulting", "bragging rights", "until the rematch"]) expect(p, tone).toContain(tone);
+    for (const rule of ["ONLY source of truth", "Never change or reinterpret", "simple arithmetic", "eight goals hit the scoreboard", "a two-goal win", "Never say why they won", "If `mvp` is empty, do not mention an MVP", "do not explain how it ended level", "more than two teams"]) expect(p, rule).toContain(rule);
+    for (const banned of ["goal scorers", "assists", "saves", "tackles", "cards", "penalties", "overtime", "halftime scores", "lead changes", "comebacks", "individual performances", "specific plays", "injuries", "weather", "crowd or player behavior", "rivalries", "previous results", "records or streaks"]) expect(p, banned).toContain(banned);
+    for (const style of ["2–4 short sentences", "1–3 fitting emojis", "Vary the opening", "no heading", "no markdown", "no JSON", "no explanations or disclaimers", "Return only the recap text."]) expect(p, style).toContain(style);
+    expect(p).not.toMatch(/cplayer|@|rating|stamina/i); // the prompt itself carries no data
+});
 });
 
 describe("generateAiRecap — mocked provider (never live)", () => {
@@ -196,5 +200,60 @@ describe("openAiCompleter — Responses API over HTTP (mocked fetch)", () => {
     const slow = (_u: string, init: RequestInit) =>
       new Promise<Response>((_res, rej) => init.signal!.addEventListener("abort", () => rej(Object.assign(new Error("aborted"), { name: "AbortError" }))));
     await expect(openAiCompleter({ OPENAI_API_KEY: "k" }, slow as never, 20)(input)).rejects.toMatchObject({ code: "TIMEOUT" });
+  });
+});
+
+// ------------------------------------------------------------------ personality upgrade: fact guards
+const FORE: RecapFacts = buildRecapFacts({ sportLabel: "Soccer", date: "2026-10-05", locationName: "Forekicks", scores: [{ teamNumber: 1, score: 5 }, { teamNumber: 2, score: 3 }], mvpNames: [], participantCount: 10 })!;
+const FORE_MVP: RecapFacts = { ...FORE, mvp: ["Azizbek"] };
+const DRAW: RecapFacts = buildRecapFacts({ sportLabel: "Soccer", date: "2026-10-05", scores: [{ teamNumber: 1, score: 4 }, { teamNumber: 2, score: 4 }], participantCount: 10 })!;
+const THREE: RecapFacts = buildRecapFacts({ sportLabel: "Soccer", date: "2026-10-05", scores: [{ teamNumber: 1, score: 3 }, { teamNumber: 2, score: 1 }, { teamNumber: 3, score: 2 }], participantCount: 15 })!;
+
+describe("AI recap personality — playful phrasing of verified facts is accepted", () => {
+  it.each([
+    [FORE, "Forekicks delivered! Team 1 grabbed the bragging rights with a 5–3 win — eight goals hit the scoreboard. Team 2, the rematch awaits ⚽🔥"],
+    [FORE, "A busy scoreboard at Forekicks: Team 1 edged it 5–3 in a two-goal win. Plenty to talk about in the group chat until next week! 😄"],
+    [FORE_MVP, "Team 1 takes it 5–3 at Forekicks! Player of the Match honors go to Azizbek! 🏆 Team 2 — back to the drawing board."],
+    [DRAW, "No bragging rights this week — Team 1 and Team 2 finished 4–4. Eight goals and still no winner, so the rematch will have to settle it. ⚽"],
+    [THREE, "Three teams, one winner: Team 1 topped the table with 3, Team 3 grabbed 2 and Team 2 got 1. Bragging rights secured! 🏅"],
+  ] as const)("%#: accepted", async (facts, text) => {
+    expect(unsupportedClaims(text, facts)).toBeNull();
+    expect(await generateAiRecap(facts, async () => text)).toEqual({ ok: true, text });
+  });
+});
+
+describe("AI recap personality — unsupported or changed facts fall back safely", () => {
+  it.each([
+    ["changed score", FORE, "Team 1 won 6–3 at Forekicks!"],
+    ["comeback story", FORE, "What a comeback from Team 1, winning 5–3!"],
+    ["came back", FORE, "Team 1 came back to win 5–3."],
+    ["hat-trick", FORE, "A hat-trick sealed Team 1's 5–3 win."],
+    ["saves", FORE, "Big saves kept Team 1 ahead, 5–3."],
+    ["assists", FORE, "Slick assists all night as Team 1 won 5–3."],
+    ["halftime", FORE, "Level at half-time, Team 1 pulled away 5–3."],
+    ["penalty", FORE, "A late penalty decided it, 5–3."],
+    ["injury", FORE, "Despite an injury, Team 1 won 5–3."],
+    ["card", FORE, "A yellow card couldn't stop Team 1, 5–3."],
+    ["invented MVP (none published)", FORE, "Team 1 won 5–3 and Player of the Match goes to Azizbek! 🏆"],
+    ["wrong MVP name", FORE_MVP, "Team 1 won 5–3. Player of the Match: Ravshan! 🏆"],
+    ["draw turned into a win", DRAW, "Team 2 won it 4–4 on vibes alone."],
+    ["loser declared winner", FORE, "Team 2 beat Team 1 5–3!"],
+  ] as const)("%s → INCONSISTENT (standard recap offered)", async (_n, facts, text) => {
+    const r = await generateAiRecap(facts, async () => text);
+    expect(r).toMatchObject({ ok: false, code: "INCONSISTENT" });
+    if (!r.ok) expect(r.message).toMatch(/standard recap/);
+  });
+
+  it("the MVP name in the payload comes only from published MVP facts (no MVP published → empty list)", () => {
+    expect(FORE.mvp).toEqual([]);
+    expect(buildRecapFacts({ date: "2026-10-05", scores: [{ teamNumber: 1, score: 5 }, { teamNumber: 2, score: 3 }], mvpNames: ["Azizbek"], candidates: ["Ravshan"], votes: { Ravshan: 3 } })!.mvp).toEqual(["Azizbek"]);
+  });
+
+  it("the provider still receives exactly the facts JSON — nothing more", async () => {
+    const complete = vi.fn(async (_input: { system: string; user: string; maxTokens: number }) => "Team 1 won 5–3! ⚽");
+    await generateAiRecap(FORE, complete);
+    const call = complete.mock.calls[0][0];
+    expect(JSON.parse(call.user)).toEqual({ sport: "Soccer", date: "2026-10-05", venue: "Forekicks", teams: [{ name: "Team 1", score: 5 }, { name: "Team 2", score: 3 }], outcome: { kind: "WIN", winner: "Team 1" }, scoreLine: "5–3", mvp: [], participants: 10 });
+    expect(call.system).toBe(RECAP_SYSTEM_PROMPT);
   });
 });

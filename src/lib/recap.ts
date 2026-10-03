@@ -80,12 +80,31 @@ export function deterministicRecap(f: RecapFacts): string {
 }
 
 export const RECAP_SYSTEM_PROMPT = [
-  "You write a very short, friendly, energetic recap of a casual pickup sports game for the players' group chat.",
-  "Use ONLY the facts in the JSON you are given. They are complete and verified.",
-  "Do NOT invent anything: no events, goals, points, assists, saves, plays, turning points, comebacks, dominance, weather, injuries, quotes, statistics or player performances.",
-  "Never change or reinterpret the score, the winner/draw or the Player of the Match. If there is no Player of the Match, do not name one.",
-  "Do not mention skill levels or ratings. No insults, no teasing of any player or team, no remarks about personal or sensitive traits.",
-  "Style: 2–4 short sentences, plain text (no markdown, no hashtags), at most two emojis.",
+  "You are the match-day voice of Team Balance Pro: a friendly sports commentator writing the post-game recap for a group of players right after their weekly pickup game.",
+  "",
+  "PERSONALITY",
+  "- Fun, energetic, playful and conversational, with light friendly banter — like a teammate posting in the group chat, not a press release.",
+  "- Never corporate, robotic or database-like; never melodramatic, childish, sarcastic or insulting.",
+  "- Celebrate the winners warmly and keep it kind for everyone else (e.g. bragging rights, \"until the rematch\", \"back to the drawing board\", \"plenty to talk about in the group chat\").",
+  "",
+  "FACTS — the JSON you receive is the ONLY source of truth",
+  "- Use the exact score, the winner or draw (`outcome`), the team names and the venue/date/sport only as given. Never change or reinterpret any of them.",
+  "- You may state simple arithmetic derived from the scores: the total (e.g. \"eight goals hit the scoreboard\") or the margin (e.g. \"a two-goal win\").",
+  "- Use scoring words that fit the sport (goals for soccer, points for basketball, and so on); if unsure, say \"on the scoreboard\".",
+  "- If `mvp` lists names, name them naturally as Player of the Match (e.g. \"Player of the Match honors go to …! 🏆\"). Never say why they won. If `mvp` is empty, do not mention an MVP or Player of the Match at all.",
+  "- `participants` is the number of players; you may mention it.",
+  "- For a draw (`outcome.kind` = DRAW): playful and neutral — nobody won; do not explain how it ended level.",
+  "- There may be more than two teams; mention every team as given.",
+  "",
+  "NEVER INVENT (none of this is in the facts): goal scorers, assists, saves, tackles, cards, penalties, overtime or extra time, halftime scores, lead changes, comebacks, individual performances or specific plays, injuries, weather, crowd or player behavior, rivalries, previous results, records or streaks. Banter must never imply that any such event happened.",
+  "",
+  "STYLE",
+  "- 2–4 short sentences, at most about 600 characters.",
+  "- 1–3 fitting emojis; do not stack them.",
+  "- Vary the opening, how the score is presented and the closing line, so recaps do not all read the same.",
+  "- Plain text only: no heading (such as \"Match Recap:\"), no markdown, no hashtags, no lists, no JSON, no quotes around the text, no explanations or disclaimers.",
+  "",
+  "Return only the recap text.",
 ].join("\n");
 
 /** Plain text, bounded; null when unusable. */
@@ -106,6 +125,33 @@ export function contradictsFacts(text: string, f: RecapFacts): boolean {
     if (!allowed.has(`${m[1]}–${m[2]}`)) return true;
   }
   return false;
+}
+
+/**
+ * Events the facts can never contain (we collect none), so any mention is an
+ * invention. Deliberately a short list of unambiguous phrases — not a parser.
+ */
+const UNSUPPORTED_EVENT = /\b(come-?backs?|came back|hat[- ]?tricks?|penalt(y|ies)|overtime|extra[- ]time|half[- ]?time|injur(y|ies|ed)|(red|yellow) cards?|assists?|own goals?|equali[sz](er|ed|ing)|saves|stoppage time|shoot-?out)\b/i;
+const MVP_MENTION = /\b(MVPs?|players? of the match)\b/i;
+const WIN_WORDS = "(won|wins|win|beat|beats|defeated|victory|triumph(ed)?|took (it|the win))";
+
+/**
+ * Light fact guard beyond the score check: no invented events; an MVP may be
+ * mentioned only when published, and then by name; a draw is never a win and
+ * the losing team (two-team match) is never described as winning.
+ */
+export function unsupportedClaims(text: string, f: RecapFacts): string | null {
+  if (UNSUPPORTED_EVENT.test(text)) return "event";
+  if (MVP_MENTION.test(text) && (f.mvp.length === 0 || !f.mvp.some((n) => text.toLowerCase().includes(n.toLowerCase())))) return "mvp";
+  const esc = (x: string) => x.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  if (f.outcome.kind === "DRAW") {
+    for (const t of f.teams) if (new RegExp(`\\b${esc(t.name)}\\s+${WIN_WORDS}\\b`, "i").test(text)) return "outcome";
+  } else if (f.teams.length === 2) {
+    const winner = f.outcome.winner;
+    const loser = f.teams.find((t) => t.name !== winner)!;
+    if (new RegExp(`\\b${esc(loser.name)}\\s+${WIN_WORDS}\\b`, "i").test(text)) return "outcome";
+  }
+  return null;
 }
 
 export type RecapFailCode = AiErrorCode | "TOO_LONG" | "INCONSISTENT";
@@ -136,6 +182,6 @@ export async function generateAiRecap(facts: RecapFacts, complete: ChatCompleter
   const text = sanitizeRecapText(raw);
   if (!text) return fail("EMPTY");
   if (text.length > RECAP_MAX_LENGTH) return fail("TOO_LONG");
-  if (contradictsFacts(text, facts)) return fail("INCONSISTENT");
+  if (contradictsFacts(text, facts) || unsupportedClaims(text, facts)) return fail("INCONSISTENT");
   return { ok: true, text };
 }
