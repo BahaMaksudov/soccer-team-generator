@@ -13,6 +13,7 @@ import {
   zodErrorResponse,
 } from "@/lib/validation";
 import { scopePlayerIds, suggestedPlayerIds } from "@/lib/telegramChatScope";
+import { canonicalMatchPath } from "@/lib/matchPaths";
 import { countAttendance, defaultSelection, effectiveAttendance, recordParticipantResponse, type AttendanceRow } from "@/lib/attendance";
 
 /**
@@ -227,6 +228,11 @@ export async function getMatchView(context: TenantContext, matchId: string): Pro
       ? { id: generation.id, date: formatYMDFromDate(generation.date), updatedAt: generation.updatedAt.toISOString(), teams: publishedTeamsOf(generation.teamsJson) }
       : null,
     scope: { chatSelected: selectedChat !== null, playerIds: scopeIds },
+    // M9-C — the player-facing Match page (no token: LINK Groups share it via the Group's share link).
+    playerPage: {
+      path: canonicalMatchPath(context.organization.slug, context.activeGroup.slug, matchId),
+      visibility: (await prisma.group.findFirst({ where: { id: groupId }, select: { visibility: true } }))?.visibility ?? "PRIVATE",
+    },
     telegram: {
       connected: chatCount > 0,
       chats: chats.map((c) => ({ ref: c.id, title: c.title || "Telegram group" })),

@@ -10,6 +10,10 @@
  * Telegram chat ↔ Player default scope, Match chat selection, linked-voter
  * suggestions, soft disconnect/reconnect, bot removal and bind-code hardening.
  *
+ * M9-C (appended below): player-facing Match page access (PUBLIC / LINK via
+ * share link / PRIVATE via membership or claim), allow-listed DTO, published
+ * teams only, same-day isolation and match-specific Telegram links.
+ *
  * Guarded local TEST database only. Telegram is a programmable stub; any
  * other network call is counted and forbidden.
  */
@@ -48,6 +52,9 @@ import { loadPublicGroupHomeData } from "@/app/g/[organizationSlug]/[groupSlug]/
 import { assignmentKey } from "@/lib/teamAssignment";
 import * as chatScopeRoute from "@/app/api/admin/o/[organizationSlug]/g/[groupSlug]/channels/telegram/[ref]/players/route";
 import * as matchChatRoute from "@/app/api/admin/o/[organizationSlug]/g/[groupSlug]/matches/[matchId]/telegram-chat/route";
+import * as shareMatchRoute from "@/app/api/share/match/route";
+import { loadMatchForViewer } from "@/lib/matchPage";
+import { generateToken } from "@/lib/secureToken";
 
 const A = { organizationSlug: "org-a", groupSlug: "group-a" };
 const B = { organizationSlug: "org-b", groupSlug: "group-b" };
@@ -954,5 +961,239 @@ describe("M9-B — disconnect / reconnect / bot removal / bind codes", () => {
     expect(stringify(await prisma.telegramChatBindCode.findMany())).not.toMatch(new RegExp(`${first.code}|${second.code}`));
     await signInAs("member@example.test");
     expect((await channelsRoute.POST(json("POST", {}), g(A))).status).toBe(404);
+  });
+});
+
+// =================================================================== M9-C
+const BASE = "https://tbp.itest";
+const pageView = (matchId: string, grp = A) => loadMatchForViewer({ ...grp, matchId });
+const shareView = async (token: unknown, matchId: unknown) => {
+  const res = await shareMatchRoute.POST(json("POST", { token, matchId }));
+  return { status: res.status, headers: res.headers, body: await res.json() };
+};
+const setVisibility = (id: string, visibility: "PUBLIC" | "LINK" | "PRIVATE") => prisma.group.update({ where: { id }, data: { visibility } });
+async function shareLink(groupId: string) {
+  const token = generateToken();
+  const row = await prisma.groupShareLink.create({ data: { groupId, tokenHash: hashToken(token) } });
+  return { token, id: row.id };
+}
+async function publishFor(matchId: string, teams: Array<{ teamNumber: number; players: Array<{ id: string }> }>, date = "2026-10-12") {
+  expect((await publishRoute.POST(json("POST", { date, teams, matchId }), g(A))).status).toBe(200);
+}
+/** Anything private that must never reach a player-facing response. */
+const FORBIDDEN = /rating|stamina|metrics|analysis|userId|chatId|telegram|email|ga-p\d|"id"|GOOD|EXCELLENT|FAIR|tokenHash|engineVersion/i;
+
+describe("M9-C — PUBLIC Match page", () => {
+  it("anonymous viewer sees the exact Match with published names + roles only; never ratings, ids, identity, metrics or a preview", async () => {
+    await signInAs("owner@example.test");
+    const id = (await createMatch({ date: "2026-10-12", startTime: "20:00", locationName: "Field 2" })).data.match.id;
+    expect(await pageView(id)).toMatchObject({ teamsPublished: false, teams: [] }); // not published yet
+    await publishFor(id, teamsOf([["ga-p1", "ga-p2"], ["ga-p3", "ga-p4"]]));
+    // Regenerate B (preview only) — the page keeps A.
+    const preview = await (await generateRoute.POST(json("POST", { teamCount: 2, date: "2026-10-12", selectedIds: ["ga-p1", "ga-p2", "ga-p5", "ga-p6"] }), g(A))).json();
+    session = null;
+    const v = await pageView(id);
+    expect(v).toEqual({
+      group: { name: "Group A", teamName: "", organizationName: "Org A", sportLabel: "Soccer" },
+      match: { date: "2026-10-12", startTime: "20:00", locationName: "Field 2", status: "SCHEDULED" },
+      teamsPublished: true,
+      teams: [
+        { teamNumber: 1, players: [{ name: "A1 Player", role: "Goalkeeper" }, { name: "A2 Player", role: "Forward" }] },
+        { teamNumber: 2, players: [{ name: "A3 Player", role: "Forward" }, { name: "A4 Player", role: "Forward" }] },
+      ],
+    });
+    expect(JSON.stringify(v)).not.toMatch(FORBIDDEN);
+    // Publish B → the page shows B.
+    await signInAs("owner@example.test");
+    await publishFor(id, preview.teams.map((t: { teamNumber: number; players: Array<{ id: string }> }) => ({ teamNumber: t.teamNumber, players: t.players.map((p) => ({ id: p.id })) })));
+    session = null;
+    const names = (await pageView(id))!.teams.flatMap((t) => t.players.map((p) => p.name)).sort();
+    expect(names).toEqual(["A1 Player", "A2 Player", "A5 Player", "A6 Player"]);
+  });
+
+  it("a Match of another Group, an unknown Match and a canceled Match: safe states", async () => {
+    await signInAs("owner-b@example.test");
+    const foreign = (await createMatch({ date: "2026-10-12" }, B)).data.match.id;
+    await setVisibility("gb", "PUBLIC");
+    session = null;
+    expect(await pageView(foreign)).toBeNull(); // B's Match under A's slugs
+    expect(await pageView("does-not-exist")).toBeNull();
+    expect(await pageView(foreign, { organizationSlug: "org-a", groupSlug: "group-b" })).toBeNull();
+    expect(await pageView(foreign, B)).toMatchObject({ teamsPublished: false });
+    await signInAs("owner@example.test");
+    const id = (await createMatch()).data.match.id;
+    await matchRoute.PATCH(json("PATCH", { status: "CANCELED" }), gm(A, id));
+    session = null;
+    expect((await pageView(id))!.match.status).toBe("CANCELED");
+  });
+
+  it("P4 (outside the selected Telegram chat's scope) appears when published — the page shows the published teams, not chat scope", async () => {
+    await signInAs("owner@example.test");
+    const { chatA } = await twoChats();
+    await scopeAdd(chatA, "ga-p1");
+    const id = (await createMatch()).data.match.id;
+    await selectChat(id, chatA);
+    await publishFor(id, teamsOf([["ga-p1"], ["ga-p4"]]));
+    session = null;
+    expect((await pageView(id))!.teams.map((t) => t.players.map((p) => p.name))).toEqual([["A1 Player"], ["A4 Player"]]);
+  });
+});
+
+describe("M9-C — PRIVATE Match page", () => {
+  it("anonymous, unrelated, other-Organization and other-Group claimed users are denied; OWNER, ADMIN, MEMBER and the Group's claimed Player are allowed", async () => {
+    await signInAs("owner@example.test");
+    const id = (await createMatch()).data.match.id;
+    await publishFor(id, teamsOf([["ga-p1"], ["ga-p2"]]));
+    await setVisibility("ga", "PRIVATE");
+    const other = await prisma.user.findUniqueOrThrow({ where: { email: "other@example.test" } });
+
+    session = null;
+    expect(await pageView(id)).toBeNull();
+    await signInAs("other@example.test"); // no membership, no claim
+    expect(await pageView(id)).toBeNull();
+    await signInAs("owner-b@example.test"); // another Organization
+    expect(await pageView(id)).toBeNull();
+    await prisma.player.update({ where: { id: "gb-p1" }, data: { userId: other.id } }); // claimed Player of ANOTHER Group
+    await signInAs("other@example.test");
+    expect(await pageView(id)).toBeNull();
+
+    for (const email of ["owner@example.test", "admin@example.test", "member@example.test", "player@example.test"]) {
+      await signInAs(email);
+      const v = await pageView(id);
+      expect(v, email).not.toBeNull();
+      expect(v!.teams).toHaveLength(2);
+      expect(JSON.stringify(v)).not.toMatch(FORBIDDEN);
+    }
+    // A share link never opens a PRIVATE Group.
+    const { token } = await shareLink("ga");
+    expect((await shareView(token, id)).status).toBe(404);
+  });
+});
+
+describe("M9-C — LINK Match page (share link)", () => {
+  it("valid token → allowed (no-store, noindex); missing/invalid/revoked/foreign token or a Match of another Group → the same 404; bare URL is not public", async () => {
+    await signInAs("owner@example.test");
+    const id = (await createMatch()).data.match.id;
+    await publishFor(id, teamsOf([["ga-p1"], ["ga-p2"]]));
+    await signInAs("owner-b@example.test");
+    const foreign = (await createMatch({ date: "2026-10-12" }, B)).data.match.id;
+    await setVisibility("ga", "LINK"); // gb is LINK by default
+    const a = await shareLink("ga");
+    const b = await shareLink("gb");
+
+    session = null;
+    expect(await pageView(id)).toBeNull(); // bare canonical URL, anonymous
+    const ok = await shareView(a.token, id);
+    expect(ok.status).toBe(200);
+    expect(ok.headers.get("cache-control")).toBe("no-store");
+    expect(ok.headers.get("x-robots-tag")).toContain("noindex");
+    expect(ok.body.teams.map((t: { players: Array<{ name: string }> }) => t.players[0].name)).toEqual(["A1 Player", "A2 Player"]);
+    expect(JSON.stringify(ok.body)).not.toMatch(FORBIDDEN);
+    expect(JSON.stringify(ok.body)).not.toContain(a.token);
+
+    const denied = [
+      await shareView(undefined, id),
+      await shareView("", id),
+      await shareView("not-a-token", id),
+      await shareView(generateToken(), id), // well-formed, unknown
+      await shareView(b.token, id), // Group B's token for Group A's Match
+      await shareView(a.token, foreign), // valid A token, Match of Group B
+      await shareView(a.token, undefined),
+    ];
+    for (const r of denied) expect(r).toMatchObject({ status: 404, body: { error: "This link is not valid." } });
+    await prisma.groupShareLink.update({ where: { id: a.id }, data: { revokedAt: new Date() } });
+    expect((await shareView(a.token, id)).status).toBe(404); // revoked
+    // Signed-in members still use the canonical URL.
+    await signInAs("member@example.test");
+    expect(await pageView(id)).not.toBeNull();
+  });
+});
+
+describe("M9-C — Telegram 'View teams online' targets the exact Match", () => {
+  const lastText = () => String(sends("sendMessage").at(-1)?.body.text ?? "");
+
+  it("PUBLIC: same-day Matches A/B get their own Match URLs (never the Group page, never by date); legacy teams keep the Group page; the content hash ignores the link", async () => {
+    vi.stubEnv("APP_BASE_URL", BASE);
+    await signInAs("owner@example.test");
+    const a = (await createMatch({ date: "2026-10-10", startTime: "18:00" })).data.match.id;
+    const b = (await createMatch({ date: "2026-10-10", startTime: "21:00" })).data.match.id;
+    await publishFor(a, teamsOf([["ga-p1", "ga-p2"], ["ga-p3", "ga-p4"]]), "2026-10-10");
+    await publishFor(b, teamsOf([["ga-p1", "ga-p3"], ["ga-p2", "ga-p5"]]), "2026-10-10");
+    await postPoll(a);
+    await postPoll(b);
+    const genA = await prisma.teamGeneration.findUniqueOrThrow({ where: { matchId: a } });
+    const genB = await prisma.teamGeneration.findUniqueOrThrow({ where: { matchId: b } });
+    const pollA = (await prisma.telegramPoll.findFirstOrThrow({ where: { matchId: a } })).pollId;
+    const pollB = (await prisma.telegramPoll.findFirstOrThrow({ where: { matchId: b } })).pollId;
+
+    expect((await closePostRoute.POST(json("POST", { pollId: pollA, teamGenerationId: genA.id }), g(A))).status).toBe(200);
+    expect(lastText()).toContain(`${BASE}/g/org-a/group-a/m/${a}`);
+    expect(lastText()).toContain(team1Block(genA.teamsJson));
+    expect(lastText()).not.toContain(b);
+    expect((await closePostRoute.POST(json("POST", { pollId: pollB, teamGenerationId: genB.id }), g(A))).status).toBe(200);
+    expect(lastText()).toContain(`${BASE}/g/org-a/group-a/m/${b}`);
+    expect(lastText()).not.toContain(`/m/${a}`);
+    expect(lastText()).not.toMatch(new RegExp(`${BASE}/g/org-a/group-a"`)); // not the Group history page
+
+    // Content hash = body WITHOUT the link: the stored hash equals the link-free body's, so the delivery reads "posted".
+    const status = async (pollId: string, genId: string) =>
+      (await (await deliveryRoute.GET(new Request(`http://itest.local/?pollId=${pollId}&teamGenerationId=${genId}`), g(A))).json()).state;
+    expect(await status(pollA, genA.id)).toBe("posted");
+    const deliveryA = await prisma.messageDelivery.findFirstOrThrow({ where: { telegramPollId: pollA, eventType: "TEAMS_PUBLISHED" } });
+    expect(stringify(deliveryA)).not.toContain(`/m/${a}`); // no URL stored
+    // A repeat post of the same teams is a no-op (dedupe unchanged).
+    const sent = sends("sendMessage").length;
+    expect((await (await closePostRoute.POST(json("POST", { pollId: pollA, teamGenerationId: genA.id }), g(A))).json()).status).toBe("already_posted");
+    expect(sends("sendMessage")).toHaveLength(sent);
+
+    // Legacy (no Match) teams still link to the Group page.
+    expect((await publishRoute.POST(json("POST", { date: "2026-10-20", teams: teamsOf([["ga-p1"], ["ga-p2"]]) }), g(A))).status).toBe(200);
+    const legacy = await prisma.teamGeneration.findFirstOrThrow({ where: { groupId: "ga", matchId: null } });
+    await prisma.telegramPoll.create({ data: { pollId: "legacy-poll", chatId: -1001n, question: "Q", optionsJson: "[]", groupId: "ga", pollDate: new Date("2026-10-20T00:00:00Z") } });
+    expect((await closePostRoute.POST(json("POST", { pollId: "legacy-poll", teamGenerationId: legacy.id }), g(A))).status).toBe(200);
+    expect(lastText()).toContain(`${BASE}/g/org-a/group-a`);
+    expect(lastText()).not.toContain("/m/");
+  });
+
+  it("LINK: the organizer's current share link becomes /share/m/<matchId>#token; invalid or foreign links are refused; without one there is no link. PRIVATE: no link at all", async () => {
+    vi.stubEnv("APP_BASE_URL", BASE);
+    await signInAs("owner@example.test");
+    await setVisibility("ga", "LINK");
+    const id = (await createMatch()).data.match.id;
+    await publishFor(id, teamsOf([["ga-p1"], ["ga-p2"]]));
+    await postPoll(id);
+    const gen = await prisma.teamGeneration.findUniqueOrThrow({ where: { matchId: id } });
+    const pollId = (await prisma.telegramPoll.findFirstOrThrow({ where: { matchId: id } })).pollId;
+    const { token } = await shareLink("ga");
+    const foreignToken = (await shareLink("gb")).token;
+    const post = (body: Record<string, unknown>) => closePostRoute.POST(json("POST", { pollId, teamGenerationId: gen.id, ...body }), g(A));
+
+    expect((await post({ shareUrl: `${BASE}/share#${foreignToken}` })).status).toBe(400); // another Group's link
+    expect((await post({ shareUrl: `https://evil.example/share#${token}` })).status).toBe(400);
+    expect(sends("sendMessage")).toHaveLength(0);
+    expect((await post({ shareUrl: `${BASE}/share#${token}` })).status).toBe(200);
+    expect(lastText()).toContain(`${BASE}/share/m/${id}#${token}`);
+    expect(lastText()).not.toContain("/g/org-a");
+    // The posted link really opens this Match (and only it).
+    session = null;
+    expect((await shareView(token, id)).status).toBe(200);
+    expect(await prisma.groupShareLink.count({ where: { groupId: "ga" } })).toBe(1); // no credential minted by posting
+
+    // PRIVATE: an updated post carries no URL, and nothing grants anonymous access.
+    await signInAs("owner@example.test");
+    await setVisibility("ga", "PRIVATE");
+    await publishFor(id, teamsOf([["ga-p2"], ["ga-p1"]]));
+    expect((await post({ intent: "post_updated", shareUrl: `${BASE}/share#${token}` })).status).toBe(200);
+    expect(lastText()).not.toMatch(/https?:\/\//);
+    session = null;
+    expect(await pageView(id)).toBeNull();
+    expect((await shareView(token, id)).status).toBe(404);
+  });
+
+  it("the organizer Match view exposes the player page path (no token) and the visibility", async () => {
+    await signInAs("owner@example.test");
+    const id = (await createMatch()).data.match.id;
+    const v = await view(id);
+    expect(v.playerPage).toEqual({ path: `/g/org-a/group-a/m/${id}`, visibility: "PUBLIC" });
   });
 });

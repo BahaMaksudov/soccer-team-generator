@@ -36,6 +36,7 @@ type MatchView = {
   generation: { id: string; date: string; updatedAt: string; teams: Array<{ teamNumber: number; players: Array<{ id: string; firstName: string; lastName: string; position: string }> }> } | null;
   // M9-B — selected chat's default player scope (ids only); chats/selection/suggestions are OWNER/ADMIN only.
   scope: { chatSelected: boolean; playerIds: string[] };
+  playerPage: { path: string; visibility: "PUBLIC" | "LINK" | "PRIVATE" };
   telegram: {
     connected: boolean;
     chats: Array<{ ref: number; title: string }>;
@@ -79,6 +80,9 @@ export default function MatchWorkspace({
   const [addedIds, setAddedIds] = useState<string[]>([]);
   const [showAll, setShowAll] = useState(false);
   const [addPick, setAddPick] = useState("");
+  // M9-C — LINK Groups: the organizer pastes the Group's CURRENT share link; the
+  // server validates it and links the post to this Match (/share/m/<id>#token).
+  const [shareUrl, setShareUrl] = useState("");
   const [edit, setEdit] = useState<{ date: string; startTime: string; locationName: string } | null>(null);
   // Telegram state of the PUBLISHED teams, from durable MessageDelivery content hashes (server).
   const [teamsDelivery, setTeamsDelivery] = useState<string | null>(null);
@@ -178,7 +182,7 @@ export default function MatchWorkspace({
       const res = await fetch(adminTenantApiPath({ organizationSlug, groupSlug, path: "/telegram/close-and-post" }), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ pollId: view.telegram.poll.pollId, teamGenerationId: published.id, intent }),
+        body: JSON.stringify({ pollId: view.telegram.poll.pollId, teamGenerationId: published.id, intent, ...(shareUrl.trim() ? { shareUrl: shareUrl.trim() } : {}) }),
       });
       const data = await res.json().catch(() => ({}));
       setMessage(res.ok ? (data.status === "already_posted" ? "These teams were already posted — nothing was sent again." : "Teams posted to Telegram.") : data?.error ?? "Could not post the teams.");
@@ -414,6 +418,26 @@ export default function MatchWorkspace({
         {published && !unpublishedPreviewOnScreen(panelMode) && (
           <div className="border rounded-lg p-3 text-sm space-y-2">
             <div className="text-emerald-700">Teams saved for this match.</div>
+            <div className="text-xs text-gray-600">
+              Player page:{" "}
+              {view.playerPage.visibility === "LINK" ? (
+                <>only through the group&apos;s share link (players without an account) or for signed-in members/claimed players: <a className="underline" href={view.playerPage.path} target="_blank" rel="noreferrer">open</a></>
+              ) : (
+                <>
+                  <a className="underline" href={view.playerPage.path} target="_blank" rel="noreferrer">{view.playerPage.path}</a>
+                  {view.playerPage.visibility === "PRIVATE" && " (signed-in members and claimed players only; Telegram posts carry no link)"}
+                </>
+              )}
+            </div>
+            {view.canManage && view.playerPage.visibility === "LINK" && view.telegram.poll?.pollId && teamsDelivery !== "posted" && (
+              <input
+                className="border rounded px-2 py-1 w-full text-xs"
+                placeholder="Optional: paste the group's current share link so the Telegram post links to this match"
+                value={shareUrl}
+                onChange={(e) => setShareUrl(e.target.value)}
+                autoComplete="off"
+              />
+            )}
             {view.canManage &&
               (view.telegram.poll?.pollId ? (
                 teamsDelivery === "posted" ? (

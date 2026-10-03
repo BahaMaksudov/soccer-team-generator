@@ -63,6 +63,8 @@ export default async function MyTeamsPage() {
                   {p.nextMatch.locationName ? ` · ${p.nextMatch.locationName}` : ""}
                 </div>
                 <MyAttendance matchId={p.nextMatch.id} status={p.nextMatch.myStatus} byOrganizer={p.nextMatch.myStatusByOrganizer} />
+                {/* M9-C — the Match page (claimed Players may view it even for LINK/PRIVATE Groups). */}
+                <Link className="text-sm underline" href={`${p.groupHref}/m/${encodeURIComponent(p.nextMatch.id)}`}>View match page</Link>
                 {p.nextMatch.myTeam && (
                   <div className="text-sm">
                     My team: Team #{p.nextMatch.myTeam.teamNumber} — <span className="text-gray-700">{p.nextMatch.myTeam.teammates.join(", ")}</span>

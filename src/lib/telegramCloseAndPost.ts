@@ -177,7 +177,7 @@ async function closeTelegramPoll(poll: PollRow, activeGroupId: string): Promise<
 
 type Validated = {
   poll: PollRow;
-  generation: { id: string; date: Date; updatedAt: Date };
+  generation: { id: string; date: Date; updatedAt: Date; matchId: string | null };
   body: string;
   current: CurrentContent;
   displayDate: string;
@@ -235,7 +235,7 @@ async function validatePostTarget(
     ok: true,
     value: {
       poll,
-      generation: { id: generation.id, date: generation.date, updatedAt: generation.updatedAt },
+      generation: { id: generation.id, date: generation.date, updatedAt: generation.updatedAt, matchId: generation.matchId },
       body,
       displayDate,
       teams,
@@ -251,7 +251,9 @@ async function validatePostTarget(
  */
 async function resolveViewUrl(
   context: TenantContext,
-  shareUrl: string | undefined
+  shareUrl: string | undefined,
+  // M9-C — the Match of the POSTED generation (never inferred); null for legacy by-date teams.
+  matchId: string | null
 ): Promise<{ ok: true; url: string | null } | { ok: false; response: NextResponse }> {
   const group = await prisma.group.findFirst({
     where: { id: context.activeGroup.id, organizationId: context.organization.id },
@@ -260,14 +262,14 @@ async function resolveViewUrl(
   const visibility = group?.visibility ?? "PRIVATE";
   const base = { organizationSlug: context.organization.slug, groupSlug: context.activeGroup.slug };
 
-  if (visibility === "PUBLIC") return { ok: true, url: playerFacingViewUrl({ ...base, visibility }) };
+  if (visibility === "PUBLIC") return { ok: true, url: playerFacingViewUrl({ ...base, visibility, matchId }) };
   if (visibility !== "LINK" || !shareUrl) return { ok: true, url: null };
 
   const invalid = {
     ok: false as const,
     response: NextResponse.json({ error: "That share link is not an active link for this group." }, { status: 400 }),
   };
-  const url = playerFacingViewUrl({ ...base, visibility, shareUrl });
+  const url = playerFacingViewUrl({ ...base, visibility, shareUrl, matchId });
   const token = url?.split("#")[1];
   if (!url || !isWellFormedToken(token)) return invalid;
   const link = await prisma.groupShareLink.findFirst({
@@ -326,9 +328,13 @@ export async function closePollAndPostTeamsForContext(context: TenantContext, re
 
   const validated = await validatePostTarget(context, pollId, teamGenerationId);
   if (!validated.ok) return validated.response;
-  const { poll, current, body, displayDate, teams } = validated.value;
+  const { poll, current, body, displayDate, teams, generation } = validated.value;
 
-  const view = await resolveViewUrl(context, shareUrl);
+  // M9-C — Match teams link to that Match's page; the content hash stays the
+  // body WITHOUT the link (contentHashOf(body)), so the URL form (Group page →
+  // Match page, or a rotated share token) never makes the same teams look
+  // "updated" and no token is ever hashed or stored.
+  const view = await resolveViewUrl(context, shareUrl, generation.matchId);
   if (!view.ok) return view.response;
 
   if (!process.env.TELEGRAM_BOT_TOKEN) {
