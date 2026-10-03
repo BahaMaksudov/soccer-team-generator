@@ -8,6 +8,7 @@ import {
   mvpMethodSwitchable,
   mvpStage,
   needsReplaceConfirmation,
+  summaryReadiness,
   syncedRecapText,
   type MvpMethod,
 } from "@/lib/postGameUi";
@@ -110,6 +111,7 @@ export default function PostGameSection({
   const tg = canManage && m;
   const needsShortlist = pg.participants.length > pg.mvpMaxCandidates && !pg.mvp?.started;
   const stage = mvpStage(pg, canManage, chosenMethod);
+  const readiness = summaryReadiness(pg, canManage);
   const switchable = canManage && mvpMethodSwitchable(pg);
 
   // Recap: replacing the textarea asks first only when it holds the organizer's own unsaved edits.
@@ -398,16 +400,36 @@ export default function PostGameSection({
         <div className="text-xs text-gray-600">Send the published result, Player of the Match and recap together in one Telegram message.</div>
         {!pg.result?.published ? (
           <div className="text-xs text-gray-600">Publish the result before posting the match summary.</div>
-        ) : !canManage || !m ? (
-          <div className="text-xs text-gray-600">An owner or admin posts the match summary to Telegram.</div>
-        ) : !m.destinationConnected ? (
-          <div className="text-xs text-gray-600">Select a connected Telegram group for this match to post the summary.</div>
         ) : (
           <>
-            <div className="text-xs text-gray-500">
-              Includes: result{pg.mvp?.published ? ", Player of the Match" : ""}{pg.recap?.published ? ", recap" : ""}. Unpublished items are not sent.
+            <div className="text-xs space-y-0.5">
+              <div className="text-gray-700">Ready to send:</div>
+              {readiness.items.map((it) => (
+                <div key={it.key} className={it.included ? "text-emerald-700" : "text-gray-500"}>
+                  {it.included ? "✓" : "○"} {it.label}
+                  {it.note ? ` — ${it.note}` : ""}
+                </div>
+              ))}
             </div>
-            <PostButton state={m.summary} label="Match Summary" disabled={busy} primary onPost={post("summary")} />
+            {readiness.publishRecapShortcut && (
+              <div className="text-xs space-y-1 border rounded p-2 bg-amber-50">
+                <div>Match recap is saved but not published. Publish it to include it in the Match Summary.</div>
+                <button type="button" className="bg-emerald-600 text-white rounded px-3 py-1" disabled={busy} onClick={() => act({ action: "publish_recap" }, "Recap published on the match page. Nothing was sent.")}>
+                  Publish Recap
+                </button>
+                <div className="text-gray-600">The Telegram summary may still be posted without the recap.</div>
+              </div>
+            )}
+            {!canManage || !m ? (
+              <div className="text-xs text-gray-600">An owner or admin posts the match summary to Telegram.</div>
+            ) : !m.destinationConnected ? (
+              <div className="text-xs text-gray-600">Select a connected Telegram group for this match to post the summary.</div>
+            ) : (
+              <>
+                {readiness.summaryChanged && <div className="text-xs text-amber-700">The published Match Summary has changed.</div>}
+                <PostButton state={m.summary} label="Match Summary" disabled={busy} primary onPost={post("summary")} />
+              </>
+            )}
           </>
         )}
       </div>

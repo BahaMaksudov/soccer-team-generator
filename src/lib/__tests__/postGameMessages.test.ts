@@ -93,3 +93,25 @@ describe("Combined Match Summary", () => {
     expect(sum({ mvpNames: ["Yasmina A"], recap }, "https://teambalancepro.com/g/o/g/m/abc").html).toContain(recap);
   });
 });
+
+// ------------------------------------------------------------------ canonical delivery hashes
+import { legacyResultHash, resultDeliveryHashes, summaryDeliveryHashes } from "@/lib/messaging/postGameMessages";
+
+describe("ONE canonical Result / Summary delivery hash", () => {
+  it("12: the result message and the delivery-state hashes come from the same function", () => {
+    const m = renderResultMessage(SOCCER, "https://x.test/m/1");
+    expect({ contentHash: m.contentHash, acceptedHashes: m.acceptedHashes }).toEqual(resultDeliveryHashes(SOCCER));
+  });
+  it("13: the summary message and the delivery-state hashes come from the same function", () => {
+    const f = { ...SOCCER, mvpNames: ["Yasmina A"], recap: RECAP };
+    const m = renderSummaryMessage(f, "https://x.test/m/1");
+    expect({ contentHash: m.contentHash, acceptedHashes: m.acceptedHashes }).toEqual(summaryDeliveryHashes(f));
+  });
+  it("the pre-scoreboard result message's stored hash is recognized for the SAME data (Oct 5, 5–3 → 1f6253505817…)", () => {
+    expect(legacyResultHash(SOCCER).slice(0, 12)).toBe("1f6253505817");
+    expect(resultDeliveryHashes(SOCCER).acceptedHashes).toContain(legacyResultHash(SOCCER));
+    // a different published result is NOT equivalent to the old post
+    const changed = { ...SOCCER, scores: [{ teamNumber: 1, score: 6 }, { teamNumber: 2, score: 3 }] };
+    expect(resultDeliveryHashes(changed).acceptedHashes).not.toContain(legacyResultHash(SOCCER));
+  });
+});

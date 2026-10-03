@@ -118,7 +118,16 @@ type Intent = "post" | "post_updated" | "retry_uncertain";
 type Reserve = { kind: "send"; deliveryId: string } | { kind: "respond"; response: NextResponse };
 
 /** Same reserve → send → finalize state machine as attendance polls (per Match + event + destination, under a lock). */
-async function reserveDelivery(context: TenantContext, matchId: string, event: MessageEventType, destination: string, contentHash: string, intent: Intent): Promise<Reserve> {
+async function reserveDelivery(
+  context: TenantContext,
+  matchId: string,
+  event: MessageEventType,
+  destination: string,
+  contentHash: string,
+  intent: Intent,
+  // Hashes meaning "this content was already posted" (defaults to the stored one).
+  acceptedHashes: string[] = [contentHash]
+): Promise<Reserve> {
   const groupId = context.activeGroup.id;
   return prisma.$transaction(async (tx): Promise<Reserve> => {
     await tx.$queryRaw`SELECT 1 AS locked FROM pg_advisory_xact_lock(hashtext(${`match-msg:${matchId}:${event}`}))`;
@@ -153,8 +162,9 @@ async function reserveDelivery(context: TenantContext, matchId: string, event: M
       return reserveExisting(latest.id);
     }
     if (latest.status === "FAILED") return reserveExisting(latest.id);
-    if (latest.contentHash === contentHash && intent !== "post_updated") return respond(200, { ok: true, state: "already_posted" });
-    if (latest.contentHash !== contentHash && intent !== "post_updated") return respond(409, { error: "This changed since it was posted. Post the update?", state: "updated_available" });
+    const same = acceptedHashes.includes(latest.contentHash);
+    if (same && intent !== "post_updated") return respond(200, { ok: true, state: "already_posted" });
+    if (!same && intent !== "post_updated") return respond(409, { error: "This changed since it was posted. Post the update?", state: "updated_available" });
     return reserveNew();
   });
 }
@@ -185,7 +195,7 @@ async function sendReserved(deliveryId: string, send: () => Promise<{ message_id
 }
 
 /** Organizer-facing state of one post-game message (mirrors the teams delivery labels). */
-async function messageState(groupId: string, matchId: string, event: MessageEventType, destination: string | null, contentHash: string | null) {
+async function messageState(groupId: string, matchId: string, event: MessageEventType, destination: string | null, acceptedHashes: string[] | null) {
   if (!destination) return null;
   const latest = await prisma.messageDelivery.findMany({
     where: { matchId, groupId, eventType: event, channel: "TELEGRAM", destination },
@@ -196,7 +206,7 @@ async function messageState(groupId: string, matchId: string, event: MessageEven
   const head = latest[0];
   if (head.status === "SENDING") return Date.now() - head.claimedAt.getTime() > STALE_SENDING_MS ? "uncertain" : "sending";
   if (head.status === "UNCERTAIN") return "uncertain";
-  if (contentHash && latest.some((d) => d.status === "SENT" && d.contentHash === contentHash)) return "posted";
+  if (acceptedHashes && latest.some((d) => d.status === "SENT" && acceptedHashes.includes(d.contentHash))) return "posted";
   if (head.status === "FAILED") return "failed";
   return latest.some((d) => d.status === "SENT") ? "updated_available" : "not_posted";
 }
@@ -228,10 +238,13 @@ function recapFactsOf(m: LoadedMatch, sportKey: string): RecapFacts | null {
 }
 
 type MessageKind = "result" | "mvp" | "recap" | "summary";
-type OutgoingMessage = { html: string; contentHash: string };
+type OutgoingMessage = { html: string; contentHash: string; acceptedHashes: string[] };
 
 const hashOf = (content: TextContent) => contentHashOf(renderTelegramHtml({ ...content, link: null }));
-const fromTextContent = (content: TextContent): OutgoingMessage => ({ html: renderTelegramHtml(content), contentHash: hashOf(content) });
+const fromTextContent = (content: TextContent): OutgoingMessage => {
+  const contentHash = hashOf(content);
+  return { html: renderTelegramHtml(content), contentHash, acceptedHashes: [contentHash] };
+};
 
 function factsOf(m: LoadedMatch, sportKey: string): PostGameFacts {
   return {
@@ -500,7 +513,7 @@ export async function postGameAction(context: TenantContext, matchId: string, re
       if (!view.ok) return view.response;
       const content = messageContent(m, body.kind, view.url, context.activeGroup.sportKey);
       if (typeof content === "string") return fail(content);
-      const decision = await reserveDelivery(context, m.id, EVENT_OF[body.kind], destination, content.contentHash, body.intent);
+      const decision = await reserveDelivery(context, m.id, EVENT_OF[body.kind], destination, content.contentHash, body.intent, content.acceptedHashes);
       if (decision.kind === "respond") return decision.response;
       const sent = await sendReserved(decision.deliveryId, () =>
         callTelegram("sendMessage", { chat_id: destination, text: content.html, parse_mode: "HTML", disable_web_page_preview: true })
@@ -556,7 +569,7 @@ export async function postGameView(context: TenantContext, matchId: string) {
   const destination = manager ? await matchDestination(groupId, m.telegramChatId) : null;
   const hash = (kind: MessageKind) => {
     const c = messageContent(m, kind, null, context.activeGroup.sportKey);
-    return typeof c === "string" ? null : c.contentHash;
+    return typeof c === "string" ? null : c.acceptedHashes;
   };
   const messages = manager
     ? {

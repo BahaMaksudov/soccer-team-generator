@@ -130,3 +130,41 @@ export function mvpMethodSwitchable(pg: MvpView): boolean {
 
 /** DOM id of the Match's Telegram-group selector (Attendance section), for "Choose Telegram group". */
 export const MATCH_TELEGRAM_GROUP_SELECTOR_ID = "match-telegram-group";
+
+export type ReadinessItem = { key: "result" | "mvp" | "recap"; label: string; included: boolean; note: string | null };
+
+/**
+ * What "Post Match Summary" WILL send — published data only. Saved-but-
+ * unpublished items are named explicitly so nothing is excluded silently.
+ * The Publish Recap shortcut (same publish_recap action) is offered to
+ * OWNER/ADMIN when a saved recap is not yet published. Nothing here
+ * publishes or sends by itself.
+ */
+export function summaryReadiness(
+  pg: {
+    result: { published: boolean } | null;
+    mvp: { published: boolean; closed?: boolean; method?: MvpMethod | null; selection?: { playerId: string } | null } | null;
+    recap: { content: string | null; published: boolean } | null;
+    messages: { summary: string | null } | null;
+  },
+  canManage: boolean
+): { items: ReadinessItem[]; publishRecapShortcut: boolean; summaryChanged: boolean } {
+  const mvpNote = pg.mvp?.published
+    ? null
+    : pg.mvp?.method === "ORGANIZER_SELECTION" && pg.mvp.selection
+      ? "selected, not published"
+      : pg.mvp?.closed
+        ? "vote closed, not published"
+        : "not published";
+  const recapSaved = Boolean(pg.recap?.content);
+  const recapNote = pg.recap?.published ? null : recapSaved ? "saved, not published" : "not published";
+  return {
+    items: [
+      { key: "result", label: "Final result", included: Boolean(pg.result?.published), note: pg.result?.published ? null : "not published" },
+      { key: "mvp", label: "Player of the Match", included: Boolean(pg.mvp?.published), note: mvpNote },
+      { key: "recap", label: "Match recap", included: Boolean(pg.recap?.published), note: recapNote },
+    ],
+    publishRecapShortcut: canManage && recapSaved && !pg.recap?.published,
+    summaryChanged: pg.messages?.summary === "updated_available",
+  };
+}

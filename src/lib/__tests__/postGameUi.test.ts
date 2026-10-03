@@ -202,3 +202,38 @@ describe("PostGameSection wiring", () => {
     expect(src).not.toMatch(/mvpName|mvp_name|playerName.*input/i);
   });
 });
+
+// ------------------------------------------------------------------ Match Summary readiness
+import { summaryReadiness } from "@/lib/postGameUi";
+
+describe("Match Summary readiness", () => {
+  const base = { result: { published: true }, mvp: { published: true }, recap: { content: "Saved recap.", published: false }, messages: { summary: "posted" } };
+  it("1/2: a saved-but-unpublished recap is shown as excluded with a Publish Recap shortcut for OWNER/ADMIN", () => {
+    const r = summaryReadiness(base, true);
+    expect(r.items).toEqual([
+      { key: "result", label: "Final result", included: true, note: null },
+      { key: "mvp", label: "Player of the Match", included: true, note: null },
+      { key: "recap", label: "Match recap", included: false, note: "saved, not published" },
+    ]);
+    expect(r.publishRecapShortcut).toBe(true);
+  });
+  it("3: MEMBER never gets the shortcut", () => {
+    expect(summaryReadiness(base, false).publishRecapShortcut).toBe(false);
+  });
+  it("published recap → included, no shortcut; no recap → plain 'not published', no shortcut", () => {
+    expect(summaryReadiness({ ...base, recap: { content: "x", published: true } }, true)).toMatchObject({ publishRecapShortcut: false });
+    expect(summaryReadiness({ ...base, recap: { content: "x", published: true } }, true).items[2]).toMatchObject({ included: true, note: null });
+    const none = summaryReadiness({ ...base, recap: null }, true);
+    expect(none.items[2]).toEqual({ key: "recap", label: "Match recap", included: false, note: "not published" });
+    expect(none.publishRecapShortcut).toBe(false);
+  });
+  it("MVP: published / organizer selection saved / vote closed / absent", () => {
+    expect(summaryReadiness({ ...base, mvp: { published: false, method: "ORGANIZER_SELECTION", selection: { playerId: "p" } } }, true).items[1].note).toBe("selected, not published");
+    expect(summaryReadiness({ ...base, mvp: { published: false, closed: true } }, true).items[1].note).toBe("vote closed, not published");
+    expect(summaryReadiness({ ...base, mvp: null }, true).items[1]).toMatchObject({ included: false, note: "not published" });
+  });
+  it("'The published Match Summary has changed' only for updated_available", () => {
+    expect(summaryReadiness({ ...base, messages: { summary: "updated_available" } }, true).summaryChanged).toBe(true);
+    expect(summaryReadiness(base, true).summaryChanged).toBe(false);
+  });
+});

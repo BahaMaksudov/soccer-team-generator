@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { escapeHtml } from "./telegram";
+import { escapeHtml, renderTelegramHtml } from "./telegram";
 import { formatPollQuestionDate } from "./content";
 
 /**
@@ -23,7 +23,13 @@ export type PostGameFacts = {
   scores: Score[];
   venue: string | null;
 };
-export type RenderedMessage = { html: string; plainLength: number; contentHash: string };
+/**
+ * `contentHash` is what a new delivery stores; `acceptedHashes` are ALL hashes
+ * that mean "this exact published content was already posted" (the current
+ * one plus equivalent hashes of older message formats of the SAME data), used
+ * for duplicate detection and the admin "posted / updated" state alike.
+ */
+export type RenderedMessage = { html: string; plainLength: number; contentHash: string; acceptedHashes: string[] };
 
 type Line = { text: string; bold?: boolean } | { link: { label: string; url: string } } | { blank: true };
 
@@ -69,8 +75,39 @@ export function outcomeLine(scores: Score[]): string {
   return o.kind === "WIN" ? `🏆 Team ${o.teamNumber} wins!` : "🤝 Draw";
 }
 
+/**
+ * Hash of the first (pre-scoreboard, "🏁 Final Result … • Team 1: 5") result
+ * message for the same published data — the rendered-text hash its SENT
+ * deliveries stored. Reconstructed byte-for-byte (link excluded, as then).
+ */
+export function legacyResultHash(f: Pick<PostGameFacts, "date" | "scores">): string {
+  const sorted = [...f.scores].sort((a, b) => a.teamNumber - b.teamNumber);
+  const top = Math.max(...sorted.map((s) => s.score));
+  const leaders = sorted.filter((s) => s.score === top);
+  const html = renderTelegramHtml({
+    kind: "text",
+    title: `\u{1F3C1} Final Result — ${formatPollQuestionDate(f.date)}`,
+    body: leaders.length === 1 ? `Team ${leaders[0].teamNumber} wins!` : "It's a draw!",
+    sections: [{ heading: "Score", items: sorted.map((s) => `Team ${s.teamNumber}: ${s.score}`) }],
+    link: null,
+  });
+  return createHash("sha256").update(html, "utf8").digest("hex");
+}
+
 const hashData = (data: unknown) => createHash("sha256").update(JSON.stringify({ v: FORMAT_VERSION, ...(data as object) }), "utf8").digest("hex");
 const scoresKey = (scores: Score[]) => [...scores].sort((a, b) => a.teamNumber - b.teamNumber).map((s) => [s.teamNumber, s.score]);
+
+/** THE canonical Result delivery hashes (send, duplicate detection and admin state all use this). */
+export function resultDeliveryHashes(f: PostGameFacts): { contentHash: string; acceptedHashes: string[] } {
+  const contentHash = hashData({ kind: "result", date: f.date, scores: scoresKey(f.scores), venue: f.venue });
+  return { contentHash, acceptedHashes: [contentHash, legacyResultHash(f)] };
+}
+
+/** THE canonical Match Summary delivery hash (send, duplicate detection and admin state all use this). */
+export function summaryDeliveryHashes(f: PostGameFacts & { mvpNames: string[]; recap: string | null }): { contentHash: string; acceptedHashes: string[] } {
+  const contentHash = hashData({ kind: "summary", date: f.date, scores: scoresKey(f.scores), mvp: f.mvpNames, recap: f.recap, venue: f.venue });
+  return { contentHash, acceptedHashes: [contentHash] };
+}
 
 /** 🏁 FINAL SCORE — scoreboard, winner/draw, venue, link. */
 export function renderResultMessage(f: PostGameFacts, viewUrl: string | null): RenderedMessage {
@@ -83,7 +120,7 @@ export function renderResultMessage(f: PostGameFacts, viewUrl: string | null): R
     ...(f.venue ? [{ text: `📍 ${f.venue}` }] : []),
     ...(viewUrl ? [{ blank: true } as Line, { link: { label: "View match", url: viewUrl } }] : []),
   ];
-  return { ...render(lines), contentHash: hashData({ kind: "result", date: f.date, scores: scoresKey(f.scores), venue: f.venue }) };
+  return { ...render(lines), ...resultDeliveryHashes(f) };
 }
 
 /**
@@ -112,6 +149,5 @@ export function renderSummaryMessage(f: PostGameFacts & { mvpNames: string[]; re
     recap = keep > 0 ? `${recap.slice(0, keep).trimEnd()}…` : null;
     r = render(build(recap));
   }
-  const contentHash = hashData({ kind: "summary", date: f.date, scores: scoresKey(f.scores), mvp: f.mvpNames, recap: f.recap, venue: f.venue });
-  return { ...r, contentHash };
+  return { ...r, ...summaryDeliveryHashes(f) };
 }

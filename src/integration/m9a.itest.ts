@@ -60,7 +60,8 @@ import * as shareMatchRoute from "@/app/api/share/match/route";
 import * as postGameRoute from "@/app/api/admin/o/[organizationSlug]/g/[groupSlug]/matches/[matchId]/post-game/route";
 import { loadMatchForViewer } from "@/lib/matchPage";
 import { generateToken } from "@/lib/secureToken";
-import { generateRecapDraft, syncedRecapText, AI_DRAFT_READY_MESSAGE } from "@/lib/postGameUi";
+import { generateRecapDraft, syncedRecapText, AI_DRAFT_READY_MESSAGE, summaryReadiness } from "@/lib/postGameUi";
+import { legacyResultHash } from "@/lib/messaging/postGameMessages";
 
 const A = { organizationSlug: "org-a", groupSlug: "group-a" };
 const B = { organizationSlug: "org-b", groupSlug: "group-b" };
@@ -1946,5 +1947,118 @@ describe("M9-D — Post Match Summary to Telegram", () => {
     await postSummary(id, { intent: "post_updated", shareUrl: `${BASE}/share#${token}` });
     expect(String(msgs().at(-1)!.body.text)).not.toMatch(/https?:\/\//);
     expect(String(msgs().at(-1)!.body.text)).not.toContain(token);
+  });
+});
+
+describe("M9-D — Telegram readiness fixes (production sequences)", () => {
+  async function prodMatch(date = "2026-10-12", startTime = "20:00") {
+    await signInAs("owner@example.test");
+    const id = (await createMatch({ date, startTime, locationName: "Forekicks" })).data.match.id;
+    await publishFor(id, teamsOf([["ga-p1", "ga-p2"], ["ga-p3", "ga-p4"]]), date);
+    await selectChat(id, await chatRef());
+    await pg(id, { action: "save_result", scores: [{ teamNumber: 1, score: 5 }, { teamNumber: 2, score: 3 }] });
+    await pg(id, { action: "publish_result" });
+    return id;
+  }
+  const state = async (id: string) => (await postGameOf(id)).messages;
+
+  it("Part 5 / 7–9: post 5–3 → posted (no button); same 5–3 again → still posted; 6–3 → updated (no auto-send); post update → posted", async () => {
+    const id = await prodMatch();
+    expect((await state(id)).result).toBe("not_posted");
+    expect((await pgJson(id, { action: "post_message", kind: "result" })).body.state).toBe("posted");
+    expect((await state(id)).result).toBe("posted");
+    await pg(id, { action: "save_result", scores: [{ teamNumber: 1, score: 5 }, { teamNumber: 2, score: 3 }] });
+    await pg(id, { action: "publish_result" });
+    expect((await state(id)).result).toBe("posted");
+    expect((await pgJson(id, { action: "post_message", kind: "result" })).body.state).toBe("already_posted");
+    await pg(id, { action: "save_result", scores: [{ teamNumber: 1, score: 6 }, { teamNumber: 2, score: 3 }] });
+    expect((await state(id)).result).toBe("updated_available");
+    expect(msgs()).toHaveLength(1); // nothing sent automatically
+    expect((await pgJson(id, { action: "post_message", kind: "result", intent: "post_updated" })).body.state).toBe("posted");
+    expect(msgs()).toHaveLength(2);
+    expect(String(msgs()[1].body.text)).toContain("⚽ Team 1  6 — 3  Team 2");
+    expect((await state(id)).result).toBe("posted");
+  });
+
+  it("14: a SENT result delivery from the pre-scoreboard format (legacy hash) counts as posted for the same result — and is not rewritten", async () => {
+    const id = await prodMatch("2026-10-05");
+    const dest = (await prisma.telegramChat.findFirstOrThrow({ where: { groupId: "ga" } })).chatId.toString();
+    const legacy = await prisma.messageDelivery.create({
+      data: { groupId: "ga", matchId: id, eventType: "MATCH_RESULT_POSTED", channel: "TELEGRAM", destination: dest, contentHash: legacyResultHash({ date: "2026-10-05", scores: [{ teamNumber: 1, score: 5 }, { teamNumber: 2, score: 3 }] }), status: "SENT", claimedAt: new Date(), sentAt: new Date() },
+    });
+    expect(legacy.contentHash.slice(0, 12)).toBe("1f6253505817");
+    expect((await state(id)).result).toBe("posted");
+    expect((await pgJson(id, { action: "post_message", kind: "result" })).body.state).toBe("already_posted");
+    expect(msgs()).toHaveLength(0);
+    expect(await prisma.messageDelivery.findUniqueOrThrow({ where: { id: legacy.id } })).toEqual(legacy); // untouched
+    await pg(id, { action: "save_result", scores: [{ teamNumber: 1, score: 5 }, { teamNumber: 2, score: 4 }] });
+    expect((await state(id)).result).toBe("updated_available"); // a real change still asks for an update
+  });
+
+  it("10/11: FAILED is never 'posted' (plain retry); UNCERTAIN needs the explicit recovery retry", async () => {
+    const id = await prodMatch();
+    sendMessageMode = "reject";
+    await pg(id, { action: "post_message", kind: "result" });
+    expect((await state(id)).result).toBe("failed");
+    sendMessageMode = "ambiguous";
+    await pg(id, { action: "post_message", kind: "result" });
+    expect((await state(id)).result).toBe("uncertain");
+    sendMessageMode = "ok";
+    expect((await pgJson(id, { action: "post_message", kind: "result" })).body.state).toBe("uncertain");
+    expect((await pgJson(id, { action: "post_message", kind: "result", intent: "retry_uncertain" })).body.state).toBe("posted");
+    expect((await state(id)).result).toBe("posted");
+  });
+
+  it("Part 4 / 4–6, 15: summary without the saved recap → publish recap (no send) → updated → post update → posted with result + MVP + recap", async () => {
+    vi.stubEnv("OPENAI_API_KEY", "sk-itest");
+    vi.stubEnv("OPENAI_BASE_URL", "https://ai.itest/v1");
+    aiText = "Team 1 takes it over Team 2, 5–3! Player of the Match honors go to A3 Player 🏆";
+    const id = await prodMatch();
+    await pg(id, { action: "save_mvp_selection", playerId: "ga-p3" });
+    await pg(id, { action: "publish_mvp" });
+    const gen = await pgJson(id, { action: "generate_recap" });
+    await pg(id, { action: "save_recap", content: gen.body.text }); // saved, NOT published
+    let pgv = await postGameOf(id);
+    expect(summaryReadiness(pgv, true).items.map((i) => [i.key, i.included, i.note])).toEqual([
+      ["result", true, null],
+      ["mvp", true, null],
+      ["recap", false, "saved, not published"],
+    ]);
+    expect(summaryReadiness(pgv, true).publishRecapShortcut).toBe(true);
+
+    expect((await pgJson(id, { action: "post_message", kind: "summary" })).body.state).toBe("posted");
+    const first = String(msgs().at(-1)!.body.text);
+    expect(first).toContain("⚽ Team 1  5 — 3  Team 2");
+    expect(first).toContain("A3 Player");
+    expect(first).not.toContain("Match Recap");
+
+    const sent = msgs().length;
+    expect((await pg(id, { action: "publish_recap" })).status).toBe(200); // the same publish action as the Recap section
+    expect(msgs()).toHaveLength(sent); // publishing sends nothing
+    pgv = await postGameOf(id);
+    expect(pgv.recap.published).toBe(true);
+    expect(pgv.messages.summary).toBe("updated_available");
+    expect(summaryReadiness(pgv, true)).toMatchObject({ summaryChanged: true, publishRecapShortcut: false });
+    expect(summaryReadiness(pgv, true).items[2]).toMatchObject({ included: true });
+
+    expect((await pgJson(id, { action: "post_message", kind: "summary", intent: "post_updated" })).body.state).toBe("posted");
+    expect(msgs()).toHaveLength(sent + 1);
+    const second = String(msgs().at(-1)!.body.text);
+    for (const part of ["⚽ Team 1  5 — 3  Team 2", "A3 Player", "<b>📝 Match Recap</b>", "Team 1 takes it over Team 2, 5–3!"]) expect(second).toContain(part);
+    expect((await state(id)).summary).toBe("posted");
+  });
+
+  it("16/17: same-day and cross-Group isolation of result/summary states; MEMBER cannot post", async () => {
+    const a = await prodMatch("2026-10-10", "18:00");
+    const b = await prodMatch("2026-10-10", "21:00");
+    await pg(a, { action: "post_message", kind: "result" });
+    await pg(a, { action: "post_message", kind: "summary" });
+    expect([(await state(a)).result, (await state(a)).summary]).toEqual(["posted", "posted"]);
+    expect([(await state(b)).result, (await state(b)).summary]).toEqual(["not_posted", "not_posted"]);
+    await signInAs("member@example.test");
+    expect((await pg(b, { action: "post_message", kind: "result" })).status).toBe(404);
+    await signInAs("owner-b@example.test");
+    expect((await pg(b, { action: "post_message", kind: "summary" }, B)).status).toBe(404);
+    expect(msgs()).toHaveLength(2);
   });
 });
