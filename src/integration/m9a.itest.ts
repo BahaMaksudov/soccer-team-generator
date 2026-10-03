@@ -1665,3 +1665,156 @@ describe("M9-D production-validation fix — AI draft reaches the textarea", () 
     expect((await pgJson(id, { action: "publish_mvp" })).body.error).toBe("Close the MVP vote first."); // no poll-less organizer selection
   });
 });
+
+describe("M9-D enhancement — Player of the Match: Organizer Selection (and method locking)", () => {
+  /** Published teams T1=[p1,p2], T2=[p3,p4], published result; NO Telegram group selected. */
+  async function readyMatch(date = "2026-10-12", startTime = "20:00") {
+    await signInAs("owner@example.test");
+    const id = (await createMatch({ date, startTime })).data.match.id;
+    await publishFor(id, teamsOf([["ga-p1", "ga-p2"], ["ga-p3", "ga-p4"]]), date);
+    await pg(id, { action: "save_result", scores: [{ teamNumber: 1, score: 5 }, { teamNumber: 2, score: 3 }] });
+    await pg(id, { action: "publish_result" });
+    return id;
+  }
+
+  it("1/2/6/7/8/9/11/13: OWNER or ADMIN selects a participant without any Telegram group; save ≠ publish ≠ send; the page shows only the name", async () => {
+    const id = await readyMatch();
+    expect((await postGameOf(id)).messages.destinationConnected).toBe(false);
+    expect((await pgJson(id, { action: "save_mvp_selection", playerId: "ga-p3" })).body).toEqual({ ok: true, published: false }); // OWNER
+    await signInAs("admin@example.test");
+    expect((await pgJson(id, { action: "save_mvp_selection", playerId: "ga-p2" })).status).toBe(200); // ADMIN (changes the saved selection)
+    const mvpRow = await prisma.matchMvp.findUniqueOrThrow({ where: { matchId: id } });
+    expect(mvpRow).toMatchObject({ method: "ORGANIZER_SELECTION", selectedPlayerId: "ga-p2", publishedAt: null, winnerPlayerIds: [], decision: null });
+    expect(mvpRow.selectedByUserId).toBe((await prisma.user.findUniqueOrThrow({ where: { email: "admin@example.test" } })).id);
+    expect(mvpRow.selectedAt).toBeInstanceOf(Date);
+    expect((await postGameOf(id)).mvp).toMatchObject({ method: "ORGANIZER_SELECTION", selection: { playerId: "ga-p2", name: "A2 Player", teamNumber: 1 }, published: false });
+    session = null;
+    expect((await pageView(id))!.mvp).toBeNull(); // saved ≠ published
+    await signInAs("admin@example.test");
+    expect((await pgJson(id, { action: "publish_mvp" })).body).toMatchObject({ ok: true, method: "ORGANIZER_SELECTION" });
+    expect(await prisma.matchMvp.findUniqueOrThrow({ where: { matchId: id } })).toMatchObject({ winnerPlayerIds: ["ga-p2"], decision: null, publishedAt: expect.any(Date) });
+    expect(tgCalls).toHaveLength(0); // select/save/publish sent nothing
+    session = null;
+    const page = (await pageView(id))!;
+    expect(page.mvp).toEqual({ names: ["A2 Player"], shared: false });
+    expect(JSON.stringify(page)).not.toMatch(/ORGANIZER|SELECTION|method|selected|admin@|ga-p\d|decision/i);
+  });
+
+  it("3/4/5: MEMBER cannot select, reset or publish an organizer selection; non-participants and other Groups' Players are not found", async () => {
+    const id = await readyMatch();
+    expect((await pgJson(id, { action: "save_mvp_selection", playerId: "ga-p5" })).status).toBe(404); // in the Group, not in the published teams
+    expect((await pgJson(id, { action: "save_mvp_selection", playerId: "gb-p1" })).status).toBe(404); // another Group
+    expect((await pgJson(id, { action: "save_mvp_selection", playerId: "does-not-exist" })).status).toBe(404);
+    await pg(id, { action: "save_mvp_selection", playerId: "ga-p1" });
+    await signInAs("member@example.test");
+    expect((await pg(id, { action: "save_mvp_selection", playerId: "ga-p4" })).status).toBe(404);
+    expect((await pg(id, { action: "reset_mvp_selection" })).status).toBe(404);
+    expect((await pg(id, { action: "publish_mvp" })).status).toBe(404);
+    await signInAs("owner-b@example.test");
+    expect((await pg(id, { action: "save_mvp_selection", playerId: "ga-p4" }, B)).status).toBe(404);
+    expect(await prisma.matchMvp.findUniqueOrThrow({ where: { matchId: id } })).toMatchObject({ selectedPlayerId: "ga-p1", publishedAt: null });
+  });
+
+  it("10/12: explicit announcement sends exactly one message; the AI recap receives only the published organizer-selected name", async () => {
+    vi.stubEnv("OPENAI_API_KEY", "sk-itest");
+    vi.stubEnv("OPENAI_BASE_URL", "https://ai.itest/v1");
+    aiText = "Team 1 takes it 5–3! Player of the Match honors go to A3 Player 🏆";
+    const id = await readyMatch();
+    await pg(id, { action: "save_mvp_selection", playerId: "ga-p3" });
+    await pg(id, { action: "generate_recap" });
+    expect(JSON.parse(aiRequests.at(-1)!.input as string).mvp).toEqual([]); // saved but unpublished → not a fact
+    await pg(id, { action: "publish_mvp" });
+    expect((await pgJson(id, { action: "generate_recap" })).status).toBe(200);
+    expect(JSON.parse(aiRequests.at(-1)!.input as string).mvp).toEqual(["A3 Player"]);
+    expect(String(aiRequests.at(-1)!.input)).not.toMatch(/ORGANIZER|ga-p3|method/);
+    expect((await pgJson(id, { action: "post_message", kind: "mvp" })).body.error).toContain("Telegram group"); // no group → nothing sent
+    await selectChat(id, await chatRef());
+    expect((await pgJson(id, { action: "post_message", kind: "mvp" })).body.state).toBe("posted");
+    expect(sends("sendMessage")).toHaveLength(1);
+    expect(String(sends("sendMessage")[0].body.text)).toContain("A3 Player");
+    expect(sends("sendPoll")).toHaveLength(0);
+  });
+
+  it("15: an active Player Vote cannot be silently replaced by an organizer selection (and a saved selection blocks starting a vote until reset)", async () => {
+    const id = await readyMatch();
+    await selectChat(id, await chatRef());
+    await pg(id, { action: "save_mvp_selection", playerId: "ga-p1" });
+    expect((await pgJson(id, { action: "start_mvp" })).body.code).toBe("MVP_METHOD_LOCKED");
+    expect(sends("sendPoll")).toHaveLength(0);
+    expect((await pg(id, { action: "reset_mvp_selection" })).status).toBe(200); // explicit reset
+    expect(await prisma.matchMvp.findUniqueOrThrow({ where: { matchId: id } })).toMatchObject({ method: null, selectedPlayerId: null });
+    expect((await pg(id, { action: "start_mvp" })).status).toBe(201);
+    expect((await pgJson(id, { action: "save_mvp_selection", playerId: "ga-p1" })).body.code).toBe("MVP_METHOD_LOCKED");
+    expect((await pgJson(id, { action: "reset_mvp_selection" })).status).toBe(400);
+    expect((await postGameOf(id)).mvp).toMatchObject({ method: "PLAYER_VOTE", voteLocked: true, open: true, selection: null });
+  });
+
+  it("a definitively FAILED poll attempt does not lock the method; an UNCERTAIN one does", async () => {
+    const id = await readyMatch();
+    await selectChat(id, await chatRef());
+    sendPollMode = "reject";
+    expect((await pg(id, { action: "start_mvp" })).status).toBe(502);
+    expect((await postGameOf(id)).mvp.voteLocked).toBe(false);
+    expect((await pg(id, { action: "save_mvp_selection", playerId: "ga-p4" })).status).toBe(200); // switch is allowed
+    await pg(id, { action: "reset_mvp_selection" });
+    sendPollMode = "ambiguous";
+    expect((await pg(id, { action: "start_mvp" })).status).toBe(502);
+    expect((await postGameOf(id)).mvp.voteLocked).toBe(true);
+    expect((await pgJson(id, { action: "save_mvp_selection", playerId: "ga-p4" })).body.code).toBe("MVP_METHOD_LOCKED");
+  });
+
+  it("16: a published Player of the Match cannot be silently replaced by either method", async () => {
+    const id = await readyMatch();
+    await selectChat(id, await chatRef());
+    await pg(id, { action: "save_mvp_selection", playerId: "ga-p1" });
+    await pg(id, { action: "publish_mvp" });
+    expect((await pgJson(id, { action: "save_mvp_selection", playerId: "ga-p2" })).body.code).toBe("MVP_LOCKED");
+    expect((await pgJson(id, { action: "reset_mvp_selection" })).body.code).toBe("MVP_LOCKED");
+    expect((await pgJson(id, { action: "start_mvp" })).body.code).toBe("MVP_LOCKED");
+    expect(sends("sendPoll")).toHaveLength(0);
+    expect(await prisma.matchMvp.findUniqueOrThrow({ where: { matchId: id } })).toMatchObject({ winnerPlayerIds: ["ga-p1"] });
+  });
+
+  it("14: same-day Matches keep separate Player of the Match (one by selection, one by vote)", async () => {
+    await prisma.telegramUserLink.create({ data: { userId: 333n, playerId: "ga-p3", groupId: "ga" } });
+    const a = await readyMatch("2026-10-10", "18:00");
+    const b = await readyMatch("2026-10-10", "21:00");
+    await pg(a, { action: "save_mvp_selection", playerId: "ga-p4" });
+    await pg(a, { action: "publish_mvp" });
+    await selectChat(b, await chatRef());
+    await pg(b, { action: "start_mvp" });
+    const pollB = (await prisma.telegramPoll.findFirstOrThrow({ where: { matchId: b, kind: "MVP" } })).pollId;
+    await vote(pollB, 333, [OPTION.p1]);
+    await pg(b, { action: "close_mvp" });
+    await pg(b, { action: "publish_mvp" });
+    session = null;
+    expect([(await pageView(a))!.mvp, (await pageView(b))!.mvp]).toEqual([
+      { names: ["A4 Player"], shared: false },
+      { names: ["A1 Player"], shared: false },
+    ]);
+    expect((await prisma.matchMvp.findUniqueOrThrow({ where: { matchId: a } })).method).toBe("ORGANIZER_SELECTION");
+    expect((await prisma.matchMvp.findUniqueOrThrow({ where: { matchId: b } })).method).toBe("PLAYER_VOTE");
+  });
+});
+
+describe("M9-D enhancement — Regenerate AI Recap (server side)", () => {
+  it("4/5/6: regenerating returns a new draft and never saves, publishes or sends; the published recap stays as it was", async () => {
+    vi.stubEnv("OPENAI_API_KEY", "sk-itest");
+    vi.stubEnv("OPENAI_BASE_URL", "https://ai.itest/v1");
+    const id = await playedMatch();
+    await pg(id, { action: "save_result", scores: [{ teamNumber: 1, score: 5 }, { teamNumber: 2, score: 3 }] });
+    await pg(id, { action: "publish_result" });
+    await pg(id, { action: "save_recap", content: "Published recap." });
+    await pg(id, { action: "publish_recap" });
+    aiText = "Team 1 takes it 5–3 ⚽";
+    expect((await pgJson(id, { action: "generate_recap" })).body.text).toBe("Team 1 takes it 5–3 ⚽");
+    aiText = "A two-goal win for Team 1, 5–3 🏆";
+    expect((await pgJson(id, { action: "generate_recap" })).body.text).toBe("A two-goal win for Team 1, 5–3 🏆");
+    expect(await prisma.matchRecap.findUniqueOrThrow({ where: { matchId: id } })).toMatchObject({ content: "Published recap.", publishedAt: expect.any(Date) });
+    session = null;
+    expect((await pageView(id))!.recap).toEqual({ text: "Published recap." });
+    expect(tgCalls.filter((c) => c.method === "sendMessage" || c.method === "sendPoll")).toHaveLength(0);
+    expect(await prisma.matchMvp.count({ where: { matchId: id } })).toBe(0);
+    expect((await prisma.matchResult.findUniqueOrThrow({ where: { matchId: id } })).scoresJson).toBe(JSON.stringify([{ teamNumber: 1, score: 5 }, { teamNumber: 2, score: 3 }]));
+  });
+});

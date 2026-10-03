@@ -89,6 +89,27 @@ export async function tallyMvp(groupId: string, matchId: string, candidates: str
   };
 }
 
+// ------------------------------------------------------------------ MVP method
+
+type MvpRow = { method: "PLAYER_VOTE" | "ORGANIZER_SELECTION" | null; openedAt: Date | null } | null;
+
+/**
+ * A player vote is "started" (and the method locked to PLAYER_VOTE) once its
+ * Telegram poll may have reached the chat: voting opened, or a poll delivery
+ * is SENDING / SENT / UNCERTAIN. A definitively FAILED attempt does not lock.
+ */
+export async function playerVoteLocked(groupId: string, matchId: string, mvp: MvpRow): Promise<boolean> {
+  if (mvp?.openedAt) return true;
+  const n = await prisma.messageDelivery.count({ where: { matchId, groupId, eventType: "MVP_POLL_POSTED", status: { in: ["SENDING", "SENT", "UNCERTAIN"] } } });
+  return n > 0;
+}
+
+/** The Match's Player-of-the-Match method (rows from before the method column: a started vote = PLAYER_VOTE). */
+export function effectiveMvpMethod(mvp: MvpRow, voteLocked: boolean): "PLAYER_VOTE" | "ORGANIZER_SELECTION" | null {
+  if (voteLocked) return "PLAYER_VOTE";
+  return mvp?.method ?? null;
+}
+
 // ------------------------------------------------------------------ deliveries
 
 type Intent = "post" | "post_updated" | "retry_uncertain";
@@ -229,8 +250,10 @@ export async function postGameAction(context: TenantContext, matchId: string, re
   if (!parsed.success) return NextResponse.json(zodErrorResponse(parsed.error), { status: 400 });
   const body = parsed.data;
   const groupId = context.activeGroup.id;
-  const telegramAction = body.action === "start_mvp" || body.action === "close_mvp" || body.action === "post_message";
-  if (telegramAction) {
+  // Telegram actions and the organizer's own Player-of-the-Match selection are OWNER/ADMIN.
+  const managersOnly =
+    body.action === "start_mvp" || body.action === "close_mvp" || body.action === "post_message" || body.action === "save_mvp_selection" || body.action === "reset_mvp_selection";
+  if (managersOnly) {
     const denied = managersOnlyResponse(context);
     if (denied) return denied;
   }
@@ -239,6 +262,8 @@ export async function postGameAction(context: TenantContext, matchId: string, re
   if (m.status === "CANCELED") return fail("This match is canceled. Reopen it before recording post-game details.");
   const participants = participantsOf(m.generation?.teamsJson);
   const participantIds = new Set(participants.map((p) => p.playerId));
+  const voteLocked = await playerVoteLocked(groupId, m.id, m.mvp);
+  const method = effectiveMvpMethod(m.mvp, voteLocked);
 
   switch (body.action) {
     // ---------------- result
@@ -273,6 +298,10 @@ export async function postGameAction(context: TenantContext, matchId: string, re
       if (participants.length < 2) return fail("Publish the teams for this match first.");
       if (!m.result?.publishedAt) return fail("Publish the final result before starting the MVP vote.");
       if (m.mvp?.closedAt) return fail("The MVP vote for this match is closed.");
+      if (m.mvp?.publishedAt) return fail("Player of the Match is already published for this match.", 409, { code: "MVP_LOCKED" });
+      if (method === "ORGANIZER_SELECTION") {
+        return fail("An organizer selection is saved for this match. Reset it before starting a player vote.", 409, { code: "MVP_METHOD_LOCKED" });
+      }
       const destination = await matchDestination(groupId, m.telegramChatId);
       if (!destination) return fail("Choose a connected Telegram group for this match first.");
       let candidates = m.mvp?.candidatePlayerIds?.length ? m.mvp.candidatePlayerIds : null;
@@ -296,7 +325,11 @@ export async function postGameAction(context: TenantContext, matchId: string, re
       const content = mvpPollContent({ date: formatYMDFromDate(m.date), names });
       const contentHash = contentHashOf(JSON.stringify({ destination, question: content.question, options: content.options }));
       // Candidates are stored BEFORE the send so option index → Player is known for every answer.
-      await prisma.matchMvp.upsert({ where: { matchId: m.id }, update: { candidatePlayerIds: candidates }, create: { matchId: m.id, groupId, candidatePlayerIds: candidates } });
+      await prisma.matchMvp.upsert({
+        where: { matchId: m.id },
+        update: { candidatePlayerIds: candidates, method: "PLAYER_VOTE" },
+        create: { matchId: m.id, groupId, candidatePlayerIds: candidates, method: "PLAYER_VOTE" },
+      });
       const decision = await reserveDelivery(context, m.id, "MVP_POLL_POSTED", destination, contentHash, body.intent);
       if (decision.kind === "respond") return decision.response;
       const sent = await sendReserved(decision.deliveryId, () => callTelegram("sendPoll", { chat_id: destination, ...renderTelegramPoll(content) }));
@@ -345,7 +378,38 @@ export async function postGameAction(context: TenantContext, matchId: string, re
       }
       return NextResponse.json({ ok: true, state: "closed" });
     }
+    case "save_mvp_selection": {
+      if (!m.result?.publishedAt) return fail("Publish the final result before choosing Player of the Match.");
+      if (m.mvp?.publishedAt) return fail("Player of the Match is already published for this match.", 409, { code: "MVP_LOCKED" });
+      if (voteLocked) return fail("A player vote has already started for this match; it can't be replaced by an organizer selection.", 409, { code: "MVP_METHOD_LOCKED" });
+      // Only a Player of this Match's PUBLISHED teams (foreign/unknown ids are indistinguishable).
+      if (!participantIds.has(body.playerId)) return fail("Player not found", 404);
+      await prisma.matchMvp.upsert({
+        where: { matchId: m.id },
+        update: { method: "ORGANIZER_SELECTION", selectedPlayerId: body.playerId, selectedByUserId: context.user.id, selectedAt: new Date() },
+        create: { matchId: m.id, groupId, method: "ORGANIZER_SELECTION", selectedPlayerId: body.playerId, selectedByUserId: context.user.id, selectedAt: new Date() },
+      });
+      return NextResponse.json({ ok: true, published: false });
+    }
+    case "reset_mvp_selection": {
+      if (m.mvp?.publishedAt) return fail("Player of the Match is already published for this match.", 409, { code: "MVP_LOCKED" });
+      if (method !== "ORGANIZER_SELECTION") return fail("There is no organizer selection to reset.");
+      await prisma.matchMvp.update({ where: { matchId: m.id }, data: { method: null, selectedPlayerId: null, selectedByUserId: null, selectedAt: null } });
+      return NextResponse.json({ ok: true });
+    }
     case "publish_mvp": {
+      if (method === "ORGANIZER_SELECTION") {
+        const denied = managersOnlyResponse(context);
+        if (denied) return denied;
+        const selected = m.mvp?.selectedPlayerId;
+        if (!selected || !participantIds.has(selected)) return fail("Save a Player of the Match selection first.");
+        await prisma.matchMvp.update({
+          where: { matchId: m.id },
+          // decision stays NULL: it only describes how a PLAYER_VOTE was resolved.
+          data: { winnerPlayerIds: [selected], decision: null, publishedAt: m.mvp!.publishedAt ?? new Date(), publishedByUserId: context.user.id },
+        });
+        return NextResponse.json({ ok: true, method });
+      }
       if (!m.mvp?.closedAt) return fail("Close the MVP vote first.");
       const tally = await tallyMvp(groupId, m.id, m.mvp.candidatePlayerIds, participantIds);
       if (tally.leaders.length === 0) return fail("There are no valid MVP votes.");
@@ -438,6 +502,8 @@ export async function postGameView(context: TenantContext, matchId: string) {
   const nameOf = new Map(participants.map((p) => [p.playerId, p.name]));
   const facts = recapFactsOf(m, context.activeGroup.sportKey);
 
+  const voteLocked = await playerVoteLocked(groupId, m.id, m.mvp);
+  const method = effectiveMvpMethod(m.mvp, voteLocked);
   let mvp = null;
   if (m.mvp) {
     const tally = await tallyMvp(groupId, m.id, m.mvp.candidatePlayerIds, participantIds);
@@ -455,6 +521,12 @@ export async function postGameView(context: TenantContext, matchId: string) {
       published: m.mvp.publishedAt !== null,
       winners: m.mvp.winnerPlayerIds.map((id) => nameOf.get(id) ?? "Player"),
       decision: m.mvp.decision,
+      method,
+      voteLocked,
+      selection:
+        method === "ORGANIZER_SELECTION" && m.mvp.selectedPlayerId
+          ? { playerId: m.mvp.selectedPlayerId, name: nameOf.get(m.mvp.selectedPlayerId) ?? "Player", teamNumber: participants.find((p) => p.playerId === m.mvp!.selectedPlayerId)?.teamNumber ?? null }
+          : null,
     };
   }
 

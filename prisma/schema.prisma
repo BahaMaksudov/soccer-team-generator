@@ -76,6 +76,16 @@ enum MvpVoteSource {
   WEB
 }
 
+// M9-D — HOW Player of the Match is determined for a Match (one method per
+// Match, never competing workflows). PLAYER_VOTE = the Telegram poll among
+// published participants; ORGANIZER_SELECTION = an OWNER/ADMIN picks one
+// published participant directly (no Telegram needed). Separate from
+// MvpDecision, which only describes how a PLAYER_VOTE result was resolved.
+enum MvpMethod {
+  PLAYER_VOTE
+  ORGANIZER_SELECTION
+}
+
 // M9-D — how the published MVP was decided. VOTES = a unique top vote count;
 // CO_MVP = a tie published as co-MVPs; ORGANIZER_TIEBREAK = the organizer
 // picked one Player from the tied set (recorded, never presented as a vote win).
@@ -190,6 +200,7 @@ model User {
   resultsUpdated             MatchResult[]          @relation("ResultUpdatedBy")
   mvpsOpened                 MatchMvp[]             @relation("MvpOpenedBy")
   mvpsPublished              MatchMvp[]             @relation("MvpPublishedBy")
+  mvpsSelected               MatchMvp[]             @relation("MvpSelectedBy")
   recapsGenerated            MatchRecap[]           @relation("RecapGeneratedBy")
   recapsPublished            MatchRecap[]           @relation("RecapPublishedBy")
   recapsUpdated              MatchRecap[]           @relation("RecapUpdatedBy")
@@ -759,6 +770,14 @@ model MatchMvp {
   closedAt           DateTime?
   winnerPlayerIds    String[]
   decision           MvpDecision?
+  // M9-D (enhancement) — determination method + the organizer's saved (not yet
+  // published) selection. NULL method on rows created before = PLAYER_VOTE
+  // when a vote was started (derived in code; no backfill). selectedPlayerId
+  // is validated against the published participants (like winnerPlayerIds).
+  method             MvpMethod?
+  selectedPlayerId   String?
+  selectedByUserId   String?
+  selectedAt         DateTime?
   publishedAt        DateTime?
   publishedByUserId  String?
   createdAt          DateTime     @default(now())
@@ -767,6 +786,7 @@ model MatchMvp {
   group       Group @relation(fields: [groupId], references: [id], onDelete: Cascade)
   match       Match @relation(fields: [matchId], references: [id], onDelete: Cascade)
   openedBy    User? @relation("MvpOpenedBy", fields: [openedByUserId], references: [id], onDelete: SetNull)
+  selectedBy  User? @relation("MvpSelectedBy", fields: [selectedByUserId], references: [id], onDelete: SetNull)
   publishedBy User? @relation("MvpPublishedBy", fields: [publishedByUserId], references: [id], onDelete: SetNull)
 
   @@index([groupId])

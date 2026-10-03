@@ -124,6 +124,8 @@ export const postGameSchema = z.discriminatedUnion("action", [
     action: z.literal("publish_mvp"),
     tieBreak: z.union([z.object({ mode: z.literal("co") }), z.object({ mode: z.literal("pick"), playerId: z.string().trim().min(1) })]).optional(),
   }),
+  z.object({ action: z.literal("save_mvp_selection"), playerId: z.string().trim().min(1).max(64) }),
+  z.object({ action: z.literal("reset_mvp_selection") }),
   z.object({ action: z.literal("generate_recap") }),
   z.object({ action: z.literal("save_recap"), content: z.string().max(5000) }),
   z.object({ action: z.literal("publish_recap") }),

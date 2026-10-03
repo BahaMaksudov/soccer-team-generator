@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from "vitest";
 import fs from "node:fs";
 import path from "node:path";
-import { AI_DRAFT_READY_MESSAGE, aiDraftOutcome, generateRecapDraft, mvpStage, syncedRecapText } from "@/lib/postGameUi";
+import { AI_DRAFT_READY_MESSAGE, AI_DRAFT_REGENERATED_MESSAGE, aiButtonLabel, aiDraftOutcome, generateRecapDraft, mvpMethodSwitchable, mvpStage, needsReplaceConfirmation, syncedRecapText } from "@/lib/postGameUi";
 
 /**
  * M9-D production-validation fix: "AI draft ready" appeared but the recap
@@ -102,37 +102,100 @@ describe("Generate AI Recap → textarea (exact production bug)", () => {
   });
 });
 
-describe("Player of the Match card stages", () => {
+describe("Player of the Match card stages (Player Vote / Organizer Selection)", () => {
   const base = { result: { published: true }, mvp: null, messages: { destinationConnected: true } };
-  it("A–F, plus the MEMBER and missing-Telegram-group states (never a blank card)", () => {
+  const vote = (o: object) => ({ ...base, mvp: { started: true, open: false, closed: false, published: false, method: "PLAYER_VOTE" as const, voteLocked: true, selection: null, ...o } });
+  it("before a method is locked: choose method; each method has its own next step; never blank", () => {
     expect(mvpStage({ ...base, result: null }, true)).toBe("RESULT_NOT_PUBLISHED");
-    expect(mvpStage({ ...base, result: { published: false } }, true)).toBe("RESULT_NOT_PUBLISHED");
-    expect(mvpStage({ ...base, messages: { destinationConnected: false } }, true)).toBe("NEEDS_TELEGRAM_GROUP");
+    expect(mvpStage({ ...base, result: { published: false } }, true, "ORGANIZER_SELECTION")).toBe("RESULT_NOT_PUBLISHED");
+    expect(mvpStage(base, true)).toBe("CHOOSE_METHOD");
+    expect(mvpStage(base, true, "PLAYER_VOTE")).toBe("READY_TO_START");
+    expect(mvpStage({ ...base, messages: { destinationConnected: false } }, true, "PLAYER_VOTE")).toBe("NEEDS_TELEGRAM_GROUP");
+    expect(mvpStage({ ...base, messages: { destinationConnected: false } }, true, "ORGANIZER_SELECTION")).toBe("SELECT_PLAYER"); // no Telegram needed
     expect(mvpStage({ ...base, messages: null }, false)).toBe("WAITING_FOR_MANAGER");
-    expect(mvpStage(base, true)).toBe("READY_TO_START");
-    expect(mvpStage({ ...base, mvp: { started: false, open: false, closed: false, published: false } }, true)).toBe("READY_TO_START"); // e.g. poll send uncertain
-    expect(mvpStage({ ...base, mvp: { started: true, open: true, closed: false, published: false } }, true)).toBe("OPEN");
-    expect(mvpStage({ ...base, mvp: { started: true, open: true, closed: false, published: false }, messages: null }, false)).toBe("OPEN");
-    expect(mvpStage({ ...base, mvp: { started: true, open: false, closed: true, published: false }, messages: { destinationConnected: false } }, true)).toBe("CLOSED");
-    expect(mvpStage({ ...base, mvp: { started: true, open: false, closed: true, published: true } }, true)).toBe("PUBLISHED");
+    expect(mvpMethodSwitchable(base)).toBe(true);
+  });
+  it("a started vote locks PLAYER_VOTE (the in-page choice cannot override it)", () => {
+    expect(mvpStage(vote({ open: true }), true, "ORGANIZER_SELECTION")).toBe("OPEN");
+    expect(mvpStage(vote({ started: false }), true, "ORGANIZER_SELECTION")).toBe("READY_TO_START"); // uncertain poll → retry only
+    expect(mvpStage(vote({ closed: true }), true)).toBe("CLOSED");
+    expect(mvpMethodSwitchable(vote({ open: true }))).toBe(false);
+    expect(mvpStage(vote({ open: true }), false)).toBe("OPEN");
+  });
+  it("a saved organizer selection locks ORGANIZER_SELECTION until reset; published locks everything", () => {
+    const saved = { ...base, mvp: { started: false, open: false, closed: false, published: false, method: "ORGANIZER_SELECTION" as const, voteLocked: false, selection: { playerId: "p1" } } };
+    expect(mvpStage(saved, true, "PLAYER_VOTE")).toBe("SELECTION_SAVED");
+    expect(mvpStage(saved, false)).toBe("WAITING_FOR_MANAGER");
+    expect(mvpMethodSwitchable(saved)).toBe(false);
+    const published = { ...saved, mvp: { ...saved.mvp, published: true } };
+    expect(mvpStage(published, true, "PLAYER_VOTE")).toBe("PUBLISHED");
+    expect(mvpMethodSwitchable(published)).toBe(false);
+  });
+});
+
+describe("Generate → Regenerate AI Recap", () => {
+  it("1/2/10: label is Generate until a draft succeeds, then Regenerate; an error does not flip it", async () => {
+    let generated = false;
+    const run = async (data: unknown, ok = true) => {
+      const r = await generateRecapDraft({ request: async () => ({ ok, data }), setDraft: () => {}, notify: () => {}, setError: () => {}, regenerate: generated });
+      if (r === "draft") generated = true;
+    };
+    expect(aiButtonLabel(generated)).toBe("Generate AI Recap");
+    await run({ error: "The AI took too long." }, false);
+    expect(aiButtonLabel(generated)).toBe("Generate AI Recap");
+    await run({ text: "Draft one ⚽" });
+    expect(aiButtonLabel(generated)).toBe("Regenerate AI Recap");
+    await run({ text: "" });
+    expect(aiButtonLabel(generated)).toBe("Regenerate AI Recap");
+  });
+  it("3/9: regeneration replaces the unsaved AI draft with the new one (new-draft message); empty/error leaves the textarea", async () => {
+    const p = panel(undefined);
+    await generateRecapDraft({ request: async () => ({ ok: true, data: { text: "Draft one ⚽" } }), setDraft: p.setDraft, notify: p.notify, setError: p.setError });
+    expect(p.messages.at(-1)).toBe(AI_DRAFT_READY_MESSAGE);
+    await generateRecapDraft({ request: async () => ({ ok: true, data: { text: "Draft two 🏆" } }), setDraft: p.setDraft, notify: p.notify, setError: p.setError, regenerate: true });
+    expect(p.text).toBe("Draft two 🏆");
+    expect(p.messages.at(-1)).toBe(AI_DRAFT_REGENERATED_MESSAGE);
+    await generateRecapDraft({ request: async () => ({ ok: true, data: { text: "  " } }), setDraft: p.setDraft, notify: p.notify, setError: p.setError, regenerate: true });
+    await generateRecapDraft({ request: async () => ({ ok: false, data: { error: "busy" } }), setDraft: p.setDraft, notify: p.notify, setError: p.setError, regenerate: true });
+    expect(p.text).toBe("Draft two 🏆");
+  });
+  it("7/8: replacing asks first only for the organizer's own unsaved edits", () => {
+    // untouched AI draft / standard recap / saved recap / empty → no confirmation
+    expect(needsReplaceConfirmation("Draft one", "Draft one", null)).toBe(false);
+    expect(needsReplaceConfirmation("Team 1 beat Team 2, 5–3.", "Team 1 beat Team 2, 5–3.", null)).toBe(false);
+    expect(needsReplaceConfirmation("Saved text", "Draft one", "Saved text")).toBe(false);
+    expect(needsReplaceConfirmation("   ", null, null)).toBe(false);
+    // edited AI draft, edited standard recap, typed from scratch → confirmation
+    expect(needsReplaceConfirmation("Draft one + my joke", "Draft one", null)).toBe(true);
+    expect(needsReplaceConfirmation("Team 1 beat Team 2, 5–3. Legends.", "Team 1 beat Team 2, 5–3.", null)).toBe(true);
+    expect(needsReplaceConfirmation("My own words", null, null)).toBe(true);
+    expect(needsReplaceConfirmation("Saved text, edited", "Saved text", "Saved text")).toBe(true);
   });
 });
 
 describe("PostGameSection wiring", () => {
   const src = fs.readFileSync(path.join(process.cwd(), "src/app/admin/o/[organizationSlug]/g/[groupSlug]/matches/[matchId]/PostGameSection.tsx"), "utf8");
   it("Generate uses the review-only handler (no reload/act) and the textarea is bound to the draft state", () => {
-    expect(src).toContain("await generateRecapDraft({ request, setDraft: setRecapText, notify, setError: setAiMessage });");
+    expect(src).toContain("const r = await generateRecapDraft({");
+    expect(src).toContain("regenerate: aiGenerated,");
+    expect(src).toContain("aiButtonLabel(aiGenerated)");
+    expect(src).toContain("will replace your current unsaved recap. Continue?");
     expect(src).not.toMatch(/act\(\{ action: "generate_recap"/);
     expect(src).toContain("value={recapText}");
     expect(src).toContain("syncedRecapText(current, lastServerRecap.current, next)");
     expect(src).not.toMatch(/setRecapText\(pg\.recap\?\.content \?\? ""\)/);
   });
   it("every MVP stage renders an explanation or action; no free-text MVP field exists", () => {
-    for (const stage of ["RESULT_NOT_PUBLISHED", "NEEDS_TELEGRAM_GROUP", "WAITING_FOR_MANAGER", "READY_TO_START", "OPEN", "CLOSED", "PUBLISHED"]) {
+    for (const stage of ["RESULT_NOT_PUBLISHED", "NEEDS_TELEGRAM_GROUP", "WAITING_FOR_MANAGER", "READY_TO_START", "OPEN", "CLOSED", "SELECT_PLAYER", "SELECTION_SAVED", "PUBLISHED"]) {
       expect(src, stage).toContain(`"${stage}"`);
     }
-    expect(src).toContain("Publish the result before starting Player of the Match voting.");
-    expect(src).toContain("Select a connected Telegram group for this match to start Player of the Match voting.");
+    expect(src).toContain("Publish the result before choosing Player of the Match.");
+    expect(src).toContain("Select a connected Telegram group for this match to start Player of the Match voting");
+    expect(src).toContain("Choose how Player of the Match will be decided:");
+    expect(src).toContain("Organizer Selection");
+    expect(src).toContain("Save Selection");
+    expect(src).toContain('{p.name} — Team {p.teamNumber}');
+    expect(src).toContain("Player of the Match selection saved — not published.");
     expect(src).toContain("Choose Telegram group");
     expect(src).toContain("Start Player of the Match Vote");
     expect(src).toContain("Close Vote");
