@@ -1,6 +1,6 @@
 # Team Balance Pro — Roadmap & Architecture Notes
 
-Production: https://teambalancepro.com · Last updated: 2026-10-01
+Production: https://teambalancepro.com · Last updated: 2026-10-02
 
 Sequence decided 2026-10-01: Multi-Sport moved before AI (M7 ↔ M8 swapped)
 so AI consumes a sport-neutral engine instead of soccer-only assumptions.
@@ -23,8 +23,10 @@ require every future feature before launch.
 | M7 | Multi-Sport Foundation — sport registry, sport-neutral balancing engine, Add Group (migration #17) | COMPLETE — migration #17 deployed (`ff29508`), production data verified unchanged, basketball production smoke passed, first M7 generation metadata verified (2026-10-01) |
 | M8-A | Deterministic Balance Intelligence — quality levels, roster notes, achievable role coverage, best single swap, Apply Swap (no LLM, no migration) | COMPLETE — deployed (`3f5f368`) and manually production-smoke-tested |
 | M8-B | Optional LLM explanation | DEFERRED — deterministic explanations cover the M8 value; generative AI is better spent on recaps/communication (M9/M10.5) |
-| M9-A | Match, Attendance & Telegram Foundation — Matches, channel-neutral attendance, Generate/Publish for a Match, Telegram attendance adapter, self-service Telegram connection, OWNER/ADMIN send boundary, public player-id privacy, /me next match (migration #18) | IMPLEMENTED — deploying; manual authenticated/Telegram smoke pending |
-| M9-B | Results, MVP, Recap, public match page, Share to WhatsApp | Planned (next) |
+| M9-A | Match, Attendance & Telegram Foundation — Matches, channel-neutral attendance, Generate/Publish for a Match, Telegram attendance adapter, self-service Telegram connection, OWNER/ADMIN send boundary, public player-id privacy, /me next match (migration #18) | COMPLETE — production manual validation passed (prod `64233ba`, 2026-10-02) |
+| M9-B | Telegram Channel Scope & Match Identity — per-Match TeamGeneration identity, chat ↔ Player scope, channel-scoped attendance UX, disconnect/reconnect hardening | Planned (next; design recorded 2026-10-02) |
+| M9-C | Match Player Experience — match-scoped player page, visibility-aware access, "View teams online" → exact Match, player-safe Match DTO, optional claim CTA | Planned |
+| M9-D | Result, MVP & Recap — explicit result publication, MVP vote/announcement, recap, Share to WhatsApp | Planned |
 | M10 | WhatsApp & Expanded Communications — GroupChannel, primary channel, WhatsApp identity, Meta Cloud API, multi-channel delivery | Planned |
 | M10.5 | Organizer Agent & Match Automation — scheduled attendance → import → generate → analysis → organizer approval → publish/post; optional game-day updates (weather) | Planned |
 | M11 | Plans & Billing | Planned |
@@ -434,6 +436,73 @@ Publish/Telegram path.
   canonical published version, never an unpublished preview, and Telegram
   team posting is hidden while such a preview is open.
 
+### M9-A completion (2026-10-02)
+
+Production manual validation passed: Match creation; attendance poll posted to
+Telegram; Telegram "Playing" votes sync live; organizer overrides and cleared
+overrides; attendance-derived selection stays synchronized with manual
+adjustments; Generate/Regenerate, Balance analysis and Apply Swap; published
+teams separate from the unpublished preview (Regenerate/Clear/Swap never touch
+them; only Publish replaces them; the public page changes only on Publish);
+Telegram team posting uses the canonical published TeamGeneration, is hidden
+while a different preview is open, and the explicit Post delivered the
+expected teams. "View teams online" works but opens the Group-wide page
+(→ M9-C).
+
+## M9-B / M9-C / M9-D — requirements and design (recorded 2026-10-02)
+
+Found in real production use (Indoor Soccer: 30 roster players, 2 connected
+Telegram chats; one chat contains only a subset of the roster):
+
+- **Telegram chat roster ≠ Group roster.** A chat connected to a Group must
+  not be assumed to contain every Player. A Group may have several chats,
+  later WhatsApp, and Players on no channel at all.
+- **Channel-scoped player scope is required** (M9-B): a Telegram-specific,
+  organizer-curated `TelegramChat ↔ Player` association (working name
+  `TelegramChatPlayer`, unique per chat+Player, Group-checked, cascades with
+  the chat or Player), seeded by explicit "add players who voted in this
+  chat" suggestions from linked voters. It is a *default view*, never an
+  eligibility rule: the Match roster shows the chat's players by default,
+  the organizer can add any Group Player, and anyone with attendance for the
+  Match is always shown. Generalize to a channel-neutral association when
+  GroupChannel arrives (M10); the table maps 1:1 onto it.
+- **Telegram membership stays optional** for being a Player or playing a
+  Match; attendance stays Group-scoped (a linked vote counts from any chat of
+  the Group).
+- **The Bot API cannot enumerate a group's members** (only administrators,
+  single-member lookup, member count, and `chat_member` events when the bot
+  is an admin and opts in). Scope never depends on full enumeration;
+  historical poll votes are evidence for suggestions, not membership truth.
+- **Disconnect/reconnect** (M9-B): disconnect becomes a soft disconnect so a
+  reconnect of the same chat to the same Group restores its scope; binding a
+  previously disconnected chat to a *different* Group starts empty (old
+  associations removed in the same transaction). A chat connected to Group A
+  never applies to Group B.
+- **Match identity before match pages** (M9-B, first step): TeamGeneration
+  moves from date identity to Match identity — `(groupId, date)` uniqueness
+  only for legacy rows without a Match (partial unique index), `matchId`
+  unique for Match rows. Today a second same-day Match's publish is refused
+  (409), so nothing is corrupted; production has no same-day Matches.
+- **"View teams online" becomes match-scoped** (M9-C):
+  `/g/[org]/[group]/matches/[matchId]` for PUBLIC Groups and for organizers /
+  claimed Players of non-PUBLIC Groups; LINK Groups use the share capability
+  plus the Match (token stays in the URL fragment). PRIVATE posts carry no
+  link (unchanged). The page shows only an allow-listed Match DTO (date, time,
+  venue label, sport, team numbers, player display names and public
+  role labels; later result/MVP/recap) — never rating, stamina, metrics,
+  Telegram/User/Player ids, unpublished previews or organizer attendance
+  metadata.
+- **No signup to view ordinary allowed match teams.** Richer identity later:
+  Telegram identity → `TelegramUserLink` → Player → optional User, through
+  the existing claim + `/connect` flows (or a verified Telegram login);
+  never a client-supplied Telegram id, never a duplicate Player.
+- **Publish ≠ Send, Group/channel isolation and OWNER/ADMIN sends** stay
+  invariants; legacy `/poll` (retired) and MEMBER Telegram privacy/actions
+  (server 404 + hidden UI) were resolved in M9-A and must stay covered by
+  tests.
+- **Future WhatsApp reuses the canonical Match lifecycle**; channels point
+  into a Match, they never own it.
+
 ## M9 — channel-neutral match lifecycle (decisions recorded 2026-10-01)
 
 The lifecycle belongs to Team Balance Pro, not to Telegram; Telegram is the
@@ -592,8 +661,7 @@ posts.
 ## Deferred backlog (still open)
 
 - **Same-day Match teams (M9-A transitional limitation):** TeamGeneration is
-  unique per (Group, date); allow per-Match generations (e.g. uniqueness on
-  matchId for Match-linked rows) when doubleheaders need saved teams.
+  unique per (Group, date) → scheduled as the first M9-B step (see above).
 - **Generation Variety / "More variety"** (found in the M8 review): Regenerate
   rarely yields a different split (e.g. 4 distinct splits in 200 runs on a
   realistic 14-player roster) because randomness only breaks exact ties.
