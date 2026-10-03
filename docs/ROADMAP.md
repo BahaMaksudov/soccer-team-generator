@@ -26,8 +26,8 @@ require every future feature before launch.
 | M9-A | Match, Attendance & Telegram Foundation — Matches, channel-neutral attendance, Generate/Publish for a Match, Telegram attendance adapter, self-service Telegram connection, OWNER/ADMIN send boundary, public player-id privacy, /me next match (migration #18) | COMPLETE — production manual validation passed (prod `64233ba`, 2026-10-02) |
 | M9-B | Telegram Channel Scope & Match Identity — per-Match TeamGeneration identity, chat ↔ Player scope, channel-scoped attendance UX, disconnect/reconnect hardening | COMPLETE — deployed with migration #19 (prod `805339b`, 2026-10-03) |
 | M9-C | Match Player Experience — match-scoped player page, visibility-aware access, "View teams online" → exact Match, player-safe Match DTO, optional sign-in CTA | COMPLETE — deployed without migration (prod `5a66485`, 2026-10-03) |
-| M9-D | Result, MVP & Recap — explicit result publication, MVP vote/announcement, recap, Share to WhatsApp | Planned (next) |
-| M10 | WhatsApp & Expanded Communications — GroupChannel, primary channel, WhatsApp identity, Meta Cloud API, multi-channel delivery | Planned |
+| M9-D | Result, MVP & AI Recap — result save/publish/post, Telegram MVP vote + deterministic winner, AI-assisted recap with deterministic fallback | COMPLETE — migration #20 (prod `8dec585`, 2026-10-03). **M9 is functionally complete for the MVP scope.** |
+| M10 | WhatsApp & Expanded Communications — GroupChannel, primary channel, WhatsApp identity, Meta Cloud API, multi-channel delivery | Planned (next) |
 | M10.5 | Organizer Agent & Match Automation — scheduled attendance → import → generate → analysis → organizer approval → publish/post; optional game-day updates (weather) | Planned |
 | M11 | Plans & Billing | Planned |
 | M12 | Product UX / Analytics / Branding | Planned |
@@ -579,6 +579,55 @@ Telegram chats; one chat contains only a subset of the roster):
   TeamGeneration ids in print links; Match ids are the URL identifier.
   No public surface exposes Player ids.
 
+## M9-D — Result, MVP & AI Recap (decisions as built, 2026-10-03)
+
+**SAVE ≠ PUBLISH ≠ SEND.** Saving stores organizer-only data; publishing
+shows it on the Match page; only explicit OWNER/ADMIN actions talk to
+Telegram ("Start MVP Vote" posts one poll; "Post Result / Announce MVP /
+Post Recap" post one message each). Nothing cascades; AI never publishes or
+sends. Services live in `src/lib/postGame.ts` (one route,
+`/matches/[matchId]/post-game`, action-discriminated) so a future agent can
+call the same functions.
+
+- **Schema (migration #20, additive):** `MatchResult`, `MatchMvp`,
+  `MatchMvpVote`, `MatchRecap` (each Match-keyed, never Telegram-owned) and
+  MessageEventType `MVP_POLL_POSTED`, `MATCH_RESULT_POSTED`, `MVP_ANNOUNCED`,
+  `MATCH_RECAP_POSTED`.
+- **Result:** one generic non-negative integer score (≤ 999) per PUBLISHED
+  team number (multi-sport; team names can hang off the same key later).
+  Draft until published; publishing completes a SCHEDULED Match; a
+  correction stays published and is reflected on the page; Telegram only via
+  explicit "Post Updated Result" (content hash). Ties show "Draw".
+- **MVP:** candidates = published-team participants (snapshot ids, so
+  history survives roster changes). Rule: only participants vote (Telegram
+  user → TelegramUserLink → Player), never for themselves (a self-vote
+  clears that Player's vote), one current vote per Player (changes replace,
+  retractions clear, malformed answers ignored), unlinked voters never count.
+  Requires a published result and the Match's connected Telegram chat.
+  Telegram polls: non-anonymous, single choice, ≤ 10 options (Bot API docs
+  disagree between 10 and 12; 10 is safe) — above that the organizer picks an
+  explicit shortlist. Close = replay stored answers, freeze, stopPoll.
+  Winner = highest valid count; ties are never silent: co-MVPs or an
+  organizer tie-break, recorded in `MatchMvp.decision`. Organizers see
+  aggregate counts only (never who voted for whom). MVP polls never feed
+  attendance and attendance polls never feed MVP.
+- **Recap:** deterministic fact recap always available. AI (optional,
+  server-only `src/lib/ai/openai.ts`; `OPENAI_API_KEY`, `OPENAI_MODEL`
+  default `gpt-4o-mini`, `OPENAI_BASE_URL`; 15 s timeout) receives ONLY an
+  allow-listed facts object (`buildRecapFacts`: sport, date, venue, team
+  labels + scores, winner/draw computed by the app, published MVP names,
+  participant count). Output is sanitized to plain text, ≤ 1,200 chars and
+  rejected if it states a different score; any failure returns the standard
+  recap as fallback. The AI draft is returned for review (kept as
+  `generatedContent`), never saved as the recap; saving records the source
+  (AI / AI_EDITED / DETERMINISTIC / MANUAL).
+- **Match page** adds (published only): Final Result, Player(s) of the
+  Match, Match Recap — no drafts, votes, voters, AI metadata or ids.
+- **Canceled Matches** accept no post-game action.
+- **Deferred:** web MVP voting fallback (schema supports `WEB` votes),
+  WhatsApp, player statistics/scorers, standings, automation/approval
+  agent (M10.5), weather-aware messages.
+
 ## Lovable / Product UX Redesign Backlog (recorded 2026-10-03, for M12)
 
 Functional-but-plain UI is intentional until the M12 redesign (with
@@ -600,6 +649,10 @@ Lovable). Not to be polished piecemeal:
 - Mobile/responsive layout of tables and controls.
 - Card design, colors, typography, backgrounds (soccer-themed background
   image), branding.
+- (M9-D) Post-game panel: Result/MVP/Recap stacked boxes, raw number inputs,
+  plain vote-count list, tie-break buttons, shortlist checkboxes, message
+  previews before posting (none today), AI recap editing UX (no diff/undo),
+  Match page result/MVP/recap layout and mobile layout.
 - (M9-C) Player Match page: plain card/table, no navigation between Match,
   Group history, Matches list and Players; no "my team" highlight; sign-in
   line styling; LINK-group share-link paste field in the Match workspace is a
