@@ -84,7 +84,7 @@ describe("POST canonical telegram/create-poll — ordering + isolation", () => {
     await POST(req({ chatId: "111", pollDate: "2026-09-28" }), ctx("org-a", "group-a"));
 
     expect(mockChatFindFirst).toHaveBeenCalledWith(
-      expect.objectContaining({ where: { chatId: 111n, groupId: "group-a" } })
+      expect.objectContaining({ where: { chatId: 111n, groupId: "group-a", disconnectedAt: null } })
     );
   });
 

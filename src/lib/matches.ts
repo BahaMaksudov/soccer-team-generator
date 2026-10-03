@@ -12,6 +12,7 @@ import {
   matchUpdateSchema,
   zodErrorResponse,
 } from "@/lib/validation";
+import { scopePlayerIds, suggestedPlayerIds } from "@/lib/telegramChatScope";
 import { countAttendance, defaultSelection, effectiveAttendance, recordParticipantResponse, type AttendanceRow } from "@/lib/attendance";
 
 /**
@@ -80,7 +81,7 @@ export function publishedTeamsOf(teamsJson: string): Array<{ teamNumber: number;
 }
 
 export async function findGroupMatch(context: TenantContext, matchId: string) {
-  return prisma.match.findFirst({ where: { id: matchId, groupId: context.activeGroup.id }, select: { ...MATCH_SELECT, groupId: true } });
+  return prisma.match.findFirst({ where: { id: matchId, groupId: context.activeGroup.id }, select: { ...MATCH_SELECT, groupId: true, telegramChatId: true } });
 }
 
 export async function createMatch(context: TenantContext, req: Request): Promise<NextResponse> {
@@ -163,7 +164,7 @@ export async function getMatchView(context: TenantContext, matchId: string): Pro
       orderBy: { createdAt: "desc" },
       select: { pollId: true, isClosed: true, createdAt: true },
     }),
-    prisma.telegramChat.count({ where: { groupId } }),
+    prisma.telegramChat.count({ where: { groupId, disconnectedAt: null } }),
   ]);
 
   let unlinkedVoters = 0;
@@ -173,6 +174,20 @@ export async function getMatchView(context: TenantContext, matchId: string): Pro
     const linkedSet = new Set(linked.map((l) => l.userId.toString()));
     unlinkedVoters = answers.filter((a) => !linkedSet.has(a.userId.toString())).length;
   }
+
+  // M9-B — the selected Telegram chat's DEFAULT player scope. Player ids only
+  // (everyone who can open the workspace sees the same default roster); chat
+  // titles, the chat list and linked-voter suggestions are OWNER/ADMIN only.
+  const selectedChat = match.telegramChatId
+    ? await prisma.telegramChat.findFirst({ where: { id: match.telegramChatId, groupId }, select: { id: true, chatId: true, title: true, disconnectedAt: true } })
+    : null;
+  const [scopeIds, suggestions, chats] = await Promise.all([
+    selectedChat ? scopePlayerIds(groupId, selectedChat.id) : Promise.resolve([] as string[]),
+    selectedChat && manager ? suggestedPlayerIds(groupId, selectedChat) : Promise.resolve([] as string[]),
+    manager
+      ? prisma.telegramChat.findMany({ where: { groupId, disconnectedAt: null }, orderBy: { createdAt: "asc" }, select: { id: true, title: true } })
+      : Promise.resolve([] as Array<{ id: number; title: string | null }>),
+  ]);
 
   const rows = attendance as AttendanceRow[];
   const byPlayer = new Map(rows.map((r) => [r.playerId, r]));
@@ -211,8 +226,15 @@ export async function getMatchView(context: TenantContext, matchId: string): Pro
     generation: generation
       ? { id: generation.id, date: formatYMDFromDate(generation.date), updatedAt: generation.updatedAt.toISOString(), teams: publishedTeamsOf(generation.teamsJson) }
       : null,
+    scope: { chatSelected: selectedChat !== null, playerIds: scopeIds },
     telegram: {
       connected: chatCount > 0,
+      chats: chats.map((c) => ({ ref: c.id, title: c.title || "Telegram group" })),
+      selectedChat:
+        manager && selectedChat
+          ? { ref: selectedChat.id, title: selectedChat.title || "Telegram group", connected: selectedChat.disconnectedAt === null }
+          : null,
+      suggestedPlayerIds: suggestions,
       poll: poll ? { pollId: manager ? poll.pollId : null, closed: poll.isClosed, postedAt: poll.createdAt.toISOString() } : null,
       unlinkedVoters,
       pollDelivery: pollDeliveries[0] ? { status: pollDeliveries[0].status, sentAt: pollDeliveries[0].sentAt?.toISOString() ?? null } : null,

@@ -6,7 +6,34 @@ vi.mock("@/lib/tenantContext", async (importOriginal) => {
   return { ...actual, requireTenantContextForSlugs: (...args: unknown[]) => mockRequireTenantContextForSlugs(...args) };
 });
 
-const mockUpsert = vi.fn();
+// M9-B — a legacy (no matchId) publish is findFirst(groupId, date, matchId: null)
+// → update or create, inside a transaction. This in-memory fake implements
+// exactly that and records every real save as { op, where, data }, where
+// `where` is the selector the route actually used.
+type LegacySave = { op: "create" | "update"; where: { groupId: string; date: Date; matchId: null }; data: Record<string, unknown> & { teamsJson: string } };
+const mockLegacySave = vi.fn<(save: LegacySave) => Promise<{ id: string } | undefined>>();
+const legacyRows = new Map<string, { id: string; where: LegacySave["where"] }>();
+const legacyKey = (w: { groupId: string; date: Date }) => `${w.groupId}|${w.date.toISOString()}`;
+const legacyTx = {
+  $queryRaw: async () => [{ locked: 1 }],
+  teamGeneration: {
+    findFirst: async ({ where }: { where: LegacySave["where"] }) => {
+      if (where.matchId !== null) throw new Error("legacy publish must select matchId: null");
+      const row = legacyRows.get(legacyKey(where));
+      return row ? { id: row.id } : null;
+    },
+    create: async ({ data }: { data: LegacySave["data"] }) => {
+      const where = { groupId: data.groupId as string, date: data.date as Date, matchId: null as null };
+      const saved = (await mockLegacySave({ op: "create", where, data })) ?? { id: "gen" };
+      legacyRows.set(legacyKey(where), { id: saved.id, where });
+      return saved;
+    },
+    update: async ({ where, data }: { where: { id: string }; data: LegacySave["data"] }) => {
+      const row = [...legacyRows.values()].find((r) => r.id === where.id)!;
+      return (await mockLegacySave({ op: "update", where: row.where, data })) ?? { id: row.id };
+    },
+  },
+};
 const mockDeleteMany = vi.fn();
 const mockPollFindUnique = vi.fn();
 const mockPollUpdate = vi.fn();
@@ -22,13 +49,13 @@ vi.mock("@/lib/prisma", () => ({
   prisma: {
     player: { findMany: (...a: [PlayerQuery]) => mockPlayerFindMany(...a) },
     teamGeneration: {
-      upsert: (...args: unknown[]) => mockUpsert(...args),
       deleteMany: (...args: unknown[]) => mockDeleteMany(...args),
     },
     telegramPoll: {
       findUnique: (...args: unknown[]) => mockPollFindUnique(...args),
       update: (...args: unknown[]) => mockPollUpdate(...args),
     },
+    $transaction: async (fn: (tx: typeof legacyTx) => unknown) => fn(legacyTx),
     // M7 — Publish reads the Group's balance weights to record metrics.
     groupSetting: { findUnique: async () => null },
   },
@@ -71,6 +98,7 @@ const originalFetch = global.fetch;
 
 beforeEach(() => {
   vi.clearAllMocks();
+  legacyRows.clear();
   mockPlayerFindMany.mockImplementation(ownAll);
   process.env.TELEGRAM_BOT_TOKEN = "test-token";
   global.fetch = vi.fn().mockRejectedValue(new Error("real Telegram API must never be called in tests"));
@@ -83,84 +111,88 @@ afterEach(() => {
 describe("POST canonical publish — success, server-stamped tenancy", () => {
   it("resolves via the URL pair; upsert selector and create payload both use the URL-resolved active group", async () => {
     mockRequireTenantContextForSlugs.mockResolvedValue(CONTEXT_A);
-    mockUpsert.mockResolvedValue({ id: "gen-1" });
+    mockLegacySave.mockResolvedValue({ id: "gen-1" });
 
     const res = await POST(publishReq({ date: "2026-09-28", teams: SAMPLE_TEAMS }), ctx("org-a", "group-a"));
     expect(res.status).toBe(200);
 
     expect(mockRequireTenantContextForSlugs).toHaveBeenCalledWith({ organizationSlug: "org-a", groupSlug: "group-a" });
 
-    const call = mockUpsert.mock.calls[0][0];
-    expect(call.where).toEqual({ groupId_date: { groupId: "group-a", date: expect.any(Date) } });
-    expect(call.create).toEqual(expect.objectContaining({ groupId: "group-a", teamsJson: expect.any(String) }));
-    expect(call.update).not.toHaveProperty("groupId");
+    const call = mockLegacySave.mock.calls[0][0];
+    expect(call.where).toEqual({ groupId: "group-a", date: expect.any(Date), matchId: null });
+    expect(call.op).toBe("create");
+    expect(call.data).toEqual(expect.objectContaining({ groupId: "group-a", teamsJson: expect.any(String) }));
+    expect(call.data).not.toHaveProperty("matchId");
   });
 });
 
 describe("POST canonical publish — date-only value is persisted exactly (Phase 2D.6E.3B)", () => {
   it("the preview's 2026-10-05T00:00:00.000Z is upserted as TeamGeneration.date 2026-10-05T00:00:00.000Z", async () => {
     mockRequireTenantContextForSlugs.mockResolvedValue(CONTEXT_A);
-    mockUpsert.mockResolvedValue({ id: "gen-1" });
+    mockLegacySave.mockResolvedValue({ id: "gen-1" });
 
     const res = await POST(publishReq({ date: "2026-10-05T00:00:00.000Z", teams: SAMPLE_TEAMS }), ctx("org-a", "group-a"));
     expect(res.status).toBe(200);
 
-    const call = mockUpsert.mock.calls[0][0];
-    expect(call.where.groupId_date.date.toISOString()).toBe("2026-10-05T00:00:00.000Z");
-    expect(call.create.date.toISOString()).toBe("2026-10-05T00:00:00.000Z");
+    const call = mockLegacySave.mock.calls[0][0];
+    expect(call.where.date.toISOString()).toBe("2026-10-05T00:00:00.000Z");
+    expect((call.data.date as Date).toISOString()).toBe("2026-10-05T00:00:00.000Z");
   });
 });
 
 describe("POST canonical publish — same-date, different-Group isolation", () => {
   it("Group A and Group B publishing the same date use structurally different (groupId, date) selectors", async () => {
     mockRequireTenantContextForSlugs.mockResolvedValue(CONTEXT_A);
-    mockUpsert.mockResolvedValue({ id: "gen-a" });
+    mockLegacySave.mockResolvedValue({ id: "gen-a" });
     await POST(publishReq({ date: "2026-09-28", teams: SAMPLE_TEAMS }), ctx("org-a", "group-a"));
-    const callA = mockUpsert.mock.calls[0][0];
-    expect(callA.where.groupId_date.groupId).toBe("group-a");
+    const callA = mockLegacySave.mock.calls[0][0];
+    expect(callA.where.groupId).toBe("group-a");
 
     vi.clearAllMocks();
+  legacyRows.clear();
     mockRequireTenantContextForSlugs.mockResolvedValue(CONTEXT_B);
-    mockUpsert.mockResolvedValue({ id: "gen-b" });
+    mockLegacySave.mockResolvedValue({ id: "gen-b" });
     await POST(publishReq({ date: "2026-09-28", teams: SAMPLE_TEAMS }), ctx("org-b", "group-b"));
-    const callB = mockUpsert.mock.calls[0][0];
-    expect(callB.where.groupId_date.groupId).toBe("group-b");
+    const callB = mockLegacySave.mock.calls[0][0];
+    expect(callB.where.groupId).toBe("group-b");
 
-    expect(callA.where.groupId_date.groupId).not.toBe(callB.where.groupId_date.groupId);
+    expect(callA.where.groupId).not.toBe(callB.where.groupId);
   });
 });
 
 describe("POST canonical publish — same-Group overwrite semantics", () => {
   it("republishing the same URL + same date reuses the identical (groupId, date) selector (upsert, not a new row)", async () => {
     mockRequireTenantContextForSlugs.mockResolvedValue(CONTEXT_A);
-    mockUpsert.mockResolvedValue({ id: "gen-a" });
+    mockLegacySave.mockResolvedValue({ id: "gen-a" });
 
     await POST(publishReq({ date: "2026-09-28", teams: SAMPLE_TEAMS }), ctx("org-a", "group-a"));
-    const firstCall = mockUpsert.mock.calls[0][0];
+    const firstCall = mockLegacySave.mock.calls[0][0];
 
     await POST(publishReq({ date: "2026-09-28", teams: [{ teamNumber: 1, players: [{ id: "p2", firstName: "C", lastName: "D" }] }] }), ctx("org-a", "group-a"));
-    const secondCall = mockUpsert.mock.calls[1][0];
+    const secondCall = mockLegacySave.mock.calls[1][0];
 
     expect(firstCall.where).toEqual(secondCall.where);
-    expect(secondCall.update.teamsJson).not.toBe(firstCall.create.teamsJson);
+    expect([firstCall.op, secondCall.op]).toEqual(["create", "update"]); // overwrite, not a new row
+    expect(secondCall.data).not.toHaveProperty("groupId"); // an overwrite never re-targets the row
+    expect(secondCall.data.teamsJson).not.toBe(firstCall.data.teamsJson);
   });
 });
 
 describe("POST canonical publish — malicious tenant fields ignored", () => {
   it("a body groupId cannot influence the selector or create payload", async () => {
     mockRequireTenantContextForSlugs.mockResolvedValue(CONTEXT_A);
-    mockUpsert.mockResolvedValue({ id: "gen-1" });
+    mockLegacySave.mockResolvedValue({ id: "gen-1" });
 
     await POST(publishReq({ date: "2026-09-28", teams: SAMPLE_TEAMS, groupId: "group-b" }), ctx("org-a", "group-a"));
 
-    const call = mockUpsert.mock.calls[0][0];
-    expect(call.where.groupId_date.groupId).toBe("group-a");
-    expect(call.create.groupId).toBe("group-a");
+    const call = mockLegacySave.mock.calls[0][0];
+    expect(call.where.groupId).toBe("group-a");
+    expect(call.data.groupId).toBe("group-a");
   });
 
   it("a body organizationId cannot influence tenant resolution", async () => {
     mockRequireTenantContextForSlugs.mockResolvedValue(CONTEXT_A);
-    mockUpsert.mockResolvedValue({ id: "gen-1" });
+    mockLegacySave.mockResolvedValue({ id: "gen-1" });
 
     await POST(
       publishReq({ date: "2026-09-28", teams: SAMPLE_TEAMS, organizationId: "org-b" }),
@@ -168,8 +200,8 @@ describe("POST canonical publish — malicious tenant fields ignored", () => {
     );
 
     expect(mockRequireTenantContextForSlugs).toHaveBeenCalledWith({ organizationSlug: "org-a", groupSlug: "group-a" });
-    const call = mockUpsert.mock.calls[0][0];
-    expect(call.create.groupId).toBe("group-a");
+    const call = mockLegacySave.mock.calls[0][0];
+    expect(call.data.groupId).toBe("group-a");
   });
 });
 
@@ -179,7 +211,7 @@ describe("POST canonical publish — invalid tenant fails closed before any Team
 
     const res = await POST(publishReq({ date: "2026-09-28", teams: SAMPLE_TEAMS }), ctx("not-real", "group-a"));
     expect(res.status).toBe(404);
-    expect(mockUpsert).not.toHaveBeenCalled();
+    expect(mockLegacySave).not.toHaveBeenCalled();
   });
 
   it("foreign/unknown Group -> identical generic canonical failure, upsert never called", async () => {
@@ -187,7 +219,7 @@ describe("POST canonical publish — invalid tenant fails closed before any Team
 
     const res = await POST(publishReq({ date: "2026-09-28", teams: SAMPLE_TEAMS }), ctx("org-a", "group-b"));
     expect(res.status).toBe(404);
-    expect(mockUpsert).not.toHaveBeenCalled();
+    expect(mockLegacySave).not.toHaveBeenCalled();
   });
 
   it("unknown Organization and foreign Group produce the identical status + body (no existence leak)", async () => {
@@ -216,17 +248,17 @@ describe("POST canonical publish — same Group slug across Organizations remain
     const GROUP_B_SAME_SLUG = { ...GROUP_B, slug: "indoor-soccer" };
 
     mockRequireTenantContextForSlugs.mockResolvedValue({ ...CONTEXT_A, activeGroup: GROUP_A_SAME_SLUG });
-    mockUpsert.mockResolvedValue({ id: "gen-a" });
+    mockLegacySave.mockResolvedValue({ id: "gen-a" });
     await POST(publishReq({ date: "2026-09-28", teams: SAMPLE_TEAMS }), ctx("org-a", "indoor-soccer"));
-    expect(mockUpsert).toHaveBeenLastCalledWith(
-      expect.objectContaining({ where: { groupId_date: { groupId: "group-a", date: expect.any(Date) } } })
+    expect(mockLegacySave).toHaveBeenLastCalledWith(
+      expect.objectContaining({ where: { groupId: "group-a", date: expect.any(Date), matchId: null } })
     );
 
     mockRequireTenantContextForSlugs.mockResolvedValue({ ...CONTEXT_B, activeGroup: GROUP_B_SAME_SLUG });
-    mockUpsert.mockResolvedValue({ id: "gen-b" });
+    mockLegacySave.mockResolvedValue({ id: "gen-b" });
     await POST(publishReq({ date: "2026-09-28", teams: SAMPLE_TEAMS }), ctx("org-b", "indoor-soccer"));
-    expect(mockUpsert).toHaveBeenLastCalledWith(
-      expect.objectContaining({ where: { groupId_date: { groupId: "group-b", date: expect.any(Date) } } })
+    expect(mockLegacySave).toHaveBeenLastCalledWith(
+      expect.objectContaining({ where: { groupId: "group-b", date: expect.any(Date), matchId: null } })
     );
   });
 });
@@ -270,7 +302,7 @@ describe("DELETE canonical publish — cross-tenant delete protection", () => {
     expect(mockPollFindUnique).not.toHaveBeenCalled();
     expect(mockPollUpdate).not.toHaveBeenCalled();
     expect(global.fetch).not.toHaveBeenCalled();
-    expect(mockUpsert).not.toHaveBeenCalled();
+    expect(mockLegacySave).not.toHaveBeenCalled();
   });
 
   it("rejects a missing/invalid date without deleting", async () => {
@@ -299,7 +331,7 @@ describe("POST canonical publish — Telegram poll actions are server-hard-disab
     );
 
     expect(res.status).toBe(400);
-    expect(mockUpsert).not.toHaveBeenCalled();
+    expect(mockLegacySave).not.toHaveBeenCalled();
     expect(mockPollFindUnique).not.toHaveBeenCalled();
     expect(global.fetch).not.toHaveBeenCalled();
   });
@@ -316,7 +348,7 @@ describe("POST canonical publish — Telegram poll actions are server-hard-disab
     );
 
     expect(res.status).toBe(400);
-    expect(mockUpsert).not.toHaveBeenCalled();
+    expect(mockLegacySave).not.toHaveBeenCalled();
     expect(mockPollFindUnique).not.toHaveBeenCalled();
     expect(mockPollUpdate).not.toHaveBeenCalled();
     expect(global.fetch).not.toHaveBeenCalled();
@@ -332,7 +364,7 @@ describe("POST canonical publish — Telegram poll actions are server-hard-disab
 
   it("omitting pollId entirely (the canonical UI's actual behavior) publishes normally and never touches Telegram", async () => {
     mockRequireTenantContextForSlugs.mockResolvedValue(CONTEXT_A);
-    mockUpsert.mockResolvedValue({ id: "gen-1" });
+    mockLegacySave.mockResolvedValue({ id: "gen-1" });
 
     const res = await POST(publishReq({ date: "2026-09-28", teams: SAMPLE_TEAMS }), ctx("org-a", "group-a"));
     const data = await res.json();
@@ -347,7 +379,7 @@ describe("POST canonical publish — Telegram poll actions are server-hard-disab
 
   it("closePoll/postToTelegram without a pollId are inert: teams are saved, nothing Telegram-related happens (Phase 2D.6D.5E.5)", async () => {
     mockRequireTenantContextForSlugs.mockResolvedValue(CONTEXT_A);
-    mockUpsert.mockResolvedValue({ id: "gen-1" });
+    mockLegacySave.mockResolvedValue({ id: "gen-1" });
 
     const res = await POST(
       publishReq({ date: "2026-09-28", teams: SAMPLE_TEAMS, closePoll: true, postToTelegram: true }),
@@ -356,7 +388,7 @@ describe("POST canonical publish — Telegram poll actions are server-hard-disab
 
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ ok: true, id: "gen-1" });
-    expect(mockUpsert).toHaveBeenCalledTimes(1);
+    expect(mockLegacySave).toHaveBeenCalledTimes(1);
     expect(mockPollFindUnique).not.toHaveBeenCalled();
     expect(mockPollUpdate).not.toHaveBeenCalled();
     expect(global.fetch).not.toHaveBeenCalled();
@@ -393,7 +425,7 @@ describe("POST canonical publish — submitted players must belong to the active
   beforeEach(() => {
     mockPlayerFindMany.mockImplementation(ownership);
     mockRequireTenantContextForSlugs.mockResolvedValue(CONTEXT_B);
-    mockUpsert.mockResolvedValue({ id: "gen-b" });
+    mockLegacySave.mockResolvedValue({ id: "gen-b" });
   });
 
   it("all Group B players → published; ownership query is scoped to Group B and runs before the upsert", async () => {
@@ -406,9 +438,9 @@ describe("POST canonical publish — submitted players must belong to the active
       where: { groupId: "group-b", id: { in: ["pb1", "pb2"] } },
       select: { id: true, firstName: true, lastName: true, position: true, rating: true, stamina: true },
     });
-    expect(mockPlayerFindMany.mock.invocationCallOrder[0]).toBeLessThan(mockUpsert.mock.invocationCallOrder[0]);
+    expect(mockPlayerFindMany.mock.invocationCallOrder[0]).toBeLessThan(mockLegacySave.mock.invocationCallOrder[0]);
     // Same-date publish stays Group-scoped.
-    expect(mockUpsert.mock.calls[0][0].where.groupId_date.groupId).toBe("group-b");
+    expect(mockLegacySave.mock.calls[0][0].where.groupId).toBe("group-b");
   });
 
   it("a Group A player through Group B Publish → 400 generic, no TeamGeneration upsert, no foreign details", async () => {
@@ -417,7 +449,7 @@ describe("POST canonical publish — submitted players must belong to the active
     const text = await res.text();
     expect(text).toBe(GENERIC);
     expect(text).not.toMatch(/pa1|group-a|First-|Last-/);
-    expect(mockUpsert).not.toHaveBeenCalled();
+    expect(mockLegacySave).not.toHaveBeenCalled();
   });
 
   it("a mixed Group A + Group B team → 400 generic, the whole Publish rejected, no upsert", async () => {
@@ -427,14 +459,14 @@ describe("POST canonical publish — submitted players must belong to the active
     );
     expect(res.status).toBe(400);
     expect(await res.text()).toBe(GENERIC);
-    expect(mockUpsert).not.toHaveBeenCalled();
+    expect(mockLegacySave).not.toHaveBeenCalled();
   });
 
   it("a nonexistent player id → 400 generic, indistinguishable from a foreign one, no upsert", async () => {
     const res = await POST(publishReq({ date: "2026-09-23", teams: [team(1, ["pb1", "nope"])] }), ctx("org-b", "group-b"));
     expect(res.status).toBe(400);
     expect(await res.text()).toBe(GENERIC);
-    expect(mockUpsert).not.toHaveBeenCalled();
+    expect(mockLegacySave).not.toHaveBeenCalled();
   });
 
   it.each([
@@ -448,7 +480,7 @@ describe("POST canonical publish — submitted players must belong to the active
     expect(res.status).toBe(400);
     expect(await res.text()).toBe(GENERIC);
     expect(mockPlayerFindMany).not.toHaveBeenCalled();
-    expect(mockUpsert).not.toHaveBeenCalled();
+    expect(mockLegacySave).not.toHaveBeenCalled();
   });
 
   it("a legitimate Generate → Preview payload still publishes, stored as the authoritative snapshot", async () => {
@@ -460,7 +492,7 @@ describe("POST canonical publish — submitted players must belong to the active
     const res = await POST(publishReq({ date: "2026-10-05T00:00:00.000Z", teams }), ctx("org-b", "group-b"));
     expect(res.status).toBe(200);
     // Unchanged when the client sent the true values.
-    expect(JSON.parse(mockUpsert.mock.calls[0][0].create.teamsJson)).toEqual(teams);
+    expect(JSON.parse(mockLegacySave.mock.calls[0][0].data.teamsJson)).toEqual(teams);
   });
 });
 
@@ -484,7 +516,7 @@ describe("POST canonical publish — server-authoritative snapshot (Phase 2D.6E.
     const { groupId: _g, ...fields } = DB[id];
     return { id, ...fields };
   };
-  const stored = () => JSON.parse(mockUpsert.mock.calls[0][0].create.teamsJson);
+  const stored = () => JSON.parse(mockLegacySave.mock.calls[0][0].data.teamsJson);
   const GENERIC = JSON.stringify({ error: "One or more players are invalid or unavailable." });
   const publish = (teams: unknown) =>
     POST(publishReq({ date: "2026-10-12", teams }), ctx("org-b", "group-b"));
@@ -492,14 +524,14 @@ describe("POST canonical publish — server-authoritative snapshot (Phase 2D.6E.
   beforeEach(() => {
     mockPlayerFindMany.mockImplementation(rows);
     mockRequireTenantContextForSlugs.mockResolvedValue(CONTEXT_B);
-    mockUpsert.mockResolvedValue({ id: "gen-b" });
+    mockLegacySave.mockResolvedValue({ id: "gen-b" });
   });
 
   it("forged first/last name → publish succeeds, DB name stored, forged name absent", async () => {
     const res = await publish([{ teamNumber: 1, players: [{ id: "pb1", firstName: "FORGED", lastName: "PLAYER" }] }]);
     expect(res.status).toBe(200);
     expect(stored()[0].players[0]).toEqual(canonical("pb1"));
-    expect(mockUpsert.mock.calls[0][0].create.teamsJson).not.toMatch(/FORGED|PLAYER/);
+    expect(mockLegacySave.mock.calls[0][0].data.teamsJson).not.toMatch(/FORGED|PLAYER/);
   });
 
   it("forged position → DB position stored", async () => {
@@ -510,7 +542,7 @@ describe("POST canonical publish — server-authoritative snapshot (Phase 2D.6E.
   it("forged rating and stamina → DB values stored", async () => {
     await publish([{ teamNumber: 1, players: [{ id: "pb1", rating: "EXCELLENT", stamina: 999 }] }]);
     expect(stored()[0].players[0]).toMatchObject({ rating: "FAIR", stamina: 2 });
-    expect(mockUpsert.mock.calls[0][0].create.teamsJson).not.toContain("999");
+    expect(mockLegacySave.mock.calls[0][0].data.teamsJson).not.toContain("999");
   });
 
   it("injected player keys and team keys are not persisted; snapshot is exactly the six allowlisted fields", async () => {
@@ -524,7 +556,7 @@ describe("POST canonical publish — server-authoritative snapshot (Phase 2D.6E.
     const t = stored()[0];
     expect(Object.keys(t).sort()).toEqual(["players", "teamNumber"]);
     expect(Object.keys(t.players[0]).sort()).toEqual(["firstName", "id", "lastName", "position", "rating", "stamina"]);
-    expect(mockUpsert.mock.calls[0][0].create.teamsJson).not.toMatch(/someInjectedKey|teamInjected|group-a|telegramUserId|isActive|bad/);
+    expect(mockLegacySave.mock.calls[0][0].data.teamsJson).not.toMatch(/someInjectedKey|teamInjected|group-a|telegramUserId|isActive|bad/);
   });
 
   it("preserves team membership, team numbers and in-team order exactly (no rebalancing, even when DB returns rows in another order)", async () => {
@@ -536,22 +568,21 @@ describe("POST canonical publish — server-authoritative snapshot (Phase 2D.6E.
       { teamNumber: 1, players: [canonical("pb3"), canonical("pb1")] },
       { teamNumber: 2, players: [canonical("pb4"), canonical("pb2")] },
     ]);
-    // update payload is the same snapshot as create
-    expect(mockUpsert.mock.calls[0][0].update.teamsJson).toBe(mockUpsert.mock.calls[0][0].create.teamsJson);
+    expect(mockLegacySave.mock.calls[0][0].op).toBe("create");
   });
 
   it("foreign player (even with forged fields) → 400 generic, no upsert", async () => {
     const res = await publish([{ teamNumber: 1, players: [{ id: "pa1", firstName: "Bea", lastName: "Beta" }] }]);
     expect(res.status).toBe(400);
     expect(await res.text()).toBe(GENERIC);
-    expect(mockUpsert).not.toHaveBeenCalled();
+    expect(mockLegacySave).not.toHaveBeenCalled();
   });
 
   it("mixed Group A + Group B → 400 generic, no upsert", async () => {
     const res = await publish([{ teamNumber: 1, players: [{ id: "pb1" }, { id: "pa1" }] }]);
     expect(res.status).toBe(400);
     expect(await res.text()).toBe(GENERIC);
-    expect(mockUpsert).not.toHaveBeenCalled();
+    expect(mockLegacySave).not.toHaveBeenCalled();
   });
 
   it("duplicate player id → 400 generic, no Player query, no upsert", async () => {
@@ -559,12 +590,12 @@ describe("POST canonical publish — server-authoritative snapshot (Phase 2D.6E.
     expect(res.status).toBe(400);
     expect(await res.text()).toBe(GENERIC);
     expect(mockPlayerFindMany).not.toHaveBeenCalled();
-    expect(mockUpsert).not.toHaveBeenCalled();
+    expect(mockLegacySave).not.toHaveBeenCalled();
   });
 
   it("the stored snapshot is fixed at Publish time: later Player-row changes don't alter it", async () => {
     await publish([{ teamNumber: 1, players: [{ id: "pb1" }] }]);
-    const persisted = mockUpsert.mock.calls[0][0].create.teamsJson;
+    const persisted = mockLegacySave.mock.calls[0][0].data.teamsJson;
     DB.pb1.firstName = "Renamed-Later";
     DB.pb1.stamina = 5;
     // The persisted value is a self-contained string; nothing re-reads Player rows.

@@ -80,6 +80,8 @@ describe("flat operational Admin APIs are deleted", () => {
         canonical("matches/[matchId]/poll"),
         canonical("channels/telegram"),
         canonical("channels/telegram/[ref]"),
+        canonical("channels/telegram/[ref]/players"), // M9-B
+        canonical("matches/[matchId]/telegram-chat"), // M9-B
         canonical("players"),
         canonical("players/[id]"),
         canonical("players/[id]/claim"), // M6-C
@@ -274,7 +276,9 @@ describe("tenant-isolation hardening invariants (Phase 2D.6E.6C)", () => {
   it("Publish persists only the server-built snapshot, never the request's teams (Phase 2D.6E.6D)", () => {
     const core = code.get(rel("src/lib/publishTeams.ts"))!;
     expect(core).not.toMatch(/teamsJson: JSON\.stringify\(teams\)/);
-    expect(core.match(/teamsJson: JSON\.stringify\(snapshotTeams\)/g)).toHaveLength(2);
+    // M9-B — one serialization of the server-built snapshot, used by every write path.
+    expect(core.match(/JSON\.stringify\(snapshotTeams\)/g)).toHaveLength(1);
+    expect(core).toContain("const teamsJson = JSON.stringify(snapshotTeams);");
     expect(core.indexOf("buildPublishSnapshot(teams, owned)")).toBeLessThan(core.indexOf("prisma.teamGeneration.upsert("));
   });
 });

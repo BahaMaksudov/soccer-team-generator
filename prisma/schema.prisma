@@ -90,6 +90,13 @@ enum AttendanceSource {
 
 // M9-A — what a Telegram poll is for. Legacy polls read as ATTENDANCE; MVP
 // polls arrive with M9-B.
+// M9-B — how a Player entered a Telegram chat's scope (always an explicit
+// OWNER/ADMIN action; SUGGESTED_VOTE = accepted from the linked-voter suggestions).
+enum TelegramChatPlayerSource {
+  ORGANIZER
+  SUGGESTED_VOTE
+}
+
 enum TelegramPollKind {
   ATTENDANCE
   MVP
@@ -144,9 +151,11 @@ model User {
   invitationsAccepted OrganizationInvitation[] @relation("InvitationAcceptedBy")
 
   // M9-A — audit only.
-  matchesCreated        Match[]                @relation("MatchCreatedBy")
-  attendanceOverrides   AttendanceResponse[]   @relation("AttendanceOverrideBy")
-  telegramChatBindCodes TelegramChatBindCode[]
+  matchesCreated             Match[]                @relation("MatchCreatedBy")
+  attendanceOverrides        AttendanceResponse[]   @relation("AttendanceOverrideBy")
+  telegramChatBindCodes      TelegramChatBindCode[]
+  // M9-B — audit only.
+  telegramChatPlayersCreated TelegramChatPlayer[]   @relation("ChatPlayerCreatedBy")
 }
 
 model Organization {
@@ -254,6 +263,8 @@ model Group {
   matches               Match[]
   attendanceResponses   AttendanceResponse[]
   telegramChatBindCodes TelegramChatBindCode[]
+  // M9-B
+  telegramChatPlayers   TelegramChatPlayer[]
 
   @@unique([organizationId, slug])
 }
@@ -428,8 +439,11 @@ model Player {
   claims               PlayerClaim[]
   telegramConnectCodes TelegramConnectCode[]
   attendanceResponses  AttendanceResponse[]
+  telegramChatPlayers  TelegramChatPlayer[]
 
   @@unique([groupId, userId])
+  // Composite target for TelegramChatPlayer's (playerId, groupId) FK.
+  @@unique([id, groupId])
   @@index([userId])
 }
 
@@ -461,13 +475,17 @@ model TeamGeneration {
   deliveries MessageDelivery[]
 
   // M9-A — the Match these teams belong to (NULL for legacy/by-date
-  // generations; never backfilled). One generation per Match. Note: the
-  // (groupId, date) uniqueness above is unchanged, so two same-day Matches
-  // cannot both have persisted teams yet (known transitional limitation).
+  // generations; never backfilled). One generation per Match.
   matchId String? @unique
   match   Match?  @relation(fields: [matchId], references: [id], onDelete: SetNull)
 
-  @@unique([groupId, date])
+  // M9-B — identity: a Match-linked generation is identified by matchId (so
+  // two Matches on the same day each keep their own teams); a legacy
+  // generation (matchId NULL) by (groupId, date). The latter is a PARTIAL
+  // unique index created in raw SQL (migration #19) that Prisma cannot
+  // express: "TeamGeneration_groupId_date_legacy_key" ON ("groupId", "date")
+  // WHERE "matchId" IS NULL. Keep it when regenerating migrations.
+  @@index([groupId, date])
 }
 
 model AppSetting {
@@ -564,13 +582,18 @@ model TelegramUserLink {
 }
 
 model TelegramChat {
-  id        Int      @id @default(autoincrement())
-  // Unchanged — Telegram's own chat-id namespace is genuinely global,
-  // this constraint never needs to change shape.
-  chatId    BigInt   @unique
-  title     String?
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  id             Int       @id @default(autoincrement())
+  // M9-B — a chat is ACTIVE in at most one Group at a time: partial unique
+  // index "TelegramChat_chatId_active_key" ON ("chatId") WHERE
+  // "disconnectedAt" IS NULL (raw SQL, migration #19). A disconnected row
+  // keeps its history (scope, polls, deliveries); reconnecting the same chat
+  // to the same Group reactivates that row (one row per (chatId, groupId)).
+  chatId         BigInt
+  title          String?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+  // M9-B — soft disconnect (organizer action or the bot was removed).
+  disconnectedAt DateTime?
 
   // Phase 2D.7 — required (NOT NULL): every row belongs to exactly one
   // Group. onDelete: Restrict — a Group cannot be deleted while it still
@@ -578,6 +601,38 @@ model TelegramChat {
   // archive its tenant data first.
   groupId String
   group   Group  @relation(fields: [groupId], references: [id], onDelete: Restrict)
+
+  players TelegramChatPlayer[]
+  matches Match[]
+
+  @@unique([chatId, groupId])
+  // Composite target for TelegramChatPlayer's (telegramChatId, groupId) FK.
+  @@unique([id, groupId])
+}
+
+// M9-B — DEFAULT player scope of one connected Telegram chat (who is usually
+// in that chat). Organizer-curated (Telegram cannot enumerate members), keyed
+// by Player — never by a Telegram user id. Not an eligibility rule: any Group
+// Player can still be added to a Match. The composite FKs make a cross-Group
+// association impossible at the database level: (telegramChatId, groupId) →
+// TelegramChat(id, groupId) and (playerId, groupId) → Player(id, groupId).
+model TelegramChatPlayer {
+  id              String                   @id @default(cuid())
+  groupId         String
+  telegramChatId  Int
+  playerId        String
+  source          TelegramChatPlayerSource @default(ORGANIZER)
+  createdByUserId String?
+  createdAt       DateTime                 @default(now())
+
+  group     Group        @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  chat      TelegramChat @relation(fields: [telegramChatId, groupId], references: [id, groupId], onDelete: Cascade)
+  player    Player       @relation(fields: [playerId, groupId], references: [id, groupId], onDelete: Cascade)
+  createdBy User?        @relation("ChatPlayerCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
+
+  @@unique([telegramChatId, playerId])
+  @@index([groupId])
+  @@index([playerId])
 }
 
 // M9-A — a scheduled game of one Group. Identity is the id, NOT the date: a
@@ -593,12 +648,17 @@ model Match {
   locationName       String?
   status             MatchStatus @default(SCHEDULED)
   attendanceClosedAt DateTime?
+  // M9-B — the organizer's selected Telegram chat (communication context and
+  // default player scope). NOT evidence that anything was sent: TelegramPoll /
+  // MessageDelivery record actual sends. Server-validated to be this Group's.
+  telegramChatId     Int?
   createdByUserId    String?
   createdAt          DateTime    @default(now())
   updatedAt          DateTime    @updatedAt
 
   group         Group                @relation(fields: [groupId], references: [id], onDelete: Restrict)
   createdBy     User?                @relation("MatchCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
+  telegramChat  TelegramChat?        @relation(fields: [telegramChatId], references: [id], onDelete: SetNull)
   attendance    AttendanceResponse[]
   generation    TeamGeneration?
   telegramPolls TelegramPoll[]
@@ -606,6 +666,7 @@ model Match {
 
   @@index([groupId])
   @@index([groupId, date])
+  @@index([telegramChatId])
 }
 
 // M9-A — one row per (Match, Player). Keeps BOTH the participant's own latest

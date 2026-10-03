@@ -93,7 +93,7 @@ export async function postAttendancePoll(context: TenantContext, matchId: string
   const match = await findGroupMatch(context, matchId);
   if (!match) return NextResponse.json({ error: "Match not found" }, { status: 404 });
   if (match.status === "CANCELED") return NextResponse.json({ error: "This match is canceled." }, { status: 400 });
-  const chat = await prisma.telegramChat.findFirst({ where: { id: chatRef, groupId }, select: { chatId: true } });
+  const chat = await prisma.telegramChat.findFirst({ where: { id: chatRef, groupId, disconnectedAt: null }, select: { chatId: true } });
   if (!chat) return NextResponse.json({ error: "Telegram group not connected" }, { status: 404 });
   if (!process.env.TELEGRAM_BOT_TOKEN) return NextResponse.json({ error: "Missing TELEGRAM_BOT_TOKEN" }, { status: 500 });
 

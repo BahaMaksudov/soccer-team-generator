@@ -49,7 +49,8 @@ export async function listTelegramChatsForContext(context: TenantContext): Promi
   const denied = managersOnlyResponse(context);
   if (denied) return denied;
   const chats = await prisma.telegramChat.findMany({
-    where: { groupId: context.activeGroup.id },
+    // M9-B — connected (not disconnected) chats only.
+    where: { groupId: context.activeGroup.id, disconnectedAt: null },
     orderBy: { updatedAt: "desc" },
     select: { chatId: true, title: true },
   });
@@ -188,7 +189,7 @@ export async function createTelegramPollForContext(context: TenantContext, req: 
   }
 
   const chat = await prisma.telegramChat.findFirst({
-    where: { chatId: chatIdBigInt, groupId: activeGroupId },
+    where: { chatId: chatIdBigInt, groupId: activeGroupId, disconnectedAt: null },
     select: { chatId: true },
   });
   if (!chat) {

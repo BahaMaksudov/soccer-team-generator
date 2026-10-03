@@ -69,7 +69,7 @@ describe("GET canonical telegram/chats — read isolation", () => {
     expect(json.chats).toEqual([{ chatId: "111", title: "Group A Chat" }]);
     expect(mockRequireTenantContextForSlugs).toHaveBeenCalledWith({ organizationSlug: "org-a", groupSlug: "group-a" });
     expect(mockFindMany).toHaveBeenCalledWith(
-      expect.objectContaining({ where: { groupId: "group-a" } })
+      expect.objectContaining({ where: { groupId: "group-a", disconnectedAt: null } })
     );
   });
 
@@ -105,12 +105,12 @@ describe("GET canonical telegram/chats — read isolation", () => {
     mockRequireTenantContextForSlugs.mockResolvedValue({ ...CONTEXT_A, activeGroup: GROUP_A_SAME_SLUG });
     mockFindMany.mockResolvedValue([]);
     await GET(reqWithQuery(), ctx("org-a", "indoor-soccer"));
-    expect(mockFindMany).toHaveBeenLastCalledWith(expect.objectContaining({ where: { groupId: "group-a" } }));
+    expect(mockFindMany).toHaveBeenLastCalledWith(expect.objectContaining({ where: { groupId: "group-a", disconnectedAt: null } }));
 
     mockRequireTenantContextForSlugs.mockResolvedValue({ ...CONTEXT_B, activeGroup: GROUP_B_SAME_SLUG });
     mockFindMany.mockResolvedValue([]);
     await GET(reqWithQuery(), ctx("org-b", "indoor-soccer"));
-    expect(mockFindMany).toHaveBeenLastCalledWith(expect.objectContaining({ where: { groupId: "group-b" } }));
+    expect(mockFindMany).toHaveBeenLastCalledWith(expect.objectContaining({ where: { groupId: "group-b", disconnectedAt: null } }));
   });
 
   it("a query-string groupId/organizationId cannot influence tenancy", async () => {

@@ -7,6 +7,7 @@ import { formatStartTime } from "@/lib/messaging/content";
 import type { PublishedGeneration } from "@/lib/closeAndPostUi";
 import type { SportClientView } from "@/lib/sports";
 import { unpublishedPreviewOnScreen, type TeamsPanelMode } from "@/lib/teamAssignment";
+import { visibleRosterIds } from "@/lib/matchRosterScope";
 import CanonicalGenerateSection from "../../CanonicalGenerateSection";
 import type { Player } from "../../CanonicalAdminWorkspace";
 import { computeSelection, NO_ADJUSTMENTS, reconcileAdjustments, toggleSelection, type EffectiveStatuses, type SelectionAdjustments } from "@/lib/matchSelection";
@@ -33,7 +34,17 @@ type MatchView = {
   counts: { PLAYING: number; MAYBE: number; NOT_PLAYING: number; NO_RESPONSE: number };
   defaultSelection: string[];
   generation: { id: string; date: string; updatedAt: string; teams: Array<{ teamNumber: number; players: Array<{ id: string; firstName: string; lastName: string; position: string }> }> } | null;
-  telegram: { connected: boolean; poll: { pollId: string | null; closed: boolean; postedAt: string } | null; unlinkedVoters: number; pollDelivery: { status: string; sentAt: string | null } | null };
+  // M9-B — selected chat's default player scope (ids only); chats/selection/suggestions are OWNER/ADMIN only.
+  scope: { chatSelected: boolean; playerIds: string[] };
+  telegram: {
+    connected: boolean;
+    chats: Array<{ ref: number; title: string }>;
+    selectedChat: { ref: number; title: string; connected: boolean } | null;
+    suggestedPlayerIds: string[];
+    poll: { pollId: string | null; closed: boolean; postedAt: string } | null;
+    unlinkedVoters: number;
+    pollDelivery: { status: string; sentAt: string | null } | null;
+  };
 };
 
 const STATUS_LABEL: Record<Status, string> = { PLAYING: "Playing", MAYBE: "Maybe", NOT_PLAYING: "Not playing" };
@@ -61,8 +72,13 @@ export default function MatchWorkspace({
   const [adjustments, setAdjustments] = useState<SelectionAdjustments>(NO_ADJUSTMENTS);
   const lastStatuses = useRef<EffectiveStatuses | null>(null);
   const [published, setPublished] = useState<PublishedGeneration | null>(null);
-  const [chats, setChats] = useState<Array<{ ref: number; title: string }>>([]);
-  const [chatRef, setChatRef] = useState<number | null>(null);
+  // M9-B — the Match's selected Telegram chat is server state (survives reload).
+  const chats = view?.telegram.chats ?? [];
+  const chatRef = view?.telegram.selectedChat?.connected ? view.telegram.selectedChat.ref : null;
+  // Roster presentation only (never eligibility): players added for this view, or everyone.
+  const [addedIds, setAddedIds] = useState<string[]>([]);
+  const [showAll, setShowAll] = useState(false);
+  const [addPick, setAddPick] = useState("");
   const [edit, setEdit] = useState<{ date: string; startTime: string; locationName: string } | null>(null);
   // Telegram state of the PUBLISHED teams, from durable MessageDelivery content hashes (server).
   const [teamsDelivery, setTeamsDelivery] = useState<string | null>(null);
@@ -106,17 +122,6 @@ export default function MatchWorkspace({
     loadTeamsDelivery();
   }, [loadTeamsDelivery]);
 
-  useEffect(() => {
-    if (!view?.canManage) return;
-    (async () => {
-      const res = await fetch(adminTenantApiPath({ organizationSlug, groupSlug, path: "/channels/telegram" }), { cache: "no-store" });
-      if (!res.ok) return;
-      const data = await res.json();
-      setChats(data.telegram ?? []);
-      setChatRef((r) => r ?? data.telegram?.[0]?.ref ?? null);
-    })();
-  }, [view?.canManage, organizationSlug, groupSlug]);
-
   async function call(path: string, body: unknown, ok: string) {
     setBusy(true);
     setMessage(null);
@@ -126,6 +131,26 @@ export default function MatchWorkspace({
       setMessage(res.ok ? (data.state === "already_posted" ? "Already posted — nothing was sent again." : ok) : data?.error ?? "Something went wrong.");
       await load();
       return { ok: res.ok, data };
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  // M9-B — OWNER/ADMIN: add/remove a Player in the selected chat's default scope (saves only).
+  async function changeScope(playerId: string, method: "POST" | "DELETE", fromSuggestion = false) {
+    if (!view?.telegram.selectedChat) return;
+    setBusy(true);
+    setMessage(null);
+    try {
+      const path = `/channels/telegram/${view.telegram.selectedChat.ref}/players`;
+      const res = await fetch(adminTenantApiPath({ organizationSlug, groupSlug, path }), {
+        method,
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ playerId, fromSuggestion }),
+      });
+      const data = await res.json().catch(() => ({}));
+      setMessage(res.ok ? (method === "POST" ? "Added to this Telegram group's players." : "Removed from this Telegram group's players.") : data?.error ?? "Something went wrong.");
+      await load();
     } finally {
       setBusy(false);
     }
@@ -167,6 +192,21 @@ export default function MatchWorkspace({
   const defaultIds = useMemo(() => view?.defaultSelection ?? [], [view]);
   const selectedIds = useMemo(() => computeSelection(defaultIds, adjustments), [defaultIds, adjustments]);
   const selectedSet = useMemo(() => new Set(selectedIds), [selectedIds]);
+  // M9-B — default roster = selected chat's scope + anyone with Match state + players added here.
+  const activeRoster = useMemo(() => (view?.roster ?? []).filter((p) => p.isActive), [view]);
+  const scopeSet = useMemo(() => new Set(view?.scope.playerIds ?? []), [view]);
+  const visibleIds = useMemo(() => {
+    const withMatchState = new Set<string>(selectedIds);
+    for (const p of activeRoster) if (p.attendance.status !== null || p.attendance.participantStatus !== null) withMatchState.add(p.id);
+    for (const t of view?.generation?.teams ?? []) for (const pl of t.players) withMatchState.add(pl.id);
+    return new Set(
+      visibleRosterIds({ rosterIds: activeRoster.map((p) => p.id), chatSelected: view?.scope.chatSelected ?? false, scopeIds: view?.scope.playerIds ?? [], withMatchState, addedIds, showAll })
+    );
+  }, [activeRoster, view, selectedIds, addedIds, showAll]);
+  const visiblePlayers = activeRoster.filter((p) => visibleIds.has(p.id));
+  const hiddenPlayers = activeRoster.filter((p) => !visibleIds.has(p.id));
+  const scopeManageable = Boolean(view?.canManage && view.telegram.selectedChat?.connected);
+  const suggestedPlayers = activeRoster.filter((p) => (view?.telegram.suggestedPlayerIds ?? []).includes(p.id));
 
   if (notFound) return <div className="text-sm text-gray-600">Match not found.</div>;
   if (!view) return <div className="text-sm text-gray-500">Loading…</div>;
@@ -233,13 +273,20 @@ export default function MatchWorkspace({
           {view.canManage &&
             (view.telegram.connected && chats.length > 0 ? (
               <>
-                {chats.length > 1 && (
-                  <select className="border rounded px-2 py-1" value={chatRef ?? ""} onChange={(e) => setChatRef(Number(e.target.value))}>
+                <label className="flex items-center gap-1">
+                  Telegram group:
+                  <select
+                    className="border rounded px-2 py-1"
+                    value={chatRef ?? ""}
+                    disabled={busy}
+                    onChange={(e) => call("/telegram-chat", { chatRef: e.target.value ? Number(e.target.value) : null }, "Telegram group saved for this match. Nothing was sent.")}
+                  >
+                    <option value="">— choose —</option>
                     {chats.map((c) => (
                       <option key={c.ref} value={c.ref}>{c.title}</option>
                     ))}
                   </select>
-                )}
+                </label>
                 <button type="button" className="bg-sky-600 text-white rounded px-3 py-1 disabled:opacity-60" disabled={busy || chatRef === null || m.status === "CANCELED"} onClick={() => call("/poll", { chatRef, intent: "post" }, "Attendance poll posted to Telegram.")}>
                   Post poll to Telegram
                 </button>
@@ -255,6 +302,37 @@ export default function MatchWorkspace({
           </div>
         )}
 
+        {view.scope.chatSelected && (
+          <div className="flex flex-wrap items-center gap-2 text-sm">
+            <span className="text-gray-600">
+              Showing {view.telegram.selectedChat ? `${view.telegram.selectedChat.title}'s` : "this Telegram group's"} players and anyone already in this match.
+            </span>
+            <label className="flex items-center gap-1">
+              <input type="checkbox" checked={showAll} onChange={(e) => setShowAll(e.target.checked)} /> Show all Group players
+            </label>
+            {hiddenPlayers.length > 0 && (
+              <>
+                <select className="border rounded px-2 py-1" value={addPick} onChange={(e) => setAddPick(e.target.value)}>
+                  <option value="">+ Add another player…</option>
+                  {hiddenPlayers.map((p) => (
+                    <option key={p.id} value={p.id}>{p.firstName} {p.lastName}</option>
+                  ))}
+                </select>
+                <button type="button" className="underline" disabled={!addPick} onClick={() => { setAddedIds((ids) => [...ids, addPick]); setAddPick(""); }}>Add to this match</button>
+              </>
+            )}
+          </div>
+        )}
+        {scopeManageable && suggestedPlayers.length > 0 && (
+          <div className="text-xs text-gray-700 flex flex-wrap items-center gap-2">
+            Suggested for this Telegram group (linked players who voted there):
+            {suggestedPlayers.map((p) => (
+              <button key={p.id} type="button" disabled={busy} className="underline" onClick={() => changeScope(p.id, "POST", true)}>
+                + {p.firstName} {p.lastName}
+              </button>
+            ))}
+          </div>
+        )}
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
             <thead>
@@ -262,10 +340,11 @@ export default function MatchWorkspace({
                 <th className="py-1">Player</th>
                 <th>Status</th>
                 <th>Set by organizer</th>
+                {scopeManageable && <th>Telegram group</th>}
               </tr>
             </thead>
             <tbody>
-              {view.roster.filter((p) => p.isActive).map((p) => (
+              {visiblePlayers.map((p) => (
                 <tr key={p.id} className="border-t">
                   <td className="py-1">{p.firstName} {p.lastName}</td>
                   <td>
@@ -288,6 +367,15 @@ export default function MatchWorkspace({
                       </button>
                     )}
                   </td>
+                  {scopeManageable && (
+                    <td className="whitespace-nowrap text-xs">
+                      {scopeSet.has(p.id) ? (
+                        <button type="button" disabled={busy} className="underline" onClick={() => changeScope(p.id, "DELETE")}>In group · remove</button>
+                      ) : (
+                        <button type="button" disabled={busy} className="underline" onClick={() => changeScope(p.id, "POST")}>Add to group</button>
+                      )}
+                    </td>
+                  )}
                 </tr>
               ))}
             </tbody>
@@ -300,7 +388,7 @@ export default function MatchWorkspace({
         <div className="font-semibold">Teams</div>
         <div className="text-xs text-gray-500">Players marked Playing are selected. Maybe players are shown but not selected — add them if you want.</div>
         <div className="flex flex-wrap gap-2 text-sm">
-          {view.roster.filter((p) => p.isActive).map((p) => (
+          {visiblePlayers.map((p) => (
             <label key={p.id} className={`border rounded-full px-2 py-0.5 flex items-center gap-1 ${p.attendance.status === "MAYBE" ? "border-amber-300" : ""}`}>
               <input type="checkbox" checked={selectedSet.has(p.id)} onChange={() => setAdjustments((adj) => toggleSelection(defaultIds, adj, p.id))} />
               {p.firstName} {p.lastName}

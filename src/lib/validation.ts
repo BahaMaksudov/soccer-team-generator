@@ -103,6 +103,10 @@ export const matchUpdateSchema = z.object({
 export const attendanceOverrideSchema = z.object({ playerId: z.string().min(1), status: attendanceStatus.nullable() });
 export const attendanceSelfSchema = z.object({ status: attendanceStatus });
 export const attendanceClosedSchema = z.object({ closed: z.boolean() });
+/** M9-B — select (number) or clear (null) a Match's Telegram chat by its opaque ref. */
+export const matchTelegramChatSchema = z.object({ chatRef: z.number().int().positive().nullable() });
+/** M9-B — one Player in a Telegram chat's default scope. */
+export const telegramChatPlayerSchema = z.object({ playerId: z.string().trim().min(1), fromSuggestion: z.boolean().optional() });
 export const attendancePollSchema = z.object({
   chatRef: z.number().int().positive(),
   intent: z.enum(["post", "post_updated", "retry_uncertain"]).optional().default("post"),

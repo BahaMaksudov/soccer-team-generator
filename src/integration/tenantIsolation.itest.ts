@@ -373,6 +373,9 @@ describe("Phase 2D.7 — PostgreSQL enforces groupId NOT NULL on every tenant-ow
       Match_groupId_fkey: "r/c",
       AttendanceResponse_groupId_fkey: "c/c",
       TelegramChatBindCode_groupId_fkey: "c/c",
+      // M9-B: a chat's default player scope is curation data that goes with
+      // its Group (and with its chat/Player via composite FKs).
+      TelegramChatPlayer_groupId_fkey: "c/c",
     });
   });
 
@@ -383,12 +386,20 @@ describe("Phase 2D.7 — PostgreSQL enforces groupId NOT NULL on every tenant-ow
     expect(fks.map((f) => f.target)).toEqual(['"TelegramPoll"']);
   });
 
-  it("schema: TeamGeneration (groupId, date) uniqueness is intact", async () => {
-    const idx = await prisma.$queryRawUnsafe<Array<{ indexdef: string }>>(
-      `SELECT indexdef FROM pg_indexes WHERE tablename = 'TeamGeneration' AND indexname = 'TeamGeneration_groupId_date_key'`
+  it("schema: TeamGeneration (groupId, date) uniqueness holds for legacy rows (M9-B: partial, WHERE matchId IS NULL); matchId is unique", async () => {
+    const idx = await prisma.$queryRawUnsafe<Array<{ indexname: string; indexdef: string }>>(
+      `SELECT indexname, indexdef FROM pg_indexes WHERE tablename = 'TeamGeneration' AND indexdef LIKE 'CREATE UNIQUE%' ORDER BY indexname`
     );
-    expect(idx).toHaveLength(1);
-    expect(idx[0].indexdef).toMatch(/UNIQUE INDEX .* \("groupId", date\)/);
+    const byName = Object.fromEntries(idx.map((i) => [i.indexname, i.indexdef]));
+    expect(byName.TeamGeneration_groupId_date_key).toBeUndefined();
+    expect(byName.TeamGeneration_groupId_date_legacy_key).toMatch(/UNIQUE INDEX .* \("groupId", date\) WHERE \("matchId" IS NULL\)/);
+    expect(byName.TeamGeneration_matchId_key).toMatch(/UNIQUE INDEX .* \("matchId"\)/);
+    // A second legacy row for the same Group and date is still rejected by PostgreSQL.
+    const insert = (id: string) =>
+      `INSERT INTO "TeamGeneration" (id, date, "teamsJson", "createdAt", "updatedAt", "groupId") VALUES ('${id}', '2031-01-01', '[]', now(), now(), '${A}')`;
+    expect(await pgErrorCode(insert("legacy-dup-1"))).toBeNull();
+    expect((await pgErrorCode(insert("legacy-dup-2")))?.code).toBe("23505");
+    await prisma.teamGeneration.deleteMany({ where: { id: "legacy-dup-1" } });
   });
 
   it.each(TENANT_TABLES)("%s: a tenantless INSERT (groupId NULL) is rejected by PostgreSQL (23502 on groupId)", async (table) => {

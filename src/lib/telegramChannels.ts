@@ -24,6 +24,15 @@ import { callTelegram } from "@/lib/telegramApi";
  * A valid code alone is never enough (admin check). Chats already bound to
  * another Group are refused without revealing that Group. Raw chat ids are
  * never returned to the UI (chats are referenced by TelegramChat.id).
+ *
+ * M9-B — soft disconnect: disconnecting (or the bot being removed from the
+ * chat) sets TelegramChat.disconnectedAt; the row, its player scope, polls
+ * and deliveries are kept. Reconnecting the same chat to the same Group
+ * reactivates that row. A chat is ACTIVE in at most one Group (partial
+ * unique index); a chat disconnected from Group A may be connected to Group
+ * B only with B's own code + Telegram-admin proof, as a NEW row — A's row
+ * and history stay with A; nothing ever moves between Groups. Issuing a new
+ * code expires the Group's older unused codes.
  */
 
 export const BIND_CODE_PREFIX = "g_";
@@ -48,7 +57,7 @@ export async function listTelegramChannels(context: TenantContext): Promise<Next
   const denied = managersOnlyResponse(context);
   if (denied) return denied;
   const chats = await prisma.telegramChat.findMany({
-    where: { groupId: context.activeGroup.id },
+    where: { groupId: context.activeGroup.id, disconnectedAt: null },
     orderBy: { createdAt: "asc" },
     select: { id: true, title: true, createdAt: true },
   });
@@ -64,9 +73,16 @@ export async function issueTelegramBindCode(context: TenantContext, now: Date = 
   if (denied) return denied;
   const code = generateBindCode();
   const expiresAt = new Date(now.getTime() + BIND_CODE_TTL_MS);
-  await prisma.telegramChatBindCode.create({
-    data: { groupId: context.activeGroup.id, codeHash: hashToken(code), expiresAt, createdByUserId: context.user.id },
-  });
+  await prisma.$transaction([
+    // M9-B — only the newest code of this Group is redeemable.
+    prisma.telegramChatBindCode.updateMany({
+      where: { groupId: context.activeGroup.id, usedAt: null, expiresAt: { gt: now } },
+      data: { expiresAt: now },
+    }),
+    prisma.telegramChatBindCode.create({
+      data: { groupId: context.activeGroup.id, codeHash: hashToken(code), expiresAt, createdByUserId: context.user.id },
+    }),
+  ]);
   const bot = botUsername();
   return NextResponse.json(
     {
@@ -80,17 +96,38 @@ export async function issueTelegramBindCode(context: TenantContext, now: Date = 
   );
 }
 
-/** OWNER/ADMIN: disconnect one connected chat of this Group. History (polls, answers, deliveries, links) is kept. */
-export async function disconnectTelegramChannel(context: TenantContext, ref: number): Promise<NextResponse> {
+/**
+ * OWNER/ADMIN: disconnect one connected chat of this Group (soft). History
+ * (polls, answers, deliveries, links, player scope) is kept; a reconnect with
+ * a new code reactivates the same row.
+ */
+export async function disconnectTelegramChannel(context: TenantContext, ref: number, now: Date = new Date()): Promise<NextResponse> {
   const denied = managersOnlyResponse(context);
   if (denied) return denied;
-  const { count } = await prisma.telegramChat.deleteMany({ where: { id: ref, groupId: context.activeGroup.id } });
+  const { count } = await prisma.telegramChat.updateMany({
+    where: { id: ref, groupId: context.activeGroup.id, disconnectedAt: null },
+    data: { disconnectedAt: now },
+  });
   if (count !== 1) return NextResponse.json({ error: "Telegram group not found" }, { status: 404 });
   return NextResponse.json({ ok: true });
 }
 
+/**
+ * Webhook (my_chat_member): the bot was removed from / left a chat → mark the
+ * active binding disconnected. Nothing is deleted. Re-adding the bot does NOT
+ * reconnect by itself — that still needs an organizer's code.
+ */
+export async function markTelegramChatBotRemoved(chatId: number | string, status: unknown, now: Date = new Date()): Promise<boolean> {
+  if (status !== "left" && status !== "kicked") return false;
+  const { count } = await prisma.telegramChat.updateMany({
+    where: { chatId: BigInt(chatId), disconnectedAt: null },
+    data: { disconnectedAt: now },
+  });
+  return count > 0;
+}
+
 export type BindResult =
-  | { ok: true; state: "connected" | "already_connected"; groupName: string }
+  | { ok: true; state: "connected" | "already_connected" | "reconnected"; groupName: string }
   | { ok: false; code: "INVALID" | "NOT_A_GROUP" | "ANONYMOUS_SENDER" | "NOT_ADMIN" | "ALREADY_BOUND_ELSEWHERE" | "ADMIN_CHECK_FAILED" };
 
 type TgChat = { id: number | string; type?: string; title?: string };
@@ -124,13 +161,20 @@ export async function redeemTelegramBindCode(
     await tx.$queryRaw`SELECT 1 AS locked FROM pg_advisory_xact_lock(hashtext(${"telegram-bind:" + chatId.toString()}))`;
     const code = await tx.telegramChatBindCode.findUnique({ where: { codeHash }, select: { id: true, groupId: true, expiresAt: true, usedAt: true, group: { select: { name: true } } } });
     if (!code || code.usedAt || code.expiresAt <= now) return { ok: false, code: "INVALID" };
-    const existing = await tx.telegramChat.findUnique({ where: { chatId }, select: { id: true, groupId: true } });
-    if (existing && existing.groupId !== code.groupId) return { ok: false, code: "ALREADY_BOUND_ELSEWHERE" };
+    // An ACTIVE binding elsewhere is never taken over (and not revealed).
+    const active = await tx.telegramChat.findFirst({ where: { chatId, disconnectedAt: null }, select: { id: true, groupId: true } });
+    if (active && active.groupId !== code.groupId) return { ok: false, code: "ALREADY_BOUND_ELSEWHERE" };
     const { count } = await tx.telegramChatBindCode.updateMany({ where: { id: code.id, usedAt: null }, data: { usedAt: now, usedChatTitle: title } });
     if (count !== 1) return { ok: false, code: "INVALID" };
-    if (existing) {
-      await tx.telegramChat.update({ where: { id: existing.id }, data: { title } });
+    if (active) {
+      await tx.telegramChat.update({ where: { id: active.id }, data: { title } });
       return { ok: true, state: "already_connected", groupName: code.group.name };
+    }
+    // This Group's own earlier (disconnected) binding → reactivate it, scope and history included.
+    const own = await tx.telegramChat.findUnique({ where: { chatId_groupId: { chatId, groupId: code.groupId } }, select: { id: true } });
+    if (own) {
+      await tx.telegramChat.update({ where: { id: own.id }, data: { title, disconnectedAt: null } });
+      return { ok: true, state: "reconnected", groupName: code.group.name };
     }
     await tx.telegramChat.create({ data: { chatId, title, groupId: code.groupId } });
     return { ok: true, state: "connected", groupName: code.group.name };
@@ -142,9 +186,13 @@ export async function migrateTelegramChat(oldChatId: number | string, newChatId:
   const from = BigInt(oldChatId);
   const to = BigInt(newChatId);
   await prisma.$transaction(async (tx) => {
-    const existing = await tx.telegramChat.findUnique({ where: { chatId: from }, select: { id: true } });
+    // Only the ACTIVE binding follows the upgrade (disconnected rows are history).
+    const existing = await tx.telegramChat.findFirst({ where: { chatId: from, disconnectedAt: null }, select: { id: true, groupId: true } });
     if (!existing) return;
-    const taken = await tx.telegramChat.findUnique({ where: { chatId: to }, select: { id: true } });
+    const taken = await tx.telegramChat.findFirst({
+      where: { chatId: to, OR: [{ disconnectedAt: null }, { groupId: existing.groupId }] },
+      select: { id: true },
+    });
     if (taken) return;
     await tx.telegramChat.update({ where: { id: existing.id }, data: { chatId: to } });
   });
@@ -152,7 +200,7 @@ export async function migrateTelegramChat(oldChatId: number | string, newChatId:
 
 export function bindReplyText(result: BindResult): string {
   if (result.ok) {
-    return result.state === "connected"
+    return result.state !== "already_connected"
       ? `✅ This Telegram group is now connected to ${result.groupName} in Team Balance Pro.`
       : `✅ This Telegram group is already connected to ${result.groupName}.`;
   }

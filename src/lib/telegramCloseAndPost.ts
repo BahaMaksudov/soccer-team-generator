@@ -202,12 +202,18 @@ async function validatePostTarget(
 
   const generation = await prisma.teamGeneration.findFirst({
     where: { id: teamGenerationId, groupId: activeGroupId },
-    select: { id: true, date: true, updatedAt: true, teamsJson: true },
+    select: { id: true, date: true, updatedAt: true, teamsJson: true, matchId: true },
   });
   if (!generation) return fail("Published teams not found", 404);
 
-  const chat = await prisma.telegramChat.findFirst({ where: { chatId: poll.chatId, groupId: activeGroupId }, select: { chatId: true } });
+  // M9-B — only a CONNECTED chat of this Group (a disconnected binding is history).
+  const chat = await prisma.telegramChat.findFirst({ where: { chatId: poll.chatId, groupId: activeGroupId, disconnectedAt: null }, select: { chatId: true } });
   if (!chat) return fail("Telegram chat not found", 404);
+  // M9-B — a Match's poll posts only THAT Match's published teams (two Matches
+  // can share a date, so the date check below is not enough on its own).
+  if (poll.matchId && generation.matchId !== poll.matchId) {
+    return fail("These published teams belong to a different match than this poll.", 400);
+  }
 
   if (!poll.pollDate) return fail("This poll has no poll date, so it cannot be matched to published teams.", 400);
   if (toDateOnlyUTC(poll.pollDate).getTime() !== toDateOnlyUTC(generation.date).getTime()) {

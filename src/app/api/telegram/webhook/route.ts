@@ -230,7 +230,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { toDateOnlyUTC } from "@/lib/dateOnly";
 import { applyTelegramAttendanceAnswer } from "@/lib/telegramAttendance";
-import { bindReplyText, isBindCode, migrateTelegramChat, redeemTelegramBindCode } from "@/lib/telegramChannels";
+import { bindReplyText, isBindCode, markTelegramChatBotRemoved, migrateTelegramChat, redeemTelegramBindCode } from "@/lib/telegramChannels";
 
 
 function nextMondayDate(base = new Date()) {
@@ -267,6 +267,12 @@ export async function POST(req: NextRequest) {
   // 1) Handle commands like /poll and /link
   if (update.message) {
     await handleMessage(update.message);
+  }
+
+  // M9-B — the bot itself was removed from / left a group: mark that binding
+  // disconnected (soft; history kept). Sends nothing.
+  if (update.my_chat_member?.chat?.id !== undefined && update.my_chat_member?.chat?.id !== null) {
+    await markTelegramChatBotRemoved(update.my_chat_member.chat.id, update.my_chat_member.new_chat_member?.status);
   }
 
   // 2) Handle votes (non-anonymous poll)
