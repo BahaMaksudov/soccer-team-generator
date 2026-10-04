@@ -2,6 +2,7 @@ import { notFound } from "next/navigation";
 import { loadCanonicalAdminContext } from "../data";
 import { loadGroupOverview } from "@/lib/groupOverview";
 import { MatchList } from "@/components/game-day/MatchList";
+import { isManager } from "@/lib/tenantRoute";
 import CreateMatchForm from "./CreateMatchForm";
 
 /**
@@ -9,8 +10,8 @@ import CreateMatchForm from "./CreateMatchForm";
  * section). Tenant and role come from the URL-resolved context; a foreign or
  * unknown Organization/Group is the generic 404. Upcoming / past use exactly
  * listMatches()'s rule (SCHEDULED and dated today or later = upcoming).
- * Creating a match is open to every member, as it already was (M9-A:
- * internal operation, nothing is sent; POST /matches is not role-gated).
+ * UI-4A — creating a match is an organizer mutation: the form is shown to
+ * OWNER/ADMIN only, and POST /matches rejects MEMBER server-side (generic 404).
  */
 type Params = Promise<{ organizationSlug: string; groupSlug: string }>;
 
@@ -29,7 +30,7 @@ export default async function MatchesPage({ params }: { params: Params }) {
           <h1 className="mt-1 text-3xl font-extrabold">Matches</h1>
         </div>
       </header>
-      <CreateMatchForm organizationSlug={context.organization.slug} groupSlug={context.activeGroup.slug} />
+      {isManager(context) && <CreateMatchForm organizationSlug={context.organization.slug} groupSlug={context.activeGroup.slug} />}
 
       <section aria-labelledby="upcoming-h" className="space-y-3">
         <h2 id="upcoming-h" className="text-xl font-extrabold">Upcoming <span className="text-base font-semibold text-muted-foreground">({overview.upcoming.length})</span></h2>

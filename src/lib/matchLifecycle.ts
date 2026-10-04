@@ -34,7 +34,7 @@ export type LifecycleInput = {
   mvpPublished: boolean;
   recap: { saved: boolean; published: boolean };
   summary: SummaryState;
-  /** OWNER/ADMIN (isManager) — only decides which steps can be suggested, never access. */
+  /** OWNER/ADMIN (isManager). MEMBER is read-only: no suggested action (presentation; the server enforces access). */
   canManage: boolean;
 };
 
@@ -54,7 +54,7 @@ export const todayUtcYmd = (now: Date = new Date()) => now.toISOString().slice(0
 
 const action = (key: StageKey, label: string): NextAction => ({ key, label, anchor: `#${key}` });
 
-/** The single suggested next step (a pointer to the section that holds the real control). */
+/** The workflow's pending step (a pointer to the section that holds the real control). */
 function nextActionOf(i: LifecycleInput, upcoming: boolean): NextAction {
   if (i.status === "CANCELED") return null;
   if (!i.teamsPublished) return i.playing === 0 && !i.attendanceClosed ? action("attendance", "Manage attendance") : action("teams", "Generate teams");
@@ -104,16 +104,19 @@ export function matchLifecycle(i: LifecycleInput): Lifecycle {
                 : "Not posted",
   };
   const labels: Record<StageKey, string> = { attendance: "Attendance", teams: "Teams", result: "Result", mvp: "Player of the Match", recap: "Recap", summary: "Match Summary" };
-  const next = nextActionOf(i, upcoming);
+  // The workflow's pending step (what an organizer would do next). UI-4A — only
+  // OWNER/ADMIN get it as an action; MEMBER is read-only and gets no call to action.
+  const pending = nextActionOf({ ...i, canManage: true, summary: i.canManage ? i.summary : "posted" }, upcoming);
+  const next = i.canManage ? pending : null;
   const keys: StageKey[] = ["attendance", "teams", "result", "mvp", "recap", "summary"];
   const stages: Stage[] = keys.map((key) => ({
     key,
     label: labels[key],
     detail: detail[key],
-    state: done[key] ? "done" : next?.key === key ? "current" : "todo",
+    state: done[key] ? "done" : pending?.key === key ? "current" : "todo",
   }));
 
-  const phase: Phase = i.status === "CANCELED" ? "canceled" : upcoming ? "upcoming" : next === null && i.result.published ? "complete" : "postgame";
+  const phase: Phase = i.status === "CANCELED" ? "canceled" : upcoming ? "upcoming" : pending === null && i.result.published ? "complete" : "postgame";
   const phaseLabel = { canceled: "Canceled", upcoming: "Upcoming", postgame: "Post-game", complete: "Post-game complete" }[phase];
   return { phase, phaseLabel, stages, next };
 }

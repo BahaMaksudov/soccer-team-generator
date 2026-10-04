@@ -11,6 +11,7 @@ import { visibleRosterIds } from "@/lib/matchRosterScope";
 import PostGameSection, { type PostGameView } from "./PostGameSection";
 import { MATCH_TELEGRAM_GROUP_SELECTOR_ID } from "@/lib/postGameUi";
 import CanonicalGenerateSection from "../../CanonicalGenerateSection";
+import { PublishedTeams } from "@/components/game-day/PublishedTeams";
 import { ArrowDown, CircleCheck, Send, Shuffle, Users } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { focusRing, LifecycleSteps, MatchMeta, PhasePill, SectionCard, StateChip } from "@/components/game-day/parts";
@@ -269,6 +270,8 @@ export default function MatchWorkspace({
             <h1 className="mt-2 text-2xl font-extrabold sm:text-3xl">{formatLongDateOnly(m.date)}</h1>
             <MatchMeta date={m.date} startTime={m.startTime} locationName={m.locationName} className="mt-1 [&>li:first-child]:hidden" />
           </div>
+          {/* UI-4A — match management is OWNER/ADMIN only (enforced server-side). */}
+          {view.canManage && (
           <div className="flex flex-wrap gap-1.5">
             <button type="button" className={cn(smallBtn, "border border-input hover:bg-muted", focusRing)} onClick={() => setEdit({ date: m.date, startTime: m.startTime ?? "", locationName: m.locationName ?? "" })}>Edit</button>
             {m.status === "SCHEDULED" ? (
@@ -280,8 +283,9 @@ export default function MatchWorkspace({
               <button type="button" className={cn(smallBtn, "border border-input hover:bg-muted", focusRing)} disabled={busy} onClick={() => saveMatch({ status: "SCHEDULED" }, "Match reopened.")}>Reopen</button>
             )}
           </div>
+          )}
         </div>
-        {edit && (
+        {view.canManage && edit && (
           <form
             className="mt-4 grid gap-3 border-t border-border pt-4 sm:grid-cols-[repeat(3,minmax(0,1fr))_auto]"
             onSubmit={(e) => {
@@ -312,7 +316,15 @@ export default function MatchWorkspace({
           <div>
             <h2 id="progress-h" className="text-xs font-bold uppercase tracking-widest text-accent">Match progress</h2>
             <p className="mt-1 text-lg font-extrabold">
-              {next ? `Next: ${next.label}` : lifecycle.phase === "canceled" ? "This match is canceled." : lifecycle.phase === "complete" ? "Post-game is complete." : "Nothing to do right now."}
+              {next
+                ? `Next: ${next.label}`
+                : lifecycle.phase === "canceled"
+                  ? "This match is canceled."
+                  : lifecycle.phase === "complete"
+                    ? "Post-game is complete."
+                    : view.canManage
+                      ? "Nothing to do right now."
+                      : "You're viewing this match. Owners and admins manage it."}
             </p>
           </div>
           {next && (
@@ -347,10 +359,12 @@ export default function MatchWorkspace({
         </dl>
 
         <div className="mt-4 flex flex-wrap items-center gap-2 text-sm" id={MATCH_TELEGRAM_GROUP_SELECTOR_ID}>
+          {view.canManage && (
           <Button type="button" variant="outline" size="sm" disabled={busy} onClick={() => call("/attendance/close", { closed: !m.attendanceClosed }, m.attendanceClosed ? "Attendance reopened." : "Attendance closed.")}>
             {m.attendanceClosed ? "Reopen attendance" : "Close attendance"}
           </Button>
-          {view.telegram.poll && (
+          )}
+          {view.canManage && view.telegram.poll && (
             <Button type="button" variant="outline" size="sm" disabled={busy} onClick={() => call("/attendance/sync", {}, "Telegram attendance synced.")}>
               Sync Telegram attendance
             </Button>
@@ -395,7 +409,7 @@ export default function MatchWorkspace({
             <label className="flex items-center gap-1.5">
               <input type="checkbox" className="size-4 accent-primary" checked={showAll} onChange={(e) => setShowAll(e.target.checked)} /> Show all Group players
             </label>
-            {hiddenPlayers.length > 0 && (
+            {view.canManage && hiddenPlayers.length > 0 && (
               <>
                 <label className="sr-only" htmlFor="add-player-pick">Add another player</label>
                 <select id="add-player-pick" className="h-9 rounded-tbp-sm border border-input bg-card px-2" value={addPick} onChange={(e) => setAddPick(e.target.value)}>
@@ -435,6 +449,7 @@ export default function MatchWorkspace({
                   )}
                 </p>
               </div>
+              {view.canManage && (
               <div role="group" aria-label={`Set attendance for ${p.firstName} ${p.lastName}`} className="flex flex-wrap items-center gap-1">
                 {(["PLAYING", "MAYBE", "NOT_PLAYING"] as Status[]).map((s) => {
                   const on = p.attendance.overridden && p.attendance.status === s;
@@ -463,14 +478,24 @@ export default function MatchWorkspace({
                     <button type="button" disabled={busy} className={cn("min-h-9 rounded-full px-3 text-xs text-muted-foreground underline", focusRing)} onClick={() => changeScope(p.id, "POST")}>Add to group</button>
                   ))}
               </div>
+              )}
             </li>
           ))}
         </ul>
-        <p className="mt-2 text-xs text-muted-foreground">The buttons set an organizer override; the player&apos;s own answer is kept.</p>
+        {view.canManage && <p className="mt-2 text-xs text-muted-foreground">The buttons set an organizer override; the player&apos;s own answer is kept.</p>}
       </SectionCard>
 
       {/* Teams */}
       <SectionCard id="teams" title="Teams" icon={<Shuffle className="size-5" />} meta={view.generation ? "Published for this match" : "Not published yet"}>
+        {!view.canManage ? (
+          // UI-4A — read-only for MEMBER: the published teams only (no generation controls).
+          view.generation ? (
+            <PublishedTeams teams={view.generation.teams} date={view.generation.date} sportKey={sport.key} />
+          ) : (
+            <p className="text-sm text-muted-foreground">Teams haven&apos;t been published for this match yet. Owners and admins build and publish teams.</p>
+          )
+        ) : (
+        <>
         <p className="text-sm text-muted-foreground">Players marked Playing are selected. Maybe players are shown but not selected — add them if you want.</p>
         <fieldset className="mt-3">
           <legend className="sr-only">Players for team generation</legend>
@@ -499,6 +524,8 @@ export default function MatchWorkspace({
           initialPublishedTeams={view.generation?.teams ?? null}
           onPanelModeChange={setPanelMode}
         />
+        </>
+        )}
         {published && !unpublishedPreviewOnScreen(panelMode) && (
           <div className="mt-4 space-y-2 rounded-tbp-xl border border-primary/20 bg-primary/5 p-4 text-sm">
             <p className="flex items-center gap-1.5 font-semibold text-primary"><CircleCheck className="size-4" aria-hidden="true" /> Teams saved for this match.</p>

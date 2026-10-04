@@ -7,6 +7,7 @@ import { generateTeams, resolveBalanceConfig } from "@/lib/balanceEngine";
 import { analyzeTeams, METRICS_VERSION } from "@/lib/balanceAnalysis";
 import { findSport } from "@/lib/sports";
 import { loadStoredBalanceWeights } from "@/lib/groupSettings";
+import { managersOnlyResponse } from "@/lib/tenantRoute";
 
 /**
  * Phase 2D.6D.2 — shared Generate core, extracted verbatim from the
@@ -21,6 +22,9 @@ import { loadStoredBalanceWeights } from "@/lib/groupSettings";
  * `context.activeGroup.id` and uses nothing else for scoping.
  */
 export async function generateTeamsForContext(context: TenantContext, req: Request): Promise<NextResponse> {
+  // UI-4A — organizer mutation: OWNER/ADMIN only (MEMBER gets the generic 404).
+  const denied = managersOnlyResponse(context);
+  if (denied) return denied;
   const body = await req.json().catch(() => ({}));
 
   const parsed = generateTeamsSchema.safeParse(body);

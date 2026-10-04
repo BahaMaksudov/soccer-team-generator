@@ -50,9 +50,12 @@ export default async function CanonicalAdminHome({ params }: { params: Params })
             {sport?.label ?? context.activeGroup.sportKey} · Your role: {ROLE_LABELS[context.membership.role]}
           </p>
         </div>
-        <ActionLink href={`${matchesHref}#new`} variant="outline">
-          New match
-        </ActionLink>
+        {/* UI-4A — creating a match is an organizer mutation (OWNER/ADMIN; enforced server-side). */}
+        {overview.canManage && (
+          <ActionLink href={`${matchesHref}#new`} variant="outline">
+            New match
+          </ActionLink>
+        )}
       </header>
       {!sport && (
         <p className="rounded-tbp border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive">
@@ -62,8 +65,8 @@ export default async function CanonicalAdminHome({ params }: { params: Params })
 
       <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_280px]">
         <div className="min-w-0 space-y-6">
-          {overview.focus ? <FocusMatch focus={overview.focus} /> : <NoNextMatch hasMatches={hasMatches} matchesHref={matchesHref} />}
-          {hasMatches && <NeedsAttention items={overview.attention} />}
+          {overview.focus ? <FocusMatch focus={overview.focus} /> : <NoNextMatch hasMatches={hasMatches} matchesHref={matchesHref} canManage={overview.canManage} />}
+          {hasMatches && overview.canManage && <NeedsAttention items={overview.attention} />}
           {overview.past.length > 0 && (
             <SectionCard
               title="Recent matches"
@@ -181,14 +184,14 @@ function FocusMatch({ focus }: { focus: NonNullable<GroupOverview["focus"]> }) {
       <div className="space-y-4 p-5 sm:p-6">
         <LifecycleSteps lifecycle={m.lifecycle} linkBase={m.href} onDark />
         <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-          <p className="text-sm opacity-80">{next ? `Next step: ${next.label}.` : m.lifecycle.phase === "complete" ? "Post-game is complete." : "Open the match for details."}</p>
+          <p className="text-sm opacity-80">{next ? `Next step: ${next.label}.` : m.lifecycle.phase === "complete" ? "Post-game is complete." : "View the match for details."}</p>
           {next ? (
             <ActionLink href={`${m.href}${next.anchor}`} variant="accent">
               {next.label}
             </ActionLink>
           ) : (
             <ActionLink href={m.href} variant="onPitch">
-              Open match
+              View match
             </ActionLink>
           )}
         </div>
@@ -197,7 +200,19 @@ function FocusMatch({ focus }: { focus: NonNullable<GroupOverview["focus"]> }) {
   );
 }
 
-function NoNextMatch({ hasMatches, matchesHref }: { hasMatches: boolean; matchesHref: string }) {
+function NoNextMatch({ hasMatches, matchesHref, canManage }: { hasMatches: boolean; matchesHref: string; canManage: boolean }) {
+  if (!canManage)
+    return (
+      <section aria-labelledby="no-next" className="rounded-tbp-2xl border border-dashed border-border bg-card p-6 text-center sm:p-8">
+        <span className="mx-auto grid size-12 place-items-center rounded-full bg-secondary text-primary" aria-hidden="true">
+          <CalendarPlus className="size-6" />
+        </span>
+        <h2 id="no-next" className="mt-4 text-xl font-extrabold">
+          No upcoming match
+        </h2>
+        <p className="mx-auto mt-2 max-w-md text-sm text-muted-foreground">The group&apos;s owners and admins schedule matches. Upcoming matches will appear here.</p>
+      </section>
+    );
   return (
     <section aria-labelledby="no-next" className="rounded-tbp-2xl border border-dashed border-border bg-card p-6 text-center sm:p-8">
       <span className="mx-auto grid size-12 place-items-center rounded-full bg-secondary text-primary" aria-hidden="true">

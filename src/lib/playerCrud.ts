@@ -3,6 +3,7 @@ import { NextResponse } from "next/server";
 import { playerCreateSchema, playerUpdateSchema, zodErrorResponse } from "@/lib/validation";
 import type { TenantContext } from "@/lib/tenantContext";
 import { findSport, isValidRoleKey } from "@/lib/sports";
+import { managersOnlyResponse } from "@/lib/tenantRoute";
 
 /**
  * Phase 2D.6D.1 — shared Player CRUD core, extracted verbatim from
@@ -89,6 +90,9 @@ export async function listPlayers(context: TenantContext): Promise<NextResponse>
 }
 
 export async function createPlayer(context: TenantContext, req: Request): Promise<NextResponse> {
+  // UI-4A — organizer mutation: OWNER/ADMIN only (MEMBER gets the generic 404).
+  const denied = managersOnlyResponse(context);
+  if (denied) return denied;
   const body = await req.json().catch(() => ({}));
 
   // playerCreateSchema has no `groupId` field and is not .passthrough(),
@@ -128,6 +132,9 @@ export async function createPlayer(context: TenantContext, req: Request): Promis
 }
 
 export async function updatePlayer(context: TenantContext, id: string, req: Request): Promise<NextResponse> {
+  // UI-4A — organizer mutation: OWNER/ADMIN only (MEMBER gets the generic 404).
+  const denied = managersOnlyResponse(context);
+  if (denied) return denied;
   const body = await req.json().catch(() => ({}));
 
   const parsed = playerUpdateSchema.safeParse(body);
@@ -171,6 +178,9 @@ export async function updatePlayer(context: TenantContext, id: string, req: Requ
 }
 
 export async function deletePlayer(context: TenantContext, id: string): Promise<NextResponse> {
+  // UI-4A — organizer mutation: OWNER/ADMIN only (MEMBER gets the generic 404).
+  const denied = managersOnlyResponse(context);
+  if (denied) return denied;
   try {
     // Phase 2D.6E.6C — single Group-scoped delete: the mutation itself
     // carries id AND the URL-resolved groupId. 0 rows (foreign or

@@ -284,13 +284,12 @@ export async function postGameAction(context: TenantContext, matchId: string, re
 export async function runPostGameAction(context: TenantContext, matchId: string, command: PostGameCommand): Promise<NextResponse> {
   const body = command;
   const groupId = context.activeGroup.id;
-  // Telegram actions and the organizer's own Player-of-the-Match selection are OWNER/ADMIN.
-  const managersOnly =
-    body.action === "start_mvp" || body.action === "close_mvp" || body.action === "post_message" || body.action === "save_mvp_selection" || body.action === "reset_mvp_selection";
-  if (managersOnly) {
-    const denied = managersOnlyResponse(context);
-    if (denied) return denied;
-  }
+  // UI-4A — every post-game command (result, Player of the Match, recap, Match
+  // Summary) is an organizer mutation: OWNER/ADMIN only; MEMBER gets the generic
+  // 404. Player voting is NOT a command here — it arrives through the Telegram
+  // poll (src/lib/telegramMvp.ts) and keeps its own participant rules.
+  const denied = managersOnlyResponse(context);
+  if (denied) return denied;
   const m = await loadMatch(context, matchId);
   if (!m) return NOT_FOUND();
   if (m.status === "CANCELED") return fail("This match is canceled. Reopen it before recording post-game details.");

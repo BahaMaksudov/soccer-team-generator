@@ -126,9 +126,13 @@ export default function PostGameSection({
   if (pg.teamNumbers.length === 0)
     return (
       <SectionCard id="result" title="After the game">
-        <p className="text-sm text-muted-foreground">Publish teams for this match to record a result.</p>
+        <p className="text-sm text-muted-foreground">
+          {canManage ? "Publish teams for this match to record a result." : "The result, Player of the Match and recap appear here after the game."}
+        </p>
       </SectionCard>
     );
+  // UI-4A — MEMBER: read-only post-game status (every post-game command is OWNER/ADMIN, enforced server-side).
+  if (!canManage) return <PostGameReadOnly pg={pg} />;
 
   const m = pg.messages;
   const tg = canManage && m;
@@ -502,6 +506,72 @@ export default function PostGameSection({
             )}
           </>
         )}
+      </section>
+    </div>
+  );
+}
+
+/** UI-4A — read-only post-game view for MEMBER: state and content, no editors, no send. */
+function PostGameReadOnly({ pg }: { pg: PostGameView }) {
+  const readiness = summaryReadiness(pg, false);
+  return (
+    <div className="space-y-6">
+      <SectionCard
+        id="result"
+        title="Result"
+        icon={<Trophy className="size-5" />}
+        action={pg.result?.published ? <StateChip tone="done">Published</StateChip> : pg.result ? <StateChip tone="pending">Saved, not published</StateChip> : <StateChip tone="neutral">Not entered</StateChip>}
+      >
+        {pg.result ? (
+          <ul className="flex flex-wrap gap-4" aria-label="Score">
+            {pg.result.scores.map((sc) => (
+              <li key={sc.teamNumber} className="flex flex-col items-center gap-1 text-sm font-semibold">
+                Team {sc.teamNumber}
+                <span className="grid h-16 w-20 place-items-center rounded-tbp-xl border border-border bg-muted font-display text-3xl font-black tabular-nums">{sc.score}</span>
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <p className="text-sm text-muted-foreground">No result yet.</p>
+        )}
+      </SectionCard>
+      <SectionCard
+        id="mvp"
+        title="Player of the Match"
+        icon={<Medal className="size-5" />}
+        action={pg.mvp?.published ? <StateChip tone="done">Published</StateChip> : <StateChip tone="neutral">Not published</StateChip>}
+      >
+        <p className="text-sm">
+          {pg.mvp?.published
+            ? `Player of the Match: ${pg.mvp.winners.join(", ")}`
+            : pg.mvp?.open
+              ? "Player vote is open in the match's Telegram group."
+              : "An owner or admin decides Player of the Match for this match."}
+        </p>
+      </SectionCard>
+      <SectionCard
+        id="recap"
+        title="Match Recap"
+        icon={<FileText className="size-5" />}
+        action={pg.recap?.published ? <StateChip tone="done">Published</StateChip> : pg.recap?.content ? <StateChip tone="pending">Saved, not published</StateChip> : <StateChip tone="neutral">Not written</StateChip>}
+      >
+        {pg.recap?.content ? <p className="whitespace-pre-line text-sm">{pg.recap.content}</p> : <p className="text-sm text-muted-foreground">No recap yet.</p>}
+      </SectionCard>
+      <section id="summary" aria-labelledby="summary-heading" className="scroll-mt-20 space-y-3 rounded-tbp-2xl bg-pitch p-4 text-pitch-foreground shadow-lift pitch-lines sm:p-5">
+        <h2 id="summary-heading" className="text-lg font-extrabold">Match Summary</h2>
+        <ul className="space-y-1 text-sm">
+          {readiness.items.map((it) => (
+            <li key={it.key} className="flex items-center gap-2">
+              {it.included ? <CircleCheck className="size-4 shrink-0 text-accent" aria-hidden="true" /> : <CircleDashed className="size-4 shrink-0 opacity-60" aria-hidden="true" />}
+              <span>
+                <span className="sr-only">{it.included ? "Included: " : "Not included: "}</span>
+                {it.label}
+                {it.note ? ` — ${it.note}` : ""}
+              </span>
+            </li>
+          ))}
+        </ul>
+        <p className="text-sm opacity-85">An owner or admin posts the match summary to Telegram.</p>
       </section>
     </div>
   );

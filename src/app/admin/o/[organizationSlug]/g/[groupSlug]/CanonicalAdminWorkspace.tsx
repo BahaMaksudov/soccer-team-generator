@@ -164,6 +164,9 @@ export default function CanonicalAdminWorkspace({
       />
       </div>
 
+      {/* UI-4A — team generation, settings, sharing and Telegram are organizer surfaces (OWNER/ADMIN; enforced server-side). */}
+      {canManage && (
+      <>
       <CanonicalGenerateSection
         organizationSlug={organizationSlug}
         groupSlug={groupSlug}
@@ -186,6 +189,8 @@ export default function CanonicalAdminWorkspace({
       />
 
       <CanonicalVisibilitySection organizationSlug={organizationSlug} groupSlug={groupSlug} />
+      </>
+      )}
 
       {canManage ? (
         <>
@@ -201,7 +206,7 @@ export default function CanonicalAdminWorkspace({
         </>
       ) : (
         <div className="border rounded-xl p-4 mt-4 text-sm text-gray-600">
-          Telegram and communication channels are managed by the group&apos;s owners and admins.
+          Teams, settings, sharing, Telegram and communication channels are managed by the group&apos;s owners and admins.
         </div>
       )}
     </div>

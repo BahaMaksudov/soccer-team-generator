@@ -4,7 +4,7 @@ import { prisma } from "@/lib/prisma";
 import type { TenantContext } from "@/lib/tenantContext";
 import { toDateOnlyUTC } from "@/lib/dateOnly";
 import { formatYMDFromDate } from "@/lib/telegramFormat";
-import { isManager } from "@/lib/tenantRoute";
+import { isManager, managersOnlyResponse } from "@/lib/tenantRoute";
 import {
   attendanceClosedSchema,
   attendanceOverrideSchema,
@@ -87,6 +87,9 @@ export async function findGroupMatch(context: TenantContext, matchId: string) {
 }
 
 export async function createMatch(context: TenantContext, req: Request): Promise<NextResponse> {
+  // UI-4A — organizer mutation: OWNER/ADMIN only (MEMBER gets the generic 404).
+  const denied = managersOnlyResponse(context);
+  if (denied) return denied;
   const parsed = matchCreateSchema.safeParse((await req.json().catch(() => null)) ?? {});
   if (!parsed.success) return NextResponse.json(zodErrorResponse(parsed.error), { status: 400 });
   const { date, startTime, locationName } = parsed.data;
@@ -104,6 +107,9 @@ export async function createMatch(context: TenantContext, req: Request): Promise
 }
 
 export async function updateMatch(context: TenantContext, matchId: string, req: Request): Promise<NextResponse> {
+  // UI-4A — organizer mutation: OWNER/ADMIN only (MEMBER gets the generic 404).
+  const denied = managersOnlyResponse(context);
+  if (denied) return denied;
   const parsed = matchUpdateSchema.safeParse((await req.json().catch(() => null)) ?? {});
   if (!parsed.success) return NextResponse.json(zodErrorResponse(parsed.error), { status: 400 });
   const { date, startTime, locationName, status } = parsed.data;
@@ -253,6 +259,9 @@ export async function getMatchView(context: TenantContext, matchId: string): Pro
 
 /** Organizer override (set or clear). Authoritative until cleared; participant responses are kept. */
 export async function setAttendanceOverride(context: TenantContext, matchId: string, req: Request): Promise<NextResponse> {
+  // UI-4A — organizer mutation: OWNER/ADMIN only (MEMBER gets the generic 404).
+  const denied = managersOnlyResponse(context);
+  if (denied) return denied;
   const parsed = attendanceOverrideSchema.safeParse((await req.json().catch(() => null)) ?? {});
   if (!parsed.success) return NextResponse.json(zodErrorResponse(parsed.error), { status: 400 });
   const groupId = context.activeGroup.id;
@@ -275,6 +284,9 @@ export async function setAttendanceOverride(context: TenantContext, matchId: str
 
 /** Open/close attendance (a timestamp; late responses are still recorded and flagged). No automatic cutoff. */
 export async function setAttendanceClosed(context: TenantContext, matchId: string, req: Request): Promise<NextResponse> {
+  // UI-4A — organizer mutation: OWNER/ADMIN only (MEMBER gets the generic 404).
+  const denied = managersOnlyResponse(context);
+  if (denied) return denied;
   const parsed = attendanceClosedSchema.safeParse((await req.json().catch(() => null)) ?? {});
   if (!parsed.success) return NextResponse.json(zodErrorResponse(parsed.error), { status: 400 });
   const { count } = await prisma.match.updateMany({

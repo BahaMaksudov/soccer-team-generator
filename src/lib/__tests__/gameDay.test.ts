@@ -80,11 +80,17 @@ describe("one suggested next step, derived from real state", () => {
     expect(done.phase).toBe("complete");
     expect(done.stages.every((s) => s.state === "done")).toBe(true);
   });
-  it("MEMBER: never suggested manager-only steps (Player of the Match decision, Match Summary)", () => {
-    const m = { ...past, canManage: false, summary: null, result: { saved: true, published: true } };
-    expect(next(m)).toBe("Write recap");
-    expect(next({ ...m, recap: { saved: true, published: true } })).toBeNull();
-    expect(matchLifecycle(base(m)).stages.find((s) => s.key === "summary")?.detail).toBe("Owner/admin posts");
+  it("UI-4A — MEMBER is read-only: never any call to action; the pending stage is still shown truthfully", () => {
+    for (const over of [{}, { playing: 5 }, { teamsPublished: true }, { ...past }, { ...past, result: { saved: true, published: false } }, { ...past, result: { saved: true, published: true } }]) {
+      const l = matchLifecycle(base({ ...over, canManage: false, summary: null }));
+      expect(l.next, JSON.stringify(over)).toBeNull();
+    }
+    const m = matchLifecycle(base({ ...past, canManage: false, summary: null, result: { saved: true, published: false } }));
+    expect(m.stages.find((s) => s.state === "current")?.key).toBe("result");
+    expect(m.phase).toBe("postgame");
+    expect(m.stages.find((s) => s.key === "summary")?.detail).toBe("Owner/admin posts");
+    const all = matchLifecycle(base({ ...past, canManage: false, summary: null, result: { saved: true, published: true }, mvpPublished: true, recap: { saved: true, published: true } }));
+    expect(all.phase).toBe("complete");
   });
   it("OWNER/ADMIN without a Telegram group yet (no delivery state): summary is 'Not posted' and still the next step", () => {
     const all = { ...past, result: { saved: true, published: true }, mvpPublished: true, recap: { saved: true, published: true }, summary: null };

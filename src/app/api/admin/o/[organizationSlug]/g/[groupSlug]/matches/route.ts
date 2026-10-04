@@ -3,9 +3,10 @@ import { canonicalTenantErrorResponse, requireJsonRequest } from "@/lib/tenantRo
 import { createMatch, listMatches } from "@/lib/matches";
 
 /**
- * M9-A — canonical, URL-bound Matches of one Group. Any member may list and
- * create Matches (internal operations; nothing is sent). Tenant failures are
- * the generic 404 (401 when signed out).
+ * M9-A — canonical, URL-bound Matches of one Group. Any member may list;
+ * UI-4A — creating a Match is an organizer mutation (OWNER/ADMIN; MEMBER gets
+ * the generic 404, enforced in createMatch). Nothing is sent. Tenant failures
+ * are the generic 404 (401 when signed out).
  */
 type Params = Promise<{ organizationSlug: string; groupSlug: string }>;
 

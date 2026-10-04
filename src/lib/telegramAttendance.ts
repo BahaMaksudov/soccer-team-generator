@@ -53,6 +53,9 @@ export async function applyTelegramAttendanceAnswer(
 
 /** Explicit recovery sync from stored answers of the Match's attendance polls (same mapping as the webhook). */
 export async function syncTelegramAttendance(context: TenantContext, matchId: string): Promise<NextResponse> {
+  // UI-4A — organizer mutation: OWNER/ADMIN only (MEMBER gets the generic 404).
+  const denied = managersOnlyResponse(context);
+  if (denied) return denied;
   const groupId = context.activeGroup.id;
   const match = await findGroupMatch(context, matchId);
   if (!match) return NextResponse.json({ error: "Match not found" }, { status: 404 });

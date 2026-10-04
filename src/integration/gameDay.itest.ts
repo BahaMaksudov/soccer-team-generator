@@ -239,10 +239,13 @@ describe("authorization: hidden buttons are not the security boundary", () => {
     expect(await prisma.messageDelivery.count()).toBe(1); // nothing new was reserved or sent
   });
 
-  it("existing M9 semantics are unchanged: any member may create a Match (internal, nothing is sent)", async () => {
+  it("UI-4A: creating a Match is an organizer mutation — MEMBER 404 (nothing created), OWNER 201", async () => {
     await as("member@example.test");
-    const res = await matchesRoute.POST(json({ date: ymd(dayOffset(20)) }), g(A));
-    expect(res.status).toBe(201);
+    const before = await prisma.match.count();
+    expect((await matchesRoute.POST(json({ date: ymd(dayOffset(20)) }), g(A))).status).toBe(404);
+    expect(await prisma.match.count()).toBe(before);
+    await as("owner@example.test");
+    expect((await matchesRoute.POST(json({ date: ymd(dayOffset(20)) }), g(A))).status).toBe(201);
   });
 
   it("the only post-game Telegram message kind is the Match Summary", async () => {

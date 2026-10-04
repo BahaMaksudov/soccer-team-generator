@@ -8,6 +8,7 @@ import { ENGINE_VERSION, resolveBalanceConfig } from "@/lib/balanceEngine";
 import { buildStoredMetrics } from "@/lib/balanceAnalysis";
 import { findSport, type SportDefinition } from "@/lib/sports";
 import { loadStoredBalanceWeights } from "@/lib/groupSettings";
+import { managersOnlyResponse } from "@/lib/tenantRoute";
 
 /**
  * Phase 2D.6D.3 — shared Publish core, originally extracted from the
@@ -126,6 +127,9 @@ export function buildGenerationMetadata(
 }
 
 export async function publishTeamsForContext(context: TenantContext, req: Request): Promise<NextResponse> {
+  // UI-4A — organizer mutation: OWNER/ADMIN only (MEMBER gets the generic 404).
+  const denied = managersOnlyResponse(context);
+  if (denied) return denied;
   const activeGroupId = context.activeGroup.id;
 
   const body = await req.json().catch(() => ({}));
@@ -238,6 +242,9 @@ export async function publishTeamsForContext(context: TenantContext, req: Reques
 }
 
 export async function deletePublishedTeamsForContext(context: TenantContext, req: Request): Promise<NextResponse> {
+  // UI-4A — organizer mutation: OWNER/ADMIN only (MEMBER gets the generic 404).
+  const denied = managersOnlyResponse(context);
+  if (denied) return denied;
   const url = new URL(req.url);
   const dateStr = url.searchParams.get("date"); // expected YYYY-MM-DD
 

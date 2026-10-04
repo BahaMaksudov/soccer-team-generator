@@ -165,11 +165,11 @@ describe("Apply Swap (preview only, server-authoritative)", () => {
     expect(networkCalls).toBe(0);
   });
 
-  it("ADMIN and MEMBER may apply (same access as Generate); anonymous 401; another Organization 404", async () => {
+  it("ADMIN may apply (same access as Generate); UI-4A: MEMBER is denied (generic 404); anonymous 401; another Organization 404", async () => {
     await signInAs("admin@example.test");
     expect((await swap(UNEVEN)).status).toBe(200);
     await signInAs("member@example.test");
-    expect((await swap(UNEVEN)).status).toBe(200);
+    expect((await swap(UNEVEN)).status).toBe(404);
     session = null;
     expect((await swap(UNEVEN)).status).toBe(401);
     await signInAs("owner-b@example.test");
