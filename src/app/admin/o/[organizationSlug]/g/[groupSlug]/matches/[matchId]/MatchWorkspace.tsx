@@ -364,7 +364,8 @@ export default function MatchWorkspace({
             {m.attendanceClosed ? "Reopen attendance" : "Close attendance"}
           </Button>
           )}
-          {view.canManage && view.telegram.poll && (
+          {/* UI-4B — while closed, attendance is read-only (the server rejects sync too): reopen first. */}
+          {view.canManage && !m.attendanceClosed && view.telegram.poll && (
             <Button type="button" variant="outline" size="sm" disabled={busy} onClick={() => call("/attendance/sync", {}, "Telegram attendance synced.")}>
               Sync Telegram attendance
             </Button>
@@ -450,6 +451,9 @@ export default function MatchWorkspace({
                 </p>
               </div>
               {view.canManage && (
+              <div className="flex flex-wrap items-center gap-1">
+              {/* UI-4B — no per-player attendance changes while attendance is closed (also enforced server-side). */}
+              {!m.attendanceClosed && (
               <div role="group" aria-label={`Set attendance for ${p.firstName} ${p.lastName}`} className="flex flex-wrap items-center gap-1">
                 {(["PLAYING", "MAYBE", "NOT_PLAYING"] as Status[]).map((s) => {
                   const on = p.attendance.overridden && p.attendance.status === s;
@@ -471,6 +475,8 @@ export default function MatchWorkspace({
                     Clear override
                   </button>
                 )}
+              </div>
+              )}
                 {scopeManageable &&
                   (scopeSet.has(p.id) ? (
                     <button type="button" disabled={busy} className={cn("min-h-9 rounded-full px-3 text-xs text-muted-foreground underline", focusRing)} onClick={() => changeScope(p.id, "DELETE")}>In group · remove</button>
@@ -482,7 +488,12 @@ export default function MatchWorkspace({
             </li>
           ))}
         </ul>
-        {view.canManage && <p className="mt-2 text-xs text-muted-foreground">The buttons set an organizer override; the player&apos;s own answer is kept.</p>}
+        {view.canManage &&
+          (m.attendanceClosed ? (
+            <p role="note" className="mt-2 text-sm font-medium text-muted-foreground">Attendance is closed. Reopen attendance to make changes.</p>
+          ) : (
+            <p className="mt-2 text-xs text-muted-foreground">The buttons set an organizer override; the player&apos;s own answer is kept.</p>
+          ))}
       </SectionCard>
 
       {/* Teams */}

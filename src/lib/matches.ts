@@ -31,6 +31,17 @@ import { countAttendance, defaultSelection, effectiveAttendance, recordParticipa
 
 const NOT_FOUND = () => NextResponse.json({ error: "Match not found" }, { status: 404 });
 
+/**
+ * UI-4B — closed attendance is READ-ONLY. While Match.attendanceClosedAt is
+ * set, no path may change an individual attendance answer (organizer
+ * override/clear, a player's own web answer, a Telegram answer, the Telegram
+ * sync). Closing and reopening never modify existing answers or overrides.
+ * Returned only AFTER the caller is authorized and the Match is found, so it
+ * reveals nothing about other tenants.
+ */
+export const ATTENDANCE_CLOSED_MESSAGE = "Attendance is closed. Reopen attendance to make changes.";
+export const attendanceClosedResponse = () => NextResponse.json({ error: ATTENDANCE_CLOSED_MESSAGE, code: "ATTENDANCE_CLOSED" }, { status: 409 });
+
 const MATCH_SELECT = {
   id: true,
   date: true,
@@ -267,6 +278,7 @@ export async function setAttendanceOverride(context: TenantContext, matchId: str
   const groupId = context.activeGroup.id;
   const match = await findGroupMatch(context, matchId);
   if (!match) return NOT_FOUND();
+  if (match.attendanceClosedAt) return attendanceClosedResponse();
   const player = await prisma.player.findFirst({ where: { id: parsed.data.playerId, groupId }, select: { id: true } });
   if (!player) return NextResponse.json({ error: "Player not found" }, { status: 404 });
 
@@ -282,7 +294,11 @@ export async function setAttendanceOverride(context: TenantContext, matchId: str
   return NextResponse.json({ ok: true });
 }
 
-/** Open/close attendance (a timestamp; late responses are still recorded and flagged). No automatic cutoff. */
+/**
+ * Open/close attendance (a timestamp only — no answer or override is changed).
+ * UI-4B: while closed, attendance is read-only on every path; reopening
+ * restores normal changes. No automatic cutoff.
+ */
 export async function setAttendanceClosed(context: TenantContext, matchId: string, req: Request): Promise<NextResponse> {
   // UI-4A — organizer mutation: OWNER/ADMIN only (MEMBER gets the generic 404).
   const denied = managersOnlyResponse(context);
@@ -300,13 +316,15 @@ export async function setAttendanceClosed(context: TenantContext, matchId: strin
 /**
  * A signed-in User sets their OWN attendance for a Match of a Group where
  * they have claimed a Player. Never for another Player. Canceled Matches
- * accept no responses.
+ * accept no responses. UI-4B — nor does a Match whose attendance is closed
+ * ("closed" is reported only to a claimed participant of that Match's Group).
  */
-export async function setOwnAttendance(userId: string, matchId: string, status: AttendanceStatus): Promise<"ok" | "not_found"> {
-  const match = await prisma.match.findFirst({ where: { id: matchId, status: { not: "CANCELED" } }, select: { id: true, groupId: true } });
+export async function setOwnAttendance(userId: string, matchId: string, status: AttendanceStatus): Promise<"ok" | "not_found" | "closed"> {
+  const match = await prisma.match.findFirst({ where: { id: matchId, status: { not: "CANCELED" } }, select: { id: true, groupId: true, attendanceClosedAt: true } });
   if (!match) return "not_found";
   const player = await prisma.player.findFirst({ where: { groupId: match.groupId, userId }, select: { id: true } });
   if (!player) return "not_found";
+  if (match.attendanceClosedAt) return "closed";
   await prisma.$transaction((tx) =>
     recordParticipantResponse(tx, { matchId: match.id, groupId: match.groupId, playerId: player.id, status, source: "WEB", at: new Date() })
   );

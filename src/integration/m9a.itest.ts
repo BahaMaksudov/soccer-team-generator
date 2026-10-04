@@ -285,7 +285,7 @@ describe("Matches", () => {
 
 // =================================================================== attendance
 describe("Attendance", () => {
-  it("override is authoritative over later Telegram answers until cleared; late answers flagged; nothing sent", async () => {
+  it("override is authoritative over later Telegram answers until cleared; UI-4B: answers while closed don't change attendance; nothing sent", async () => {
     await signInAs("owner@example.test");
     const id = (await createMatch()).data.match.id;
     await postPoll(id);
@@ -311,7 +311,14 @@ describe("Attendance", () => {
     await vote(pollId, 222, [0]);
     v = await view(id);
     expect(v.match.attendanceClosed).toBe(true);
-    expect(v.roster.find((p: { id: string }) => p.id === "ga-p2").attendance).toMatchObject({ status: "PLAYING", late: true });
+    // UI-4B — closed attendance is read-only: the Telegram answer is kept provider-side only…
+    expect(v.roster.find((p: { id: string }) => p.id === "ga-p2").attendance).toMatchObject({ status: null, late: false });
+    expect(await prisma.telegramPollAnswer.count({ where: { pollId, userId: 222n } })).toBe(1);
+    // …and after an explicit reopen, the organizer's sync applies it.
+    expect((await closeRoute.POST(json("POST", { closed: false }), gm(A, id))).status).toBe(200);
+    expect((await syncRoute.POST(json("POST", {}), gm(A, id))).status).toBe(200);
+    v = await view(id);
+    expect(v.roster.find((p: { id: string }) => p.id === "ga-p2").attendance).toMatchObject({ status: "PLAYING", source: "TELEGRAM" });
     expect(sends("sendMessage")).toEqual([]);
   });
 

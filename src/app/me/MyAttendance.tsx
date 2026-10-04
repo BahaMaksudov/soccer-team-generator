@@ -14,10 +14,13 @@ export default function MyAttendance({
   matchId,
   status,
   byOrganizer,
+  closed = false,
 }: {
   matchId: string;
   status: "PLAYING" | "NOT_PLAYING" | "MAYBE" | null;
   byOrganizer: boolean;
+  /** UI-4B — closed attendance is read-only (the server rejects changes too). */
+  closed?: boolean;
 }) {
   const router = useRouter();
   const [busy, setBusy] = useState(false);
@@ -33,12 +36,24 @@ export default function MyAttendance({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ status: next }),
       });
-      if (!res.ok) setErr("Could not save your answer.");
+      if (!res.ok) setErr(res.status === 409 ? "Attendance is closed. Your organizer can reopen it." : "Could not save your answer.");
       else router.refresh();
     } catch {
       setErr("Could not save your answer.");
     }
     setBusy(false);
+  }
+
+  if (closed) {
+    const label = OPTIONS.find((o) => o.status === status)?.label ?? "No answer";
+    return (
+      <div className="space-y-1">
+        <div className="text-sm">
+          Your answer: <span className="font-medium">{label}</span>
+        </div>
+        <div className="text-xs text-gray-500">Attendance is closed. Your organizer can reopen it.</div>
+      </div>
+    );
   }
 
   return (

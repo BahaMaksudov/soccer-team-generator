@@ -69,7 +69,7 @@ describe("source gating (organizer controls exist only inside manager branches)"
       expect(managed(marker), marker).toBe(true);
     expect(ws).toContain("<PublishedTeams teams={view.generation.teams}");
     // "Clear override" lives inside the canManage-gated "Set attendance for …" group.
-    const group = ws.slice(ws.indexOf("{view.canManage && (\n              <div role=\"group\" aria-label={`Set attendance for"));
+    const group = ws.slice(ws.indexOf("<div role=\"group\" aria-label={`Set attendance for"));
     expect(group.indexOf("Clear override")).toBeGreaterThan(0);
     expect(group.indexOf("Clear override")).toBeLessThan(group.indexOf("</li>"));
   });
