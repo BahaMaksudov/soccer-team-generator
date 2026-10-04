@@ -72,7 +72,7 @@ describe("role-aware navigation (presentation only)", () => {
     const items = buildShellNav({ data: data(), pathname: "/admin/o/eagles/g/indoor" });
     expect(items.filter((i) => i.section === "main").map((i) => [i.key, i.href])).toEqual([
       ["overview", "/admin/o/eagles/g/indoor"],
-      ["matches", "/admin/o/eagles/g/indoor#matches"],
+      ["matches", "/admin/o/eagles/g/indoor/matches"],
       ["players", "/admin/o/eagles/g/indoor#players"],
       ["groups", "/admin"],
     ]);
@@ -102,8 +102,9 @@ describe("role-aware navigation (presentation only)", () => {
     const g = "/admin/o/eagles/g/indoor";
     expect(item(g, "overview")?.active).toBe(true);
     expect(item(g, "matches")?.active).toBe(false);
-    expect(item(g, "matches", data(), "#matches")?.active).toBe(true);
-    expect(item(g, "overview", data(), "#matches")?.active).toBe(false);
+    expect(item(`${g}/matches`, "matches")?.active).toBe(true);
+    expect(item(`${g}/matches`, "overview")?.active).toBe(false);
+    expect(item(`${g}/matchesx`, "matches")?.active).toBe(false);
     expect(item(g, "players", data(), "#players")?.active).toBe(true);
     expect(item(`${g}/matches/m1`, "matches")?.active).toBe(true);
     expect(item(`${g}/matches/m1`, "overview")?.active).toBe(false);

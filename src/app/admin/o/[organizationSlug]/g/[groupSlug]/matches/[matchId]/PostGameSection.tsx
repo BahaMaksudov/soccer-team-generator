@@ -13,11 +13,17 @@ import {
   syncedRecapText,
   type MvpMethod,
 } from "@/lib/postGameUi";
+import { CircleCheck, CircleDashed, FileText, Medal, Megaphone, Send, Sparkles, Trophy } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { focusRing, SectionCard, StateChip } from "@/components/game-day/parts";
+import { cn } from "@/lib/cn";
 
 /**
- * M9-D — organizer post-game panel (functional only; visual design is in the
- * Lovable backlog). SAVE ≠ PUBLISH ≠ SEND: only the "Post …", "Announce …"
+ * M9-D — organizer post-game panel. SAVE ≠ PUBLISH ≠ SEND: only the "Post …",
  * and "Start MVP vote" buttons talk to Telegram, and only OWNER/ADMIN see them.
+ * UI-4 — redesigned as four sections (#result, #mvp, #recap, #summary); the
+ * logic, payloads and texts are unchanged. Match Summary remains the ONLY
+ * post-game Telegram message.
  */
 
 type MessageState = "not_posted" | "posted" | "updated_available" | "failed" | "uncertain" | "sending" | null;
@@ -55,13 +61,18 @@ type Act = (body: Record<string, unknown>, ok: string) => Promise<{ ok: boolean;
 type Request = (body: Record<string, unknown>) => Promise<{ ok: boolean; data: Record<string, unknown> }>;
 
 function PostButton({ state, label, onPost, disabled, primary }: { state: MessageState; label: string; onPost: (intent: string) => void; disabled: boolean; primary?: boolean }) {
-  if (state === "posted") return <span className="text-xs text-gray-600">{primary ? `${label} posted to Telegram.` : "Posted to Telegram."}</span>;
-  if (state === "sending") return <span className="text-xs text-gray-600">Posting…</span>;
+  if (state === "posted") return <span className="text-sm font-semibold">{primary ? `${label} posted to Telegram.` : "Posted to Telegram."}</span>;
+  if (state === "sending") return <span role="status" className="text-sm">Posting…</span>;
   const intent = state === "updated_available" ? "post_updated" : state === "uncertain" ? "retry_uncertain" : "post";
   const text = state === "updated_available" ? `Post Updated ${label} to Telegram` : state === "uncertain" ? `Retry posting ${label} (check the group first)` : `Post ${label} to Telegram`;
   return (
-    <button type="button" className="bg-sky-600 text-white rounded px-3 py-1 text-sm disabled:opacity-60" disabled={disabled} onClick={() => onPost(intent)}>
-      {text} <span className="text-xs">(sends a message)</span>
+    <button
+      type="button"
+      className="inline-flex min-h-11 items-center gap-2 rounded-full bg-accent px-5 text-sm font-semibold text-accent-foreground hover:brightness-105 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-2 focus-visible:ring-offset-pitch disabled:opacity-60"
+      disabled={disabled}
+      onClick={() => onPost(intent)}
+    >
+      {text} <span className="text-xs font-normal">(sends a message)</span>
     </button>
   );
 }
@@ -106,8 +117,18 @@ export default function PostGameSection({
     lastServerRecap.current = next;
   }, [pg.recap?.content]);
 
-  if (pg.canceled) return <div className="text-sm text-gray-600">This match is canceled — reopen it to record a result, MVP or recap.</div>;
-  if (pg.teamNumbers.length === 0) return <div className="text-sm text-gray-600">Publish teams for this match to record a result.</div>;
+  if (pg.canceled)
+    return (
+      <SectionCard id="result" title="After the game">
+        <p className="text-sm text-muted-foreground">This match is canceled — reopen it to record a result, MVP or recap.</p>
+      </SectionCard>
+    );
+  if (pg.teamNumbers.length === 0)
+    return (
+      <SectionCard id="result" title="After the game">
+        <p className="text-sm text-muted-foreground">Publish teams for this match to record a result.</p>
+      </SectionCard>
+    );
 
   const m = pg.messages;
   const tg = canManage && m;
@@ -150,24 +171,36 @@ export default function PostGameSection({
   const editor = resultEditorState(pg.teamNumbers, pg.result?.scores ?? null, scores);
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-6">
 
       {/* Result */}
-      <div className="border rounded-lg p-3 space-y-2 text-sm">
-        <div className="font-medium">Result {pg.result?.published ? <span className="text-xs text-emerald-700">· published</span> : pg.result ? <span className="text-xs text-gray-500">· saved, not published</span> : null}</div>
-        <div className="flex flex-wrap gap-3">
+      <SectionCard
+        id="result"
+        title="Result"
+        icon={<Trophy className="size-5" />}
+        action={pg.result?.published ? <StateChip tone="done">Published</StateChip> : pg.result ? <StateChip tone="pending">Saved, not published</StateChip> : <StateChip tone="neutral">Not entered</StateChip>}
+      >
+        <div className="flex flex-wrap gap-4">
           {pg.teamNumbers.map((n) => (
-            <label key={n} className="flex items-center gap-1">
+            <label key={n} className="flex flex-col items-center gap-1.5 text-sm font-semibold">
               Team {n}
-              <input type="number" min={0} max={999} className="border rounded px-2 py-1 w-20" value={scores[n] ?? ""} onChange={(e) => setScores({ ...scores, [n]: e.target.value })} />
+              <input
+                type="number"
+                min={0}
+                max={999}
+                inputMode="numeric"
+                className="h-16 w-20 rounded-tbp-xl border border-input bg-card text-center font-display text-3xl font-black tabular-nums focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-ring/30"
+                value={scores[n] ?? ""}
+                onChange={(e) => setScores({ ...scores, [n]: e.target.value })}
+              />
             </label>
           ))}
         </div>
-        <div className="flex flex-wrap gap-2 items-center">
+        <div className="mt-4 flex flex-wrap items-center gap-2">
           {editor.action ? (
-            <button
+            <Button
               type="button"
-              className="border rounded px-3 py-1 disabled:opacity-60"
+              variant="outline"
               disabled={busy || !editor.valid}
               onClick={() =>
                 act(
@@ -177,34 +210,41 @@ export default function PostGameSection({
               }
             >
               {editor.action === "SAVE_CHANGES" ? "Save Changes" : "Save Result"}
-            </button>
+            </Button>
           ) : (
-            <span className="text-xs text-gray-600">Saved.</span>
+            <span className="text-xs font-semibold text-primary">Saved.</span>
           )}
-          {editor.action === "SAVE_CHANGES" && <span className="text-xs text-amber-700">Unsaved changes</span>}
+          {editor.action === "SAVE_CHANGES" && <StateChip tone="pending">Unsaved changes</StateChip>}
           {pg.result && !pg.result.published && !editor.dirty && (
-            <button type="button" className="bg-emerald-600 text-white rounded px-3 py-1" disabled={busy} onClick={() => act({ action: "publish_result" }, "Result published on the match page. Nothing was sent.")}>
+            <Button type="button" disabled={busy} onClick={() => act({ action: "publish_result" }, "Result published on the match page. Nothing was sent.")}>
               Publish Result
-            </button>
+            </Button>
           )}
         </div>
-      </div>
+        <p className="mt-2 text-xs text-muted-foreground">Saving and publishing never send anything to Telegram.</p>
+      </SectionCard>
 
       {/* Player of the Match — Player Vote (Telegram poll) or Organizer Selection; always a published participant, never free text */}
-      <div className="border rounded-lg p-3 space-y-2 text-sm">
-        <div className="font-medium">Player of the Match {pg.mvp?.published ? <span className="text-xs text-emerald-700">· published</span> : null}</div>
-        {stage === "RESULT_NOT_PUBLISHED" && <div className="text-xs text-gray-600">Publish the result before choosing Player of the Match.</div>}
-        {stage === "WAITING_FOR_MANAGER" && <div className="text-xs text-gray-600">An owner or admin decides Player of the Match for this match.</div>}
+      <SectionCard
+        id="mvp"
+        title="Player of the Match"
+        icon={<Medal className="size-5" />}
+        action={pg.mvp?.published ? <StateChip tone="done">Published</StateChip> : <StateChip tone="neutral">Not published</StateChip>}
+      >
+        <div className="space-y-3 text-sm">
+        {stage === "RESULT_NOT_PUBLISHED" && <p className="text-muted-foreground">Publish the result before choosing Player of the Match.</p>}
+        {stage === "WAITING_FOR_MANAGER" && <p className="text-muted-foreground">An owner or admin decides Player of the Match for this match.</p>}
 
         {switchable && (
-          <div className="space-y-1">
-            <div className="text-xs text-gray-700">Choose how Player of the Match will be decided:</div>
-            <div className="flex flex-wrap gap-2">
+          <div className="space-y-2">
+            <p className="font-semibold">Choose how Player of the Match will be decided:</p>
+            <div role="group" aria-label="Player of the Match method" className="grid grid-cols-2 gap-1 rounded-tbp bg-muted p-1 sm:max-w-md">
               {(["PLAYER_VOTE", "ORGANIZER_SELECTION"] as const).map((mth) => (
                 <button
                   key={mth}
                   type="button"
-                  className={`border rounded px-3 py-1 ${chosenMethod === mth ? "bg-gray-900 text-white" : ""}`}
+                  aria-pressed={chosenMethod === mth}
+                  className={cn("min-h-10 rounded-tbp-sm px-3 text-sm font-semibold", chosenMethod === mth ? "bg-card shadow-card" : "text-muted-foreground hover:text-foreground", focusRing)}
                   onClick={() => setChosenMethod(mth)}
                 >
                   {mth === "PLAYER_VOTE" ? "Player Vote" : "Organizer Selection"}
@@ -215,24 +255,25 @@ export default function PostGameSection({
         )}
 
         {stage === "NEEDS_TELEGRAM_GROUP" && (
-          <div className="text-xs text-gray-700 space-y-1">
-            <div>Player Vote runs as a Telegram poll among this match&apos;s players. Select a connected Telegram group for this match to start Player of the Match voting{switchable ? " — or use Organizer Selection, which needs no Telegram group." : "."}</div>
-            <button type="button" className="underline" onClick={() => document.getElementById(MATCH_TELEGRAM_GROUP_SELECTOR_ID)?.scrollIntoView({ behavior: "smooth", block: "center" })}>
+          <div className="space-y-1">
+            <p>Player Vote runs as a Telegram poll among this match&apos;s players. Select a connected Telegram group for this match to start Player of the Match voting{switchable ? " — or use Organizer Selection, which needs no Telegram group." : "."}</p>
+            <button type="button" className={cn("font-semibold text-primary underline", focusRing)} onClick={() => document.getElementById(MATCH_TELEGRAM_GROUP_SELECTOR_ID)?.scrollIntoView({ behavior: "smooth", block: "center" })}>
               Choose Telegram group
             </button>
           </div>
         )}
         {stage === "READY_TO_START" && m && (
           <div className="space-y-2">
-            <div className="text-xs text-gray-600">Posts a Player of the Match poll to the match&apos;s Telegram group. Only players of the published teams can vote, and not for themselves.</div>
+            <p className="text-muted-foreground">Posts a Player of the Match poll to the match&apos;s Telegram group. Only players of the published teams can vote, and not for themselves.</p>
             {needsShortlist && (
-              <div className="text-xs space-y-1">
-                <div>Telegram polls list at most {pg.mvpMaxCandidates} players. Choose the shortlist ({shortlist.length}/{pg.mvpMaxCandidates}):</div>
+              <fieldset className="space-y-1">
+                <legend>Telegram polls list at most {pg.mvpMaxCandidates} players. Choose the shortlist ({shortlist.length}/{pg.mvpMaxCandidates}):</legend>
                 <div className="flex flex-wrap gap-2">
                   {pg.participants.map((p) => (
-                    <label key={p.playerId} className="flex items-center gap-1">
+                    <label key={p.playerId} className="flex min-h-9 items-center gap-1.5 rounded-full border border-input px-3">
                       <input
                         type="checkbox"
+                        className="size-4 accent-primary"
                         checked={shortlist.includes(p.playerId)}
                         onChange={() => setShortlist((s) => (s.includes(p.playerId) ? s.filter((x) => x !== p.playerId) : s.length < pg.mvpMaxCandidates ? [...s, p.playerId] : s))}
                       />
@@ -240,139 +281,145 @@ export default function PostGameSection({
                     </label>
                   ))}
                 </div>
-              </div>
+              </fieldset>
             )}
-            <button
+            <Button
               type="button"
-              className="bg-sky-600 text-white rounded px-3 py-1 disabled:opacity-60"
               disabled={busy || (needsShortlist && shortlist.length < 2)}
               onClick={() => act({ action: "start_mvp", ...(needsShortlist ? { candidateIds: shortlist } : {}), ...(m.mvpPoll === "uncertain" ? { intent: "retry_uncertain" } : {}) }, "Player of the Match poll posted to Telegram.")}
             >
-              {m.mvpPoll === "uncertain" ? "Retry Player of the Match poll (check the group first)" : "Start Player of the Match Vote"} <span className="text-xs">(sends a poll)</span>
-            </button>
+              <Send aria-hidden="true" />
+              {m.mvpPoll === "uncertain" ? "Retry Player of the Match poll (check the group first)" : "Start Player of the Match Vote"} <span className="text-xs font-normal">(sends a poll)</span>
+            </Button>
           </div>
         )}
         {(stage === "OPEN" || stage === "CLOSED" || (stage === "PUBLISHED" && pg.mvp?.method !== "ORGANIZER_SELECTION")) && pg.mvp?.started && (
-          <div className="space-y-1">
-            <div className="text-xs text-gray-600">
+          <div className="space-y-2">
+            <p className="text-muted-foreground">
               Player Vote · {pg.mvp.open ? "voting open" : "voting closed"} · {pg.mvp.validVotes} valid vote(s) of {pg.mvp.eligibleVoters} players
               {pg.mvp.answersNotCounted > 0 ? ` · ${pg.mvp.answersNotCounted} answer(s) not counted (unlinked, not a participant or self-vote)` : ""}
-            </div>
-            <ul className="text-xs">
+            </p>
+            <ul className="divide-y divide-border rounded-tbp border border-border">
               {pg.mvp.candidates.map((c) => (
-                <li key={c.playerId}>{c.name} — {c.votes}</li>
+                <li key={c.playerId} className="flex items-center justify-between px-3 py-2">{c.name} — {c.votes}</li>
               ))}
             </ul>
           </div>
         )}
         {stage === "OPEN" && (
           <>
-            <div className="text-xs text-gray-500">The method is locked to Player Vote while voting is open.</div>
-            <button type="button" className="border rounded px-3 py-1" disabled={busy} onClick={() => act({ action: "close_mvp" }, "Vote closed. Nothing was announced.")}>
+            <p className="text-xs text-muted-foreground">The method is locked to Player Vote while voting is open.</p>
+            <Button type="button" variant="outline" disabled={busy} onClick={() => act({ action: "close_mvp" }, "Vote closed. Nothing was announced.")}>
               Close Vote
-            </button>
+            </Button>
           </>
         )}
         {(stage === "CLOSED" || (stage === "PUBLISHED" && pg.mvp?.method !== "ORGANIZER_SELECTION")) && pg.mvp && (
-          <div className="flex flex-wrap gap-2 items-center">
+          <div className="flex flex-wrap items-center gap-2">
             {pg.mvp.leaders.length === 1 && (
-              <button type="button" className="bg-emerald-600 text-white rounded px-3 py-1" disabled={busy} onClick={() => act({ action: "publish_mvp" }, "Player of the Match published on the match page. Nothing was sent.")}>
+              <Button type="button" disabled={busy} onClick={() => act({ action: "publish_mvp" }, "Player of the Match published on the match page. Nothing was sent.")}>
                 {pg.mvp.published ? "Republish" : "Publish Player of the Match"}
-              </button>
+              </Button>
             )}
             {pg.mvp.leaders.length > 1 && (
               <>
-                <span className="text-xs text-amber-700">Tied: {pg.mvp.candidates.filter((c) => pg.mvp!.leaders.includes(c.playerId)).map((c) => c.name).join(", ")}</span>
-                <button type="button" className="border rounded px-3 py-1" disabled={busy} onClick={() => act({ action: "publish_mvp", tieBreak: { mode: "co" } }, "Co-Players of the Match published. Nothing was sent.")}>
+                <StateChip tone="pending">Tied: {pg.mvp.candidates.filter((c) => pg.mvp!.leaders.includes(c.playerId)).map((c) => c.name).join(", ")}</StateChip>
+                <Button type="button" variant="outline" disabled={busy} onClick={() => act({ action: "publish_mvp", tieBreak: { mode: "co" } }, "Co-Players of the Match published. Nothing was sent.")}>
                   Publish co-Players of the Match
-                </button>
+                </Button>
                 {pg.mvp.leaders.map((id) => (
-                  <button key={id} type="button" className="border rounded px-3 py-1" disabled={busy} onClick={() => act({ action: "publish_mvp", tieBreak: { mode: "pick", playerId: id } }, "Player of the Match published (organizer tie-break). Nothing was sent.")}>
+                  <Button key={id} type="button" variant="outline" disabled={busy} onClick={() => act({ action: "publish_mvp", tieBreak: { mode: "pick", playerId: id } }, "Player of the Match published (organizer tie-break). Nothing was sent.")}>
                     Pick {pg.mvp!.candidates.find((c) => c.playerId === id)?.name}
-                  </button>
+                  </Button>
                 ))}
               </>
             )}
-            {pg.mvp.leaders.length === 0 && <span className="text-xs text-gray-500">The vote closed with no valid votes, so there is no Player of the Match to publish.</span>}
+            {pg.mvp.leaders.length === 0 && <span className="text-xs text-muted-foreground">The vote closed with no valid votes, so there is no Player of the Match to publish.</span>}
           </div>
         )}
 
         {stage === "SELECT_PLAYER" && (
           <div className="space-y-2">
-            <div className="text-xs text-gray-700">Select Player of the Match (players of this match&apos;s published teams). No Telegram group is needed.</div>
-            <select className="border rounded px-2 py-1" value={selectPick} onChange={(e) => setSelectPick(e.target.value)}>
+            <label htmlFor="mvp-select" className="block">Select Player of the Match (players of this match&apos;s published teams). No Telegram group is needed.</label>
+            <select id="mvp-select" className="h-11 w-full max-w-sm rounded-tbp-md border border-input bg-card px-3" value={selectPick} onChange={(e) => setSelectPick(e.target.value)}>
               <option value="">Select a player…</option>
               {pg.participants.map((p) => (
                 <option key={p.playerId} value={p.playerId}>{p.name} — Team {p.teamNumber}</option>
               ))}
             </select>
             <div>
-              <button type="button" className="border rounded px-3 py-1" disabled={busy || !selectPick} onClick={() => act({ action: "save_mvp_selection", playerId: selectPick }, "Player of the Match selection saved — not published.")}>
+              <Button type="button" variant="outline" disabled={busy || !selectPick} onClick={() => act({ action: "save_mvp_selection", playerId: selectPick }, "Player of the Match selection saved — not published.")}>
                 Save Selection
-              </button>
+              </Button>
             </div>
           </div>
         )}
         {stage === "SELECTION_SAVED" && pg.mvp?.selection && (
           <div className="space-y-2">
-            <div className="text-xs text-gray-700">
+            <p>
               Organizer Selection: <b>{pg.mvp.selection.name}</b>{pg.mvp.selection.teamNumber ? ` — Team ${pg.mvp.selection.teamNumber}` : ""} · saved, not published.
-            </div>
+            </p>
             <div className="flex flex-wrap gap-2">
-              <button type="button" className="bg-emerald-600 text-white rounded px-3 py-1" disabled={busy} onClick={() => act({ action: "publish_mvp" }, "Player of the Match published on the match page. Nothing was sent.")}>
+              <Button type="button" disabled={busy} onClick={() => act({ action: "publish_mvp" }, "Player of the Match published on the match page. Nothing was sent.")}>
                 Publish Player of the Match
-              </button>
-              <button type="button" className="border rounded px-3 py-1" disabled={busy} onClick={() => act({ action: "reset_mvp_selection" }, "Selection reset. Choose how Player of the Match will be decided.")}>
+              </Button>
+              <Button type="button" variant="outline" disabled={busy} onClick={() => act({ action: "reset_mvp_selection" }, "Selection reset. Choose how Player of the Match will be decided.")}>
                 Change / reset selection
-              </button>
+              </Button>
             </div>
           </div>
         )}
 
         {stage === "PUBLISHED" && pg.mvp && (
           <div className="space-y-1">
-            <div className="text-xs">
+            <p className="flex items-center gap-2 font-semibold">
+              <Medal className="size-4 text-accent" aria-hidden="true" />
               Published: {pg.mvp.winners.join(", ")}
               {pg.mvp.method === "ORGANIZER_SELECTION" ? " (organizer selection)" : pg.mvp.decision === "ORGANIZER_TIEBREAK" ? " (organizer tie-break)" : ""}
-            </div>
-            <div className="text-xs text-gray-500">It is sent to Telegram with the Match Summary below.</div>
+            </p>
+            <p className="text-xs text-muted-foreground">It is sent to Telegram with the Match Summary below.</p>
           </div>
         )}
-      </div>
+        </div>
+      </SectionCard>
 
       {/* Recap */}
-      <div className="border rounded-lg p-3 space-y-2 text-sm">
-        <div className="font-medium">
-          Match Recap {pg.recap?.published ? <span className="text-xs text-emerald-700">· published</span> : pg.recap?.content ? <span className="text-xs text-gray-500">· saved, not published</span> : null}
-        </div>
+      <SectionCard
+        id="recap"
+        title="Match Recap"
+        icon={<FileText className="size-5" />}
+        action={pg.recap?.published ? <StateChip tone="done">Published</StateChip> : pg.recap?.content ? <StateChip tone="pending">Saved, not published</StateChip> : <StateChip tone="neutral">Not written</StateChip>}
+      >
+        <div className="space-y-3 text-sm">
         {!pg.standardRecap ? (
-          <div className="text-xs text-gray-500">Publish the result before writing the recap.</div>
+          <p className="text-muted-foreground">Publish the result before writing the recap.</p>
         ) : (
           <>
             <div className="flex flex-wrap gap-2">
-              <button
+              <Button
                 type="button"
-                className="border rounded px-3 py-1"
+                variant="outline"
                 disabled={busy || generating || !pg.aiConfigured || pendingReplace !== null}
                 title={pg.aiConfigured ? undefined : "AI is not configured"}
                 onClick={() => requestReplace("ai")}
               >
+                <Sparkles aria-hidden="true" />
                 {generating ? "Generating…" : aiButtonLabel(aiGenerated)}
-              </button>
-              <button type="button" className="border rounded px-3 py-1" disabled={busy || generating || pendingReplace !== null} onClick={() => requestReplace("standard")}>
+              </Button>
+              <Button type="button" variant="outline" disabled={busy || generating || pendingReplace !== null} onClick={() => requestReplace("standard")}>
                 Use standard recap
-              </button>
+              </Button>
             </div>
             {pendingReplace && (
-              <div className="text-xs border rounded p-2 bg-amber-50 space-y-1">
-                <div>{pendingReplace === "ai" ? "Regenerating" : "Using the standard recap"} will replace your current unsaved recap. Continue?</div>
+              <div role="alertdialog" aria-labelledby="recap-replace-q" className="space-y-2 rounded-tbp border border-accent/40 bg-accent/10 p-3">
+                <p id="recap-replace-q">{pendingReplace === "ai" ? "Regenerating" : "Using the standard recap"} will replace your current unsaved recap. Continue?</p>
                 <div className="flex gap-2">
-                  <button type="button" className="border rounded px-2 py-0.5" onClick={() => setPendingReplace(null)}>
+                  <Button type="button" variant="outline" size="sm" onClick={() => setPendingReplace(null)}>
                     Cancel
-                  </button>
-                  <button
+                  </Button>
+                  <Button
                     type="button"
-                    className="border rounded px-2 py-0.5 bg-white"
+                    size="sm"
                     onClick={() => {
                       const kind = pendingReplace;
                       setPendingReplace(null);
@@ -381,66 +428,81 @@ export default function PostGameSection({
                     }}
                   >
                     {pendingReplace === "ai" ? (aiGenerated ? "Regenerate" : "Generate") : "Replace"}
-                  </button>
+                  </Button>
                 </div>
               </div>
             )}
-            {!pg.aiConfigured && <div className="text-xs text-gray-500">AI recaps are not set up; the standard recap is always available.</div>}
-            {aiMessage && <div className="text-xs text-amber-700">{aiMessage}</div>}
-            <textarea className="border rounded w-full p-2 text-sm" rows={4} maxLength={1200} value={recapText} onChange={(e) => setRecapText(e.target.value)} placeholder="Recap text" />
+            {!pg.aiConfigured && <p className="text-xs text-muted-foreground">AI recaps are not set up; the standard recap is always available.</p>}
+            {aiMessage && <p role="alert" className="text-xs text-destructive">{aiMessage}</p>}
+            <label htmlFor="recap-text" className="sr-only">Recap text</label>
+            <textarea id="recap-text" className="w-full rounded-tbp-md border border-input bg-card p-3 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" rows={5} maxLength={1200} value={recapText} onChange={(e) => setRecapText(e.target.value)} placeholder="Recap text" />
             <div className="flex flex-wrap gap-2">
-              <button type="button" className="border rounded px-3 py-1" disabled={busy || !recapText.trim()} onClick={() => act({ action: "save_recap", content: recapText }, pg.recap?.published ? "Recap updated. Telegram was not updated." : "Recap saved (not published).")}>
+              <Button type="button" variant="outline" disabled={busy || !recapText.trim()} onClick={() => act({ action: "save_recap", content: recapText }, pg.recap?.published ? "Recap updated. Telegram was not updated." : "Recap saved (not published).")}>
                 Save Recap
-              </button>
+              </Button>
               {pg.recap?.content && !pg.recap.published && (
-                <button type="button" className="bg-emerald-600 text-white rounded px-3 py-1" disabled={busy} onClick={() => act({ action: "publish_recap" }, "Recap published on the match page. Nothing was sent.")}>
+                <Button type="button" disabled={busy} onClick={() => act({ action: "publish_recap" }, "Recap published on the match page. Nothing was sent.")}>
                   Publish Recap
-                </button>
+                </Button>
               )}
             </div>
           </>
         )}
-      </div>
+        </div>
+      </SectionCard>
 
-      {/* Match Summary — the preferred single post (published data only; sending is separate from publishing) */}
-      <div className="border-2 border-sky-200 rounded-lg p-3 space-y-2 text-sm">
-        <div className="font-medium">Match Summary</div>
-        <div className="text-xs text-gray-600">Send the published result, Player of the Match and recap together in one Telegram message.</div>
+      {/* Match Summary — the ONLY post-game Telegram message (published data only; sending is separate from publishing) */}
+      <section id="summary" aria-labelledby="summary-heading" className="scroll-mt-20 space-y-3 rounded-tbp-2xl bg-pitch p-4 text-pitch-foreground shadow-lift pitch-lines sm:p-5">
+        <div className="flex items-center gap-2.5">
+          <span className="grid size-9 shrink-0 place-items-center rounded-tbp-sm bg-accent text-accent-foreground" aria-hidden="true">
+            <Megaphone className="size-5" />
+          </span>
+          <div>
+            <h2 id="summary-heading" className="text-lg font-extrabold">Match Summary</h2>
+            <p className="text-sm opacity-80">Send the published result, Player of the Match and recap together in one Telegram message.</p>
+          </div>
+        </div>
         {!pg.result?.published ? (
-          <div className="text-xs text-gray-600">Publish the result before posting the match summary.</div>
+          <p className="text-sm opacity-85">Publish the result before posting the match summary.</p>
         ) : (
           <>
-            <div className="text-xs space-y-0.5">
-              <div className="text-gray-700">Ready to send:</div>
-              {readiness.items.map((it) => (
-                <div key={it.key} className={it.included ? "text-emerald-700" : "text-gray-500"}>
-                  {it.included ? "✓" : "○"} {it.label}
-                  {it.note ? ` — ${it.note}` : ""}
-                </div>
-              ))}
+            <div className="rounded-tbp bg-pitch-foreground/10 p-3 text-sm">
+              <p className="font-semibold">Ready to send:</p>
+              <ul className="mt-1 space-y-1">
+                {readiness.items.map((it) => (
+                  <li key={it.key} className="flex items-center gap-2">
+                    {it.included ? <CircleCheck className="size-4 shrink-0 text-accent" aria-hidden="true" /> : <CircleDashed className="size-4 shrink-0 opacity-60" aria-hidden="true" />}
+                    <span>
+                      <span className="sr-only">{it.included ? "Included: " : "Not included: "}</span>
+                      {it.label}
+                      {it.note ? ` — ${it.note}` : ""}
+                    </span>
+                  </li>
+                ))}
+              </ul>
             </div>
             {readiness.publishRecapShortcut && (
-              <div className="text-xs space-y-1 border rounded p-2 bg-amber-50">
-                <div>Match recap is saved but not published. Publish it to include it in the Match Summary.</div>
-                <button type="button" className="bg-emerald-600 text-white rounded px-3 py-1" disabled={busy} onClick={() => act({ action: "publish_recap" }, "Recap published on the match page. Nothing was sent.")}>
+              <div className="space-y-2 rounded-tbp bg-card p-3 text-sm text-card-foreground">
+                <p>Match recap is saved but not published. Publish it to include it in the Match Summary.</p>
+                <Button type="button" size="sm" disabled={busy} onClick={() => act({ action: "publish_recap" }, "Recap published on the match page. Nothing was sent.")}>
                   Publish Recap
-                </button>
-                <div className="text-gray-600">The Telegram summary may still be posted without the recap.</div>
+                </Button>
+                <p className="text-xs text-muted-foreground">The Telegram summary may still be posted without the recap.</p>
               </div>
             )}
             {!canManage || !m ? (
-              <div className="text-xs text-gray-600">An owner or admin posts the match summary to Telegram.</div>
+              <p className="text-sm opacity-85">An owner or admin posts the match summary to Telegram.</p>
             ) : !m.destinationConnected ? (
-              <div className="text-xs text-gray-600">Select a connected Telegram group for this match to post the summary.</div>
+              <p className="text-sm opacity-85">Select a connected Telegram group for this match to post the summary.</p>
             ) : (
               <>
-                {readiness.summaryChanged && <div className="text-xs text-amber-700">The published Match Summary has changed.</div>}
+                {readiness.summaryChanged && <p className="text-sm font-semibold text-accent">The published Match Summary has changed.</p>}
                 <PostButton state={m.summary} label="Match Summary" disabled={busy} primary onPost={postSummary} />
               </>
             )}
           </>
         )}
-      </div>
+      </section>
     </div>
   );
 }

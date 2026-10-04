@@ -86,11 +86,12 @@ export function buildShellNav(params: { data: ShellData; pathname: string; hash?
   if (ctx?.group) {
     const base = groupAdminHref(ctx.organization.slug, ctx.group.slug);
     const onGroupPage = pathname === base || pathname === `${base}/`;
-    const onMatchPage = pathname.startsWith(`${base}/matches/`);
-    // The Group workspace is one page: Matches and Players are its sections.
+    const matchesBase = `${base}/matches`;
+    const onMatches = pathname === matchesBase || pathname.startsWith(`${matchesBase}/`);
+    // UI-4 — Matches is a real page (list + each Match workspace); Players is still a section of the Group page.
     items.push(
-      { key: "overview", label: "Overview", href: base, active: onGroupPage && hash !== "matches" && hash !== "players", section: "main", mobilePrimary: true },
-      { key: "matches", label: "Matches", href: `${base}#matches`, active: onMatchPage || (onGroupPage && hash === "matches"), section: "main", mobilePrimary: true },
+      { key: "overview", label: "Overview", href: base, active: onGroupPage && hash !== "players", section: "main", mobilePrimary: true },
+      { key: "matches", label: "Matches", href: matchesBase, active: onMatches, section: "main", mobilePrimary: true },
       { key: "players", label: "Players", href: `${base}#players`, active: onGroupPage && hash === "players", section: "main", mobilePrimary: true }
     );
   }

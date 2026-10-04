@@ -12,7 +12,6 @@ import CanonicalGenerateSection from "./CanonicalGenerateSection";
 import CanonicalSettingsSection from "./CanonicalSettingsSection";
 import CanonicalVisibilitySection from "./CanonicalVisibilitySection";
 import CanonicalTelegramSection from "./CanonicalTelegramSection";
-import CanonicalMatchesSection from "./CanonicalMatchesSection";
 import CommunicationChannelsSection from "./CommunicationChannelsSection";
 
 /**
@@ -148,11 +147,7 @@ export default function CanonicalAdminWorkspace({
     <div>
       {message && <div className="text-sm text-blue-700 mt-2">{message}</div>}
 
-      {/* UI-3 — in-page targets for the app shell's Matches / Players navigation. */}
-      <div id="matches" className="scroll-mt-20">
-        <CanonicalMatchesSection organizationSlug={organizationSlug} groupSlug={groupSlug} />
-      </div>
-
+      {/* UI-3 — in-page target for the app shell's Players navigation (UI-4: Matches has its own page). */}
       <div id="players" className="scroll-mt-20">
       <CanonicalPlayersSection
         canManage={canManage}

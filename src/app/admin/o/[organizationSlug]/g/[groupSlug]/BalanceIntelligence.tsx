@@ -13,9 +13,9 @@ import type { GeneratedTeam } from "@/app/admin/types";
  * which the organizer may apply. Raw numbers stay under "Details".
  */
 const QUALITY_STYLE = {
-  EVEN: "bg-emerald-50 text-emerald-700 border-emerald-200",
-  CLOSE: "bg-sky-50 text-sky-700 border-sky-200",
-  UNEVEN: "bg-amber-50 text-amber-800 border-amber-200",
+  EVEN: "bg-primary/10 text-primary border-primary/25",
+  CLOSE: "bg-secondary text-secondary-foreground border-border",
+  UNEVEN: "bg-accent/15 text-accent-foreground border-accent/40",
 } as const;
 
 export default function BalanceIntelligence({
@@ -38,30 +38,31 @@ export default function BalanceIntelligence({
   const rolePlural = (key: string) => sport.roles.find((r) => r.key === key)?.pluralLabel ?? key;
 
   return (
-    <div className="border rounded-xl p-3 space-y-2 text-sm bg-white">
+    <div className="mt-4 space-y-3 rounded-tbp-2xl border border-border bg-card p-4 text-sm shadow-card">
       <div className="flex items-center gap-2">
-        <span className="font-medium">Balance</span>
-        <span className={`text-xs px-2 py-0.5 rounded-full border ${QUALITY_STYLE[analysis.quality]}`}>{QUALITY_LABEL[analysis.quality]}</span>
+        <span className="font-display font-extrabold">Balance</span>
+        {/* The quality is always written out (never color alone). */}
+        <span className={`rounded-full border px-2.5 py-0.5 text-xs font-bold ${QUALITY_STYLE[analysis.quality]}`}>{QUALITY_LABEL[analysis.quality]}</span>
       </div>
 
-      <ul className="space-y-0.5 text-gray-700">
+      <ul className="space-y-0.5 text-muted-foreground">
         {analysis.summary.map((line) => (
           <li key={line}>{line}</li>
         ))}
       </ul>
 
       {swap && (
-        <div className="border rounded-lg p-2 bg-gray-50 space-y-1">
-          <div className="text-xs font-medium text-gray-600">Suggested improvement</div>
+        <div className="space-y-1 rounded-tbp-xl border border-accent/40 bg-accent/10 p-3">
+          <div className="text-xs font-semibold uppercase tracking-wider text-accent-foreground">Suggested improvement</div>
           <div>
             Swap <b>{swap.nameA}</b> (Team {swap.teamA}) with <b>{swap.nameB}</b> (Team {swap.teamB})
           </div>
-          <div className="text-xs text-gray-600">
+          <div className="text-xs text-muted-foreground">
             {swap.from} → {swap.to}
           </div>
           <button
             type="button"
-            className="bg-black text-white rounded px-3 py-1 text-xs disabled:opacity-60"
+            className="inline-flex min-h-9 items-center rounded-full bg-primary px-4 text-xs font-semibold text-primary-foreground hover:bg-primary/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:opacity-60"
             disabled={applying}
             onClick={onApplySwap}
           >
@@ -72,7 +73,7 @@ export default function BalanceIntelligence({
 
       {metrics && (
         <details className="text-xs">
-          <summary className="cursor-pointer text-gray-600">Details</summary>
+          <summary className="cursor-pointer font-semibold text-primary">Details</summary>
           <div className="overflow-x-auto mt-1">
             <table className="w-full">
               <thead>

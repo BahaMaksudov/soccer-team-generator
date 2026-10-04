@@ -257,60 +257,64 @@ export default function CanonicalGenerateSection({
   }
 
   return (
-    <div className="border rounded-xl p-4 mt-4 space-y-3">
-      <div className="font-semibold">Generate Teams (Preview)</div>
-      <p className="text-xs text-gray-500">
+    <div className="mt-4 space-y-3 rounded-tbp-xl border border-border bg-background/60 p-4">
+      <div className="font-display font-extrabold">Generate Teams (Preview)</div>
+      <p className="text-xs text-muted-foreground">
         Select players above, generate a preview, then publish it for this Group.
       </p>
 
       <div className="flex flex-wrap items-end gap-3">
         {!matchId && (
           <div>
-            <label className="block text-xs">Date</label>
+            <label className="block text-xs font-semibold" htmlFor="generate-date">Date</label>
             <input
+              id="generate-date"
               type="date"
-              className="border rounded px-2 py-1 text-sm"
+              className="h-10 rounded-tbp-sm border border-input bg-card px-2 text-sm"
               value={date}
               onChange={(e) => onDateChange(e.target.value)}
             />
           </div>
         )}
         <div>
-          <label className="block text-xs">Number of teams</label>
+          <label className="block text-xs font-semibold" htmlFor={matchId ? "generate-team-count-match" : "generate-team-count"}>Number of teams</label>
           <input
+            id={matchId ? "generate-team-count-match" : "generate-team-count"}
             type="number"
             min={2}
-            className="border rounded px-2 py-1 text-sm w-24"
+            className="h-10 w-24 rounded-tbp-sm border border-input bg-card px-2 text-sm"
             value={teamCount}
             onChange={(e) => setTeamCount(Number(e.target.value))}
           />
         </div>
         <button
-          className="bg-emerald-600 text-white rounded px-3 py-1 text-sm disabled:opacity-50 disabled:cursor-not-allowed"
+          type="button"
+          className="inline-flex min-h-10 items-center rounded-full bg-primary px-4 text-sm font-semibold text-primary-foreground hover:bg-primary/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
           disabled={selectedIds.length === 0}
           onClick={generate}
         >
           {panel.generateLabel} (Selected: {selectedIds.length})
         </button>
         <button
-          className="bg-sky-600 text-white rounded px-3 py-1 text-sm disabled:opacity-50 disabled:cursor-not-allowed"
+          type="button"
+          className="inline-flex min-h-10 items-center rounded-full bg-accent px-4 text-sm font-semibold text-accent-foreground hover:brightness-105 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
           disabled={!panel.canPublish || publishing}
           onClick={publish}
         >
           {publishing ? "Publishing…" : "Publish"}
         </button>
         {previewTeams && (
-          <button className="bg-rose-600 text-white rounded px-3 py-1 text-sm" onClick={clearPreview}>
+          <button type="button" className="inline-flex min-h-10 items-center rounded-full border border-input bg-card px-4 text-sm font-semibold hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2" onClick={clearPreview}>
             Clear Preview
           </button>
         )}
         {published && panel.badge === "Published" && (
-          <span className="text-xs px-2 py-1 rounded-full border bg-emerald-50 text-emerald-700 border-emerald-200">
+          <span className="rounded-full border border-primary/25 bg-primary/10 px-2.5 py-1 text-xs font-bold text-primary">
             Published
           </span>
         )}
         {published && panel.badge === "Published version exists" && (
-          <span className="text-xs px-2 py-1 rounded-full border bg-gray-50 text-gray-600 border-gray-200">
+          <span className="rounded-full border border-border bg-muted px-2.5 py-1 text-xs font-bold text-muted-foreground">
             Published version exists
           </span>
         )}
@@ -322,8 +326,8 @@ export default function CanonicalGenerateSection({
             key={c.roleKey}
             className={
               c.warn
-                ? "text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded px-3 py-2"
-                : "text-xs text-gray-600 bg-gray-50 border rounded px-3 py-2"
+                ? "rounded-tbp-sm border border-accent/40 bg-accent/10 px-3 py-2 text-xs text-accent-foreground"
+                : "rounded-tbp-sm border border-border bg-muted px-3 py-2 text-xs text-muted-foreground"
             }
           >
             Note: {roleCoverageMessage(sport, c, teamCount)}
@@ -333,7 +337,7 @@ export default function CanonicalGenerateSection({
       {previewWarnings
         .filter((w) => w.code === "UNKNOWN_ROLE")
         .map((w) => (
-          <div key={`unknown-${w.roleKey}`} className="text-xs text-amber-700">
+          <div key={`unknown-${w.roleKey}`} className="text-xs text-accent-foreground">
             {w.count} player(s) have a {sport.terminology.roleNoun.toLowerCase()} that isn&apos;t used in {sport.label} ({w.roleKey}); they were balanced as a general player.
           </div>
         ))}
@@ -360,7 +364,7 @@ export default function CanonicalGenerateSection({
       {/* M9-A — one full table at a time: while a different preview is open, the
           published teams are summarised here instead of shown as a second table. */}
       {panel.publishedVersionNote && (
-        <div className="text-sm text-gray-700 bg-gray-50 border rounded px-3 py-2">
+        <div className="rounded-tbp-sm border border-border bg-muted px-3 py-2 text-sm">
           ✓ A published version already exists. Players still see the published teams until you click Publish;
           publishing this preview replaces them.
         </div>

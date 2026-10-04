@@ -11,6 +11,11 @@ import { visibleRosterIds } from "@/lib/matchRosterScope";
 import PostGameSection, { type PostGameView } from "./PostGameSection";
 import { MATCH_TELEGRAM_GROUP_SELECTOR_ID } from "@/lib/postGameUi";
 import CanonicalGenerateSection from "../../CanonicalGenerateSection";
+import { ArrowDown, CircleCheck, Send, Shuffle, Users } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { focusRing, LifecycleSteps, MatchMeta, PhasePill, SectionCard, StateChip } from "@/components/game-day/parts";
+import { matchLifecycle, todayUtcYmd } from "@/lib/matchLifecycle";
+import { cn } from "@/lib/cn";
 import type { Player } from "../../CanonicalAdminWorkspace";
 import { computeSelection, NO_ADJUSTMENTS, reconcileAdjustments, toggleSelection, type EffectiveStatuses, type SelectionAdjustments } from "@/lib/matchSelection";
 
@@ -23,6 +28,9 @@ import { computeSelection, NO_ADJUSTMENTS, reconcileAdjustments, toggleSelection
  *                 existing Generate/Balance/Apply Swap/Publish, then a
  *                 separate "Post Teams to Telegram" (OWNER/ADMIN)
  * Nothing here sends unless the organizer clicks a "Post …" button.
+ *
+ * UI-4 — redesigned presentation (header, progress with ONE suggested next
+ * step, sectioned cards). Every request, payload and permission is unchanged.
  */
 
 type Status = "PLAYING" | "NOT_PLAYING" | "MAYBE";
@@ -215,75 +223,145 @@ export default function MatchWorkspace({
   const scopeManageable = Boolean(view?.canManage && view.telegram.selectedChat?.connected);
   const suggestedPlayers = activeRoster.filter((p) => (view?.telegram.suggestedPlayerIds ?? []).includes(p.id));
 
-  if (notFound) return <div className="text-sm text-gray-600">Match not found.</div>;
-  if (!view) return <div className="text-sm text-gray-500">Loading…</div>;
+  if (notFound)
+    return (
+      <div className="rounded-tbp-2xl border border-border bg-card p-6 text-center">
+        <h1 className="text-2xl font-extrabold">Match not found</h1>
+        <p className="mt-2 text-sm text-muted-foreground">This match doesn&apos;t exist in this group.</p>
+      </div>
+    );
+  if (!view)
+    return (
+      <p role="status" className="text-sm text-muted-foreground">
+        Loading match…
+      </p>
+    );
   const m = view.match;
+  const pg = view.postGame;
+  // UI-4 — presentation only, from the real view (src/lib/matchLifecycle.ts).
+  const lifecycle = matchLifecycle({
+    status: m.status,
+    date: m.date,
+    today: todayUtcYmd(),
+    attendanceClosed: m.attendanceClosed,
+    playing: view.counts.PLAYING,
+    teamsPublished: view.generation !== null,
+    result: { saved: Boolean(pg?.result), published: Boolean(pg?.result?.published) },
+    mvpPublished: Boolean(pg?.mvp?.published),
+    recap: { saved: Boolean(pg?.recap?.content), published: Boolean(pg?.recap?.published) },
+    summary: pg?.messages?.summary ?? null,
+    canManage: view.canManage,
+  });
+  const next = lifecycle.next;
+  const smallBtn = "inline-flex min-h-9 items-center rounded-tbp-sm px-3 text-sm font-semibold disabled:opacity-50";
+  const input = "h-11 rounded-tbp-md border border-input bg-card px-3 text-base focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring md:text-sm";
 
   return (
-    <div className="space-y-4">
-      {message && <div className="text-sm text-blue-700">{message}</div>}
-
-      {/* Match */}
-      <section className="border rounded-xl p-4 space-y-2">
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <div>
-            <div className="text-lg font-semibold">
-              {formatLongDateOnly(m.date)}
-              {m.startTime ? ` · ${formatStartTime(m.startTime)}` : ""}
+    <div className="space-y-6">
+      {/* Match header */}
+      <header className="rounded-tbp-2xl border border-border bg-card p-4 shadow-card sm:p-5">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div className="min-w-0">
+            <div className="flex flex-wrap items-center gap-2">
+              <PhasePill phase={lifecycle.phase} label={lifecycle.phaseLabel} />
+              {m.status === "COMPLETED" && <StateChip tone="done">Marked completed</StateChip>}
             </div>
-            {m.locationName && <div className="text-sm text-gray-600">{m.locationName}</div>}
-            {m.status !== "SCHEDULED" && <div className="text-xs mt-1">{m.status === "CANCELED" ? "Canceled" : "Completed"}</div>}
+            <h1 className="mt-2 text-2xl font-extrabold sm:text-3xl">{formatLongDateOnly(m.date)}</h1>
+            <MatchMeta date={m.date} startTime={m.startTime} locationName={m.locationName} className="mt-1 [&>li:first-child]:hidden" />
           </div>
-          <div className="flex flex-wrap gap-2 text-sm">
-            <button type="button" className="underline" onClick={() => setEdit({ date: m.date, startTime: m.startTime ?? "", locationName: m.locationName ?? "" })}>Edit</button>
+          <div className="flex flex-wrap gap-1.5">
+            <button type="button" className={cn(smallBtn, "border border-input hover:bg-muted", focusRing)} onClick={() => setEdit({ date: m.date, startTime: m.startTime ?? "", locationName: m.locationName ?? "" })}>Edit</button>
             {m.status === "SCHEDULED" ? (
               <>
-                <button type="button" className="underline" disabled={busy} onClick={() => saveMatch({ status: "COMPLETED" }, "Marked as completed.")}>Mark completed</button>
-                <button type="button" className="underline text-rose-700" disabled={busy} onClick={() => saveMatch({ status: "CANCELED" }, "Match canceled. Nothing was sent.")}>Cancel match</button>
+                <button type="button" className={cn(smallBtn, "border border-input hover:bg-muted", focusRing)} disabled={busy} onClick={() => saveMatch({ status: "COMPLETED" }, "Marked as completed.")}>Mark completed</button>
+                <button type="button" className={cn(smallBtn, "border border-destructive/40 text-destructive hover:bg-destructive/5", focusRing)} disabled={busy} onClick={() => saveMatch({ status: "CANCELED" }, "Match canceled. Nothing was sent.")}>Cancel match</button>
               </>
             ) : (
-              <button type="button" className="underline" disabled={busy} onClick={() => saveMatch({ status: "SCHEDULED" }, "Match reopened.")}>Reopen</button>
+              <button type="button" className={cn(smallBtn, "border border-input hover:bg-muted", focusRing)} disabled={busy} onClick={() => saveMatch({ status: "SCHEDULED" }, "Match reopened.")}>Reopen</button>
             )}
           </div>
         </div>
         {edit && (
-          <div className="flex flex-wrap items-end gap-2 text-sm">
-            <input type="date" className="border rounded px-2 py-1" value={edit.date} onChange={(e) => setEdit({ ...edit, date: e.target.value })} />
-            <input type="time" className="border rounded px-2 py-1" value={edit.startTime} onChange={(e) => setEdit({ ...edit, startTime: e.target.value })} />
-            <input className="border rounded px-2 py-1" maxLength={80} placeholder="Location" value={edit.locationName} onChange={(e) => setEdit({ ...edit, locationName: e.target.value })} />
-            <button type="button" className="bg-black text-white rounded px-3 py-1" disabled={busy} onClick={() => saveMatch(edit, "Match saved. Nothing was sent.")}>Save</button>
-            <button type="button" className="underline" onClick={() => setEdit(null)}>Cancel</button>
-          </div>
+          <form
+            className="mt-4 grid gap-3 border-t border-border pt-4 sm:grid-cols-[repeat(3,minmax(0,1fr))_auto]"
+            onSubmit={(e) => {
+              e.preventDefault();
+              saveMatch(edit, "Match saved. Nothing was sent.");
+            }}
+          >
+            <label className="text-sm font-semibold">Date<input type="date" className={cn(input, "mt-1 block w-full font-normal")} value={edit.date} onChange={(e) => setEdit({ ...edit, date: e.target.value })} /></label>
+            <label className="text-sm font-semibold">Start time<input type="time" className={cn(input, "mt-1 block w-full font-normal")} value={edit.startTime} onChange={(e) => setEdit({ ...edit, startTime: e.target.value })} /></label>
+            <label className="text-sm font-semibold">Location<input className={cn(input, "mt-1 block w-full font-normal")} maxLength={80} placeholder="Location" value={edit.locationName} onChange={(e) => setEdit({ ...edit, locationName: e.target.value })} /></label>
+            <div className="flex items-end gap-2">
+              <Button type="submit" disabled={busy}>Save</Button>
+              <Button type="button" variant="ghost" onClick={() => setEdit(null)}>Cancel</Button>
+            </div>
+          </form>
         )}
+      </header>
+
+      {message && (
+        <p role="status" aria-live="polite" className="rounded-tbp border border-border bg-secondary px-4 py-3 text-sm font-medium text-secondary-foreground">
+          {message}
+        </p>
+      )}
+
+      {/* Progress + the ONE suggested next step (it points at the section holding the real control). */}
+      <section aria-labelledby="progress-h" className="space-y-3 rounded-tbp-2xl bg-pitch p-4 text-pitch-foreground shadow-lift pitch-lines sm:p-5">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <h2 id="progress-h" className="text-xs font-bold uppercase tracking-widest text-accent">Match progress</h2>
+            <p className="mt-1 text-lg font-extrabold">
+              {next ? `Next: ${next.label}` : lifecycle.phase === "canceled" ? "This match is canceled." : lifecycle.phase === "complete" ? "Post-game is complete." : "Nothing to do right now."}
+            </p>
+          </div>
+          {next && (
+            <a href={next.anchor} className={cn("inline-flex min-h-11 items-center justify-center gap-2 rounded-full bg-accent px-5 text-sm font-semibold text-accent-foreground hover:brightness-105", focusRing)}>
+              {next.label}
+              <ArrowDown className="size-4" aria-hidden="true" />
+            </a>
+          )}
+        </div>
+        <LifecycleSteps lifecycle={lifecycle} linkBase="" onDark />
       </section>
 
       {/* Attendance */}
-      <section className="border rounded-xl p-4 space-y-3">
-        <div className="font-semibold">Attendance</div>
-        <div className="flex flex-wrap gap-3 text-sm">
-          <span><b>{view.counts.PLAYING}</b> Playing</span>
-          <span><b>{view.counts.MAYBE}</b> Maybe</span>
-          <span><b>{view.counts.NOT_PLAYING}</b> Not playing</span>
-          <span><b>{view.counts.NO_RESPONSE}</b> No response</span>
-          {m.attendanceClosed && <span className="text-xs border rounded-full px-2">Attendance closed</span>}
-        </div>
+      <SectionCard
+        id="attendance"
+        title="Attendance"
+        icon={<Users className="size-5" />}
+        meta={m.attendanceClosed ? "Attendance closed" : "Attendance open"}
+      >
+        <dl className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+          {([
+            ["PLAYING", "Playing"],
+            ["MAYBE", "Maybe"],
+            ["NOT_PLAYING", "Not playing"],
+            ["NO_RESPONSE", "No response"],
+          ] as const).map(([k, label]) => (
+            <div key={k} className="rounded-tbp bg-muted px-3 py-2">
+              <dt className="text-xs font-semibold text-muted-foreground">{label}</dt>
+              <dd className="font-display text-2xl font-black tabular-nums">{view.counts[k]}</dd>
+            </div>
+          ))}
+        </dl>
 
-        <div className="flex flex-wrap items-center gap-2 text-sm" id={MATCH_TELEGRAM_GROUP_SELECTOR_ID}>
-          <button type="button" className="border rounded px-3 py-1" disabled={busy} onClick={() => call("/attendance/close", { closed: !m.attendanceClosed }, m.attendanceClosed ? "Attendance reopened." : "Attendance closed.")}>
+        <div className="mt-4 flex flex-wrap items-center gap-2 text-sm" id={MATCH_TELEGRAM_GROUP_SELECTOR_ID}>
+          <Button type="button" variant="outline" size="sm" disabled={busy} onClick={() => call("/attendance/close", { closed: !m.attendanceClosed }, m.attendanceClosed ? "Attendance reopened." : "Attendance closed.")}>
             {m.attendanceClosed ? "Reopen attendance" : "Close attendance"}
-          </button>
+          </Button>
           {view.telegram.poll && (
-            <button type="button" className="border rounded px-3 py-1" disabled={busy} onClick={() => call("/attendance/sync", {}, "Telegram attendance synced.")}>
+            <Button type="button" variant="outline" size="sm" disabled={busy} onClick={() => call("/attendance/sync", {}, "Telegram attendance synced.")}>
               Sync Telegram attendance
-            </button>
+            </Button>
           )}
           {view.canManage &&
             (view.telegram.connected && chats.length > 0 ? (
               <>
-                <label className="flex items-center gap-1">
-                  Telegram group:
+                <label className="flex items-center gap-2 font-semibold">
+                  Telegram group
                   <select
-                    className="border rounded px-2 py-1"
+                    className="h-9 rounded-tbp-sm border border-input bg-card px-2 font-normal"
                     value={chatRef ?? ""}
                     disabled={busy}
                     onChange={(e) => call("/telegram-chat", { chatRef: e.target.value ? Number(e.target.value) : null }, "Telegram group saved for this match. Nothing was sent.")}
@@ -294,115 +372,118 @@ export default function MatchWorkspace({
                     ))}
                   </select>
                 </label>
-                <button type="button" className="bg-sky-600 text-white rounded px-3 py-1 disabled:opacity-60" disabled={busy || chatRef === null || m.status === "CANCELED"} onClick={() => call("/poll", { chatRef, intent: "post" }, "Attendance poll posted to Telegram.")}>
-                  Post poll to Telegram
-                </button>
+                <Button type="button" size="sm" disabled={busy || chatRef === null || m.status === "CANCELED"} onClick={() => call("/poll", { chatRef, intent: "post" }, "Attendance poll posted to Telegram.")}>
+                  <Send aria-hidden="true" /> Post poll to Telegram
+                </Button>
               </>
             ) : (
-              <span className="text-gray-600">Telegram not connected — connect it in Communication Channels on the group page.</span>
+              <span className="text-muted-foreground">Telegram not connected — connect it in Communication Channels on the group page.</span>
             ))}
         </div>
-        {view.canManage && view.telegram.pollDelivery && <div className="text-xs text-gray-500">Last poll post: {view.telegram.pollDelivery.status.toLowerCase()}</div>}
+        {view.canManage && view.telegram.pollDelivery && <p className="mt-2 text-xs text-muted-foreground">Last poll post: {view.telegram.pollDelivery.status.toLowerCase()}</p>}
         {view.telegram.unlinkedVoters > 0 && (
-          <div className="text-xs text-amber-700">
+          <p className="mt-2 text-xs text-accent-foreground">
             {view.telegram.unlinkedVoters} Telegram voter(s) aren&apos;t linked to players{view.canManage ? " — link them in the Telegram section of the group page." : "."}
-          </div>
+          </p>
         )}
 
         {view.scope.chatSelected && (
-          <div className="flex flex-wrap items-center gap-2 text-sm">
-            <span className="text-gray-600">
+          <div className="mt-3 flex flex-wrap items-center gap-2 text-sm">
+            <span className="text-muted-foreground">
               Showing {view.telegram.selectedChat ? `${view.telegram.selectedChat.title}'s` : "this Telegram group's"} players and anyone already in this match.
             </span>
-            <label className="flex items-center gap-1">
-              <input type="checkbox" checked={showAll} onChange={(e) => setShowAll(e.target.checked)} /> Show all Group players
+            <label className="flex items-center gap-1.5">
+              <input type="checkbox" className="size-4 accent-primary" checked={showAll} onChange={(e) => setShowAll(e.target.checked)} /> Show all Group players
             </label>
             {hiddenPlayers.length > 0 && (
               <>
-                <select className="border rounded px-2 py-1" value={addPick} onChange={(e) => setAddPick(e.target.value)}>
+                <label className="sr-only" htmlFor="add-player-pick">Add another player</label>
+                <select id="add-player-pick" className="h-9 rounded-tbp-sm border border-input bg-card px-2" value={addPick} onChange={(e) => setAddPick(e.target.value)}>
                   <option value="">+ Add another player…</option>
                   {hiddenPlayers.map((p) => (
                     <option key={p.id} value={p.id}>{p.firstName} {p.lastName}</option>
                   ))}
                 </select>
-                <button type="button" className="underline" disabled={!addPick} onClick={() => { setAddedIds((ids) => [...ids, addPick]); setAddPick(""); }}>Add to this match</button>
+                <Button type="button" variant="ghost" size="sm" disabled={!addPick} onClick={() => { setAddedIds((ids) => [...ids, addPick]); setAddPick(""); }}>Add to this match</Button>
               </>
             )}
           </div>
         )}
         {scopeManageable && suggestedPlayers.length > 0 && (
-          <div className="text-xs text-gray-700 flex flex-wrap items-center gap-2">
+          <div className="mt-2 flex flex-wrap items-center gap-2 text-xs">
             Suggested for this Telegram group (linked players who voted there):
             {suggestedPlayers.map((p) => (
-              <button key={p.id} type="button" disabled={busy} className="underline" onClick={() => changeScope(p.id, "POST", true)}>
+              <button key={p.id} type="button" disabled={busy} className={cn("font-semibold text-primary underline", focusRing)} onClick={() => changeScope(p.id, "POST", true)}>
                 + {p.firstName} {p.lastName}
               </button>
             ))}
           </div>
         )}
-        <div className="overflow-x-auto">
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="text-left text-gray-500">
-                <th className="py-1">Player</th>
-                <th>Status</th>
-                <th>Set by organizer</th>
-                {scopeManageable && <th>Telegram group</th>}
-              </tr>
-            </thead>
-            <tbody>
-              {visiblePlayers.map((p) => (
-                <tr key={p.id} className="border-t">
-                  <td className="py-1">{p.firstName} {p.lastName}</td>
-                  <td>
-                    {p.attendance.status ? STATUS_LABEL[p.attendance.status] : <span className="text-gray-400">No response</span>}
-                    {p.attendance.source && <span className="text-xs text-gray-500"> · {SOURCE_LABEL[p.attendance.source]}</span>}
-                    {p.attendance.late && <span className="text-xs text-amber-700"> · late</span>}
-                    {p.attendance.overridden && p.attendance.participantStatus && (
-                      <span className="text-xs text-gray-500"> (player said {STATUS_LABEL[p.attendance.participantStatus]})</span>
-                    )}
-                  </td>
-                  <td className="whitespace-nowrap text-xs">
-                    {(["PLAYING", "MAYBE", "NOT_PLAYING"] as Status[]).map((s) => (
-                      <button key={s} type="button" disabled={busy} className="underline mr-2" onClick={() => call("/attendance", { playerId: p.id, status: s }, "Attendance saved.")}>
-                        {STATUS_LABEL[s]}
-                      </button>
-                    ))}
-                    {p.attendance.overridden && (
-                      <button type="button" disabled={busy} className="underline text-rose-700" onClick={() => call("/attendance", { playerId: p.id, status: null }, "Override cleared.")}>
-                        Clear override
-                      </button>
-                    )}
-                  </td>
-                  {scopeManageable && (
-                    <td className="whitespace-nowrap text-xs">
-                      {scopeSet.has(p.id) ? (
-                        <button type="button" disabled={busy} className="underline" onClick={() => changeScope(p.id, "DELETE")}>In group · remove</button>
-                      ) : (
-                        <button type="button" disabled={busy} className="underline" onClick={() => changeScope(p.id, "POST")}>Add to group</button>
-                      )}
-                    </td>
+
+        <ul className="mt-4 divide-y divide-border rounded-tbp-xl border border-border" aria-label="Player attendance">
+          {visiblePlayers.length === 0 && <li className="px-4 py-3 text-sm text-muted-foreground">No players to show.</li>}
+          {visiblePlayers.map((p) => (
+            <li key={p.id} className="flex flex-wrap items-center gap-x-4 gap-y-2 px-4 py-3">
+              <div className="min-w-0 flex-1 basis-44">
+                <p className="truncate font-semibold">{p.firstName} {p.lastName}</p>
+                <p className="text-sm">
+                  {p.attendance.status ? STATUS_LABEL[p.attendance.status] : <span className="text-muted-foreground">No response</span>}
+                  {p.attendance.source && <span className="text-xs text-muted-foreground"> · {SOURCE_LABEL[p.attendance.source]}</span>}
+                  {p.attendance.late && <span className="text-xs font-semibold text-accent-foreground"> · late</span>}
+                  {p.attendance.overridden && p.attendance.participantStatus && (
+                    <span className="text-xs text-muted-foreground"> (player said {STATUS_LABEL[p.attendance.participantStatus]})</span>
                   )}
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      </section>
+                </p>
+              </div>
+              <div role="group" aria-label={`Set attendance for ${p.firstName} ${p.lastName}`} className="flex flex-wrap items-center gap-1">
+                {(["PLAYING", "MAYBE", "NOT_PLAYING"] as Status[]).map((s) => {
+                  const on = p.attendance.overridden && p.attendance.status === s;
+                  return (
+                    <button
+                      key={s}
+                      type="button"
+                      disabled={busy}
+                      aria-pressed={on}
+                      className={cn("min-h-9 rounded-full border px-3 text-xs font-semibold disabled:opacity-50", on ? "border-primary bg-primary text-primary-foreground" : "border-input bg-card hover:bg-muted", focusRing)}
+                      onClick={() => call("/attendance", { playerId: p.id, status: s }, "Attendance saved.")}
+                    >
+                      {STATUS_LABEL[s]}
+                    </button>
+                  );
+                })}
+                {p.attendance.overridden && (
+                  <button type="button" disabled={busy} className={cn("min-h-9 rounded-full px-3 text-xs font-semibold text-destructive hover:bg-destructive/5", focusRing)} onClick={() => call("/attendance", { playerId: p.id, status: null }, "Override cleared.")}>
+                    Clear override
+                  </button>
+                )}
+                {scopeManageable &&
+                  (scopeSet.has(p.id) ? (
+                    <button type="button" disabled={busy} className={cn("min-h-9 rounded-full px-3 text-xs text-muted-foreground underline", focusRing)} onClick={() => changeScope(p.id, "DELETE")}>In group · remove</button>
+                  ) : (
+                    <button type="button" disabled={busy} className={cn("min-h-9 rounded-full px-3 text-xs text-muted-foreground underline", focusRing)} onClick={() => changeScope(p.id, "POST")}>Add to group</button>
+                  ))}
+              </div>
+            </li>
+          ))}
+        </ul>
+        <p className="mt-2 text-xs text-muted-foreground">The buttons set an organizer override; the player&apos;s own answer is kept.</p>
+      </SectionCard>
 
       {/* Teams */}
-      <section className="border rounded-xl p-4 space-y-3">
-        <div className="font-semibold">Teams</div>
-        <div className="text-xs text-gray-500">Players marked Playing are selected. Maybe players are shown but not selected — add them if you want.</div>
-        <div className="flex flex-wrap gap-2 text-sm">
-          {visiblePlayers.map((p) => (
-            <label key={p.id} className={`border rounded-full px-2 py-0.5 flex items-center gap-1 ${p.attendance.status === "MAYBE" ? "border-amber-300" : ""}`}>
-              <input type="checkbox" checked={selectedSet.has(p.id)} onChange={() => setAdjustments((adj) => toggleSelection(defaultIds, adj, p.id))} />
-              {p.firstName} {p.lastName}
-              {p.attendance.status === "MAYBE" && <span className="text-xs text-amber-700">maybe</span>}
-            </label>
-          ))}
-        </div>
+      <SectionCard id="teams" title="Teams" icon={<Shuffle className="size-5" />} meta={view.generation ? "Published for this match" : "Not published yet"}>
+        <p className="text-sm text-muted-foreground">Players marked Playing are selected. Maybe players are shown but not selected — add them if you want.</p>
+        <fieldset className="mt-3">
+          <legend className="sr-only">Players for team generation</legend>
+          <div className="flex flex-wrap gap-2 text-sm">
+            {visiblePlayers.map((p) => (
+              <label key={p.id} className={cn("flex min-h-9 cursor-pointer items-center gap-1.5 rounded-full border px-3", selectedSet.has(p.id) ? "border-primary bg-primary/5" : "border-input", p.attendance.status === "MAYBE" && "border-dashed")}>
+                <input type="checkbox" className="size-4 accent-primary" checked={selectedSet.has(p.id)} onChange={() => setAdjustments((adj) => toggleSelection(defaultIds, adj, p.id))} />
+                {p.firstName} {p.lastName}
+                {p.attendance.status === "MAYBE" && <span className="text-xs text-accent-foreground">maybe</span>}
+              </label>
+            ))}
+          </div>
+        </fieldset>
         <CanonicalGenerateSection
           organizationSlug={organizationSlug}
           groupSlug={groupSlug}
@@ -419,65 +500,62 @@ export default function MatchWorkspace({
           onPanelModeChange={setPanelMode}
         />
         {published && !unpublishedPreviewOnScreen(panelMode) && (
-          <div className="border rounded-lg p-3 text-sm space-y-2">
-            <div className="text-emerald-700">Teams saved for this match.</div>
-            <div className="text-xs text-gray-600">
+          <div className="mt-4 space-y-2 rounded-tbp-xl border border-primary/20 bg-primary/5 p-4 text-sm">
+            <p className="flex items-center gap-1.5 font-semibold text-primary"><CircleCheck className="size-4" aria-hidden="true" /> Teams saved for this match.</p>
+            <p className="text-xs text-muted-foreground">
               Player page:{" "}
               {view.playerPage.visibility === "LINK" ? (
-                <>only through the group&apos;s share link (players without an account) or for signed-in members/claimed players: <a className="underline" href={view.playerPage.path} target="_blank" rel="noreferrer">open</a></>
+                <>only through the group&apos;s share link (players without an account) or for signed-in members/claimed players: <a className="font-semibold text-primary underline" href={view.playerPage.path} target="_blank" rel="noreferrer">open</a></>
               ) : (
                 <>
-                  <a className="underline" href={view.playerPage.path} target="_blank" rel="noreferrer">{view.playerPage.path}</a>
+                  <a className="break-all font-semibold text-primary underline" href={view.playerPage.path} target="_blank" rel="noreferrer">{view.playerPage.path}</a>
                   {view.playerPage.visibility === "PRIVATE" && " (signed-in members and claimed players only; Telegram posts carry no link)"}
                 </>
               )}
-            </div>
+            </p>
             {view.canManage && view.playerPage.visibility === "LINK" && view.telegram.poll?.pollId && teamsDelivery !== "posted" && (
-              <input
-                className="border rounded px-2 py-1 w-full text-xs"
-                placeholder="Optional: paste the group's current share link so the Telegram post links to this match"
-                value={shareUrl}
-                onChange={(e) => setShareUrl(e.target.value)}
-                autoComplete="off"
-              />
+              <>
+                <label className="sr-only" htmlFor="teams-share-url">Group share link (optional)</label>
+                <input
+                  id="teams-share-url"
+                  className={cn(input, "w-full text-xs")}
+                  placeholder="Optional: paste the group's current share link so the Telegram post links to this match"
+                  value={shareUrl}
+                  onChange={(e) => setShareUrl(e.target.value)}
+                  autoComplete="off"
+                />
+              </>
             )}
             {view.canManage &&
               (view.telegram.poll?.pollId ? (
                 teamsDelivery === "posted" ? (
-                  <div className="text-gray-600">These published teams were posted to Telegram.</div>
+                  <p className="text-muted-foreground">These published teams were posted to Telegram.</p>
                 ) : (
-                  <button
-                    type="button"
-                    className="bg-sky-600 text-white rounded px-3 py-1 disabled:opacity-60"
-                    disabled={busy}
-                    onClick={() => postTeams(teamsDelivery === "updated_available" ? "post_updated" : "post")}
-                  >
+                  <Button type="button" size="sm" disabled={busy} onClick={() => postTeams(teamsDelivery === "updated_available" ? "post_updated" : "post")}>
+                    <Send aria-hidden="true" />
                     {teamsDelivery === "updated_available" ? "Post Updated Teams to Telegram" : "Post Teams to Telegram"}
-                  </button>
+                  </Button>
                 )
               ) : (
-                <div className="text-gray-600">To post teams to Telegram, post this match&apos;s attendance poll first.</div>
+                <p className="text-muted-foreground">To post teams to Telegram, post this match&apos;s attendance poll first.</p>
               ))}
           </div>
         )}
-      </section>
+      </SectionCard>
 
-      {/* M9-D — Result / MVP / Recap */}
+      {/* M9-D — Result / MVP / Recap / Match Summary (each its own section inside PostGameSection) */}
       {view.postGame && (
-        <section className="border rounded-xl p-4 space-y-3">
-          <div className="font-semibold">After the game</div>
-          <PostGameSection
-            pg={view.postGame}
-            canManage={view.canManage}
-            busy={busy}
-            act={(body, ok) => call("/post-game", body, ok)}
-            request={async (body) => {
-              const res = await fetch(api("/post-game"), { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
-              return { ok: res.ok, data: await res.json().catch(() => ({})) };
-            }}
-            notify={setMessage}
-          />
-        </section>
+        <PostGameSection
+          pg={view.postGame}
+          canManage={view.canManage}
+          busy={busy}
+          act={(body, ok) => call("/post-game", body, ok)}
+          request={async (body) => {
+            const res = await fetch(api("/post-game"), { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+            return { ok: res.ok, data: await res.json().catch(() => ({})) };
+          }}
+          notify={setMessage}
+        />
       )}
     </div>
   );

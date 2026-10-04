@@ -113,7 +113,7 @@ describe("UI primitives are presentation-only", () => {
     const cnSrc = read("src/lib/cn.ts");
     expect([...cnSrc.matchAll(/from\s+["']([^"']+)["']/g)].map((m) => m[1]).sort()).toEqual(["clsx", "tailwind-merge"]);
   });
-  it("only the redesigned pages use the primitives (UI-0 is opt-in; UI-1 = homepage, UI-2 = auth screens, UI-3 = app shell)", () => {
+  it("only the redesigned pages use the primitives (UI-0 is opt-in; UI-1 = homepage, UI-2 = auth, UI-3 = app shell, UI-4 = game day)", () => {
     const users: string[] = [];
     const walk = (d: string) => {
       for (const e of fs.readdirSync(d, { withFileTypes: true })) {
@@ -141,6 +141,12 @@ describe("UI primitives are presentation-only", () => {
         "src/app/admin/page.tsx",
         "src/components/app-shell/AppShell.tsx",
         "src/components/app-shell/ShellClient.tsx",
+        "src/app/admin/o/[organizationSlug]/g/[groupSlug]/page.tsx",
+        "src/app/admin/o/[organizationSlug]/g/[groupSlug]/matches/CreateMatchForm.tsx",
+        "src/app/admin/o/[organizationSlug]/g/[groupSlug]/matches/[matchId]/MatchWorkspace.tsx",
+        "src/app/admin/o/[organizationSlug]/g/[groupSlug]/matches/[matchId]/PostGameSection.tsx",
+        "src/components/game-day/MatchList.tsx",
+        "src/components/game-day/parts.tsx",
       ].sort()
     );
   });
