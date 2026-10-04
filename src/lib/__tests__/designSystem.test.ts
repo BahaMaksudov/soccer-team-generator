@@ -113,7 +113,7 @@ describe("UI primitives are presentation-only", () => {
     const cnSrc = read("src/lib/cn.ts");
     expect([...cnSrc.matchAll(/from\s+["']([^"']+)["']/g)].map((m) => m[1]).sort()).toEqual(["clsx", "tailwind-merge"]);
   });
-  it("only the redesigned pages use the primitives (UI-0 is opt-in; UI-1 = homepage, UI-2 = auth screens)", () => {
+  it("only the redesigned pages use the primitives (UI-0 is opt-in; UI-1 = homepage, UI-2 = auth screens, UI-3 = app shell)", () => {
     const users: string[] = [];
     const walk = (d: string) => {
       for (const e of fs.readdirSync(d, { withFileTypes: true })) {
@@ -138,6 +138,9 @@ describe("UI primitives are presentation-only", () => {
         "src/components/auth/AuthLayout.tsx",
         "src/components/auth/fields.tsx",
         "src/components/auth/parts.tsx",
+        "src/app/admin/page.tsx",
+        "src/components/app-shell/AppShell.tsx",
+        "src/components/app-shell/ShellClient.tsx",
       ].sort()
     );
   });

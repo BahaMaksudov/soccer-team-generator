@@ -148,8 +148,12 @@ export default function CanonicalAdminWorkspace({
     <div>
       {message && <div className="text-sm text-blue-700 mt-2">{message}</div>}
 
-      <CanonicalMatchesSection organizationSlug={organizationSlug} groupSlug={groupSlug} />
+      {/* UI-3 — in-page targets for the app shell's Matches / Players navigation. */}
+      <div id="matches" className="scroll-mt-20">
+        <CanonicalMatchesSection organizationSlug={organizationSlug} groupSlug={groupSlug} />
+      </div>
 
+      <div id="players" className="scroll-mt-20">
       <CanonicalPlayersSection
         canManage={canManage}
         organizationSlug={organizationSlug}
@@ -163,6 +167,7 @@ export default function CanonicalAdminWorkspace({
         refreshPlayers={loadPlayers}
         sport={sport}
       />
+      </div>
 
       <CanonicalGenerateSection
         organizationSlug={organizationSlug}
