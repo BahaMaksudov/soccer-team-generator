@@ -14,7 +14,7 @@ import { cn } from "@/lib/cn";
  * Groups screen). Organization from the URL slug, verified against the
  * session User's membership (generic 404 otherwise). Real data only
  * (src/lib/organizationGroups.ts). Create Group = the existing OWNER/ADMIN
- * flow (/groups/new); Settings = the Group's existing settings sections
+ * flow (/groups/new); Settings = the Group's settings page (UI-8: /settings)
  * (OWNER/ADMIN). A Group's sport is fixed at creation.
  */
 type Params = Promise<{ organizationSlug: string }>;
@@ -143,7 +143,7 @@ function GroupCard({ g, canManage }: { g: OrganizationGroupCard; canManage: bool
           Players<span className="sr-only"> in {g.name}</span>
         </Link>
         {canManage && (
-          <Link href={`${g.href}#settings`} className={cn("inline-flex min-h-10 items-center gap-1.5 rounded-full border border-input px-4 text-sm font-semibold hover:bg-muted", focusRing)}>
+          <Link href={`${g.href}/settings`} className={cn("inline-flex min-h-10 items-center gap-1.5 rounded-full border border-input px-4 text-sm font-semibold hover:bg-muted", focusRing)}>
             <Settings2 className="size-4" aria-hidden="true" /> Settings<span className="sr-only"> for {g.name}</span>
           </Link>
         )}

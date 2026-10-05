@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { adminTenantApiPath } from "@/lib/adminTenantApi";
 import { formatLongDateOnly } from "@/lib/dateOnly";
@@ -8,6 +9,7 @@ import type { PublishedGeneration } from "@/lib/closeAndPostUi";
 import type { SportClientView } from "@/lib/sports";
 import { unpublishedPreviewOnScreen, type TeamsPanelMode } from "@/lib/teamAssignment";
 import { visibleRosterIds } from "@/lib/matchRosterScope";
+import { adminGroupSettingsPath } from "@/lib/matchPaths";
 import PostGameSection, { type PostGameView } from "./PostGameSection";
 import { MATCH_TELEGRAM_GROUP_SELECTOR_ID } from "@/lib/postGameUi";
 import CanonicalGenerateSection from "../../CanonicalGenerateSection";
@@ -392,13 +394,13 @@ export default function MatchWorkspace({
                 </Button>
               </>
             ) : (
-              <span className="text-muted-foreground">Telegram not connected — connect it in Communication Channels on the group page.</span>
+              <span className="text-muted-foreground">Telegram not connected — connect it in <Link className="font-semibold text-primary underline" href={`${adminGroupSettingsPath(organizationSlug, groupSlug)}#telegram`}>Group settings</Link>.</span>
             ))}
         </div>
         {view.canManage && view.telegram.pollDelivery && <p className="mt-2 text-xs text-muted-foreground">Last poll post: {view.telegram.pollDelivery.status.toLowerCase()}</p>}
         {view.telegram.unlinkedVoters > 0 && (
           <p className="mt-2 text-xs text-accent-foreground">
-            {view.telegram.unlinkedVoters} Telegram voter(s) aren&apos;t linked to players{view.canManage ? " — link them in the Telegram section of the group page." : "."}
+            {view.telegram.unlinkedVoters} Telegram voter(s) aren&apos;t linked to players{view.canManage ? <> — link them in <Link className="font-semibold text-primary underline" href={`${adminGroupSettingsPath(organizationSlug, groupSlug)}#telegram`}>Group settings</Link>.</> : "."}
           </p>
         )}
 

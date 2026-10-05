@@ -11,5 +11,7 @@ export const shareMatchPath = (matchId: string, token: string) => `${SHARE_MATCH
 /** UI-4 — organizer (admin) Group, Matches list and Match workspace paths. */
 export const adminGroupPath = (organizationSlug: string, groupSlug: string) => `/admin/o/${encodeURIComponent(organizationSlug)}/g/${encodeURIComponent(groupSlug)}`;
 export const adminMatchesPath = (organizationSlug: string, groupSlug: string) => `${adminGroupPath(organizationSlug, groupSlug)}/matches`;
+/** UI-8 — the ONE organizer location for group-level settings (OWNER/ADMIN). */
+export const adminGroupSettingsPath = (organizationSlug: string, groupSlug: string) => `${adminGroupPath(organizationSlug, groupSlug)}/settings`;
 export const canonicalAdminMatchPath = (organizationSlug: string, groupSlug: string, matchId: string) =>
   `${adminMatchesPath(organizationSlug, groupSlug)}/${encodeURIComponent(matchId)}`;

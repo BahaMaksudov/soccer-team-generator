@@ -88,7 +88,7 @@ describe("Groups page", () => {
   it("Create Group only for the existing group-creator roles; Settings only for managers; sport is never editable here", () => {
     expect(groupsPage).toContain("hasOrgRole(context, [...GROUP_CREATOR_ROLES])");
     expect(groupsPage).toMatch(/\{canCreate && \(\s*<Link href=\{newHref\}/);
-    expect(groupsPage).toMatch(/\{canManage && \(\s*<Link href=\{`\$\{g\.href\}#settings`\}/);
+    expect(groupsPage).toMatch(/\{canManage && \(\s*<Link href=\{`\$\{g\.href\}\/settings`\}/);
     expect(groupsPage).not.toMatch(/sportKey.*onChange|<select/);
     expect(read("src/app/admin/o/[organizationSlug]/groups/new/AddGroupForm.tsx")).toContain("Sport can&apos;t be changed later.");
   });

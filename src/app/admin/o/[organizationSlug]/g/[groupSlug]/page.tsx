@@ -1,14 +1,12 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { AlertCircle, CalendarPlus, CircleCheck, Clock, MapPin, Shuffle, Users } from "lucide-react";
+import { AlertCircle, CalendarPlus, CircleCheck, Clock, MapPin, Settings, Shuffle, Users } from "lucide-react";
 import { formatLongDateOnly } from "@/lib/dateOnly";
 import { formatStartTime } from "@/lib/messaging/content";
 import { loadCanonicalAdminContext } from "./data";
-import CanonicalAdminWorkspace from "./CanonicalAdminWorkspace";
-import { findSport, sportClientView } from "@/lib/sports";
-import { other } from "@/lib/sports/other";
+import { findSport } from "@/lib/sports";
 import { loadGroupOverview, type GroupOverview } from "@/lib/groupOverview";
-import { adminGroupPath, adminMatchesPath } from "@/lib/matchPaths";
+import { adminGroupPath, adminGroupSettingsPath, adminMatchesPath } from "@/lib/matchPaths";
 import { ROLE_LABELS } from "@/lib/appShell";
 import { ActionLink, focusRing, LifecycleSteps, PhasePill, SectionCard } from "@/components/game-day/parts";
 import { MatchList } from "@/components/game-day/MatchList";
@@ -17,9 +15,10 @@ import { cn } from "@/lib/cn";
 /**
  * Phase 2D.6C — canonical tenant Admin entry point; UI-4 — redesigned as the
  * organizer Overview ("what needs to happen next?") from REAL data only
- * (src/lib/groupOverview.ts), followed by the existing Players / Generate /
- * Settings / Visibility / Telegram sections, unchanged and still tenant-bound
- * to the canonical API via CanonicalAdminWorkspace.
+ * (src/lib/groupOverview.ts). UI-8 — the dashboard ends after Recent
+ * matches: the legacy "Players & group settings" workspace is no longer
+ * rendered here. Players → /players, match-day attendance / Telegram poll /
+ * teams / post-game → the Match Workspace, group configuration → /settings.
  *
  * Organization/Group names displayed, and the slugs passed down, come from
  * the resolved TenantContext — never echoed directly from the raw URL params.
@@ -94,23 +93,15 @@ export default async function CanonicalAdminHome({ params }: { params: Params })
               <Link href={matchesHref} className={cn("inline-flex min-h-10 items-center gap-2 rounded-tbp-sm px-2 text-sm font-semibold text-primary hover:bg-muted", focusRing)}>
                 <CalendarPlus className="size-4" aria-hidden="true" /> All matches
               </Link>
+              {overview.canManage && (
+                <Link href={adminGroupSettingsPath(context.organization.slug, context.activeGroup.slug)} className={cn("inline-flex min-h-10 items-center gap-2 rounded-tbp-sm px-2 text-sm font-semibold text-primary hover:bg-muted", focusRing)}>
+                  <Settings className="size-4" aria-hidden="true" /> Group settings
+                </Link>
+              )}
             </div>
           </SectionCard>
         </aside>
       </div>
-
-      <section aria-labelledby="group-management" className="space-y-2 border-t border-border pt-8">
-        <h2 id="group-management" className="text-xl font-extrabold">
-          Players &amp; group settings
-        </h2>
-        <p className="text-sm text-muted-foreground">Manage the roster, sharing, Telegram and group settings. Match-day teams are built inside each match.</p>
-        <CanonicalAdminWorkspace
-          organizationSlug={context.organization.slug}
-          groupSlug={context.activeGroup.slug}
-          sport={sportClientView(sport ?? other)}
-          canManage={context.membership.role === "OWNER" || context.membership.role === "ADMIN"}
-        />
-      </section>
     </div>
   );
 }
