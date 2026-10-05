@@ -6,7 +6,7 @@
  *   - PUBLIC redesigned pages (marketing homepage, auth screens) — never
  *     auth-gated by middleware;
  *   - AUTHENTICATED redesigned pages (UI-3 app shell: /admin/**, /me/**,
- *     /account/**) — still auth-gated by middleware exactly as before; they
+ *     /account/**, UI-7: /onboarding) — still auth-gated by middleware exactly as before; they
  *     render their own shell via nested layouts.
  * The decision is made on the SERVER: middleware tags requests for a
  * redesigned path with a request header and RootLayout reads it, so every
@@ -25,8 +25,8 @@ export const REDESIGNED_PATHS: readonly string[] = ["/", "/login", "/signup", "/
 export const REDESIGNED_PREFIXES: readonly string[] = ["/verify-email/"];
 
 /** UI-3 — authenticated app-shell pages (exact paths / subtrees). */
-export const APP_SHELL_PATHS: readonly string[] = ["/admin", "/me", "/account"];
-export const APP_SHELL_PREFIXES: readonly string[] = ["/admin/", "/me/", "/account/"];
+export const APP_SHELL_PATHS: readonly string[] = ["/admin", "/me", "/account", "/onboarding"];
+export const APP_SHELL_PREFIXES: readonly string[] = ["/admin/", "/me/", "/account/", "/onboarding/"];
 
 export type ChromeMode = "redesign" | "legacy";
 

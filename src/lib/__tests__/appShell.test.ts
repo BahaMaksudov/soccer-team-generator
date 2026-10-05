@@ -219,13 +219,13 @@ describe("shell data (server): identity + OWN memberships only", () => {
 });
 
 describe("middleware: app-shell routes keep the SAME auth gate", () => {
-  it.each(["/admin", "/admin/o/x/g/y", "/me", "/account/security"])("%s unauthenticated → login redirect, not tagged", async (p) => {
+  it.each(["/admin", "/admin/o/x/g/y", "/me", "/account/security", "/onboarding"])("%s unauthenticated → login redirect, not tagged", async (p) => {
     const res = await middleware(new NextRequest(`http://localhost${p}`));
     expect(res.status).toBe(307);
     expect(res.headers.get("location")).toBe(`http://localhost/login?callbackUrl=${encodeURIComponent(p)}`);
     expect(res.headers.get(`x-middleware-request-${CHROME_HEADER}`)).toBeNull();
   });
-  it.each(["/admin", "/admin/o/x/g/y/matches/m", "/me", "/account/security"])("%s authenticated → passes and is tagged for the new shell", async (p) => {
+  it.each(["/admin", "/admin/o/x/g/y/matches/m", "/me", "/account/security", "/onboarding"])("%s authenticated → passes and is tagged for the new shell", async (p) => {
     jwt.token = { email: "pat@example.com" };
     const res = await middleware(new NextRequest(`http://localhost${p}`));
     expect(res.headers.get("location")).toBeNull();
@@ -233,7 +233,7 @@ describe("middleware: app-shell routes keep the SAME auth gate", () => {
   });
   it("legacy protected routes pass the gate but are NOT tagged (old chrome); APIs never tagged", async () => {
     jwt.token = { email: "pat@example.com" };
-    for (const p of ["/onboarding", "/api/admin/organizations", "/api/account/change-password"]) {
+    for (const p of ["/api/admin/organizations", "/api/account/change-password", "/api/invitations/accept"]) {
       const res = await middleware(new NextRequest(`http://localhost${p}`));
       expect(res.headers.get(`x-middleware-request-${CHROME_HEADER}`), p).toBeNull();
     }
@@ -255,8 +255,8 @@ describe("no Lovable mock data / preview infrastructure at runtime", () => {
     const src = read(f).replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "").replace(/\{\/\*[\s\S]*?\*\/\}/g, "");
     expect(src).not.toMatch(/AppPreview|usePreview|VARIANTS|MATCH_STAGES|Design preview|Bahrom|New England Eagles|Sunday Pickup|Yasmina|@tanstack|localStorage|sessionStorage|document\.cookie/);
   });
-  it("the shell layouts (and in-shell 404s) exist for exactly /admin, /me and /account", () => {
-    for (const d of ["admin", "me", "account"]) {
+  it("the shell layouts (and in-shell 404s) exist for exactly /admin, /me, /account and (UI-7) /onboarding", () => {
+    for (const d of ["admin", "me", "account", "onboarding"]) {
       expect(read(`src/app/${d}/layout.tsx`)).toContain("<AuthenticatedShell>");
       expect(read(`src/app/${d}/not-found.tsx`)).toContain("ShellNotFound");
     }
@@ -264,6 +264,6 @@ describe("no Lovable mock data / preview infrastructure at runtime", () => {
       expect(read(f)).toMatch(/notFound\(\);/);
     // One message for missing AND unauthorized (never reveals whether a tenant exists).
     expect(read("src/components/app-shell/ShellNotFound.tsx")).toContain("This page doesn&apos;t exist, or you don&apos;t have access to it.");
-    expect(fs.existsSync(path.join(root, "src/app/onboarding/layout.tsx"))).toBe(false);
+    expect(fs.existsSync(path.join(root, "src/app/claim/layout.tsx"))).toBe(false); // still legacy
   });
 });

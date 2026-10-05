@@ -29,7 +29,7 @@ export default async function MyGamesPage() {
   }
   if (!account.emailVerified) {
     return (
-      <EmptyState title="Verify your email">
+      <EmptyState title="Verify your email" heading="h1">
         <p>Verify your email address to see your games.</p>
         <Link className={cn("mt-4 inline-flex min-h-11 items-center rounded-full bg-primary px-5 text-sm font-semibold text-primary-foreground", focusRing)} href="/verify-email?next=%2Fme">
           Verify email
@@ -64,13 +64,14 @@ export default async function MyGamesPage() {
   );
 }
 
-function EmptyState({ title, children }: { title: string; children: React.ReactNode }) {
+function EmptyState({ title, children, heading = "h2" }: { title: string; children: React.ReactNode; heading?: "h1" | "h2" }) {
+  const H = heading;
   return (
     <section className="mx-auto max-w-lg rounded-tbp-2xl border border-dashed border-border bg-card p-8 text-center">
       <span className="mx-auto grid size-12 place-items-center rounded-full bg-secondary text-primary" aria-hidden="true">
         <Ticket className="size-6" />
       </span>
-      <h1 className="mt-4 text-xl font-extrabold">{title}</h1>
+      <H className="mt-4 text-xl font-extrabold">{title}</H>
       <div className="mt-2 text-sm text-muted-foreground">{children}</div>
     </section>
   );

@@ -212,8 +212,9 @@ export default function CanonicalPlayersSection({
               )}
               <th>Name</th>
               <th>{sport.terminology.roleNoun}</th>
-              <th>Skill</th>
-              <th>Stamina</th>
+              {/* UI-7 — skill/stamina are not sent to MEMBER at all. */}
+              {canManage && <th>Skill</th>}
+              {canManage && <th>Stamina</th>}
               <th>Status</th>
               <th title="Optional Team Balance Pro account (players never need one)">Account</th>
               <th title="Telegram connection used to match poll votes in this group">Telegram</th>
@@ -237,8 +238,8 @@ export default function CanonicalPlayersSection({
                   {p.firstName} {p.lastName}
                 </td>
                 <td>{roleLabel(sport.key, p.position)}</td>
-                <td>{ratingLabel(p.rating)}</td>
-                <td>{Number(p.stamina)}</td>
+                {canManage && <td>{ratingLabel(p.rating)}</td>}
+                {canManage && <td>{Number(p.stamina)}</td>}
                 <td>
                   {canManage ? (
                   <button className="underline text-xs" onClick={() => toggleActive(p)}>

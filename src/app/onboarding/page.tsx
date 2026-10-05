@@ -22,24 +22,25 @@ export default async function OnboardingPage() {
     throw e;
   }
 
+  // UI-7 — inside the authenticated app shell (was the only first-run page left in legacy chrome).
+  const link = "font-semibold text-primary hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring";
   return (
-    <div className="max-w-lg mx-auto rounded-2xl border bg-white shadow-sm p-5 space-y-4">
-      <div>
-        <h1 className="text-2xl font-semibold">
-          {organizationCount === 0 ? "Create your organization" : "Create another organization"}
-        </h1>
-        <p className="text-sm text-gray-600 mt-1">
-          An organization holds your groups. Each group has its own players, teams and settings.
-        </p>
+    <div className="mx-auto max-w-lg space-y-4">
+      <header>
+        <p className="eyebrow">{organizationCount === 0 ? "Get started" : "Organizations"}</p>
+        <h1 className="mt-1 text-3xl font-extrabold">{organizationCount === 0 ? "Create your organization" : "Create another organization"}</h1>
+        <p className="mt-1 text-sm text-muted-foreground">An organization holds your groups. Each group has its own players, teams and settings.</p>
+      </header>
+      <div className="rounded-tbp-2xl border border-border bg-card p-5 shadow-card">
+        <OnboardingClient sports={SUPPORTED_SPORTS.map((s) => ({ key: s.key, label: s.label }))} defaultTimezone={DEFAULT_TIMEZONE} />
       </div>
-      <OnboardingClient sports={SUPPORTED_SPORTS.map((s) => ({ key: s.key, label: s.label }))} defaultTimezone={DEFAULT_TIMEZONE} />
       <div className="flex flex-wrap gap-4 text-sm">
         {organizationCount > 0 && (
-          <Link className="underline" href="/admin">
+          <Link className={link} href="/admin">
             Back to your workspaces
           </Link>
         )}
-        <Link className="underline" href="/account/security">
+        <Link className={link} href="/account/security">
           Account
         </Link>
       </div>

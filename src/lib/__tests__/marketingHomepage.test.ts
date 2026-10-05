@@ -165,9 +165,9 @@ describe("chrome isolation: decided on the server; every other route keeps the o
     expect(chromeModeFromHeader("marketing")).toBe("legacy");
   });
   it("redesigned paths: /, the auth screens and (UI-3) the app shell — nothing else (no tenant, session, cookie or storage input)", () => {
-    for (const p of ["/", "/login", "/signup", "/verify-email", "/verify-email/abc", "/admin", "/admin/o/x/g/y", "/me", "/account/security"])
+    for (const p of ["/", "/login", "/signup", "/verify-email", "/verify-email/abc", "/admin", "/admin/o/x/g/y", "/me", "/account/security", "/onboarding"])
       expect(isRedesignedPath(p), p).toBe(true);
-    for (const p of ["/g/o/g", "/g/o/g/m/x", "/players", "/login/x", "/signup2", "/verify-emailx", "/adminx", "/onboarding", "/claim", "/invite/t", "/share/m/x", "/print/x", "", null, undefined])
+    for (const p of ["/g/o/g", "/g/o/g/m/x", "/players", "/login/x", "/signup2", "/verify-emailx", "/adminx", "/onboardingx", "/claim", "/invite/t", "/share/m/x", "/print/x", "", null, undefined])
       expect(isRedesignedPath(p), String(p)).toBe(false);
     const code = read("src/lib/chrome.ts").replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, "");
     expect(code).not.toMatch(/import|cookies|localStorage|session|tenant|fetch\(/i);

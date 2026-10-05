@@ -268,8 +268,11 @@ export async function deletePublishedTeamsForContext(context: TenantContext, req
   // here is fully atomic and correct: a tenant can only ever delete
   // rows that are both in this date range AND already owned by their
   // own active Group.
+  // UI-7 — legacy by-date sets ONLY (matchId NULL). Teams published for a
+  // Match are that Match's record (result / Player of the Match / Match
+  // Summary depend on them) and are never removed by this date-wide action.
   const result = await prisma.teamGeneration.deleteMany({
-    where: { date: { gte: start, lt: end }, groupId: context.activeGroup.id },
+    where: { date: { gte: start, lt: end }, groupId: context.activeGroup.id, matchId: null },
   });
 
   revalidatePath("/");

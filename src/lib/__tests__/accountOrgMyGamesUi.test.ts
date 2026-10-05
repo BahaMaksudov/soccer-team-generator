@@ -19,6 +19,11 @@ describe("My Games (player surface)", () => {
     for (const src of [strip(myGamesLib), strip(myGamesPage)]) expect(src).not.toMatch(/rating|stamina|balanceWeight|metricsJson|impact/i);
     expect(myGamesLib).toContain("publishedPostGame(m, m.generation?.teamsJson ?? null)");
   });
+  it("one <h1> per page: the empty-state title is an h2 under the page heading (h1 only when it IS the page)", () => {
+    expect(myGamesPage).toContain('heading = "h2"');
+    expect(myGamesPage).toContain('<EmptyState title="Verify your email" heading="h1">');
+    expect(myGamesPage).toContain('<EmptyState title="No player profile connected">');
+  });
   it("empty state when no Player is claimed (no fake games); verification gate kept", () => {
     expect(myGamesPage).toContain("No player profile connected");
     expect(myGamesPage).toContain("Verify your email address to see your games.");

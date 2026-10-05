@@ -3,7 +3,7 @@ import { NextResponse } from "next/server";
 import { playerCreateSchema, playerUpdateSchema, zodErrorResponse } from "@/lib/validation";
 import type { TenantContext } from "@/lib/tenantContext";
 import { findSport, isValidRoleKey } from "@/lib/sports";
-import { managersOnlyResponse } from "@/lib/tenantRoute";
+import { isManager, managersOnlyResponse } from "@/lib/tenantRoute";
 
 /**
  * Phase 2D.6D.1 — shared Player CRUD core, extracted verbatim from
@@ -86,7 +86,25 @@ export async function listPlayers(context: TenantContext): Promise<NextResponse>
       claims: { where: { usedAt: null, revokedAt: null, expiresAt: { gt: new Date() } }, select: { id: true } },
     },
   });
-  return NextResponse.json((players as AdminPlayerRow[]).map(toAdminPlayer));
+  // UI-7 — balancing data (skill / stamina) and organizer-only claim-link state
+  // go to OWNER/ADMIN only; MEMBER receives the roster without them (absent from
+  // the serialized response, not merely hidden in the UI). Role comes from the
+  // URL-resolved, membership-verified context — never from the client.
+  const manager = isManager(context);
+  return NextResponse.json((players as AdminPlayerRow[]).map((p) => (manager ? toAdminPlayer(p) : toMemberPlayer(p))));
+}
+
+/** UI-7 — MEMBER roster DTO: identity/status only; no rating, stamina or claim-link state. */
+export function toMemberPlayer(p: AdminPlayerRow) {
+  return {
+    id: p.id,
+    firstName: p.firstName,
+    lastName: p.lastName,
+    position: p.position,
+    isActive: p.isActive,
+    accountClaimed: Boolean(p.userId),
+    telegramConnected: (p.telegramLink?.length ?? 0) > 0,
+  };
 }
 
 export async function createPlayer(context: TenantContext, req: Request): Promise<NextResponse> {

@@ -222,10 +222,14 @@ export async function getMatchView(context: TenantContext, matchId: string): Pro
   return NextResponse.json({
     match: toSummary(match),
     canManage: manager,
-    roster: players.map((p) => {
+    roster: players.map(({ rating, stamina, ...safe }) => {
+      const p = safe;
       const r = byPlayer.get(p.id);
       const eff = effectiveAttendance(r, match.attendanceClosedAt);
       return {
+        // UI-7 — balancing data (skill / stamina) for OWNER/ADMIN only; MEMBER's
+        // serialized roster has no rating/stamina keys at all.
+        ...(manager ? { rating, stamina } : {}),
         ...p,
         attendance: {
           ...eff,

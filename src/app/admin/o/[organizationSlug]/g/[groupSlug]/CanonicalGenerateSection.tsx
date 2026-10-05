@@ -377,7 +377,7 @@ export default function CanonicalGenerateSection({
       <div className="pt-3 border-t space-y-2">
         <div className="text-sm font-medium">Delete Published Teams</div>
         <div className="text-xs text-gray-500">
-          Removes this Group&apos;s published teams for one date from the public page. It does not delete or edit any
+          Removes this Group&apos;s published teams for one date from the public page (teams published for a match are kept — manage them in the match). It does not delete or edit any
           teams message already posted to Telegram.
         </div>
         <div className="flex flex-wrap items-end gap-2">
