@@ -33,47 +33,41 @@ export default async function OrganizationMembersPage({ params }: { params: Para
     throw e;
   }
 
+  // UI-6 — redesigned presentation; same OWNER-only data and invitation flow.
+  const card = "rounded-tbp-2xl border border-border bg-card p-5 shadow-card";
   return (
-    <div className="rounded-2xl border bg-white shadow-sm p-5 space-y-5">
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <h1 className="text-2xl font-semibold">{organizationName} — Members</h1>
-        <Link className="text-sm underline" href="/admin">
-          Switch workspace
-        </Link>
-      </div>
+    <div className="space-y-6">
+      <Link className="inline-flex min-h-10 items-center text-sm font-semibold text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" href={`/admin/o/${encodeURIComponent(slug)}`}>
+        ← {organizationName}
+      </Link>
+      <header>
+        <p className="eyebrow">{organizationName}</p>
+        <h1 className="mt-1 text-3xl font-extrabold">Members</h1>
+      </header>
 
-      <section className="space-y-2">
-        <h2 className="font-semibold">Members</h2>
-        <div className="overflow-x-auto">
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="text-left text-gray-500">
-                <th className="py-1 pr-4">Name</th>
-                <th className="py-1 pr-4">Email</th>
-                <th className="py-1">Role</th>
-              </tr>
-            </thead>
-            <tbody>
-              {view.members.map((m) => (
-                <tr key={m.id} className="border-t">
-                  <td className="py-1 pr-4">{m.name ?? "—"}</td>
-                  <td className="py-1 pr-4">{m.email}</td>
-                  <td className="py-1">{m.role}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+      <section aria-labelledby="members-h" className={card}>
+        <h2 id="members-h" className="mb-3 text-lg font-extrabold">Members</h2>
+        <ul className="divide-y divide-border">
+          {view.members.map((m) => (
+            <li key={m.id} className="flex flex-wrap items-center justify-between gap-2 py-2.5 first:pt-0 last:pb-0 text-sm">
+              <span className="min-w-0">
+                <span className="block font-semibold">{m.name ?? "—"}</span>
+                <span className="block break-all text-xs text-muted-foreground">{m.email}</span>
+              </span>
+              <span className="rounded-full bg-secondary px-2.5 py-0.5 text-xs font-bold text-secondary-foreground">{m.role}</span>
+            </li>
+          ))}
+        </ul>
       </section>
 
-      <section className="space-y-2">
-        <h2 className="font-semibold">Pending invitations</h2>
+      <section aria-labelledby="pending-h" className={card}>
+        <h2 id="pending-h" className="mb-3 text-lg font-extrabold">Pending invitations</h2>
         {view.pendingInvitations.length === 0 ? (
-          <p className="text-sm text-gray-500">No pending invitations.</p>
+          <p className="text-sm text-muted-foreground">No pending invitations.</p>
         ) : (
-          <ul className="text-sm space-y-1">
+          <ul className="space-y-1 text-sm">
             {view.pendingInvitations.map((i) => (
-              <li key={i.id}>
+              <li key={i.id} className="break-all">
                 {i.email} · {i.role} · expires {fmt(i.expiresAt)}
               </li>
             ))}
@@ -81,8 +75,8 @@ export default async function OrganizationMembersPage({ params }: { params: Para
         )}
       </section>
 
-      <section className="space-y-2">
-        <h2 className="font-semibold">Invite someone</h2>
+      <section aria-labelledby="invite-h" className={card}>
+        <h2 id="invite-h" className="mb-3 text-lg font-extrabold">Invite someone</h2>
         <InviteForm organizationSlug={slug} roles={[...INVITABLE_ROLES]} />
       </section>
     </div>

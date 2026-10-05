@@ -77,12 +77,13 @@ describe("role-aware navigation (presentation only)", () => {
       ["groups", "/admin/o/eagles/groups"],
     ]);
   });
-  it("Organization (the OWNER-only Members page) is shown only to an OWNER of the CURRENT organization", () => {
-    expect(item("/admin/o/eagles/g/indoor", "organization")?.href).toBe("/admin/o/eagles/members");
-    expect(keys("/admin/o/hawks/g/sun")).not.toContain("organization"); // MEMBER
-    const admin = data({ organizations: [{ ...ORGS[0], role: "ADMIN" }] });
-    expect(keys("/admin/o/eagles/g/indoor", admin)).not.toContain("organization");
-    expect(keys("/admin")).not.toContain("organization"); // neutral context
+  it("UI-6: Organization (overview page) is shown to any member of the CURRENT organization; never in a neutral context", () => {
+    expect(item("/admin/o/eagles/g/indoor", "organization")?.href).toBe("/admin/o/eagles");
+    expect(item("/admin/o/hawks/g/sun", "organization")?.href).toBe("/admin/o/hawks"); // MEMBER
+    expect(item("/admin/o/eagles", "organization")?.active).toBe(true);
+    expect(item("/admin/o/eagles/members", "organization")?.active).toBe(true);
+    expect(keys("/admin")).not.toContain("organization");
+    expect(keys("/me")).not.toContain("organization");
   });
   it("neutral context (no Group in the URL) shows no Group links; Account is always there", () => {
     expect(keys("/admin")).toEqual(["groups", "account"]);
@@ -99,8 +100,9 @@ describe("role-aware navigation (presentation only)", () => {
     expect(item("/admin/o/eagles/g/indoor", "groups", data({ workspaceListAvailable: false }))?.href).toBe("/admin/o/eagles/groups");
     expect(item("/admin/o/eagles/groups", "groups")?.active).toBe(true);
     expect(item("/admin/o/eagles/groups/new", "groups")?.active).toBe(true);
-    expect(keys("/me", data({ workspaceListAvailable: false }))).not.toContain("groups");
-    expect(item("/me", "groups")?.href).toBe("/admin");
+    // UI-6 — outside an Organization, anyone with an Organization keeps a way back (/admin opens the only Group).
+    expect(item("/me", "groups", data({ workspaceListAvailable: false }))?.href).toBe("/admin");
+    expect(keys("/me", data({ organizations: [], workspaceListAvailable: false, hasPlayerProfile: true }))).not.toContain("groups");
   });
   it("active state: exact page, in-page sections, match pages, account", () => {
     const g = "/admin/o/eagles/g/indoor";
@@ -160,7 +162,7 @@ describe("rendered shell", () => {
   });
   it("MEMBER context: no organizer-only links rendered", () => {
     const html = render("/admin/o/hawks/g/sun");
-    expect(html).not.toContain("/admin/o/hawks/members");
+    expect(html).not.toContain("/admin/o/hawks/members"); // the OWNER-only Members page is never linked for a MEMBER
     expect(html).toContain("Member · Hawks");
   });
   it("user with no organizations: no group switcher", () => {

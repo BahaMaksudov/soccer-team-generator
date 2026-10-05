@@ -47,14 +47,14 @@ export default function InviteForm({ organizationSlug, roles }: { organizationSl
   return (
     <form onSubmit={submit} className="space-y-2">
       <div className="flex flex-wrap gap-2">
-        <input type="email" className="flex-1 min-w-[12rem] border rounded-md px-3 py-2" placeholder="name@example.com"
+        <input type="email" className="h-11 min-w-0 flex-1 basis-48 rounded-tbp-md border border-input bg-card px-3 text-base focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring md:text-sm" placeholder="name@example.com"
           value={email} onChange={(e) => setEmail(e.target.value)} required aria-label="Email" />
-        <select className="border rounded-md px-3 py-2 bg-white" value={role} onChange={(e) => setRole(e.target.value)} aria-label="Role">
+        <select className="h-11 rounded-tbp-md border border-input bg-card px-3 text-sm" value={role} onChange={(e) => setRole(e.target.value)} aria-label="Role">
           {roles.map((r) => (
             <option key={r} value={r}>{r}</option>
           ))}
         </select>
-        <button type="submit" className="bg-black text-white rounded-md px-4 py-2 disabled:opacity-60" disabled={loading}>
+        <button type="submit" className="inline-flex min-h-11 items-center rounded-full bg-primary px-5 text-sm font-semibold text-primary-foreground hover:bg-primary/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:opacity-60" disabled={loading} aria-busy={loading}>
           {loading ? "Inviting..." : "Invite"}
         </button>
       </div>

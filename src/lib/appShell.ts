@@ -49,6 +49,7 @@ const enc = encodeURIComponent;
 
 export const groupAdminHref = (organizationSlug: string, groupSlug: string) => `/admin/o/${enc(organizationSlug)}/g/${enc(groupSlug)}`;
 export const membersHref = (organizationSlug: string) => `/admin/o/${enc(organizationSlug)}/members`;
+export const organizationHref = (organizationSlug: string) => `/admin/o/${enc(organizationSlug)}`;
 export const groupsHrefOf = (organizationSlug: string) => `/admin/o/${enc(organizationSlug)}/groups`;
 
 function decodeSegment(s: string | undefined): string | null {
@@ -103,7 +104,9 @@ export function buildShellNav(params: { data: ShellData; pathname: string; hash?
   if (ctx) {
     const groupsHref = groupsHrefOf(ctx.organization.slug);
     items.push({ key: "groups", label: "Groups", href: groupsHref, active: pathname === groupsHref || pathname.startsWith(`${groupsHref}/`), section: "main", mobilePrimary: !ctx.group });
-  } else if (data.workspaceListAvailable) {
+  } else if (data.organizations.length > 0) {
+    // Outside an Organization (e.g. My Games, Account): a way back to the workspace —
+    // /admin lists workspaces, or opens the only Group directly.
     items.push({ key: "groups", label: "Groups", href: "/admin", active: pathname === "/admin", section: "main", mobilePrimary: true });
   }
 
@@ -111,10 +114,12 @@ export function buildShellNav(params: { data: ShellData; pathname: string; hash?
     items.push({ key: "my-games", label: "My Games", href: "/me", active: pathname === "/me" || pathname.startsWith("/me/"), section: "personal", mobilePrimary: true });
   }
 
-  // Organization = the existing Members page, which is OWNER-only server-side.
-  if (ctx && ctx.organization.role === "OWNER") {
-    const href = membersHref(ctx.organization.slug);
-    items.push({ key: "organization", label: "Organization", href, active: pathname === href, section: "admin", mobilePrimary: false });
+  // UI-6 — Organization overview for any member of the current Organization
+  // (Members & invitations inside it stay OWNER-only server-side).
+  if (ctx) {
+    const href = organizationHref(ctx.organization.slug);
+    const members = membersHref(ctx.organization.slug);
+    items.push({ key: "organization", label: "Organization", href, active: pathname === href || pathname === members, section: "admin", mobilePrimary: false });
   }
 
   items.push({ key: "account", label: "Account", href: "/account/security", active: pathname.startsWith("/account/"), section: "admin", mobilePrimary: false });

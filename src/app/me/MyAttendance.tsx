@@ -51,7 +51,7 @@ export default function MyAttendance({
         <div className="text-sm">
           Your answer: <span className="font-medium">{label}</span>
         </div>
-        <div className="text-xs text-gray-500">Attendance is closed. Your organizer can reopen it.</div>
+        <div className="text-xs text-muted-foreground">Attendance is closed. Your organizer can reopen it.</div>
       </div>
     );
   }
@@ -65,14 +65,15 @@ export default function MyAttendance({
             type="button"
             disabled={busy}
             onClick={() => choose(o.status)}
-            className={`text-sm rounded-full border px-3 py-1 disabled:opacity-60 ${status === o.status ? "bg-black text-white border-black" : "bg-white"}`}
+            aria-pressed={status === o.status}
+            className={`min-h-11 rounded-full border px-4 text-sm font-semibold disabled:opacity-60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 ${status === o.status ? "border-primary bg-primary text-primary-foreground" : "border-input bg-card hover:bg-muted"}`}
           >
             {o.label}
           </button>
         ))}
       </div>
-      {byOrganizer && <div className="text-xs text-gray-500">Your organizer set this. Your answer is saved but the organizer&apos;s choice applies.</div>}
-      {err && <div className="text-xs text-red-600">{err}</div>}
+      {byOrganizer && <div className="text-xs text-muted-foreground">Your organizer set this. Your answer is saved but the organizer&apos;s choice applies.</div>}
+      {err && <div role="alert" className="text-xs text-destructive">{err}</div>}
     </div>
   );
 }

@@ -1,18 +1,25 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
+import { CalendarDays, Clock, MapPin, Medal, MessageCircle, Ticket, Trophy } from "lucide-react";
 import { requireSessionAccount, TenantContextError } from "@/lib/tenantContext";
 import { formatLongDateOnly } from "@/lib/dateOnly";
-import { loadMyPlayers } from "./data";
+import { formatStartTime } from "@/lib/messaging/content";
+import { loadMyGames, type MyGamesProfile, type MyRecentGame, type MyUpcomingGame } from "@/lib/myGames";
 import ConnectTelegram from "./ConnectTelegram";
 import MyAttendance from "./MyAttendance";
-import { formatStartTime } from "@/lib/messaging/content";
-import { findSport } from "@/lib/sports";
+import { cn } from "@/lib/cn";
 
 /**
- * M6-C — "My teams": the signed-in player's claimed Player profiles.
- * Optional — taking part through Telegram never requires this page.
+ * M6-C / UI-6 — "My Games": the signed-in User's player experience, built
+ * ONLY from the Players they have claimed (src/lib/myGames.ts — player-facing
+ * allow-list, published post-game data only, no ratings or stamina). Not an
+ * organizer view. Taking part through Telegram never requires this page.
  */
-export default async function MyTeamsPage() {
+const focusRing = "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2";
+
+export const metadata = { title: "My Games — Team Balance Pro" };
+
+export default async function MyGamesPage() {
   let account;
   try {
     account = await requireSessionAccount();
@@ -22,75 +29,214 @@ export default async function MyTeamsPage() {
   }
   if (!account.emailVerified) {
     return (
-      <div className="max-w-lg mx-auto rounded-2xl border bg-white shadow-sm p-5 space-y-2">
-        <h1 className="text-2xl font-semibold">My teams</h1>
-        <p className="text-sm text-gray-600">Verify your email address to see your teams.</p>
-        <Link className="text-sm underline" href="/verify-email?next=%2Fme">Verify email</Link>
-      </div>
+      <EmptyState title="Verify your email">
+        <p>Verify your email address to see your games.</p>
+        <Link className={cn("mt-4 inline-flex min-h-11 items-center rounded-full bg-primary px-5 text-sm font-semibold text-primary-foreground", focusRing)} href="/verify-email?next=%2Fme">
+          Verify email
+        </Link>
+      </EmptyState>
     );
   }
 
-  const players = await loadMyPlayers(account.id);
+  const profiles = await loadMyGames(account.id);
 
   return (
-    <div className="max-w-2xl mx-auto space-y-4">
-      <div className="rounded-2xl border bg-white shadow-sm p-5 flex flex-wrap items-center justify-between gap-2">
-        <h1 className="text-2xl font-semibold">My teams</h1>
-        <Link className="text-sm underline" href="/account/security">Account</Link>
-      </div>
+    <div className="mx-auto max-w-3xl space-y-8">
+      <header>
+        <p className="eyebrow">Player</p>
+        <h1 className="mt-1 text-3xl font-extrabold">My Games</h1>
+        {profiles.length > 0 && (
+          <p className="mt-1 text-sm text-muted-foreground">
+            {profiles.length === 1 ? `Playing as ${profiles[0].displayName}` : `${profiles.length} player profiles connected to your account`}
+          </p>
+        )}
+      </header>
 
-      {players.length === 0 ? (
-        <div className="rounded-2xl border bg-white shadow-sm p-5 text-sm text-gray-600 space-y-1">
-          <p>You haven&apos;t claimed a player profile yet.</p>
-          <p>Ask your organizer for a player claim link. You can still take part in polls through Telegram without one.</p>
-        </div>
+      {profiles.length === 0 ? (
+        <EmptyState title="No player profile connected">
+          <p>Your account isn&apos;t connected to a player in any group yet, so there are no games to show.</p>
+          <p className="mt-2">Ask your organizer for a player claim link and open it while signed in. You can still answer attendance polls in Telegram without one.</p>
+        </EmptyState>
       ) : (
-        players.map((p) => (
-          <div key={p.playerId} className="rounded-2xl border bg-white shadow-sm p-5 space-y-3">
-            <div>
-              <div className="text-sm text-gray-500">{p.organizationName}</div>
-              <div className="text-lg font-semibold">
-                <Link className="underline" href={p.groupHref}>{p.groupName}</Link>{" "}
-                <span className="text-xs text-gray-500 font-normal">({findSport(p.sportKey)?.label ?? p.sportKey})</span>
-              </div>
-              <div className="text-sm">Player: {p.displayName}</div>
-            </div>
-            {p.nextMatch && (
-              <div className="border rounded-lg p-3 space-y-2">
-                <div className="text-sm font-medium">
-                  Next match: {formatLongDateOnly(p.nextMatch.date)}
-                  {p.nextMatch.startTime ? ` · ${formatStartTime(p.nextMatch.startTime)}` : ""}
-                  {p.nextMatch.locationName ? ` · ${p.nextMatch.locationName}` : ""}
-                </div>
-                <MyAttendance matchId={p.nextMatch.id} status={p.nextMatch.myStatus} byOrganizer={p.nextMatch.myStatusByOrganizer} closed={p.nextMatch.attendanceClosed} />
-                {/* M9-C — the Match page (claimed Players may view it even for LINK/PRIVATE Groups). */}
-                <Link className="text-sm underline" href={`${p.groupHref}/m/${encodeURIComponent(p.nextMatch.id)}`}>View match page</Link>
-                {p.nextMatch.myTeam && (
-                  <div className="text-sm">
-                    My team: Team #{p.nextMatch.myTeam.teamNumber} — <span className="text-gray-700">{p.nextMatch.myTeam.teammates.join(", ")}</span>
-                  </div>
-                )}
-              </div>
-            )}
-            {p.recent.length === 0 ? (
-              <div className="text-sm text-gray-500">No published teams with you yet.</div>
-            ) : (
-              <ul className="text-sm space-y-1">
-                {p.recent.map((r) => (
-                  <li key={r.date}>
-                    <span className="font-medium">{formatLongDateOnly(r.date)}</span> — Team #{r.teamNumber}:{" "}
-                    <span className="text-gray-700">{r.teammates.join(", ")}</span>
-                  </li>
-                ))}
-              </ul>
-            )}
-            <div className="border-t pt-2 text-sm">
-              Telegram: {p.telegramConnected ? "connected" : "not connected"}
-              <ConnectTelegram playerId={p.playerId} connected={p.telegramConnected} />
-            </div>
-          </div>
-        ))
+        profiles.map((p) => <Profile key={p.playerId} p={p} single={profiles.length === 1} />)
       )}
     </div>
+  );
+}
+
+function EmptyState({ title, children }: { title: string; children: React.ReactNode }) {
+  return (
+    <section className="mx-auto max-w-lg rounded-tbp-2xl border border-dashed border-border bg-card p-8 text-center">
+      <span className="mx-auto grid size-12 place-items-center rounded-full bg-secondary text-primary" aria-hidden="true">
+        <Ticket className="size-6" />
+      </span>
+      <h1 className="mt-4 text-xl font-extrabold">{title}</h1>
+      <div className="mt-2 text-sm text-muted-foreground">{children}</div>
+    </section>
+  );
+}
+
+function Meta({ date, startTime, locationName, onDark = false, hideDate = false }: { date: string; startTime: string | null; locationName: string | null; onDark?: boolean; hideDate?: boolean }) {
+  const time = formatStartTime(startTime);
+  return (
+    <ul className={cn("flex flex-wrap gap-x-4 gap-y-1 text-sm", onDark ? "opacity-85" : "text-muted-foreground")}>
+      {!hideDate && (
+        <li className="flex items-center gap-1.5">
+          <CalendarDays className="size-4 shrink-0" aria-hidden="true" />
+          {formatLongDateOnly(date)}
+        </li>
+      )}
+      {time && (
+        <li className="flex items-center gap-1.5">
+          <Clock className="size-4 shrink-0" aria-hidden="true" />
+          {time}
+        </li>
+      )}
+      {locationName && (
+        <li className="flex min-w-0 items-center gap-1.5">
+          <MapPin className="size-4 shrink-0" aria-hidden="true" />
+          <span className="truncate">{locationName}</span>
+        </li>
+      )}
+    </ul>
+  );
+}
+
+function Profile({ p, single }: { p: MyGamesProfile; single: boolean }) {
+  const [next, ...later] = p.upcoming;
+  const headingId = `profile-${p.playerId}`;
+  return (
+    <section aria-labelledby={headingId} className="space-y-4">
+      <div className="flex flex-wrap items-end justify-between gap-2">
+        <div className="min-w-0">
+          <p className="eyebrow truncate">{p.organizationName}</p>
+          <h2 id={headingId} className="break-words text-xl font-extrabold">
+            {p.groupName} <span className="text-base font-semibold text-muted-foreground">· {p.sportLabel}</span>
+          </h2>
+          {!single && <p className="text-sm text-muted-foreground">Playing as {p.displayName}</p>}
+        </div>
+      </div>
+
+      {next ? <NextGame g={next} /> : <p className="rounded-tbp-xl border border-dashed border-border bg-card p-5 text-sm text-muted-foreground">No upcoming games scheduled in this group yet.</p>}
+
+      {later.length > 0 && (
+        <div className="rounded-tbp-xl border border-border bg-card p-4">
+          <h3 className="text-sm font-semibold">Also coming up</h3>
+          <ul className="mt-2 space-y-1.5">
+            {later.map((g) => (
+              <li key={g.matchId} className="flex flex-wrap items-center justify-between gap-2 text-sm">
+                <Meta date={g.date} startTime={g.startTime} locationName={g.locationName} />
+                <Link href={g.matchHref} className={cn("font-semibold text-primary hover:underline", focusRing)}>
+                  View<span className="sr-only"> match on {formatLongDateOnly(g.date)}</span>
+                </Link>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      <div className="space-y-3">
+        <h3 className="text-lg font-extrabold">Recent games</h3>
+        {p.recent.length === 0 ? (
+          <p className="text-sm text-muted-foreground">No past games with you on a published team yet.</p>
+        ) : (
+          <ul className="space-y-3">
+            {p.recent.map((g) => (
+              <RecentGame key={g.matchId} g={g} />
+            ))}
+          </ul>
+        )}
+      </div>
+
+      <div className="flex flex-wrap items-center gap-3 rounded-tbp-xl border border-border bg-card p-4 text-sm">
+        <MessageCircle className="size-5 shrink-0 text-primary" aria-hidden="true" />
+        <span className="font-semibold">Telegram: {p.telegramConnected ? "connected" : "not connected"}</span>
+        <ConnectTelegram playerId={p.playerId} connected={p.telegramConnected} />
+      </div>
+    </section>
+  );
+}
+
+function NextGame({ g }: { g: MyUpcomingGame }) {
+  return (
+    <article aria-label="Your next game" className="overflow-hidden rounded-tbp-2xl border border-border bg-card shadow-card">
+      <div className="pitch-lines bg-pitch p-5 text-pitch-foreground">
+        <p className="text-xs font-bold uppercase tracking-widest text-accent">Next game</p>
+        <p className="mt-2 font-display text-2xl font-black">{formatLongDateOnly(g.date)}</p>
+        <div className="mt-1">
+          <Meta date={g.date} startTime={g.startTime} locationName={g.locationName} onDark hideDate />
+        </div>
+      </div>
+      <div className="space-y-4 p-5">
+        <div>
+          <h4 className="mb-2 font-semibold">Are you playing?</h4>
+          <MyAttendance matchId={g.matchId} status={g.myStatus} byOrganizer={g.myStatusByOrganizer} closed={g.attendanceClosed} />
+        </div>
+        <div className="border-t border-border pt-4 text-sm">
+          {g.myTeam ? (
+            <p>
+              <span className="font-semibold">Your team: Team {g.myTeam.teamNumber}</span>
+              {g.myTeam.teammates.length > 0 && <span className="text-muted-foreground"> — with {g.myTeam.teammates.join(", ")}</span>}
+            </p>
+          ) : (
+            <p className="text-muted-foreground">{g.teamsPublished ? "You're not on the published teams for this game." : "Teams haven't been published yet."}</p>
+          )}
+        </div>
+        <Link href={g.matchHref} className={cn("inline-flex min-h-11 items-center rounded-full border border-input px-5 text-sm font-semibold hover:bg-muted", focusRing)}>
+          View match page
+        </Link>
+      </div>
+    </article>
+  );
+}
+
+function RecentGame({ g }: { g: MyRecentGame }) {
+  const mine = g.result?.teams.find((t) => t.teamNumber === g.myTeam.teamNumber);
+  const outcome = !g.result ? null : g.result.draw ? "Draw" : g.result.winnerTeamNumber === g.myTeam.teamNumber ? "Win" : "Loss";
+  return (
+    <li className="rounded-tbp-xl border border-border bg-card p-4 shadow-card">
+      <div className="flex flex-wrap items-start justify-between gap-2">
+        <div className="min-w-0">
+          <Meta date={g.date} startTime={g.startTime} locationName={g.locationName} />
+          <p className="mt-1 text-sm">
+            <span className="font-semibold">Team {g.myTeam.teamNumber}</span>
+            {g.myTeam.teammates.length > 0 && <span className="text-muted-foreground"> — with {g.myTeam.teammates.join(", ")}</span>}
+          </p>
+        </div>
+        {g.result ? (
+          <div className="text-right">
+            <p className="font-display text-xl font-black tabular-nums">
+              {g.result.teams.map((t) => t.score).join(" – ")}
+              <span className="sr-only"> ({g.result.teams.map((t) => `Team ${t.teamNumber} ${t.score}`).join(", ")})</span>
+            </p>
+            {outcome && mine && <p className="text-xs font-bold uppercase tracking-wider text-primary">{outcome}</p>}
+          </div>
+        ) : (
+          <span className="rounded-full bg-muted px-2.5 py-0.5 text-xs font-semibold text-muted-foreground">Result not published</span>
+        )}
+      </div>
+      {(g.mvp || g.mvpVoteOpen || g.recap) && (
+        <div className="mt-3 space-y-2 border-t border-border pt-3 text-sm">
+          {g.mvp && (
+            <p className="flex items-center gap-2">
+              <Medal className="size-4 shrink-0 text-accent" aria-hidden="true" />
+              <span>
+                Player of the Match{g.mvp.shared ? "es" : ""}: <span className="font-semibold">{g.mvp.names.join(", ")}</span>
+              </span>
+            </p>
+          )}
+          {!g.mvp && g.mvpVoteOpen && (
+            <p className="flex items-center gap-2">
+              <Trophy className="size-4 shrink-0 text-primary" aria-hidden="true" />
+              Player of the Match voting is open in your group&apos;s Telegram poll.
+            </p>
+          )}
+          {g.recap && <p className="whitespace-pre-line text-muted-foreground">{g.recap.text}</p>}
+        </div>
+      )}
+      <Link href={g.matchHref} className={cn("mt-3 inline-flex text-sm font-semibold text-primary hover:underline", focusRing)}>
+        View match page<span className="sr-only"> for {formatLongDateOnly(g.date)}</span>
+      </Link>
+    </li>
   );
 }
