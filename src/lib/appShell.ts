@@ -49,6 +49,7 @@ const enc = encodeURIComponent;
 
 export const groupAdminHref = (organizationSlug: string, groupSlug: string) => `/admin/o/${enc(organizationSlug)}/g/${enc(groupSlug)}`;
 export const membersHref = (organizationSlug: string) => `/admin/o/${enc(organizationSlug)}/members`;
+export const groupsHrefOf = (organizationSlug: string) => `/admin/o/${enc(organizationSlug)}/groups`;
 
 function decodeSegment(s: string | undefined): string | null {
   if (!s) return null;
@@ -88,16 +89,22 @@ export function buildShellNav(params: { data: ShellData; pathname: string; hash?
     const onGroupPage = pathname === base || pathname === `${base}/`;
     const matchesBase = `${base}/matches`;
     const onMatches = pathname === matchesBase || pathname.startsWith(`${matchesBase}/`);
-    // UI-4 — Matches is a real page (list + each Match workspace); Players is still a section of the Group page.
+    const playersBase = `${base}/players`;
+    // UI-4/UI-5 — Matches and Players are real pages of the Group.
     items.push(
-      { key: "overview", label: "Overview", href: base, active: onGroupPage && hash !== "players", section: "main", mobilePrimary: true },
+      { key: "overview", label: "Overview", href: base, active: onGroupPage, section: "main", mobilePrimary: true },
       { key: "matches", label: "Matches", href: matchesBase, active: onMatches, section: "main", mobilePrimary: true },
-      { key: "players", label: "Players", href: `${base}#players`, active: onGroupPage && hash === "players", section: "main", mobilePrimary: true }
+      { key: "players", label: "Players", href: playersBase, active: pathname === playersBase || pathname.startsWith(`${playersBase}/`), section: "main", mobilePrimary: true }
     );
   }
 
-  if (data.workspaceListAvailable) {
-    items.push({ key: "groups", label: "Groups", href: "/admin", active: pathname === "/admin", section: "main", mobilePrimary: !ctx?.group });
+  // UI-5 — inside an Organization, Groups is that Organization's Groups page
+  // (any member may view it); elsewhere the /admin workspace list (when it lists).
+  if (ctx) {
+    const groupsHref = groupsHrefOf(ctx.organization.slug);
+    items.push({ key: "groups", label: "Groups", href: groupsHref, active: pathname === groupsHref || pathname.startsWith(`${groupsHref}/`), section: "main", mobilePrimary: !ctx.group });
+  } else if (data.workspaceListAvailable) {
+    items.push({ key: "groups", label: "Groups", href: "/admin", active: pathname === "/admin", section: "main", mobilePrimary: true });
   }
 
   if (data.hasPlayerProfile || pathname === "/me" || pathname.startsWith("/me/")) {

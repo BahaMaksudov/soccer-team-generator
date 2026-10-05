@@ -8,6 +8,7 @@ import {
   mvpMethodSwitchable,
   mvpStage,
   needsReplaceConfirmation,
+  recapEditorState,
   resultEditorState,
   summaryReadiness,
   syncedRecapText,
@@ -173,6 +174,7 @@ export default function PostGameSection({
   };
   const postSummary = (intent: string) => act({ action: "post_message", kind: "summary", intent }, "Match summary posted to Telegram.");
   const editor = resultEditorState(pg.teamNumbers, pg.result?.scores ?? null, scores);
+  const recapEditor = recapEditorState(recapText, pg.recap?.content);
 
   return (
     <div className="space-y-6">
@@ -440,11 +442,15 @@ export default function PostGameSection({
             {aiMessage && <p role="alert" className="text-xs text-destructive">{aiMessage}</p>}
             <label htmlFor="recap-text" className="sr-only">Recap text</label>
             <textarea id="recap-text" className="w-full rounded-tbp-md border border-input bg-card p-3 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" rows={5} maxLength={1200} value={recapText} onChange={(e) => setRecapText(e.target.value)} placeholder="Recap text" />
-            <div className="flex flex-wrap gap-2">
-              <Button type="button" variant="outline" disabled={busy || !recapText.trim()} onClick={() => act({ action: "save_recap", content: recapText }, pg.recap?.published ? "Recap updated. Telegram was not updated." : "Recap saved (not published).")}>
+            {recapEditor.dirty && pg.recap?.published && (
+              <p className="text-xs text-muted-foreground">Saving updates the published recap on the match page. Telegram is not updated until you post the Match Summary.</p>
+            )}
+            <div className="flex flex-wrap items-center gap-2">
+              <Button type="button" variant="outline" disabled={busy || !recapEditor.canSave} onClick={() => act({ action: "save_recap", content: recapText }, pg.recap?.published ? "Recap updated. Telegram was not updated." : "Recap saved (not published).")}>
                 Save Recap
               </Button>
-              {pg.recap?.content && !pg.recap.published && (
+              {recapEditor.dirty ? <StateChip tone="pending">Unsaved changes</StateChip> : pg.recap?.content ? <span className="text-xs font-semibold text-primary">Saved.</span> : null}
+              {pg.recap?.content && !pg.recap.published && !recapEditor.dirty && (
                 <Button type="button" disabled={busy} onClick={() => act({ action: "publish_recap" }, "Recap published on the match page. Nothing was sent.")}>
                   Publish Recap
                 </Button>

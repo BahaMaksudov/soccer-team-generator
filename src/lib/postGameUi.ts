@@ -79,6 +79,21 @@ export function syncedRecapText(current: string, previousServer: string | null |
   return current;
 }
 
+/**
+ * UI-5 — recap editor dirty state. "Save Recap" is actionable only when the
+ * textarea holds non-empty text that differs from the SAVED recap. The
+ * comparison uses the text as the server will store it (trimmed), so
+ * whitespace-only edits of a saved recap are not "changes".
+ * Existing backend semantics: saving an edit of a PUBLISHED recap updates the
+ * published recap in place (it stays published; Telegram is not updated).
+ */
+export function recapEditorState(local: string, saved: string | null | undefined): { dirty: boolean; canSave: boolean } {
+  const next = local.trim();
+  const current = (saved ?? "").trim();
+  const dirty = next !== current;
+  return { dirty, canSave: dirty && next.length > 0 };
+}
+
 export type MvpMethod = "PLAYER_VOTE" | "ORGANIZER_SELECTION";
 export type MvpStage =
   | "RESULT_NOT_PUBLISHED"

@@ -8,7 +8,7 @@ import CanonicalAdminWorkspace from "./CanonicalAdminWorkspace";
 import { findSport, sportClientView } from "@/lib/sports";
 import { other } from "@/lib/sports/other";
 import { loadGroupOverview, type GroupOverview } from "@/lib/groupOverview";
-import { adminMatchesPath } from "@/lib/matchPaths";
+import { adminGroupPath, adminMatchesPath } from "@/lib/matchPaths";
 import { ROLE_LABELS } from "@/lib/appShell";
 import { ActionLink, focusRing, LifecycleSteps, PhasePill, SectionCard } from "@/components/game-day/parts";
 import { MatchList } from "@/components/game-day/MatchList";
@@ -88,7 +88,7 @@ export default async function CanonicalAdminHome({ params }: { params: Params })
               <Stat label="Past matches" value={overview.past.length} />
             </dl>
             <div className="mt-4 flex flex-col gap-2">
-              <Link href="#players" className={cn("inline-flex min-h-10 items-center gap-2 rounded-tbp-sm px-2 text-sm font-semibold text-primary hover:bg-muted", focusRing)}>
+              <Link href={`${adminGroupPath(context.organization.slug, context.activeGroup.slug)}/players`} className={cn("inline-flex min-h-10 items-center gap-2 rounded-tbp-sm px-2 text-sm font-semibold text-primary hover:bg-muted", focusRing)}>
                 <Users className="size-4" aria-hidden="true" /> Players
               </Link>
               <Link href={matchesHref} className={cn("inline-flex min-h-10 items-center gap-2 rounded-tbp-sm px-2 text-sm font-semibold text-primary hover:bg-muted", focusRing)}>

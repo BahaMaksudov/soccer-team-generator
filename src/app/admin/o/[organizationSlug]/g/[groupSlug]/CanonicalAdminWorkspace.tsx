@@ -181,6 +181,8 @@ export default function CanonicalAdminWorkspace({
         onPanelModeChange={setPanelMode}
       />
 
+      {/* UI-5 — target of the Groups page "Settings" action. */}
+      <div id="settings" className="scroll-mt-20">
       <CanonicalSettingsSection
         organizationSlug={organizationSlug}
         groupSlug={groupSlug}
@@ -189,6 +191,7 @@ export default function CanonicalAdminWorkspace({
       />
 
       <CanonicalVisibilitySection organizationSlug={organizationSlug} groupSlug={groupSlug} />
+      </div>
       </>
       )}
 

@@ -73,8 +73,8 @@ describe("role-aware navigation (presentation only)", () => {
     expect(items.filter((i) => i.section === "main").map((i) => [i.key, i.href])).toEqual([
       ["overview", "/admin/o/eagles/g/indoor"],
       ["matches", "/admin/o/eagles/g/indoor/matches"],
-      ["players", "/admin/o/eagles/g/indoor#players"],
-      ["groups", "/admin"],
+      ["players", "/admin/o/eagles/g/indoor/players"],
+      ["groups", "/admin/o/eagles/groups"],
     ]);
   });
   it("Organization (the OWNER-only Members page) is shown only to an OWNER of the CURRENT organization", () => {
@@ -95,8 +95,12 @@ describe("role-aware navigation (presentation only)", () => {
     const playerOnly = data({ organizations: [], hasPlayerProfile: true, workspaceListAvailable: false });
     expect(keys("/me", playerOnly)).toEqual(["my-games", "account"]);
   });
-  it("Groups is hidden when /admin would just redirect to the only Group", () => {
-    expect(keys("/admin/o/eagles/g/indoor", data({ workspaceListAvailable: false }))).not.toContain("groups");
+  it("UI-5: inside an Organization, Groups is that Organization's Groups page; outside it, /admin only when it lists workspaces", () => {
+    expect(item("/admin/o/eagles/g/indoor", "groups", data({ workspaceListAvailable: false }))?.href).toBe("/admin/o/eagles/groups");
+    expect(item("/admin/o/eagles/groups", "groups")?.active).toBe(true);
+    expect(item("/admin/o/eagles/groups/new", "groups")?.active).toBe(true);
+    expect(keys("/me", data({ workspaceListAvailable: false }))).not.toContain("groups");
+    expect(item("/me", "groups")?.href).toBe("/admin");
   });
   it("active state: exact page, in-page sections, match pages, account", () => {
     const g = "/admin/o/eagles/g/indoor";
@@ -105,7 +109,8 @@ describe("role-aware navigation (presentation only)", () => {
     expect(item(`${g}/matches`, "matches")?.active).toBe(true);
     expect(item(`${g}/matches`, "overview")?.active).toBe(false);
     expect(item(`${g}/matchesx`, "matches")?.active).toBe(false);
-    expect(item(g, "players", data(), "#players")?.active).toBe(true);
+    expect(item(`${g}/players`, "players")?.active).toBe(true);
+    expect(item(`${g}/players`, "overview")?.active).toBe(false);
     expect(item(`${g}/matches/m1`, "matches")?.active).toBe(true);
     expect(item(`${g}/matches/m1`, "overview")?.active).toBe(false);
     expect(item("/admin", "groups")?.active).toBe(true);
