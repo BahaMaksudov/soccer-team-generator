@@ -4,7 +4,7 @@ import type { TenantContext } from "@/lib/tenantContext";
 import { isManager } from "@/lib/tenantRoute";
 import { formatYMDFromDate } from "@/lib/telegramFormat";
 import { countAttendance, type AttendanceCounts, type AttendanceRow } from "@/lib/attendance";
-import { parseScores } from "@/lib/postGame";
+import { parseResult, resultView, type ResultView } from "@/lib/postGame";
 import { canonicalAdminMatchPath } from "@/lib/matchPaths";
 import { isUpcomingYmd, matchLifecycle, todayUtcYmd, type Lifecycle } from "@/lib/matchLifecycle";
 
@@ -30,8 +30,8 @@ export type OverviewMatch = {
   upcoming: boolean;
   attendanceClosed: boolean;
   teamsPublished: boolean;
-  /** Published result only (scores are shown once published). */
-  publishedScores: Array<{ teamNumber: number; score: number }> | null;
+  /** Published result only (M8.1: pairwise fixtures; legacy standings for old 3+ team rows). */
+  publishedResult: ResultView | null;
   resultSaved: boolean;
   lifecycle: Lifecycle;
 };
@@ -92,7 +92,7 @@ export async function loadGroupOverview(context: TenantContext, now: Date = new 
       upcoming: isUpcomingYmd(m.status, date, today),
       attendanceClosed: m.attendanceClosedAt !== null,
       teamsPublished: m.generation !== null,
-      publishedScores: resultPublished ? parseScores(m.result!.scoresJson).sort((a, b) => a.teamNumber - b.teamNumber) : null,
+      publishedResult: resultPublished ? resultView(parseResult(m.result!.scoresJson)) : null,
       resultSaved: m.result !== null,
       lifecycle: matchLifecycle({
         status: m.status,

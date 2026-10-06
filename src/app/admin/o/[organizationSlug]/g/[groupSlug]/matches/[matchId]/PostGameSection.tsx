@@ -8,15 +8,18 @@ import {
   mvpMethodSwitchable,
   mvpStage,
   needsReplaceConfirmation,
+  fieldsFromFixtures,
+  fixtureEditorState,
+  fixtureFieldKey,
+  fixturesFromFields,
   recapEditorState,
-  resultEditorState,
   summaryReadiness,
   syncedRecapText,
   type MvpMethod,
 } from "@/lib/postGameUi";
 import { CircleCheck, CircleDashed, FileText, Medal, Megaphone, Send, Sparkles, Trophy } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { focusRing, SectionCard, StateChip } from "@/components/game-day/parts";
+import { FixtureResults, focusRing, SectionCard, StateChip, type ResultDisplay } from "@/components/game-day/parts";
 import { cn } from "@/lib/cn";
 
 /**
@@ -31,8 +34,11 @@ type MessageState = "not_posted" | "posted" | "updated_available" | "failed" | "
 export type PostGameView = {
   canceled: boolean;
   teamNumbers: number[];
+  /** M8.1 — every pair of published teams once (teamA < teamB), in display order. */
+  fixturePairs: Array<[number, number]>;
   participants: Array<{ playerId: string; name: string; teamNumber: number }>;
-  result: { scores: Array<{ teamNumber: number; score: number }>; published: boolean } | null;
+  /** M8.1 — saved fixtures (or a pre-M8.1 per-team row); `complete` = covers every pair of the published teams. */
+  result: (ResultDisplay & { published: boolean; complete: boolean }) | null;
   mvp: {
     started: boolean;
     open: boolean;
@@ -93,7 +99,7 @@ export default function PostGameSection({
   request: Request;
   notify: (message: string | null) => void;
 }) {
-  const [scores, setScores] = useState<Record<number, string>>({});
+  const [scores, setScores] = useState<Record<string, string>>({});
   const [recapText, setRecapText] = useState<string>(pg.recap?.content ?? "");
   const [shortlist, setShortlist] = useState<string[]>([]);
   const [aiMessage, setAiMessage] = useState<string | null>(null);
@@ -105,9 +111,9 @@ export default function PostGameSection({
   const [aiGenerated, setAiGenerated] = useState(false);
   const [lastProgrammatic, setLastProgrammatic] = useState<string | null>(pg.recap?.content ?? null);
   const [pendingReplace, setPendingReplace] = useState<"ai" | "standard" | null>(null);
-  const savedKey = JSON.stringify(pg.result?.scores ?? []);
+  const savedKey = JSON.stringify(pg.result?.fixtures ?? []);
   useEffect(() => {
-    setScores(Object.fromEntries((pg.result?.scores ?? []).map((s) => [s.teamNumber, String(s.score)])));
+    setScores(fieldsFromFixtures(pg.result?.fixtures ?? []));
   }, [savedKey]); // eslint-disable-line react-hooks/exhaustive-deps
   // Only a newly SAVED server recap replaces the textarea; an empty server value never clears an unsaved draft.
   const lastServerRecap = useRef<string | null | undefined>(pg.recap?.content);
@@ -173,7 +179,9 @@ export default function PostGameSection({
     else applyStandardRecap();
   };
   const postSummary = (intent: string) => act({ action: "post_message", kind: "summary", intent }, "Match summary posted to Telegram.");
-  const editor = resultEditorState(pg.teamNumbers, pg.result?.scores ?? null, scores);
+  // A pre-M8.1 per-team row has no fixtures to edit: the editor starts empty and saving replaces it.
+  const savedFixtures = pg.result && !pg.result.legacyStandings ? pg.result.fixtures : null;
+  const editor = fixtureEditorState(pg.fixturePairs, savedFixtures, scores);
   const recapEditor = recapEditorState(recapText, pg.recap?.content);
 
   return (
@@ -186,22 +194,50 @@ export default function PostGameSection({
         icon={<Trophy className="size-5" />}
         action={pg.result?.published ? <StateChip tone="done">Published</StateChip> : pg.result ? <StateChip tone="pending">Saved, not published</StateChip> : <StateChip tone="neutral">Not entered</StateChip>}
       >
-        <div className="flex flex-wrap gap-4">
-          {pg.teamNumbers.map((n) => (
-            <label key={n} className="flex flex-col items-center gap-1.5 text-sm font-semibold">
-              Team {n}
-              <input
-                type="number"
-                min={0}
-                max={999}
-                inputMode="numeric"
-                className="h-16 w-20 rounded-tbp-xl border border-input bg-card text-center font-display text-3xl font-black tabular-nums focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-ring/30"
-                value={scores[n] ?? ""}
-                onChange={(e) => setScores({ ...scores, [n]: e.target.value })}
-              />
-            </label>
+        {pg.result?.legacyStandings && (
+          <p className="mb-3 rounded-tbp border border-border bg-muted px-3 py-2 text-xs text-muted-foreground">
+            This result was recorded as one score per team ({pg.result.legacyStandings.map((t) => `Team ${t.teamNumber}: ${t.score}`).join(", ")}). Enter each fixture&apos;s score to replace it.
+          </p>
+        )}
+        {/* M8.1 — one card per fixture: every pair of published teams plays once, with two independent scores. */}
+        <ul className="grid gap-3 sm:grid-cols-2" aria-label="Fixtures">
+          {pg.fixturePairs.map(([a, b]) => (
+            <li key={`${a}-${b}`} className="rounded-tbp-xl border border-border bg-card p-3">
+              <fieldset>
+                <legend className="mb-2 text-sm font-semibold">
+                  Team {a} <span className="font-normal text-muted-foreground">vs</span> Team {b}
+                </legend>
+                <div className="flex items-center justify-center gap-3">
+                  {(["A", "B"] as const).map((side, i) => {
+                    const key = fixtureFieldKey(a, b, side);
+                    return (
+                      <span key={side} className="contents">
+                        {i === 1 && (
+                          <span className="font-display text-2xl font-black text-muted-foreground" aria-hidden="true">
+                            —
+                          </span>
+                        )}
+                        <label className="flex flex-col items-center gap-1 text-xs font-semibold text-muted-foreground">
+                          <span>Team {side === "A" ? a : b}</span>
+                          <input
+                            type="number"
+                            min={0}
+                            max={999}
+                            inputMode="numeric"
+                            aria-label={`Team ${side === "A" ? a : b} score against Team ${side === "A" ? b : a}`}
+                            className="h-14 w-20 rounded-tbp-xl border border-input bg-card text-center font-display text-2xl font-black tabular-nums text-foreground focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-ring/30"
+                            value={scores[key] ?? ""}
+                            onChange={(e) => setScores({ ...scores, [key]: e.target.value })}
+                          />
+                        </label>
+                      </span>
+                    );
+                  })}
+                </div>
+              </fieldset>
+            </li>
           ))}
-        </div>
+        </ul>
         <div className="mt-4 flex flex-wrap items-center gap-2">
           {editor.action ? (
             <Button
@@ -210,7 +246,7 @@ export default function PostGameSection({
               disabled={busy || !editor.valid}
               onClick={() =>
                 act(
-                  { action: "save_result", scores: pg.teamNumbers.map((n) => ({ teamNumber: n, score: Number(scores[n]) })) },
+                  { action: "save_result", fixtures: fixturesFromFields(pg.fixturePairs, scores) },
                   pg.result?.published ? "Result changes saved. Telegram was not updated." : "Result saved (not published)."
                 )
               }
@@ -221,7 +257,8 @@ export default function PostGameSection({
             <span className="text-xs font-semibold text-primary">Saved.</span>
           )}
           {editor.action === "SAVE_CHANGES" && <StateChip tone="pending">Unsaved changes</StateChip>}
-          {pg.result && !pg.result.published && !editor.dirty && (
+          {!editor.valid && editor.dirty && <span className="text-xs text-muted-foreground">Enter both scores for every fixture.</span>}
+          {pg.result && !pg.result.published && !editor.dirty && pg.result.complete && (
             <Button type="button" disabled={busy} onClick={() => act({ action: "publish_result" }, "Result published on the match page. Nothing was sent.")}>
               Publish Result
             </Button>
@@ -529,14 +566,7 @@ function PostGameReadOnly({ pg }: { pg: PostGameView }) {
         action={pg.result?.published ? <StateChip tone="done">Published</StateChip> : pg.result ? <StateChip tone="pending">Saved, not published</StateChip> : <StateChip tone="neutral">Not entered</StateChip>}
       >
         {pg.result ? (
-          <ul className="flex flex-wrap gap-4" aria-label="Score">
-            {pg.result.scores.map((sc) => (
-              <li key={sc.teamNumber} className="flex flex-col items-center gap-1 text-sm font-semibold">
-                Team {sc.teamNumber}
-                <span className="grid h-16 w-20 place-items-center rounded-tbp-xl border border-border bg-muted font-display text-3xl font-black tabular-nums">{sc.score}</span>
-              </li>
-            ))}
-          </ul>
+          <FixtureResults result={pg.result} />
         ) : (
           <p className="text-sm text-muted-foreground">No result yet.</p>
         )}

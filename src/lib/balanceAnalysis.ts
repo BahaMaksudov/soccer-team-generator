@@ -1,6 +1,8 @@
 import {
   SKILL_WEIGHT,
+  distributedRoles,
   effectiveRole,
+  roleExcess,
   evaluateTeams,
   getStamina,
   impactScore,
@@ -143,7 +145,8 @@ function rosterNotesOf(sport: SportDefinition, teams: AnalysisTeam[]): RosterNot
 /**
  * Exhaustive, deterministic cross-team single-swap search. Team sizes are
  * fixed by construction. A swap is valid only if no role rule's covered-team
- * count drops. Ranking: impact spread, then average-skill spread, then
+ * count drops and (M8.1) no distributable role becomes more concentrated
+ * than before (the generator's position balancing is never undone). Ranking: impact spread, then average-skill spread, then
  * stamina spread, then same-role first, then stable team/player order.
  */
 function findBestSwap(sport: SportDefinition, config: BalanceConfig, teams: AnalysisTeam[], current: { impactSpread: number; quality: BalanceQuality }) {
@@ -163,6 +166,10 @@ function findBestSwap(sport: SportDefinition, config: BalanceConfig, teams: Anal
     return m;
   });
   const coveredBefore = rules.map((r) => roleCounts.filter((m) => (m.get(r.roleKey) ?? 0) >= r.perTeam).length);
+  const distributed = new Set(distributedRoles(sport, config));
+  const excessAfterSwap = (roleKey: string, a: number, b: number, ra: string, rb: string) =>
+    roleExcess(roleCounts.map((m, t) => (m.get(roleKey) ?? 0) + (t === a ? Number(rb === roleKey) - Number(ra === roleKey) : t === b ? Number(ra === roleKey) - Number(rb === roleKey) : 0)));
+  const excessBefore = (roleKey: string) => roleExcess(roleCounts.map((m) => m.get(roleKey) ?? 0));
 
   type Candidate = { a: number; i: number; b: number; j: number; impactSpread: number; averageSkillSpread: number; staminaSpread: number; sameRole: boolean };
   let best: Candidate | null = null;
@@ -194,6 +201,9 @@ function findBestSwap(sport: SportDefinition, config: BalanceConfig, teams: Anal
               return covered < coveredBefore[k];
             });
             if (unsafe) continue;
+            // M8.1 — never re-concentrate a role the generator spread out.
+            const sum2 = (x: string, y: string, f: (k: string) => number) => (distributed.has(x) ? f(x) : 0) + (distributed.has(y) ? f(y) : 0);
+            if (sum2(ra, rb, (k) => excessAfterSwap(k, a, b, ra, rb)) > sum2(ra, rb, excessBefore)) continue;
           }
           const totals = [...impactTotals];
           totals[a] += impact[b][j] - impact[a][i];

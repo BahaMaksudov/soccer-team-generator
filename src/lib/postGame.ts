@@ -19,6 +19,7 @@ import { aiConfigured } from "@/lib/ai/openai";
 import { participantsOf } from "@/lib/matchParticipants";
 import { applyTelegramMvpAnswer } from "@/lib/telegramMvp";
 import { buildRecapFacts, deterministicRecap, generateAiRecap, RECAP_MAX_LENGTH, sanitizeRecapText, type RecapFacts } from "@/lib/recap";
+import { fixturePairs, fixtureWinner, isCompleteFor, parseResult, serializeFixtures, validateFixtures, type FixtureInput, type MatchResultData } from "@/lib/matchResults";
 
 /**
  * M9-D — post-game lifecycle of a Match: result, MVP voting, recap.
@@ -39,17 +40,11 @@ import { buildRecapFacts, deterministicRecap, generateAiRecap, RECAP_MAX_LENGTH,
 const fail = (error: string, status = 400, extra: Record<string, unknown> = {}) => NextResponse.json({ error, ...extra }, { status });
 const NOT_FOUND = () => fail("Match not found", 404);
 
-type Scores = Array<{ teamNumber: number; score: number }>;
 export { participantsOf, applyTelegramMvpAnswer };
+// M8.1 — results are pairwise fixtures (src/lib/matchResults.ts); 2-team rows keep the historical format.
+export { parseResult };
 
-export function parseScores(json: string | null | undefined): Scores {
-  try {
-    const v = JSON.parse(json ?? "[]");
-    return Array.isArray(v) ? v.filter((s) => Number.isInteger(s?.teamNumber) && Number.isInteger(s?.score)).map((s) => ({ teamNumber: s.teamNumber, score: s.score })) : [];
-  } catch {
-    return [];
-  }
-}
+const teamNumbersOf = (participants: Array<{ teamNumber: number }>) => [...new Set(participants.map((p) => p.teamNumber))].sort((a, b) => a - b);
 
 async function loadMatch(context: TenantContext, matchId: string) {
   return prisma.match.findFirst({
@@ -233,7 +228,7 @@ function recapFactsOf(m: LoadedMatch, sportKey: string): RecapFacts | null {
     sportLabel: findSport(sportKey)?.label ?? "",
     date: formatYMDFromDate(m.date),
     locationName: m.locationName,
-    scores: parseScores(m.result.scoresJson),
+    result: parseResult(m.result.scoresJson),
     mvpNames: mvpNames(m),
     participantCount: participantsOf(m.generation?.teamsJson).length,
   });
@@ -245,7 +240,7 @@ function factsOf(m: LoadedMatch, sportKey: string): PostGameFacts {
   return {
     date: formatYMDFromDate(m.date),
     sportEmoji: sportMessaging(sportKey).emoji,
-    scores: parseScores(m.result?.scoresJson),
+    result: parseResult(m.result?.scoresJson),
     venue: m.locationName?.trim() || null,
   };
 }
@@ -302,12 +297,23 @@ export async function runPostGameAction(context: TenantContext, matchId: string,
     // ---------------- result
     case "save_result": {
       if (participants.length === 0) return fail("Publish the teams for this match first.");
-      const teamNumbers = [...new Set(participants.map((p) => p.teamNumber))].sort((a, b) => a - b);
-      const given = [...body.scores].sort((a, b) => a.teamNumber - b.teamNumber);
-      if (given.length !== teamNumbers.length || given.some((s, i) => s.teamNumber !== teamNumbers[i])) {
-        return fail("Enter one score for each published team.");
+      const teamNumbers = teamNumbersOf(participants);
+      if (Boolean(body.fixtures) === Boolean(body.scores)) return fail("Send the result as one score pair per fixture.");
+      let input: FixtureInput[];
+      if (body.scores) {
+        // Pre-M8.1 shape (one score per team): only meaningful for exactly two teams.
+        const given = [...body.scores].sort((a, b) => a.teamNumber - b.teamNumber);
+        if (teamNumbers.length !== 2 || given.length !== 2 || given.some((s, i) => s.teamNumber !== teamNumbers[i])) {
+          return fail(teamNumbers.length === 2 ? "Enter one score for each published team." : "Enter a score for every fixture.");
+        }
+        input = [{ teamA: given[0].teamNumber, teamB: given[1].teamNumber, scoreA: given[0].score, scoreB: given[1].score }];
+      } else {
+        input = body.fixtures!;
       }
-      const scoresJson = JSON.stringify(given.map((s) => ({ teamNumber: s.teamNumber, score: s.score })));
+      // Team numbers are checked against THIS match's published team set (never trusted from the browser).
+      const checked = validateFixtures(teamNumbers, input);
+      if (!checked.ok) return fail(checked.error);
+      const scoresJson = serializeFixtures(checked.fixtures);
       await prisma.matchResult.upsert({
         where: { matchId: m.id },
         update: { scoresJson, updatedByUserId: context.user.id },
@@ -317,6 +323,10 @@ export async function runPostGameAction(context: TenantContext, matchId: string,
     }
     case "publish_result": {
       if (!m.result) return fail("Save the result first.");
+      // M8.1 — the whole fixture set is published at once, and only when complete for the published teams.
+      if (!m.result.publishedAt && !isCompleteFor(parseResult(m.result.scoresJson), teamNumbersOf(participants))) {
+        return fail("Enter a score for every fixture before publishing the result.");
+      }
       const now = new Date();
       await prisma.$transaction([
         prisma.matchResult.update({ where: { matchId: m.id }, data: { publishedAt: m.result.publishedAt ?? now, publishedByUserId: context.user.id } }),
@@ -578,9 +588,11 @@ export async function postGameView(context: TenantContext, matchId: string) {
 
   return {
     canceled: m.status === "CANCELED",
-    teamNumbers: [...new Set(participants.map((p) => p.teamNumber))].sort((a, b) => a - b),
+    teamNumbers: teamNumbersOf(participants),
+    // M8.1 — the fixtures this match's result consists of (every pair of published teams once).
+    fixturePairs: fixturePairs(teamNumbersOf(participants)),
     participants: participants.map((p) => ({ playerId: p.playerId, name: p.name, teamNumber: p.teamNumber })),
-    result: m.result ? { scores: parseScores(m.result.scoresJson), published: m.result.publishedAt !== null } : null,
+    result: m.result ? { ...resultView(parseResult(m.result.scoresJson)), published: m.result.publishedAt !== null, complete: isCompleteFor(parseResult(m.result.scoresJson), teamNumbersOf(participants)) } : null,
     mvp,
     mvpMaxCandidates: MVP_POLL_MAX_OPTIONS,
     recap: m.recap ? { content: m.recap.content, source: m.recap.source, published: m.recap.publishedAt !== null, hasAiDraft: m.recap.generatedContent !== null } : null,
@@ -590,14 +602,26 @@ export async function postGameView(context: TenantContext, matchId: string) {
   };
 }
 
+/** Display shape of a result: fixtures (with each fixture's winner) or labeled legacy standings. */
+export type ResultView = {
+  fixtures: Array<{ teamA: number; teamB: number; scoreA: number; scoreB: number; winner: number | null }>;
+  /** Pre-M8.1 rows with one score per team for 3+ teams (never rewritten); null otherwise. */
+  legacyStandings: Array<{ teamNumber: number; score: number }> | null;
+};
+
+export function resultView(r: MatchResultData | null): ResultView {
+  if (!r) return { fixtures: [], legacyStandings: null };
+  if (r.kind === "legacy_standings") return { fixtures: [], legacyStandings: r.teams.map((t) => ({ teamNumber: t.teamNumber, score: t.score })) };
+  return { fixtures: r.fixtures.map((f) => ({ teamA: f.teamA, teamB: f.teamB, scoreA: f.scoreA, scoreB: f.scoreB, winner: fixtureWinner(f) })), legacyStandings: null };
+}
+
 /** Player-facing published post-game data (allow-list; display names only). */
 export function publishedPostGame(m: { result: { scoresJson: string; publishedAt: Date | null } | null; mvp: { winnerPlayerIds: string[]; publishedAt: Date | null } | null; recap: { content: string | null; publishedAt: Date | null } | null }, teamsJson: string | null) {
   const names = new Map(participantsOf(teamsJson).map((p) => [p.playerId, p.name]));
-  const scores = m.result?.publishedAt ? parseScores(m.result.scoresJson).sort((a, b) => a.teamNumber - b.teamNumber) : null;
-  const top = scores?.length ? Math.max(...scores.map((s) => s.score)) : null;
-  const leaders = scores?.filter((s) => s.score === top) ?? [];
+  // M8.1 — PUBLISHED fixtures only; an unpublished result never appears.
+  const parsed = m.result?.publishedAt ? parseResult(m.result.scoresJson) : null;
   return {
-    result: scores ? { teams: scores.map((s) => ({ teamNumber: s.teamNumber, score: s.score })), winnerTeamNumber: leaders.length === 1 ? leaders[0].teamNumber : null, draw: leaders.length > 1 } : null,
+    result: parsed ? resultView(parsed) : null,
     mvp: m.mvp?.publishedAt && m.mvp.winnerPlayerIds.length ? { names: m.mvp.winnerPlayerIds.map((id) => names.get(id) ?? "Player"), shared: m.mvp.winnerPlayerIds.length > 1 } : null,
     recap: m.recap?.publishedAt && m.recap.content ? { text: m.recap.content } : null,
   };

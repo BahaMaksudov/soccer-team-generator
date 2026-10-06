@@ -199,7 +199,7 @@ describe("match workflow regression (OWNER, nothing sent)", () => {
     expect((await pg({ action: "save_result", scores: [{ teamNumber: 1, score: 3 }, { teamNumber: 2, score: 1 }] })).status).toBe(200);
     expect((await loadMatchForViewer({ ...A, matchId: id }))?.result).toBeNull(); // saved ≠ published
     expect((await pg({ action: "publish_result" })).status).toBe(200);
-    expect((await loadMatchForViewer({ ...A, matchId: id }))?.result).toMatchObject({ winnerTeamNumber: 1 });
+    expect((await loadMatchForViewer({ ...A, matchId: id }))?.result).toMatchObject({ fixtures: [{ winner: 1 }] });
 
     const participant = (await prisma.teamGeneration.findFirstOrThrow({ where: { matchId: id } })).teamsJson.match(/"id":"(p\d)"/)![1];
     expect((await pg({ action: "save_mvp_selection", playerId: participant })).status).toBe(200);

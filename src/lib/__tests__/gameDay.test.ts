@@ -144,12 +144,12 @@ describe("rendering", () => {
       upcoming: false,
       attendanceClosed: true,
       teamsPublished: true,
-      publishedScores: null,
+      publishedResult: null,
       resultSaved: true,
       lifecycle: matchLifecycle(base({ ...past, result: { saved: true, published: false } })),
       ...over,
     });
-    const html = renderToStaticMarkup(createElement(MatchList, { matches: [m({}), m({ id: "y", publishedScores: [{ teamNumber: 1, score: 5 }, { teamNumber: 2, score: 3 }] })], emptyText: "none" }));
+    const html = renderToStaticMarkup(createElement(MatchList, { matches: [m({}), m({ id: "y", publishedResult: { fixtures: [{ teamA: 1, teamB: 2, scoreA: 5, scoreB: 3, winner: 1 }], legacyStandings: null } })], emptyText: "none" }));
     expect(html).toContain('href="/admin/o/o/g/g/matches/x"');
     expect(html).toContain("Result not published");
     expect(html).toContain("Next: Publish result");
@@ -171,7 +171,7 @@ describe("M9 invariants in the redesigned components", () => {
   it("readiness and MVP state come from the existing helpers, not re-implemented", () => {
     expect(pg).toContain("summaryReadiness(pg, canManage)");
     expect(pg).toContain("mvpStage(pg, canManage, chosenMethod)");
-    expect(pg).toContain("resultEditorState(");
+    expect(pg).toContain("fixtureEditorState(");
   });
   it("sections are addressable for the next-step pointer", () => {
     for (const id of ["result", "mvp", "recap", "summary"]) expect(pg).toContain(`id="${id}"`);

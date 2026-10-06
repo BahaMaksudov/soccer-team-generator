@@ -153,22 +153,44 @@ export function normalizeScore(raw: string | undefined): number | null {
   return Number(t);
 }
 
+/** M8.1 — one fixture's two score fields, keyed by the pair (teamA < teamB) and side. */
+export const fixtureFieldKey = (teamA: number, teamB: number, side: "A" | "B") => `${teamA}-${teamB}:${side}`;
+
+type SavedFixture = { teamA: number; teamB: number; scoreA: number; scoreB: number };
+
+/** Field values of a saved fixture set (for the editor's initial state). */
+export function fieldsFromFixtures(fixtures: SavedFixture[]): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const f of fixtures) {
+    out[fixtureFieldKey(f.teamA, f.teamB, "A")] = String(f.scoreA);
+    out[fixtureFieldKey(f.teamA, f.teamB, "B")] = String(f.scoreB);
+  }
+  return out;
+}
+
+/** The save_result payload: one fixture per expected pair (call only when the editor is valid). */
+export function fixturesFromFields(pairs: Array<[number, number]>, local: Record<string, string | undefined>): SavedFixture[] {
+  return pairs.map(([a, b]) => ({ teamA: a, teamB: b, scoreA: normalizeScore(local[fixtureFieldKey(a, b, "A")]) ?? 0, scoreB: normalizeScore(local[fixtureFieldKey(a, b, "B")]) ?? 0 }));
+}
+
 /**
- * Result editor dirty state. No saved result → "Save Result". A saved result
- * whose fields still equal it (compared as numbers, so "05" == 5) → no action
- * ("Saved"). Any difference → "Save Changes". The server stays authoritative
- * for validation.
+ * Result editor dirty state over every fixture of the published teams. No
+ * saved result → "Save Result". A saved result whose fields still equal it
+ * (compared as numbers, so "05" == 5) → no action ("Saved"). Any difference
+ * → "Save Changes". Valid only when EVERY fixture has both scores. The
+ * server stays authoritative for validation.
  */
-export function resultEditorState(
-  teamNumbers: number[],
-  saved: Array<{ teamNumber: number; score: number }> | null,
-  local: Record<number, string | undefined>
+export function fixtureEditorState(
+  pairs: Array<[number, number]>,
+  saved: SavedFixture[] | null,
+  local: Record<string, string | undefined>
 ): { action: "SAVE_RESULT" | "SAVE_CHANGES" | null; valid: boolean; dirty: boolean } {
-  const values = teamNumbers.map((n) => normalizeScore(local[n]));
-  const valid = values.every((v) => v !== null);
+  const keys = pairs.flatMap(([a, b]) => [fixtureFieldKey(a, b, "A"), fixtureFieldKey(a, b, "B")]);
+  const values = keys.map((k) => normalizeScore(local[k]));
+  const valid = keys.length > 0 && values.every((v) => v !== null);
   if (!saved) return { action: "SAVE_RESULT", valid, dirty: values.some((v) => v !== null) };
-  const savedBy = new Map(saved.map((s) => [s.teamNumber, s.score]));
-  const dirty = teamNumbers.some((n, i) => values[i] !== savedBy.get(n));
+  const savedFields = fieldsFromFixtures(saved);
+  const dirty = keys.some((k, i) => values[i] !== (k in savedFields ? Number(savedFields[k]) : null));
   return { action: dirty ? "SAVE_CHANGES" : null, valid, dirty };
 }
 

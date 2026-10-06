@@ -120,7 +120,8 @@ describe("My Games — identity states", () => {
     const [draft, done] = a.recent;
     expect(done).toMatchObject({
       myTeam: { teamNumber: 1, teammates: ["Two Mate"] },
-      result: { teams: [{ teamNumber: 1, score: 3 }, { teamNumber: 2, score: 1 }], winnerTeamNumber: 1, draw: false },
+      result: { fixtures: [{ teamA: 1, teamB: 2, scoreA: 3, scoreB: 1, winner: 1 }], legacyStandings: null },
+      myRecord: [{ opponent: 2, scoreFor: 3, scoreAgainst: 1, outcome: "W" }],
       mvp: { names: ["Owen Owner"], shared: false },
       recap: { text: "Team 1 ran away with it." },
       mvpVoteOpen: false,

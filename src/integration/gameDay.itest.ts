@@ -157,11 +157,11 @@ describe("Overview read model (real data only)", () => {
     const o = await loadGroupOverview(await contextFor("owner@example.test"));
     const byId = Object.fromEntries(o.past.map((m) => [m.id, m]));
     expect(byId["m-past-result"].lifecycle.next?.label).toBe("Publish result");
-    expect(byId["m-past-result"].publishedScores).toBeNull(); // unpublished scores are not shown
+    expect(byId["m-past-result"].publishedResult).toBeNull(); // unpublished scores are not shown
     expect(byId["m-canceled"].lifecycle.phase).toBe("canceled");
     expect(byId["m-canceled"].lifecycle.next).toBeNull();
     expect(byId["m-done"].lifecycle.phase).toBe("complete");
-    expect(byId["m-done"].publishedScores).toEqual([{ teamNumber: 1, score: 5 }, { teamNumber: 2, score: 4 }]);
+    expect(byId["m-done"].publishedResult).toEqual({ fixtures: [{ teamA: 1, teamB: 2, scoreA: 5, scoreB: 4, winner: 1 }], legacyStandings: null }); // M8.1 — historical two-team row = one fixture
   });
 
   it("Needs attention lists only real next steps (next Match + recent past Matches with published teams)", async () => {

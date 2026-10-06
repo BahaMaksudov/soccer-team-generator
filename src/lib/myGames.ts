@@ -1,7 +1,8 @@
 import { prisma } from "@/lib/prisma";
 import { effectiveAttendance, type AttendanceRow } from "@/lib/attendance";
 import { participantsOf } from "@/lib/matchParticipants";
-import { publishedPostGame } from "@/lib/postGame";
+import { publishedPostGame, type ResultView } from "@/lib/postGame";
+import type { FixtureOutcome } from "@/lib/matchResults";
 import { findSport } from "@/lib/sports";
 import { formatYMDFromDate } from "@/lib/telegramFormat";
 import { toDateOnlyUTC } from "@/lib/dateOnly";
@@ -46,7 +47,14 @@ export type MyRecentGame = {
   locationName: string | null;
   matchHref: string;
   myTeam: MyTeam;
-  result: { teams: Array<{ teamNumber: number; score: number }>; winnerTeamNumber: number | null; draw: boolean } | null;
+  /** M8.1 — PUBLISHED fixtures (or labeled pre-M8.1 per-team standings). */
+  result: ResultView | null;
+  /**
+   * My team's own published fixtures, each with its own W/D/L (my team's score
+   * first). Never an invented overall result: a 2-team match has one entry; a
+   * 3-team match two. Empty without a published fixture result.
+   */
+  myRecord: Array<{ opponent: number; scoreFor: number; scoreAgainst: number; outcome: FixtureOutcome }>;
   mvp: { names: string[]; shared: boolean } | null;
   recap: { text: string } | null;
   /** The Player-of-the-Match poll is open and this Player is a published participant (existing rule). */
@@ -75,6 +83,17 @@ function myTeamIn(teamsJson: string | null | undefined, playerId: string): MyTea
   const me = participants.find((p) => p.playerId === playerId);
   if (!me) return null;
   return { teamNumber: me.teamNumber, teammates: participants.filter((p) => p.teamNumber === me.teamNumber && p.playerId !== playerId).map((p) => p.name) };
+}
+
+function recordOf(result: ResultView | null, teamNumber: number): MyRecentGame["myRecord"] {
+  return (result?.fixtures ?? [])
+    .filter((f) => f.teamA === teamNumber || f.teamB === teamNumber)
+    .map((f) => {
+      const mine = f.teamA === teamNumber;
+      const scoreFor = mine ? f.scoreA : f.scoreB;
+      const scoreAgainst = mine ? f.scoreB : f.scoreA;
+      return { opponent: mine ? f.teamB : f.teamA, scoreFor, scoreAgainst, outcome: scoreFor > scoreAgainst ? "W" : scoreFor < scoreAgainst ? "L" : "D" };
+    });
 }
 
 export async function loadMyGames(userId: string, now: Date = new Date()): Promise<MyGamesProfile[]> {
@@ -156,6 +175,7 @@ export async function loadMyGames(userId: string, now: Date = new Date()): Promi
           matchHref: href(m.id),
           myTeam,
           result: pub.result,
+          myRecord: recordOf(pub.result, myTeam.teamNumber),
           mvp: pub.mvp,
           recap: pub.recap,
           mvpVoteOpen: Boolean(m.mvp?.openedAt && !m.mvp.closedAt && !m.mvp.publishedAt),
