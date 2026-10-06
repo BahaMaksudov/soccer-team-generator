@@ -1,3 +1,5 @@
+import { normalizeRecapText } from "@/lib/recapText";
+
 /**
  * M9-D — pure client-state rules of the organizer post-game panel (kept out
  * of React so they are unit-testable).
@@ -80,16 +82,17 @@ export function syncedRecapText(current: string, previousServer: string | null |
 }
 
 /**
- * UI-5 — recap editor dirty state. "Save Recap" is actionable only when the
- * textarea holds non-empty text that differs from the SAVED recap. The
- * comparison uses the text as the server will store it (trimmed), so
- * whitespace-only edits of a saved recap are not "changes".
+ * UI-5 / M9.1 — recap editor dirty state. "Save Recap" is actionable only when
+ * the textarea holds non-empty text that differs from the SAVED recap. Both
+ * sides are compared exactly as the server stores them (normalizeRecapText —
+ * the same function save_recap uses), so whitespace-only or other no-op edits
+ * are never "changes" and Save stays disabled after a save of such text.
  * Existing backend semantics: saving an edit of a PUBLISHED recap updates the
  * published recap in place (it stays published; Telegram is not updated).
  */
 export function recapEditorState(local: string, saved: string | null | undefined): { dirty: boolean; canSave: boolean } {
-  const next = local.trim();
-  const current = (saved ?? "").trim();
+  const next = normalizeRecapText(local);
+  const current = normalizeRecapText(saved ?? "");
   const dirty = next !== current;
   return { dirty, canSave: dirty && next.length > 0 };
 }

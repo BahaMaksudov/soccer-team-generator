@@ -95,6 +95,12 @@ function weightsFor(sport: SportDefinition, stored: unknown) {
 const UNSUPPORTED_SPORT = () => NextResponse.json({ error: "This group's sport is not supported." }, { status: 400 });
 
 export async function getBalanceWeightsForContext(context: TenantContext): Promise<NextResponse> {
+  // M9.1 — balance weights are organizer configuration: OWNER/ADMIN only, also
+  // for READS (MEMBER gets the same generic 404 as every organizer endpoint).
+  // The team name stays readable: it is player-facing display data (also public
+  // via /api/public/[org]/[group]/team-name).
+  const denied = managersOnlyResponse(context);
+  if (denied) return denied;
   // M7 — defaults and allowed role keys come from the Group's own sport.
   const sport = findSport(context.activeGroup.sportKey);
   if (!sport) return UNSUPPORTED_SPORT();

@@ -5,7 +5,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { adminTenantApiPath } from "@/lib/adminTenantApi";
 import { formatLongDateOnly } from "@/lib/dateOnly";
 import { formatStartTime } from "@/lib/messaging/content";
-import type { PublishedGeneration } from "@/lib/closeAndPostUi";
+import type { PublishedGeneration, TeamsDeliveryState } from "@/lib/closeAndPostUi";
+import TeamsTelegramPost, { type TeamsPostIntent } from "./TeamsTelegramPost";
 import type { SportClientView } from "@/lib/sports";
 import { unpublishedPreviewOnScreen, type TeamsPanelMode } from "@/lib/teamAssignment";
 import { visibleRosterIds } from "@/lib/matchRosterScope";
@@ -99,7 +100,9 @@ export default function MatchWorkspace({
   const [shareUrl, setShareUrl] = useState("");
   const [edit, setEdit] = useState<{ date: string; startTime: string; locationName: string } | null>(null);
   // Telegram state of the PUBLISHED teams, from durable MessageDelivery content hashes (server).
-  const [teamsDelivery, setTeamsDelivery] = useState<string | null>(null);
+  const [teamsDelivery, setTeamsDelivery] = useState<TeamsDeliveryState | null>(null);
+  // M9.1 — the delivery record recovery actions target (uncertain → mark as sent / retry).
+  const [teamsDeliveryId, setTeamsDeliveryId] = useState<string | null>(null);
   // M9-A — Telegram team posting is hidden while an unpublished preview is on screen;
   // the post itself always sends the canonical published TeamGeneration (by id).
   const [panelMode, setPanelMode] = useState<TeamsPanelMode>("none");
@@ -130,10 +133,15 @@ export default function MatchWorkspace({
   const pollId = view?.telegram.poll?.pollId ?? null;
   const generationKey = view?.generation ? `${view.generation.id}:${view.generation.updatedAt}` : null;
   const loadTeamsDelivery = useCallback(async () => {
-    if (!view?.canManage || !pollId || !view.generation) return setTeamsDelivery(null);
+    if (!view?.canManage || !pollId || !view.generation) {
+      setTeamsDeliveryId(null);
+      return setTeamsDelivery(null);
+    }
     const q = new URLSearchParams({ pollId, teamGenerationId: view.generation.id });
     const res = await fetch(`${adminTenantApiPath({ organizationSlug, groupSlug, path: "/telegram/delivery" })}?${q}`, { cache: "no-store" });
-    setTeamsDelivery(res.ok ? (await res.json()).state ?? null : null);
+    const data = res.ok ? await res.json() : null;
+    setTeamsDelivery(data?.state ?? null);
+    setTeamsDeliveryId(data?.deliveryId ?? null);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [view?.canManage, pollId, generationKey, organizationSlug, groupSlug]);
   useEffect(() => {
@@ -188,7 +196,7 @@ export default function MatchWorkspace({
     }
   }
 
-  async function postTeams(intent: "post" | "post_updated" = "post") {
+  async function postTeams(intent: TeamsPostIntent = "post", deliveryId?: string) {
     if (!view?.telegram.poll?.pollId || !published) return;
     setBusy(true);
     setMessage(null);
@@ -196,10 +204,28 @@ export default function MatchWorkspace({
       const res = await fetch(adminTenantApiPath({ organizationSlug, groupSlug, path: "/telegram/close-and-post" }), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ pollId: view.telegram.poll.pollId, teamGenerationId: published.id, intent, ...(shareUrl.trim() ? { shareUrl: shareUrl.trim() } : {}) }),
+        body: JSON.stringify({ pollId: view.telegram.poll.pollId, teamGenerationId: published.id, intent, ...(deliveryId ? { deliveryId } : {}), ...(shareUrl.trim() ? { shareUrl: shareUrl.trim() } : {}) }),
       });
       const data = await res.json().catch(() => ({}));
       setMessage(res.ok ? (data.status === "already_posted" ? "These teams were already posted — nothing was sent again." : "Teams posted to Telegram.") : data?.error ?? "Could not post the teams.");
+      await loadTeamsDelivery();
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  // M9.1 — organizer recovery for an uncertain delivery: records the decision only (the server never sends here).
+  async function markTeamsSent(deliveryId: string) {
+    setBusy(true);
+    setMessage(null);
+    try {
+      const res = await fetch(adminTenantApiPath({ organizationSlug, groupSlug, path: "/telegram/delivery" }), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "mark_sent", deliveryId }),
+      });
+      const data = await res.json().catch(() => ({}));
+      setMessage(res.ok ? "Marked as sent. Nothing was posted to Telegram." : data?.error ?? "Could not mark the teams as sent.");
       await loadTeamsDelivery();
     } finally {
       setBusy(false);
@@ -568,14 +594,7 @@ export default function MatchWorkspace({
             )}
             {view.canManage &&
               (view.telegram.poll?.pollId ? (
-                teamsDelivery === "posted" ? (
-                  <p className="text-muted-foreground">These published teams were posted to Telegram.</p>
-                ) : (
-                  <Button type="button" size="sm" disabled={busy} onClick={() => postTeams(teamsDelivery === "updated_available" ? "post_updated" : "post")}>
-                    <Send aria-hidden="true" />
-                    {teamsDelivery === "updated_available" ? "Post Updated Teams to Telegram" : "Post Teams to Telegram"}
-                  </Button>
-                )
+                <TeamsTelegramPost state={teamsDelivery} deliveryId={teamsDeliveryId} busy={busy} onPost={postTeams} onMarkSent={markTeamsSent} />
               ) : (
                 <p className="text-muted-foreground">To post teams to Telegram, post this match&apos;s attendance poll first.</p>
               ))}

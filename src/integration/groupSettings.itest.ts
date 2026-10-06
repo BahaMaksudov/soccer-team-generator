@@ -11,8 +11,8 @@
  *  - Every API the Settings page uses (team name, balance weights,
  *    visibility, Telegram channels, Telegram voter links) keeps its existing
  *    authorization: OWNER/ADMIN 200; foreign tenant 404; MEMBER 404 for
- *    visibility / Telegram reads and for every write. (Team name and balance
- *    weights reads were already open to any member — unchanged here.)
+ *    balance weights (M9.1), visibility / Telegram reads and every write. The
+ *    team name (player-facing display data) stays readable by members.
  *
  * Guarded local TEST database only; nothing is sent (global fetch is a guard).
  */
@@ -125,9 +125,9 @@ describe("Overview / Players / Matches stay reachable (MEMBER read-only); foreig
 describe("settings APIs keep their authorization", () => {
   const memberReadable = {
     teamName: () => teamNameRoute.GET(req(), p()),
-    balanceWeights: () => weightsRoute.GET(req(), p()),
   };
   const managerOnly = {
+    balanceWeights: () => weightsRoute.GET(req(), p()),
     visibility: () => visibilityRoute.GET(req(), p()),
     telegramChannels: () => channelsRoute.GET(req(), p()),
     telegramVoters: () => votersRoute.GET(req(), p()),
@@ -141,7 +141,7 @@ describe("settings APIs keep their authorization", () => {
     await signIn("other");
     for (const [name, call] of Object.entries(reads)) expect((await call()).status, name).toBe(404);
   });
-  it("MEMBER: 404 for visibility / Telegram reads (unchanged: team name + balance weights reads stay open)", async () => {
+  it("MEMBER: 404 for balance weights / visibility / Telegram reads; team name (display data) stays readable", async () => {
     await signIn("member");
     for (const [name, call] of Object.entries(managerOnly)) expect((await call()).status, name).toBe(404);
     for (const [name, call] of Object.entries(memberReadable)) expect((await call()).status, name).toBe(200);
