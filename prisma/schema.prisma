@@ -829,7 +829,11 @@ model MatchRecap {
   id                String       @id @default(cuid())
   groupId           String
   matchId           String       @unique
+  // M9.1 — `content` is the organizer's latest SAVED working copy;
+  // `publishedContent` is the last explicitly PUBLISHED, player-visible copy
+  // (NULL = never published). Save writes only `content`; Publish copies it.
   content           String?
+  publishedContent  String?
   source            RecapSource?
   generatedContent  String?
   generatedAt       DateTime?

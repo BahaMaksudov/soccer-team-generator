@@ -87,3 +87,68 @@ describe("3 — recap editor dirty state (normalized exactly like the server)", 
     expect(recapEditorState("   ", null)).toEqual({ dirty: false, canSave: false });
   });
 });
+
+// ------------------------------------------------------------ M9.1 D — saved vs published recap (panel states)
+import { vi } from "vitest";
+import PostGameSection, { type PostGameView } from "@/app/admin/o/[organizationSlug]/g/[groupSlug]/matches/[matchId]/PostGameSection";
+import { summaryReadiness } from "@/lib/matchSummaryReadiness";
+
+describe("3D — recap panel: published / saved-not-published / saved changes not published", () => {
+  const view = (recap: PostGameView["recap"]): PostGameView => ({
+    canceled: false,
+    teamNumbers: [1, 2],
+    fixturePairs: [[1, 2]],
+    participants: [{ playerId: "a", name: "A", teamNumber: 1 }, { playerId: "b", name: "B", teamNumber: 2 }],
+    result: { fixtures: [{ teamA: 1, teamB: 2, scoreA: 1, scoreB: 0, winner: 1 }], legacyStandings: null, published: true, complete: true },
+    mvp: null,
+    mvpMaxCandidates: 10,
+    recap,
+    standardRecap: "Standard.",
+    aiConfigured: false,
+    messages: { destinationConnected: true, summary: "posted", mvpPoll: null },
+  });
+  const render = (recap: PostGameView["recap"], canManage = true) =>
+    renderToStaticMarkup(createElement(PostGameSection, { pg: view(recap), canManage, busy: false, act: vi.fn(), request: vi.fn(), notify: vi.fn() }));
+  const section = (out: string, id: string, next: string) => out.slice(out.indexOf(`id="${id}"`), next ? out.indexOf(`id="${next}"`) : undefined);
+  const saveDisabled = /<button[^>]*disabled=""[^>]*>Save Recap<\/button>/;
+
+  it("A/D: published and unchanged → Published; Save disabled; no publish button", () => {
+    const r = section(render({ content: "Recap B", source: "MANUAL", published: true, changesUnpublished: false, hasAiDraft: false }), "recap", "summary");
+    expect(r).toContain(">Published<");
+    expect(r).toMatch(saveDisabled);
+    expect(r).not.toMatch(/Publish (Recap|Changes)/);
+    expect(r).not.toContain("changes not published");
+  });
+  it("C: published with newer saved changes → 'Saved — changes not published'; Save disabled; Publish Changes offered; players keep the published recap", () => {
+    const out = render({ content: "Recap B", source: "MANUAL", published: true, changesUnpublished: true, hasAiDraft: false });
+    const r = section(out, "recap", "summary");
+    expect(r).toContain("Saved — changes not published");
+    expect(r).toMatch(saveDisabled);
+    expect(r).toContain(">Publish Changes</button>");
+    expect(r).toContain("Players keep seeing the published recap until you publish your saved changes.");
+    expect(section(out, "summary", "")).toContain("The Match Summary uses the published recap until you publish them.");
+  });
+  it("never published: Save → 'Saved, not published' and Publish Recap — never 'changes not published'", () => {
+    const r = section(render({ content: "Draft A", source: "MANUAL", published: false, changesUnpublished: false, hasAiDraft: false }), "recap", "summary");
+    expect(r).toContain("Saved, not published");
+    expect(r).toContain(">Publish Recap</button>");
+    expect(r).not.toContain("changes not published");
+    expect(r).toMatch(saveDisabled);
+  });
+  it("MEMBER read-only view renders only what the server gives it (the published copy); no editor or publish", () => {
+    const r = section(render({ content: "Recap A", source: null, published: true, changesUnpublished: false, hasAiDraft: false }, false), "recap", "");
+    expect(r).toContain("Recap A");
+    expect(r).toContain(">Published<");
+    expect(r).not.toMatch(/<textarea|Save Recap|<button[^>]*>[^<]*Publish/);
+  });
+  it("Match Summary readiness: the published recap is included; pending changes are named, never sent", () => {
+    const base = { result: { published: true }, mvp: null, messages: { summary: "posted" } };
+    const pending = summaryReadiness({ ...base, recap: { content: "Recap B", published: true, changesUnpublished: true } }, true);
+    expect(pending.items.find((i) => i.key === "recap")).toEqual({ key: "recap", label: "Match recap", included: true, note: "published version; newer saved changes not published" });
+    expect(pending.publishRecapShortcut).toBe(true);
+    const clean = summaryReadiness({ ...base, recap: { content: "Recap B", published: true, changesUnpublished: false } }, true);
+    expect(clean.items.find((i) => i.key === "recap")?.note).toBeNull();
+    expect(clean.publishRecapShortcut).toBe(false);
+    expect(summaryReadiness({ ...base, recap: { content: "Recap B", published: true, changesUnpublished: true } }, false).publishRecapShortcut).toBe(false);
+  });
+});

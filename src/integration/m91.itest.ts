@@ -11,6 +11,10 @@
  *     The team name (player-facing display data) stays readable.
  *  3. Recap save ≠ publish; neither sends anything; the Match Summary send
  *     path is unchanged.
+ *  4. Saved vs PUBLISHED recap (migration 20261010120000): the backfill keeps
+ *     historical visibility; Save writes only the working copy; Publish copies
+ *     it; every player/public surface and the Match Summary read only the
+ *     published copy; MEMBER never receives a draft.
  */
 import { describe, it, expect, vi, beforeAll, beforeEach, afterAll } from "vitest";
 
@@ -20,7 +24,13 @@ vi.mock("next-auth", () => ({ getServerSession: vi.fn(async () => session) }));
 vi.mock("next/cache", () => ({ revalidatePath: vi.fn() }));
 
 import { prisma } from "@/lib/prisma";
-import { loadMatchForViewer } from "@/lib/matchPage";
+import fs from "node:fs";
+import path from "node:path";
+import { loadMatchForViewer, resolveShareMatchView } from "@/lib/matchPage";
+import { getMatchSummaryReadiness, postGameView } from "@/lib/postGame";
+import { loadMyGames } from "@/lib/myGames";
+import { createShareLink } from "@/lib/shareLinks";
+import { requireTenantContextForSlugs } from "@/lib/tenantContext";
 import * as closePostRoute from "@/app/api/admin/o/[organizationSlug]/g/[groupSlug]/telegram/close-and-post/route";
 import * as deliveryRoute from "@/app/api/admin/o/[organizationSlug]/g/[groupSlug]/telegram/delivery/route";
 import * as weightsRoute from "@/app/api/admin/o/[organizationSlug]/g/[groupSlug]/settings/balance-weights/route";
@@ -294,5 +304,136 @@ describe("3 — recap save ≠ publish; no Telegram from either", () => {
     expect((await pg({ action: "post_message", kind: "summary" })).status).toBe(200);
     expect(tgCalls.map((c) => c.method)).toEqual(["sendMessage"]);
     expect(String(tgCalls[0].body.text)).toContain("Great game!");
+  });
+});
+
+describe("4 — saved recap (content) vs published recap (publishedContent)", () => {
+  const pg = async (body: unknown) => {
+    const res = await postGameRoute.POST(json("POST", body) as never, { params: Promise.resolve({ ...A, matchId: "m1" }) } as never);
+    return { status: res.status, body: (await res.json()) as Record<string, unknown> };
+  };
+  const row = () => prisma.matchRecap.findUniqueOrThrow({ where: { matchId: "m1" }, select: { content: true, publishedContent: true, publishedAt: true } });
+  const asPlayer = async <T,>(fn: () => Promise<T>) => {
+    const s = session;
+    session = null;
+    try {
+      return await fn();
+    } finally {
+      session = s;
+    }
+  };
+  const publicRecap = () => asPlayer(async () => (await loadMatchForViewer({ ...A, matchId: "m1" }))?.recap ?? null);
+  const organizerView = async () => (await postGameView(await requireTenantContextForSlugs(A), "m1"))!;
+  beforeEach(async () => {
+    await pg({ action: "save_result", fixtures: [{ teamA: 1, teamB: 2, scoreA: 2, scoreB: 1 }] });
+    await pg({ action: "publish_result" });
+    tgCalls = [];
+  });
+
+  it("migration backfill: published rows get publishedContent = content; saved-only and AI-draft-only rows stay NULL; content untouched", async () => {
+    const sql = fs.readFileSync(path.join(process.cwd(), "prisma/migrations/20261010120000_m91_recap_published_content/migration.sql"), "utf8");
+    const statements = sql.split("\n").filter((l) => l.trim() && !l.trim().startsWith("--")).join("\n").split(";").map((x) => x.trim()).filter(Boolean);
+    expect(statements).toEqual([
+      'ALTER TABLE "MatchRecap" ADD COLUMN "publishedContent" TEXT',
+      'UPDATE "MatchRecap" SET "publishedContent" = "content" WHERE "publishedAt" IS NOT NULL',
+    ]);
+    // Pre-M9.1 rows (as they exist in Production before the migration): no publishedContent yet.
+    await prisma.match.createMany({ data: ["m-pub", "m-saved", "m-ai"].map((id) => ({ id, groupId: "ga", date: DAY })) });
+    await prisma.matchRecap.createMany({
+      data: [
+        { groupId: "ga", matchId: "m-pub", content: "Published long ago.", publishedAt: new Date("2026-09-01T00:00:00Z") },
+        { groupId: "ga", matchId: "m-saved", content: "Saved, never published." },
+        { groupId: "ga", matchId: "m-ai", generatedContent: "AI draft only." },
+      ],
+    });
+    await prisma.$executeRawUnsafe(statements[1]); // the migration's own backfill statement
+    const after = Object.fromEntries((await prisma.matchRecap.findMany({ where: { matchId: { in: ["m-pub", "m-saved", "m-ai"] } } })).map((r) => [r.matchId, [r.content, r.publishedContent]]));
+    expect(after).toEqual({ "m-pub": ["Published long ago.", "Published long ago."], "m-saved": ["Saved, never published.", null], "m-ai": [null, null] });
+  });
+
+  it("save → publish → edit+save → republish, with what players, LINK, MEMBER, My Games and the Match Summary see at each step", async () => {
+    await prisma.group.update({ where: { id: "ga" }, data: { visibility: "LINK" } });
+    await prisma.player.update({ where: { id: "p1" }, data: { userId: "u-member" } });
+    const { token } = await createShareLink(await requireTenantContextForSlugs(A));
+    const linkRecap = () => asPlayer(async () => (await resolveShareMatchView(token, "m1"))?.recap ?? null);
+    const memberSees = async () => {
+      await signIn("member");
+      const v = await organizerView();
+      const mine = (await loadMyGames("u-member", new Date("2026-10-20T00:00:00Z")))[0]?.recent.find((g) => g.matchId === "m1")?.recap ?? null;
+      const authed = (await loadMatchForViewer({ ...A, matchId: "m1" }))?.recap ?? null;
+      await signIn("owner");
+      return { workspace: v.recap, myGames: mine, page: authed };
+    };
+
+    // 3 — new recap save: working copy only.
+    expect((await pg({ action: "save_recap", content: "Recap A" })).body).toMatchObject({ ok: true, published: false });
+    expect(await row()).toMatchObject({ content: "Recap A", publishedContent: null, publishedAt: null });
+    expect(await linkRecap()).toBeNull();
+    expect(await memberSees()).toEqual({ workspace: null, myGames: null, page: null });
+    expect((await organizerView()).recap).toMatchObject({ content: "Recap A", published: false, changesUnpublished: false });
+
+    // 4 — first publish copies it.
+    expect((await pg({ action: "publish_recap" })).status).toBe(200);
+    expect(await row()).toMatchObject({ content: "Recap A", publishedContent: "Recap A" });
+    expect(await linkRecap()).toEqual({ text: "Recap A" });
+    expect((await organizerView()).recap).toMatchObject({ content: "Recap A", published: true, changesUnpublished: false });
+
+    // 5/6 — edit + save: the published text stays player-visible everywhere.
+    expect((await pg({ action: "save_recap", content: "Recap B" })).body).toMatchObject({ ok: true, published: true, changesUnpublished: true });
+    expect(await row()).toMatchObject({ content: "Recap B", publishedContent: "Recap A" });
+    expect(await linkRecap()).toEqual({ text: "Recap A" });
+    const member = await memberSees();
+    expect(member).toEqual({ workspace: { content: "Recap A", source: null, published: true, changesUnpublished: false, hasAiDraft: false }, myGames: { text: "Recap A" }, page: { text: "Recap A" } });
+    expect(JSON.stringify(member)).not.toContain("Recap B");
+    expect(JSON.stringify(await asPlayer(() => resolveShareMatchView(token, "m1")))).not.toContain("Recap B");
+    // 10 — organizers edit the working copy.
+    expect((await organizerView()).recap).toMatchObject({ content: "Recap B", published: true, changesUnpublished: true });
+
+    // 11 — the Match Summary uses the PUBLISHED recap (A), never the saved draft (B).
+    const readiness = (await getMatchSummaryReadiness(await requireTenantContextForSlugs(A), "m1"))!;
+    expect(readiness.items.find((i) => i.key === "recap")).toMatchObject({ included: true, note: "published version; newer saved changes not published" });
+    expect(readiness.publishRecapShortcut).toBe(true);
+    expect((await pg({ action: "post_message", kind: "summary" })).status).toBe(200);
+    expect(String(tgCalls.at(-1)!.body.text)).toContain("Recap A");
+    expect(String(tgCalls.at(-1)!.body.text)).not.toContain("Recap B");
+    expect(tgCalls.map((c) => c.method)).toEqual(["sendMessage"]);
+
+    // 7 — republish: the new text becomes the published one.
+    expect((await pg({ action: "publish_recap" })).status).toBe(200);
+    expect(await row()).toMatchObject({ content: "Recap B", publishedContent: "Recap B" });
+    expect(await linkRecap()).toEqual({ text: "Recap B" });
+    expect((await organizerView()).recap).toMatchObject({ published: true, changesUnpublished: false });
+    expect((await organizerView()).messages?.summary).toBe("updated_available"); // posting again stays an explicit action
+    // 12/13/14 — save and publish never sent anything; only the one explicit summary post did.
+    expect(tgCalls.map((c) => c.method)).toEqual(["sendMessage"]);
+    expect(otherNetwork).toBe(0);
+  });
+
+  it("standard recap and AI drafts follow Save/Publish (AI not configured → fallback; no OpenAI request)", async () => {
+    const standard = (await organizerView()).standardRecap!;
+    const ai = await pg({ action: "generate_recap" });
+    expect(ai.status).toBe(503);
+    expect(ai.body.fallback).toBe(standard);
+    expect(await prisma.matchRecap.count({ where: { matchId: "m1" } })).toBe(0); // a failed AI draft stores nothing
+    expect((await pg({ action: "save_recap", content: standard })).body).toMatchObject({ source: "DETERMINISTIC", published: false });
+    expect(await publicRecap()).toBeNull();
+    await pg({ action: "publish_recap" });
+    expect(await publicRecap()).toEqual({ text: standard });
+    expect(otherNetwork).toBe(0);
+    expect(tgCalls).toEqual([]);
+  });
+
+  it("publishing is idempotent; MEMBER and other tenants cannot save or publish (404, nothing changes)", async () => {
+    await pg({ action: "save_recap", content: "Recap A" });
+    await pg({ action: "publish_recap" });
+    const first = await row();
+    await pg({ action: "publish_recap" });
+    expect(await row()).toEqual(first);
+    for (const who of ["member", "other"]) {
+      await signIn(who);
+      expect((await pg({ action: "save_recap", content: "Hijack" })).status).toBe(404);
+      expect((await pg({ action: "publish_recap" })).status).toBe(404);
+    }
+    expect(await row()).toEqual(first);
   });
 });

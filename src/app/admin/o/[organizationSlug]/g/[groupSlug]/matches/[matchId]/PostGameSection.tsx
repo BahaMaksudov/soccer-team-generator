@@ -56,7 +56,8 @@ export type PostGameView = {
     selection: { playerId: string; name: string; teamNumber: number | null } | null;
   } | null;
   mvpMaxCandidates: number;
-  recap: { content: string | null; source: string | null; published: boolean; hasAiDraft: boolean } | null;
+  /** M9.1 — `content` = saved working copy (organizers) / published copy (MEMBER); `changesUnpublished` = saved changes not yet published. */
+  recap: { content: string | null; source: string | null; published: boolean; changesUnpublished?: boolean; hasAiDraft: boolean } | null;
   standardRecap: string | null;
   aiConfigured: boolean;
   // M9-D — Match Summary is the only post-game Telegram message (plus the Player Vote poll).
@@ -431,7 +432,7 @@ export default function PostGameSection({
         id="recap"
         title="Match Recap"
         icon={<FileText className="size-5" />}
-        action={pg.recap?.published ? <StateChip tone="done">Published</StateChip> : pg.recap?.content ? <StateChip tone="pending">Saved, not published</StateChip> : <StateChip tone="neutral">Not written</StateChip>}
+        action={<RecapStateChip recap={pg.recap} />}
       >
         <div className="space-y-3 text-sm">
         {!pg.standardRecap ? (
@@ -479,17 +480,17 @@ export default function PostGameSection({
             {aiMessage && <p role="alert" className="text-xs text-destructive">{aiMessage}</p>}
             <label htmlFor="recap-text" className="sr-only">Recap text</label>
             <textarea id="recap-text" className="w-full rounded-tbp-md border border-input bg-card p-3 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" rows={5} maxLength={1200} value={recapText} onChange={(e) => setRecapText(e.target.value)} placeholder="Recap text" />
-            {recapEditor.dirty && pg.recap?.published && (
-              <p className="text-xs text-muted-foreground">Saving updates the published recap on the match page. Telegram is not updated until you post the Match Summary.</p>
+            {(recapEditor.dirty || pg.recap?.changesUnpublished) && pg.recap?.published && (
+              <p className="text-xs text-muted-foreground">Players keep seeing the published recap until you publish your saved changes. Telegram is not updated until you post the Match Summary.</p>
             )}
             <div className="flex flex-wrap items-center gap-2">
-              <Button type="button" variant="outline" disabled={busy || !recapEditor.canSave} onClick={() => act({ action: "save_recap", content: recapText }, pg.recap?.published ? "Recap updated. Telegram was not updated." : "Recap saved (not published).")}>
+              <Button type="button" variant="outline" disabled={busy || !recapEditor.canSave} onClick={() => act({ action: "save_recap", content: recapText }, pg.recap?.published ? "Changes saved — not published yet. Players still see the published recap." : "Recap saved (not published).")}>
                 Save Recap
               </Button>
               {recapEditor.dirty ? <StateChip tone="pending">Unsaved changes</StateChip> : pg.recap?.content ? <span className="text-xs font-semibold text-primary">Saved.</span> : null}
-              {pg.recap?.content && !pg.recap.published && !recapEditor.dirty && (
+              {pg.recap?.content && (!pg.recap.published || pg.recap.changesUnpublished) && !recapEditor.dirty && (
                 <Button type="button" disabled={busy} onClick={() => act({ action: "publish_recap" }, "Recap published on the match page. Nothing was sent.")}>
-                  Publish Recap
+                  {pg.recap.changesUnpublished ? "Publish Changes" : "Publish Recap"}
                 </Button>
               )}
             </div>
@@ -530,7 +531,11 @@ export default function PostGameSection({
             </div>
             {readiness.publishRecapShortcut && (
               <div className="space-y-2 rounded-tbp bg-card p-3 text-sm text-card-foreground">
-                <p>Match recap is saved but not published. Publish it to include it in the Match Summary.</p>
+                <p>
+                  {pg.recap?.changesUnpublished
+                    ? "Your latest recap changes are saved but not published. The Match Summary uses the published recap until you publish them."
+                    : "Match recap is saved but not published. Publish it to include it in the Match Summary."}
+                </p>
                 <Button type="button" size="sm" disabled={busy} onClick={() => act({ action: "publish_recap" }, "Recap published on the match page. Nothing was sent.")}>
                   Publish Recap
                 </Button>
@@ -589,7 +594,7 @@ function PostGameReadOnly({ pg }: { pg: PostGameView }) {
         id="recap"
         title="Match Recap"
         icon={<FileText className="size-5" />}
-        action={pg.recap?.published ? <StateChip tone="done">Published</StateChip> : pg.recap?.content ? <StateChip tone="pending">Saved, not published</StateChip> : <StateChip tone="neutral">Not written</StateChip>}
+        action={pg.recap?.published ? <StateChip tone="done">Published</StateChip> : <StateChip tone="neutral">Not published</StateChip>}
       >
         {pg.recap?.content ? <p className="whitespace-pre-line text-sm">{pg.recap.content}</p> : <p className="text-sm text-muted-foreground">No recap yet.</p>}
       </SectionCard>
@@ -611,4 +616,12 @@ function PostGameReadOnly({ pg }: { pg: PostGameView }) {
       </section>
     </div>
   );
+}
+
+/** M9.1 — organizer recap state: never published / saved, not published / published / saved changes not published. */
+function RecapStateChip({ recap }: { recap: PostGameView["recap"] }) {
+  if (recap?.published && recap.changesUnpublished) return <StateChip tone="pending">Saved — changes not published</StateChip>;
+  if (recap?.published) return <StateChip tone="done">Published</StateChip>;
+  if (recap?.content) return <StateChip tone="pending">Saved, not published</StateChip>;
+  return <StateChip tone="neutral">Not written</StateChip>;
 }

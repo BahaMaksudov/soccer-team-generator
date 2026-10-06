@@ -253,7 +253,8 @@ function factsOf(m: LoadedMatch, sportKey: string): PostGameFacts {
  */
 function summaryMessage(m: LoadedMatch, viewUrl: string | null, sportKey: string): OutgoingMessage | string {
   if (!m.result?.publishedAt) return "Publish the result before posting the match summary.";
-  const recap = m.recap?.publishedAt && m.recap.content ? m.recap.content : null;
+  // M9.1 — the PUBLISHED recap (publishedContent), never the saved working copy.
+  const recap = m.recap?.publishedAt && m.recap.publishedContent ? m.recap.publishedContent : null;
   return renderSummaryMessage({ ...factsOf(m, sportKey), mvpNames: mvpNames(m), recap }, viewUrl);
 }
 
@@ -504,11 +505,18 @@ export async function runPostGameAction(context: TenantContext, matchId: string,
         update: { content, source, updatedByUserId: context.user.id },
         create: { matchId: m.id, groupId, content, source, updatedByUserId: context.user.id },
       });
-      return NextResponse.json({ ok: true, source, published: Boolean(m.recap?.publishedAt) });
+      // M9.1 — Save writes ONLY the working copy (content): the published recap
+      // (publishedContent) stays player-visible until the organizer publishes again.
+      return NextResponse.json({ ok: true, source, published: Boolean(m.recap?.publishedAt), changesUnpublished: Boolean(m.recap?.publishedAt) && content !== m.recap?.publishedContent });
     }
     case "publish_recap": {
       if (!m.recap?.content) return fail("Save the recap first.");
-      await prisma.matchRecap.update({ where: { matchId: m.id }, data: { publishedAt: m.recap.publishedAt ?? new Date(), publishedByUserId: context.user.id } });
+      // M9.1 — publishing copies the saved working copy to the player-visible copy.
+      // Idempotent (same text → same state); sends nothing.
+      await prisma.matchRecap.update({
+        where: { matchId: m.id },
+        data: { publishedContent: m.recap.content, publishedAt: m.recap.publishedAt ?? new Date(), publishedByUserId: context.user.id },
+      });
       return NextResponse.json({ ok: true });
     }
 
@@ -595,7 +603,9 @@ export async function postGameView(context: TenantContext, matchId: string) {
     result: m.result ? { ...resultView(parseResult(m.result.scoresJson)), published: m.result.publishedAt !== null, complete: isCompleteFor(parseResult(m.result.scoresJson), teamNumbersOf(participants)) } : null,
     mvp,
     mvpMaxCandidates: MVP_POLL_MAX_OPTIONS,
-    recap: m.recap ? { content: m.recap.content, source: m.recap.source, published: m.recap.publishedAt !== null, hasAiDraft: m.recap.generatedContent !== null } : null,
+    // M9.1 — organizers get the saved working copy (and whether it differs from the
+    // published one); MEMBER gets ONLY the published recap (never a draft).
+    recap: m.recap ? recapView(m.recap, manager) : null,
     standardRecap: facts ? deterministicRecap(facts) : null,
     aiConfigured: aiConfigured(),
     messages,
@@ -615,15 +625,31 @@ export function resultView(r: MatchResultData | null): ResultView {
   return { fixtures: r.fixtures.map((f) => ({ teamA: f.teamA, teamB: f.teamB, scoreA: f.scoreA, scoreB: f.scoreB, winner: fixtureWinner(f) })), legacyStandings: null };
 }
 
+type RecapRow = { content: string | null; publishedContent: string | null; source: string | null; publishedAt: Date | null; generatedContent: string | null };
+
+/**
+ * M9.1 — the recap as the Match Workspace sees it. `changesUnpublished`: a
+ * published recap whose saved working copy differs (players still see the
+ * published copy). Non-managers receive the published copy only.
+ */
+function recapView(r: RecapRow, manager: boolean) {
+  const published = r.publishedAt !== null && r.publishedContent !== null;
+  if (!manager) {
+    return published ? { content: r.publishedContent, source: null, published: true, changesUnpublished: false, hasAiDraft: false } : null;
+  }
+  return { content: r.content, source: r.source, published, changesUnpublished: published && r.content !== r.publishedContent, hasAiDraft: r.generatedContent !== null };
+}
+
 /** Player-facing published post-game data (allow-list; display names only). */
-export function publishedPostGame(m: { result: { scoresJson: string; publishedAt: Date | null } | null; mvp: { winnerPlayerIds: string[]; publishedAt: Date | null } | null; recap: { content: string | null; publishedAt: Date | null } | null }, teamsJson: string | null) {
+export function publishedPostGame(m: { result: { scoresJson: string; publishedAt: Date | null } | null; mvp: { winnerPlayerIds: string[]; publishedAt: Date | null } | null; recap: { publishedContent: string | null; publishedAt: Date | null } | null }, teamsJson: string | null) {
   const names = new Map(participantsOf(teamsJson).map((p) => [p.playerId, p.name]));
   // M8.1 — PUBLISHED fixtures only; an unpublished result never appears.
   const parsed = m.result?.publishedAt ? parseResult(m.result.scoresJson) : null;
   return {
     result: parsed ? resultView(parsed) : null,
     mvp: m.mvp?.publishedAt && m.mvp.winnerPlayerIds.length ? { names: m.mvp.winnerPlayerIds.map((id) => names.get(id) ?? "Player"), shared: m.mvp.winnerPlayerIds.length > 1 } : null,
-    recap: m.recap?.publishedAt && m.recap.content ? { text: m.recap.content } : null,
+    // M9.1 — the published copy only; the saved working copy is never even loaded for players.
+    recap: m.recap?.publishedAt && m.recap.publishedContent ? { text: m.recap.publishedContent } : null,
   };
 }
 

@@ -18,7 +18,7 @@ export function summaryReadiness(
   pg: {
     result: { published: boolean } | null;
     mvp: { published: boolean; closed?: boolean; method?: "PLAYER_VOTE" | "ORGANIZER_SELECTION" | null; selection?: { playerId: string } | null } | null;
-    recap: { content: string | null; published: boolean } | null;
+    recap: { content: string | null; published: boolean; changesUnpublished?: boolean } | null;
     messages: { summary: string | null } | null;
   },
   canManage: boolean
@@ -31,14 +31,16 @@ export function summaryReadiness(
         ? "vote closed, not published"
         : "not published";
   const recapSaved = Boolean(pg.recap?.content);
-  const recapNote = pg.recap?.published ? null : recapSaved ? "saved, not published" : "not published";
+  // M9.1 — a published recap with newer saved changes: the summary uses the PUBLISHED version.
+  const recapChanges = Boolean(pg.recap?.published && pg.recap.changesUnpublished);
+  const recapNote = pg.recap?.published ? (recapChanges ? "published version; newer saved changes not published" : null) : recapSaved ? "saved, not published" : "not published";
   return {
     items: [
       { key: "result", label: "Final result", included: Boolean(pg.result?.published), note: pg.result?.published ? null : "not published" },
       { key: "mvp", label: "Player of the Match", included: Boolean(pg.mvp?.published), note: mvpNote },
       { key: "recap", label: "Match recap", included: Boolean(pg.recap?.published), note: recapNote },
     ],
-    publishRecapShortcut: canManage && recapSaved && !pg.recap?.published,
+    publishRecapShortcut: canManage && recapSaved && (!pg.recap?.published || recapChanges),
     summaryChanged: pg.messages?.summary === "updated_available",
   };
 }

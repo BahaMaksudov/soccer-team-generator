@@ -1540,6 +1540,11 @@ describe("M9-D — recap", () => {
     expect(String(msgs().at(-1)!.body.text)).toContain(`/m/${id}`);
     await pg(id, { action: "save_recap", content: "Corrected recap." });
     expect(msgs()).toHaveLength(1);
+    // M9.1 — a SAVED change is not published: players and the summary keep the published recap.
+    expect((await postGameOf(id)).messages.summary).toBe("posted");
+    expect((await postGameOf(id)).recap).toMatchObject({ content: "Corrected recap.", published: true, changesUnpublished: true });
+    expect((await pg(id, { action: "publish_recap" })).status).toBe(200);
+    expect(msgs()).toHaveLength(1); // publishing sends nothing
     expect((await postGameOf(id)).messages.summary).toBe("updated_available"); // 40
     expect((await pgJson(id, { action: "post_message", kind: "summary", intent: "post_updated" })).body.state).toBe("posted");
     expect(String(msgs().at(-1)!.body.text)).toContain("Corrected recap.");

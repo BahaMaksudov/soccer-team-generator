@@ -213,8 +213,11 @@ describe("match workflow regression (OWNER, nothing sent)", () => {
     expect((await loadMatchForViewer({ ...A, matchId: id }))?.recap).toBeNull();
     expect((await pg({ action: "publish_recap" })).status).toBe(200);
     expect((await loadMatchForViewer({ ...A, matchId: id }))?.recap?.text).toBe(pgView.standardRecap);
-    // Editing a PUBLISHED recap updates it in place (existing semantics, unchanged).
+    // M9.1 — saving an edit of a PUBLISHED recap does not publish it: players keep the
+    // published text until the organizer explicitly publishes the change.
     expect((await pg({ action: "save_recap", content: "Edited after publishing." })).status).toBe(200);
+    expect((await loadMatchForViewer({ ...A, matchId: id }))?.recap?.text).toBe(pgView.standardRecap);
+    expect((await pg({ action: "publish_recap" })).status).toBe(200);
     expect((await loadMatchForViewer({ ...A, matchId: id }))?.recap?.text).toBe("Edited after publishing.");
 
     const ctx = await requireTenantContextForSlugs(A);
