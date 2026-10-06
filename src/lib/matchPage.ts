@@ -59,7 +59,7 @@ async function buildPlayerMatchView(
       generation: { select: { teamsJson: true, groupId: true } },
       result: { select: { scoresJson: true, publishedAt: true } },
       mvp: { select: { winnerPlayerIds: true, publishedAt: true } },
-      recap: { select: { content: true, publishedAt: true } },
+      recap: { select: { publishedContent: true, publishedAt: true } },
     },
   });
   if (!match) return null;

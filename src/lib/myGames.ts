@@ -141,7 +141,7 @@ export async function loadMyGames(userId: string, now: Date = new Date()): Promi
             generation: { select: { teamsJson: true } },
             result: { select: { scoresJson: true, publishedAt: true } },
             mvp: { select: { winnerPlayerIds: true, publishedAt: true, openedAt: true, closedAt: true } },
-            recap: { select: { content: true, publishedAt: true } },
+            recap: { select: { publishedContent: true, publishedAt: true } },
           },
         }),
       ]);

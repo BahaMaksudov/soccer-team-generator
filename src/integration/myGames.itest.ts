@@ -76,7 +76,7 @@ async function seed() {
   // m-done: everything published. m-draft: result saved but NOT published; MVP vote open; recap saved not published.
   await prisma.matchResult.create({ data: { groupId: "ga", matchId: "m-done", scoresJson: JSON.stringify([{ teamNumber: 1, score: 3 }, { teamNumber: 2, score: 1 }]), publishedAt: NOW } });
   await prisma.matchMvp.create({ data: { groupId: "ga", matchId: "m-done", winnerPlayerIds: ["po"], method: "ORGANIZER_SELECTION", selectedPlayerId: "po", publishedAt: NOW } });
-  await prisma.matchRecap.create({ data: { groupId: "ga", matchId: "m-done", content: "Team 1 ran away with it.", source: "MANUAL", publishedAt: NOW } });
+  await prisma.matchRecap.create({ data: { groupId: "ga", matchId: "m-done", content: "Team 1 ran away with it.", publishedContent: "Team 1 ran away with it.", source: "MANUAL", publishedAt: NOW } });
   await prisma.matchResult.create({ data: { groupId: "ga", matchId: "m-draft", scoresJson: JSON.stringify([{ teamNumber: 1, score: 9 }, { teamNumber: 2, score: 9 }]) } });
   await prisma.matchMvp.create({ data: { groupId: "ga", matchId: "m-draft", candidatePlayerIds: ["pm", "p2", "p3", "po"], openedAt: NOW, method: "PLAYER_VOTE" } });
   await prisma.matchRecap.create({ data: { groupId: "ga", matchId: "m-draft", content: "SECRET DRAFT", source: "MANUAL" } });

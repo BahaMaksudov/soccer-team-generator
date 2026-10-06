@@ -1,5 +1,6 @@
 import { AiError, openAiCompleter, type AiErrorCode, type ChatCompleter } from "@/lib/ai/openai";
 import { fixtureWinner, type MatchResultData } from "@/lib/matchResults";
+import { normalizeRecapText } from "@/lib/recapText";
 
 /**
  * M9-D — Match recap facts, deterministic recap and the AI language layer.
@@ -171,14 +172,9 @@ export const RECAP_SYSTEM_PROMPT = [
   "Return only the recap text.",
 ].join("\n");
 
-/** Plain text, bounded; null when unusable. */
+/** Plain text (src/lib/recapText.ts — the same rules the editor uses); null when unusable. */
 export function sanitizeRecapText(raw: string): string | null {
-  const text = raw
-    .replace(/<[^>]*>/g, "")
-    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, "")
-    .replace(/[ \t]+/g, " ")
-    .replace(/\n{3,}/g, "\n\n")
-    .trim();
+  const text = normalizeRecapText(raw);
   return text.length === 0 ? null : text;
 }
 
