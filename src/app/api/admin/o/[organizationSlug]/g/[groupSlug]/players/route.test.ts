@@ -14,6 +14,8 @@ vi.mock("@/lib/prisma", () => ({
       findMany: (...args: unknown[]) => mockFindMany(...args),
       create: (...args: unknown[]) => mockCreate(...args),
     },
+    // M9.2 — the organizer DTO's rating reads the Group's stored balance weights (none here → sport default).
+    groupSetting: { findUnique: async () => null },
   },
 }));
 
