@@ -16,7 +16,9 @@ import { sportMessaging } from "@/lib/sports";
 import { callTelegram, TelegramApiRejectionError } from "@/lib/telegramApi";
 import { resolveViewUrl } from "@/lib/telegramCloseAndPost";
 import { aiConfigured } from "@/lib/ai/openai";
-import { participantsOf } from "@/lib/matchParticipants";
+import { participantsOf, type Participant } from "@/lib/matchParticipants";
+import { effectiveAttendance, type AttendanceRow } from "@/lib/attendance";
+import { communityMemberIds } from "@/lib/communities";
 import { applyTelegramMvpAnswer } from "@/lib/telegramMvp";
 import { buildRecapFacts, deterministicRecap, generateAiRecap, RECAP_MAX_LENGTH, sanitizeRecapText, type RecapFacts } from "@/lib/recap";
 import { fixturePairs, fixtureWinner, isCompleteFor, parseResult, serializeFixtures, validateFixtures, type FixtureInput, type MatchResultData } from "@/lib/matchResults";
@@ -56,6 +58,9 @@ async function loadMatch(context: TenantContext, matchId: string) {
       locationName: true,
       status: true,
       telegramChatId: true,
+      communityId: true,
+      attendanceClosedAt: true,
+      attendance: { select: { playerId: true, participantStatus: true, participantSource: true, participantRespondedAt: true, overrideStatus: true, overrideAt: true } },
       generation: { select: { teamsJson: true, groupId: true } },
       result: true,
       mvp: true,
@@ -64,6 +69,20 @@ async function loadMatch(context: TenantContext, matchId: string) {
   });
 }
 type LoadedMatch = NonNullable<Awaited<ReturnType<typeof loadMatch>>>;
+
+/**
+ * M9.2 — Player of the Match ELIGIBILITY (candidates), the same set for the
+ * Telegram vote, the organizer selection and the web: the Players who
+ * actually took part — on this Match's PUBLISHED teams — who are members of
+ * the Match's Community (when it has one) and are not marked Not Playing.
+ * Community membership alone never makes anyone eligible; voting rights
+ * (published participants) are unchanged.
+ */
+async function potmEligible(groupId: string, m: LoadedMatch, participants: Participant[]): Promise<Participant[]> {
+  const members = m.communityId ? new Set(await communityMemberIds(groupId, m.communityId)) : null;
+  const byPlayer = new Map(m.attendance.map((r) => [r.playerId, r as AttendanceRow]));
+  return participants.filter((p) => (!members || members.has(p.playerId)) && effectiveAttendance(byPlayer.get(p.playerId), m.attendanceClosedAt).status !== "NOT_PLAYING");
+}
 
 // ------------------------------------------------------------------ MVP tally
 
@@ -291,6 +310,8 @@ export async function runPostGameAction(context: TenantContext, matchId: string,
   if (m.status === "CANCELED") return fail("This match is canceled. Reopen it before recording post-game details.");
   const participants = participantsOf(m.generation?.teamsJson);
   const participantIds = new Set(participants.map((p) => p.playerId));
+  const eligible = await potmEligible(groupId, m, participants);
+  const eligibleIds = new Set(eligible.map((p) => p.playerId));
   const voteLocked = await playerVoteLocked(groupId, m.id, m.mvp);
   const method = effectiveMvpMethod(m.mvp, voteLocked);
 
@@ -351,15 +372,15 @@ export async function runPostGameAction(context: TenantContext, matchId: string,
       let candidates = m.mvp?.candidatePlayerIds?.length ? m.mvp.candidatePlayerIds : null;
       if (body.candidateIds) {
         const unique = [...new Set(body.candidateIds)];
-        if (unique.some((id) => !participantIds.has(id))) return fail("Candidates must be players of this match's published teams.", 404);
+        if (unique.some((id) => !eligibleIds.has(id))) return fail("Candidates must be players who played in this match.", 404);
         if (candidates && candidates.join() !== unique.join()) return fail("The MVP vote already started with other candidates.", 409);
         candidates = unique;
       }
       if (!candidates) {
-        if (participants.length > MVP_POLL_MAX_OPTIONS) {
+        if (eligible.length > MVP_POLL_MAX_OPTIONS) {
           return fail(`A Telegram poll can list at most ${MVP_POLL_MAX_OPTIONS} players. Choose a shortlist of candidates.`, 400, { code: "SHORTLIST_REQUIRED" });
         }
-        candidates = participants.map((p) => p.playerId);
+        candidates = eligible.map((p) => p.playerId);
       }
       if (candidates.length < 2 || candidates.length > MVP_POLL_MAX_OPTIONS) return fail(`Choose between 2 and ${MVP_POLL_MAX_OPTIONS} candidates.`);
       // Option text = display name; duplicates are disambiguated by team so every option is distinct.
@@ -426,8 +447,8 @@ export async function runPostGameAction(context: TenantContext, matchId: string,
       if (!m.result?.publishedAt) return fail("Publish the final result before choosing Player of the Match.");
       if (m.mvp?.publishedAt) return fail("Player of the Match is already published for this match.", 409, { code: "MVP_LOCKED" });
       if (voteLocked) return fail("A player vote has already started for this match; it can't be replaced by an organizer selection.", 409, { code: "MVP_METHOD_LOCKED" });
-      // Only a Player of this Match's PUBLISHED teams (foreign/unknown ids are indistinguishable).
-      if (!participantIds.has(body.playerId)) return fail("Player not found", 404);
+      // Only an eligible participant (published teams, Match Community, not Not Playing); foreign/unknown ids are indistinguishable.
+      if (!eligibleIds.has(body.playerId)) return fail("Player not found", 404);
       await prisma.matchMvp.upsert({
         where: { matchId: m.id },
         update: { method: "ORGANIZER_SELECTION", selectedPlayerId: body.playerId, selectedByUserId: context.user.id, selectedAt: new Date() },
@@ -446,7 +467,7 @@ export async function runPostGameAction(context: TenantContext, matchId: string,
         const denied = managersOnlyResponse(context);
         if (denied) return denied;
         const selected = m.mvp?.selectedPlayerId;
-        if (!selected || !participantIds.has(selected)) return fail("Save a Player of the Match selection first.");
+        if (!selected || !eligibleIds.has(selected)) return fail("Save a Player of the Match selection first.");
         await prisma.matchMvp.update({
           where: { matchId: m.id },
           // decision stays NULL: it only describes how a PLAYER_VOTE was resolved.
@@ -551,6 +572,7 @@ export async function postGameView(context: TenantContext, matchId: string) {
   const participants = participantsOf(m.generation?.teamsJson);
   const participantIds = new Set(participants.map((p) => p.playerId));
   const nameOf = new Map(participants.map((p) => [p.playerId, p.name]));
+  const eligible = await potmEligible(groupId, m, participants);
   const facts = recapFactsOf(m, context.activeGroup.sportKey);
 
   const voteLocked = await playerVoteLocked(groupId, m.id, m.mvp);
@@ -599,7 +621,8 @@ export async function postGameView(context: TenantContext, matchId: string) {
     teamNumbers: teamNumbersOf(participants),
     // M8.1 — the fixtures this match's result consists of (every pair of published teams once).
     fixturePairs: fixturePairs(teamNumbersOf(participants)),
-    participants: participants.map((p) => ({ playerId: p.playerId, name: p.name, teamNumber: p.teamNumber })),
+    // M9.2 — Player of the Match candidates (eligible participants only); the vote's eligible voters are all participants.
+    participants: eligible.map((p) => ({ playerId: p.playerId, name: p.name, teamNumber: p.teamNumber })),
     result: m.result ? { ...resultView(parseResult(m.result.scoresJson)), published: m.result.publishedAt !== null, complete: isCompleteFor(parseResult(m.result.scoresJson), teamNumbersOf(participants)) } : null,
     mvp,
     mvpMaxCandidates: MVP_POLL_MAX_OPTIONS,

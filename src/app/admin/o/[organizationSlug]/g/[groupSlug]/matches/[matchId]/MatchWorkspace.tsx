@@ -46,6 +46,12 @@ type MatchView = {
   canManage: boolean;
   roster: RosterPlayer[];
   counts: { PLAYING: number; MAYBE: number; NOT_PLAYING: number; NO_RESPONSE: number };
+  /** M9.2 — eligible roster size (the four counts add up to it). */
+  rosterSize?: number;
+  /** M9.2 — the Match's Community (null = legacy Match, whole-Group roster). */
+  community?: { id: string; name: string; isActive: boolean } | null;
+  /** OWNER/ADMIN: the Group's active Communities (to assign one to a legacy Match). */
+  communities?: Array<{ id: string; name: string }>;
   defaultSelection: string[];
   generation: { id: string; date: string; updatedAt: string; teams: Array<{ teamNumber: number; players: Array<{ id: string; firstName: string; lastName: string; position: string }> }> } | null;
   // M9-B — selected chat's default player scope (ids only); chats/selection/suggestions are OWNER/ADMIN only.
@@ -214,6 +220,36 @@ export default function MatchWorkspace({
     }
   }
 
+  // M9.2 — assign a Community to a legacy Match (server validates it is this Group's).
+  async function setCommunity(communityId: string) {
+    setBusy(true);
+    setMessage(null);
+    try {
+      const res = await fetch(api(""), { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ communityId }) });
+      const data = await res.json().catch(() => ({}));
+      setMessage(res.ok ? "Community saved for this match. Nothing was sent." : data?.error ?? "Could not save the community.");
+      await load();
+    } finally {
+      setBusy(false);
+    }
+  }
+  async function addToCommunity(playerId: string) {
+    if (!view?.community) return;
+    setBusy(true);
+    setMessage(null);
+    try {
+      const res = await fetch(adminTenantApiPath({ organizationSlug, groupSlug, path: `/communities/${view.community.id}/players` }), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ playerId }),
+      });
+      setMessage(res.ok ? `Added to ${view.community.name}.` : "Could not add the player to the community.");
+      await load();
+    } finally {
+      setBusy(false);
+    }
+  }
+
   // M9.1 — organizer recovery for an uncertain delivery: records the decision only (the server never sends here).
   async function markTeamsSent(deliveryId: string) {
     setBusy(true);
@@ -237,7 +273,14 @@ export default function MatchWorkspace({
   const selectedIds = useMemo(() => computeSelection(defaultIds, adjustments), [defaultIds, adjustments]);
   const selectedSet = useMemo(() => new Set(selectedIds), [selectedIds]);
   // M9-B — default roster = selected chat's scope + anyone with Match state + players added here.
-  const activeRoster = useMemo(() => (view?.roster ?? []).filter((p) => p.isActive), [view]);
+  // M9.2 — only the Match Community's players are selectable; outsiders with Match state are listed separately.
+  const activeRoster = useMemo(() => (view?.roster ?? []).filter((p) => p.isActive && p.inCommunity !== false), [view]);
+  const outsiders = useMemo(() => (view?.roster ?? []).filter((p) => p.inCommunity === false), [view]);
+  const namesBy = useMemo(() => {
+    const by: Record<"PLAYING" | "MAYBE" | "NOT_PLAYING" | "NO_RESPONSE", string[]> = { PLAYING: [], MAYBE: [], NOT_PLAYING: [], NO_RESPONSE: [] };
+    for (const p of activeRoster) by[p.attendance.status ?? "NO_RESPONSE"].push(`${p.firstName} ${p.lastName}`);
+    return by;
+  }, [activeRoster]);
   const scopeSet = useMemo(() => new Set(view?.scope.playerIds ?? []), [view]);
   const visibleIds = useMemo(() => {
     const withMatchState = new Set<string>(selectedIds);
@@ -372,19 +415,62 @@ export default function MatchWorkspace({
         icon={<Users className="size-5" />}
         meta={m.attendanceClosed ? "Attendance closed" : "Attendance open"}
       >
-        <dl className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+        {view.community ? (
+          <p className="mb-3 text-sm">
+            <span className="text-muted-foreground">Community:</span> <span className="font-semibold">{view.community.name}</span>
+          </p>
+        ) : (
+          view.canManage &&
+          (view.communities ?? []).length > 0 && (
+            <div role="note" className="mb-3 flex flex-wrap items-center gap-2 rounded-tbp-xl border border-accent/40 bg-accent/10 p-3 text-sm">
+              <span className="min-w-0 flex-1 basis-56">This match has no community yet, so every player in the group is listed. Choose the community it belongs to:</span>
+              <label className="sr-only" htmlFor="match-community">Community</label>
+              <select id="match-community" className="h-9 rounded-tbp-sm border border-input bg-card px-2" defaultValue="" disabled={busy} onChange={(e) => e.target.value && setCommunity(e.target.value)}>
+                <option value="">Choose…</option>
+                {(view.communities ?? []).map((c) => (
+                  <option key={c.id} value={c.id}>
+                    {c.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+          )
+        )}
+        <dl className="grid grid-cols-2 gap-2 sm:grid-cols-5">
           {([
             ["PLAYING", "Playing"],
             ["MAYBE", "Maybe"],
             ["NOT_PLAYING", "Not playing"],
-            ["NO_RESPONSE", "No response"],
+            ["NO_RESPONSE", "Not responded"],
           ] as const).map(([k, label]) => (
             <div key={k} className="rounded-tbp bg-muted px-3 py-2">
               <dt className="text-xs font-semibold text-muted-foreground">{label}</dt>
               <dd className="font-display text-2xl font-black tabular-nums">{view.counts[k]}</dd>
             </div>
           ))}
+          <div className="col-span-2 rounded-tbp border border-border px-3 py-2 sm:col-span-1">
+            <dt className="text-xs font-semibold text-muted-foreground">Roster</dt>
+            <dd className="font-display text-2xl font-black tabular-nums">{view.rosterSize ?? activeRoster.length}</dd>
+          </div>
         </dl>
+        {view.canManage && (
+          <details className="mt-3 text-sm">
+            <summary className={cn("cursor-pointer font-semibold text-primary", focusRing)}>Who is in each group</summary>
+            <dl className="mt-2 space-y-1">
+              {([
+                ["PLAYING", "Playing"],
+                ["MAYBE", "Maybe"],
+                ["NOT_PLAYING", "Not playing"],
+                ["NO_RESPONSE", "Not responded"],
+              ] as const).map(([k, label]) => (
+                <div key={k} className="flex flex-wrap gap-x-2">
+                  <dt className="font-semibold">{label} ({namesBy[k].length}):</dt>
+                  <dd className="min-w-0 break-words text-muted-foreground">{namesBy[k].length ? namesBy[k].join(", ") : "—"}</dd>
+                </div>
+              ))}
+            </dl>
+          </details>
+        )}
 
         <div className="mt-4 flex flex-wrap items-center gap-2 text-sm" id={MATCH_TELEGRAM_GROUP_SELECTOR_ID}>
           {view.canManage && (
@@ -516,6 +602,27 @@ export default function MatchWorkspace({
             </li>
           ))}
         </ul>
+        {outsiders.length > 0 && view.community && (
+          <div className="mt-4 rounded-tbp-xl border border-dashed border-border p-3 text-sm">
+            <p className="font-semibold">Not in {view.community.name}</p>
+            <p className="text-xs text-muted-foreground">They answered or were added to this match but aren&apos;t members of its community, so they aren&apos;t counted or selected.</p>
+            <ul className="mt-2 space-y-1">
+              {outsiders.map((p) => (
+                <li key={p.id} className="flex flex-wrap items-center justify-between gap-2">
+                  <span className="min-w-0 truncate">
+                    {p.firstName} {p.lastName}
+                    <span className="text-muted-foreground"> · {p.attendance.status ? STATUS_LABEL[p.attendance.status] : "No response"}</span>
+                  </span>
+                  {view.canManage && (
+                    <Button type="button" size="sm" variant="outline" disabled={busy} onClick={() => addToCommunity(p.id)}>
+                      Add to {view.community!.name}
+                    </Button>
+                  )}
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
         {view.canManage &&
           (m.attendanceClosed ? (
             <p role="note" className="mt-2 text-sm font-medium text-muted-foreground">Attendance is closed. Reopen attendance to make changes.</p>

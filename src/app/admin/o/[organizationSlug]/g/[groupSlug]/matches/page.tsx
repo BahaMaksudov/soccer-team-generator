@@ -4,6 +4,7 @@ import { loadGroupOverview } from "@/lib/groupOverview";
 import { MatchList } from "@/components/game-day/MatchList";
 import { isManager } from "@/lib/tenantRoute";
 import CreateMatchForm from "./CreateMatchForm";
+import { prisma } from "@/lib/prisma";
 
 /**
  * UI-4 — canonical Matches page of one Group (replaces the in-page Matches
@@ -21,6 +22,10 @@ export default async function MatchesPage({ params }: { params: Params }) {
   const overview = await loadGroupOverview(context);
   const canceled = overview.past.filter((m) => m.status === "CANCELED");
   const past = overview.past.filter((m) => m.status !== "CANCELED");
+  // M9.2 — the Group's active Communities (a new Match names its roster).
+  const communities = isManager(context)
+    ? await prisma.community.findMany({ where: { groupId: context.activeGroup.id, isActive: true }, orderBy: { createdAt: "asc" }, select: { id: true, name: true } })
+    : [];
 
   return (
     <div className="space-y-8">
@@ -30,7 +35,7 @@ export default async function MatchesPage({ params }: { params: Params }) {
           <h1 className="mt-1 text-3xl font-extrabold">Matches</h1>
         </div>
       </header>
-      {isManager(context) && <CreateMatchForm organizationSlug={context.organization.slug} groupSlug={context.activeGroup.slug} />}
+      {isManager(context) && <CreateMatchForm organizationSlug={context.organization.slug} groupSlug={context.activeGroup.slug} communities={communities} />}
 
       <section aria-labelledby="upcoming-h" className="space-y-3">
         <h2 id="upcoming-h" className="text-xl font-extrabold">Upcoming <span className="text-base font-semibold text-muted-foreground">({overview.upcoming.length})</span></h2>

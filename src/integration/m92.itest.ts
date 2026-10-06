@@ -28,6 +28,7 @@ import * as publishRoute from "@/app/api/admin/o/[organizationSlug]/g/[groupSlug
 import * as playersRoute from "@/app/api/admin/o/[organizationSlug]/g/[groupSlug]/players/route";
 import * as weightsRoute from "@/app/api/admin/o/[organizationSlug]/g/[groupSlug]/settings/balance-weights/route";
 import { playerRating } from "@/lib/playerRating";
+import * as postGameRoute from "@/app/api/admin/o/[organizationSlug]/g/[groupSlug]/matches/[matchId]/post-game/route";
 
 const A = { organizationSlug: "org-a", groupSlug: "group-a" };
 const B = { organizationSlug: "org-b", groupSlug: "group-b" };
@@ -325,5 +326,38 @@ describe("M9.2-2 — Players API: Community memberships and the 0–10 Rating", 
     expect(((res.body as Row[]).find((r) => r.id === "shared")!.communityIds).sort()).toEqual(["c-funny", "c-uccne"]);
     await signIn("other");
     expect((await list()).status).toBe(404);
+  });
+});
+
+describe("M9.2-3 — Player of the Match eligibility = actual participants of the Match's Community", () => {
+  const pg = (matchId: string, body: unknown) => call(postGameRoute.POST(json("POST", body), gm(matchId)));
+  it("published participants only; Not Playing and other-Community players are never candidates (web selection and vote alike)", async () => {
+    // UCCNE's Telegram group (the Match picks it up as its channel).
+    await prisma.telegramChat.create({ data: { chatId: -9100n, title: "UCCNE chat", groupId: "ga", communityId: "c-uccne" } });
+    const id = ((await createMatch({ communityId: "c-uccne" })).body.match as { id: string }).id;
+    expect((await prisma.match.findUniqueOrThrow({ where: { id } })).telegramChatId).not.toBeNull();
+    // A published snapshot that (as legacy data could) contains a FunnyStuff-only player f1.
+    const P = (pid: string) => ({ id: pid, firstName: pid.toUpperCase(), lastName: "Test", position: "MIDFIELDER", rating: "GOOD", stamina: 3 });
+    await prisma.teamGeneration.create({ data: { groupId: "ga", matchId: id, date: new Date(DAY), teamsJson: JSON.stringify([{ teamNumber: 1, players: [P("u1"), P("u2"), P("f1")] }, { teamNumber: 2, players: [P("u3"), P("u4"), P("shared")] }]) } });
+    for (const [playerId, status] of [["u1", "PLAYING"], ["u2", "NOT_PLAYING"], ["u3", "MAYBE"], ["shared", "PLAYING"]] as const)
+      await call(overrideRoute.POST(json("POST", { playerId, status }), gm(id)));
+    await pg(id, { action: "save_result", fixtures: [{ teamA: 1, teamB: 2, scoreA: 3, scoreB: 2 }] });
+    await pg(id, { action: "publish_result" });
+
+    const v = (await call(matchRoute.GET(json("GET"), gm(id)))).body as { postGame: { participants: Array<{ playerId: string }> } };
+    // u4 never responded but played (on the published teams) → eligible; MAYBE on a team → eligible.
+    expect(v.postGame.participants.map((p) => p.playerId).sort()).toEqual(["shared", "u1", "u3", "u4"]);
+    for (const bad of ["u2", "f1", "u5", "b1", "nobody"]) expect((await pg(id, { action: "save_mvp_selection", playerId: bad })).status, bad).toBe(404);
+    expect((await pg(id, { action: "save_mvp_selection", playerId: "u1" })).status).toBe(200);
+    // A Telegram vote's candidate list is checked against the same set (before anything is sent).
+    expect((await pg(id, { action: "reset_mvp_selection" })).status).toBe(200);
+    expect((await pg(id, { action: "start_mvp", candidateIds: ["u1", "f1"] })).status).toBe(404);
+    expect(tgCalls).toEqual([]);
+  });
+  it("POTM still requires a published result", async () => {
+    const id = ((await createMatch({ communityId: "c-uccne" })).body.match as { id: string }).id;
+    const ok = await call(generateRoute.POST(json("POST", { teamCount: 2, date: DAY, selectedIds: ["u1", "u2", "u3", "u4"], matchId: id }), g()));
+    await call(publishRoute.POST(json("POST", { date: DAY, teams: ok.body.teams, matchId: id }), g()));
+    expect((await pg(id, { action: "save_mvp_selection", playerId: "u1" })).body.error).toBe("Publish the final result before choosing Player of the Match.");
   });
 });

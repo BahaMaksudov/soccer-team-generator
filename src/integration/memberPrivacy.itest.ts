@@ -118,7 +118,7 @@ describe("players API — serialized response by role", () => {
     const { status, text } = await playersJson();
     expect(status).toBe(200);
     expect(text).not.toMatch(/"rating"|"stamina"|"claimPending"|EXCELLENT|VERY_GOOD|"FAIR"|"GOOD"/);
-    expect(JSON.parse(text)[0]).toEqual({ id: expect.any(String), firstName: expect.any(String), lastName: "Test", position: expect.any(String), isActive: true, accountClaimed: expect.any(Boolean), telegramConnected: false });
+    expect(JSON.parse(text)[0]).toEqual({ id: expect.any(String), firstName: expect.any(String), lastName: "Test", position: expect.any(String), isActive: true, accountClaimed: expect.any(Boolean), telegramConnected: false, communityIds: expect.any(Array) }); // M9.2 — memberships are roster data
   });
   it("another Organization: 404", async () => {
     await signIn("other@example.test");

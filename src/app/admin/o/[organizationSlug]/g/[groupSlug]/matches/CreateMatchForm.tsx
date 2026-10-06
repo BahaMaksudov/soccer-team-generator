@@ -12,10 +12,19 @@ import { Button } from "@/components/ui/button";
  * from the Group. Creating a match sends nothing. Opens automatically when the
  * page is reached with #new (Overview "Create match" / "New match").
  */
-export default function CreateMatchForm({ organizationSlug, groupSlug }: { organizationSlug: string; groupSlug: string }) {
+export default function CreateMatchForm({
+  organizationSlug,
+  groupSlug,
+  communities = [],
+}: {
+  organizationSlug: string;
+  groupSlug: string;
+  /** M9.2 — the Group's active Communities; the new Match's roster (required when there are several). */
+  communities?: Array<{ id: string; name: string }>;
+}) {
   const url = adminTenantApiPath({ organizationSlug, groupSlug, path: "/matches" });
   const [open, setOpen] = useState(false);
-  const [form, setForm] = useState({ date: "", startTime: "", locationName: "" });
+  const [form, setForm] = useState({ date: "", startTime: "", locationName: "", communityId: communities.length === 1 ? communities[0].id : "" });
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const id = useId();
@@ -33,7 +42,7 @@ export default function CreateMatchForm({ organizationSlug, groupSlug }: { organ
     setBusy(true);
     setErr(null);
     try {
-      const res = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(form) });
+      const res = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ date: form.date, startTime: form.startTime, locationName: form.locationName, ...(form.communityId ? { communityId: form.communityId } : {}) }) });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
         setErr(data?.issues?.fieldErrors ? (Object.values(data.issues.fieldErrors).flat()[0] as string) : data?.error ?? "Could not create the match.");
@@ -64,6 +73,20 @@ export default function CreateMatchForm({ organizationSlug, groupSlug }: { organ
           <X aria-hidden="true" />
         </Button>
       </div>
+      {communities.length > 0 && (
+        <div>
+          <label htmlFor={`${id}-community`} className="mb-1 block text-sm font-semibold">Community</label>
+          <select id={`${id}-community`} required className={input} value={form.communityId} onChange={(e) => setForm({ ...form, communityId: e.target.value })}>
+            {communities.length > 1 && <option value="">Choose a community…</option>}
+            {communities.map((c) => (
+              <option key={c.id} value={c.id}>
+                {c.name}
+              </option>
+            ))}
+          </select>
+          <p className="mt-1 text-xs text-muted-foreground">Attendance, teams and Player of the Match use this community&apos;s players.</p>
+        </div>
+      )}
       <div className="grid gap-3 sm:grid-cols-3">
         <div>
           <label htmlFor={`${id}-date`} className="mb-1 block text-sm font-semibold">Date</label>
