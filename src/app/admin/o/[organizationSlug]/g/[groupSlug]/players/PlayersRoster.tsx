@@ -1,7 +1,8 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { CirclePause, CirclePlay, Pencil, Plus, Search, Trash2, UserRound, X } from "lucide-react";
+import { CirclePause, CirclePlay, Pencil, Plus, Search, Trash2, UserRound, Users, X } from "lucide-react";
+import { formatPlayerRating } from "@/lib/playerRating";
 import { adminTenantApiPath } from "@/lib/adminTenantApi";
 import { ratingLabel } from "@/lib/labels";
 import { roleLabel, type SportClientView } from "@/lib/sports";
@@ -89,6 +90,32 @@ export default function PlayersRoster({
   const [busyId, setBusyId] = useState<string | null>(null);
   // One-time claim URLs live in transient memory only (never storage), as in the group page.
   const [claimLinks, setClaimLinks] = useState<Record<string, string>>({});
+  // M9.2 — Communities (rosters): filter + membership management.
+  const [communities, setCommunities] = useState<Array<{ id: string; name: string; isActive: boolean }>>([]);
+  const [community, setCommunity] = useState<string>("all");
+  const [addingTo, setAddingTo] = useState(false);
+  const [addQ, setAddQ] = useState("");
+  const communitiesUrl = adminTenantApiPath({ organizationSlug, groupSlug, path: "/communities" });
+  const membershipUrl = useCallback((cid: string) => adminTenantApiPath({ organizationSlug, groupSlug, path: `/communities/${cid}/players` }), [organizationSlug, groupSlug]);
+  const loadCommunities = useCallback(async () => {
+    const res = await fetch(communitiesUrl, { cache: "no-store" });
+    if (res.ok) setCommunities((await res.json()).communities ?? []);
+  }, [communitiesUrl]);
+  useEffect(() => {
+    loadCommunities();
+  }, [loadCommunities]);
+  const communityName = (id: string) => communities.find((c) => c.id === id)?.name ?? "Community";
+  async function setMembership(p: Player, cid: string, member: boolean) {
+    setMessage(null);
+    setBusyId(p.id);
+    try {
+      const res = await fetch(membershipUrl(cid), { method: member ? "POST" : "DELETE", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ playerId: p.id }) });
+      setMessage(res.ok ? `${fullName(p)} ${member ? "added to" : "removed from"} ${communityName(cid)}.` : "Could not update the community.");
+      await load();
+    } finally {
+      setBusyId(null);
+    }
+  }
 
   const load = useCallback(async () => {
     const res = await fetch(playersUrl, { cache: "no-store" });
@@ -100,10 +127,17 @@ export default function PlayersRoster({
     load();
   }, [load]);
 
-  const list = useMemo(() => filterRoster(players ?? [], { q, status, role }), [players, q, status, role]);
+  const list = useMemo(
+    () => filterRoster(players ?? [], { q, status, role }).filter((p) => community === "all" || (p.communityIds ?? []).includes(community)),
+    [players, q, status, role, community]
+  );
   const summary = rosterSummary(players ?? []);
   const detail = (players ?? []).find((p) => p.id === detailId) ?? null;
-  const filtersActive = status !== "all" || role !== "all";
+  const filtersActive = status !== "all" || role !== "all" || community !== "all";
+  const selectedCommunity = communities.find((c) => c.id === community) ?? null;
+  const addable = selectedCommunity
+    ? (players ?? []).filter((p) => !(p.communityIds ?? []).includes(selectedCommunity.id) && fullName(p).toLowerCase().includes(addQ.trim().toLowerCase()))
+    : [];
   const roleOf = (key: string) => roleLabel(sport.key, key);
 
   async function create(values: PlayerFormValues): Promise<string | null> {
@@ -231,6 +265,20 @@ export default function PlayersRoster({
                 </button>
               )}
             </div>
+            {communities.length > 0 && (
+              <label className="text-xs font-semibold text-muted-foreground">
+                Community
+                <select value={community} onChange={(e) => setCommunity(e.target.value)} className="mt-1 block h-10 max-w-[16rem] rounded-tbp-md border border-input bg-card px-2 text-sm text-foreground">
+                  <option value="all">All players</option>
+                  {communities.map((c) => (
+                    <option key={c.id} value={c.id}>
+                      {c.name}
+                      {c.isActive ? "" : " (inactive)"}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            )}
             <label className="text-xs font-semibold text-muted-foreground">
               Status
               <select value={status} onChange={(e) => setStatus(e.target.value as RosterStatusFilter)} className="mt-1 block h-10 rounded-tbp-md border border-input bg-card px-2 text-sm text-foreground">
@@ -251,8 +299,13 @@ export default function PlayersRoster({
               </select>
             </label>
             {filtersActive && (
-              <Button type="button" variant="ghost" size="sm" className="h-10" onClick={() => (setStatus("all"), setRole("all"))}>
+              <Button type="button" variant="ghost" size="sm" className="h-10" onClick={() => (setStatus("all"), setRole("all"), setCommunity("all"))}>
                 Clear filters
+              </Button>
+            )}
+            {canManage && selectedCommunity && (
+              <Button type="button" variant="outline" size="sm" className="h-10" onClick={() => (setAddQ(""), setAddingTo(true))}>
+                <Users aria-hidden="true" /> Add players to {selectedCommunity.name}
               </Button>
             )}
           </div>
@@ -277,6 +330,12 @@ export default function PlayersRoster({
                       <th scope="col" className="py-2.5 pr-3">{sport.terminology.roleNoun}</th>
                       {canManage && <th scope="col" className="py-2.5 pr-3">Skill</th>}
                       {canManage && <th scope="col" className="py-2.5 pr-3">Stamina</th>}
+                      {canManage && (
+                        <th scope="col" className="py-2.5 pr-3" title="0–10, from skill and stamina (the balance engine's strength)">
+                          Rating
+                        </th>
+                      )}
+                      {communities.length > 0 && <th scope="col" className="hidden py-2.5 pr-3 xl:table-cell">Communities</th>}
                       <th scope="col" className="py-2.5 pr-3">Status</th>
                       <th scope="col" className="hidden py-2.5 pr-3 lg:table-cell">Account</th>
                       <th scope="col" className="hidden py-2.5 pr-3 lg:table-cell">Telegram</th>
@@ -303,6 +362,12 @@ export default function PlayersRoster({
                             <Stamina value={Number(p.stamina)} />
                           </td>
                         )}
+                        {canManage && <td className="py-2.5 pr-3 font-semibold tabular-nums">{typeof p.playerRating === "number" ? formatPlayerRating(p.playerRating) : "—"}</td>}
+                        {communities.length > 0 && (
+                          <td className="hidden py-2.5 pr-3 text-xs xl:table-cell">
+                            {(p.communityIds ?? []).length ? (p.communityIds ?? []).map((id) => communityName(id)).join(", ") : <span className="text-muted-foreground">None</span>}
+                          </td>
+                        )}
                         <td className="py-2.5 pr-3">
                           <StatusBadge active={p.isActive} />
                         </td>
@@ -326,7 +391,11 @@ export default function PlayersRoster({
                         <p className="text-xs text-muted-foreground">
                           {roleOf(p.position)}
                           {canManage ? ` · ${ratingLabel(p.rating)} · Stamina ${Number(p.stamina)}/5` : ""}
+                          {canManage && typeof p.playerRating === "number" ? ` · Rating ${formatPlayerRating(p.playerRating)}` : ""}
                         </p>
+                        {communities.length > 0 && (p.communityIds ?? []).length > 0 && (
+                          <p className="truncate text-xs text-muted-foreground">{(p.communityIds ?? []).map((id) => communityName(id)).join(", ")}</p>
+                        )}
                       </div>
                       <StatusBadge active={p.isActive} />
                     </div>
@@ -383,6 +452,36 @@ export default function PlayersRoster({
         </Dialog>
       )}
 
+      {canManage && selectedCommunity && (
+        <Dialog open={addingTo} title={`Add players to ${selectedCommunity.name}`} description="Adds an existing player to this community. Their other communities are not changed." onClose={() => setAddingTo(false)}>
+          <input
+            type="search"
+            value={addQ}
+            onChange={(e) => setAddQ(e.target.value)}
+            placeholder="Search players"
+            aria-label="Search players to add"
+            className="mb-3 h-10 w-full rounded-tbp-md border border-input bg-card px-3 text-base focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring md:text-sm"
+          />
+          {addable.length === 0 ? (
+            <p className="text-sm text-muted-foreground">Everyone matching is already in {selectedCommunity.name}.</p>
+          ) : (
+            <ul className="max-h-80 space-y-1 overflow-y-auto">
+              {addable.map((p) => (
+                <li key={p.id} className="flex items-center justify-between gap-2 rounded-tbp-sm px-1 py-1">
+                  <span className="min-w-0 truncate text-sm">
+                    {fullName(p)}
+                    <span className="text-muted-foreground"> · {roleOf(p.position)}</span>
+                  </span>
+                  <Button type="button" size="sm" variant="outline" disabled={busyId === p.id} onClick={() => setMembership(p, selectedCommunity.id, true)}>
+                    Add<span className="sr-only"> {fullName(p)}</span>
+                  </Button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </Dialog>
+      )}
+
       {canManage && (
         <Dialog open={detail !== null} title={detail ? fullName(detail) : ""} description="Optional account and Telegram connection for this player." onClose={() => setDetailId(null)}>
           {detail && (
@@ -404,6 +503,28 @@ export default function PlayersRoster({
                 <h3 className="mb-1 font-semibold">Telegram</h3>
                 <PlayerTelegramCell organizationSlug={organizationSlug} groupSlug={groupSlug} player={detail} onChanged={load} onMessage={setMessage} />
               </section>
+              {communities.length > 0 && (
+                <section>
+                  <h3 className="mb-1 font-semibold">Communities</h3>
+                  <p className="mb-2 text-xs text-muted-foreground">Which rosters this player belongs to. Removing a community never deletes the player.</p>
+                  <ul className="space-y-1">
+                    {communities.map((c) => {
+                      const member = (detail.communityIds ?? []).includes(c.id);
+                      return (
+                        <li key={c.id}>
+                          <label className="flex min-h-9 items-center gap-2">
+                            <input type="checkbox" className="size-4" checked={member} disabled={busyId === detail.id || (!c.isActive && !member)} onChange={(e) => setMembership(detail, c.id, e.target.checked)} />
+                            <span>
+                              {c.name}
+                              {c.isActive ? "" : " (inactive)"}
+                            </span>
+                          </label>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                </section>
+              )}
             </div>
           )}
         </Dialog>

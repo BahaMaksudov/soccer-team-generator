@@ -25,6 +25,9 @@ import * as matchRoute from "@/app/api/admin/o/[organizationSlug]/g/[groupSlug]/
 import * as overrideRoute from "@/app/api/admin/o/[organizationSlug]/g/[groupSlug]/matches/[matchId]/attendance/route";
 import * as generateRoute from "@/app/api/admin/o/[organizationSlug]/g/[groupSlug]/generate/route";
 import * as publishRoute from "@/app/api/admin/o/[organizationSlug]/g/[groupSlug]/publish/route";
+import * as playersRoute from "@/app/api/admin/o/[organizationSlug]/g/[groupSlug]/players/route";
+import * as weightsRoute from "@/app/api/admin/o/[organizationSlug]/g/[groupSlug]/settings/balance-weights/route";
+import { playerRating } from "@/lib/playerRating";
 
 const A = { organizationSlug: "org-a", groupSlug: "group-a" };
 const B = { organizationSlug: "org-b", groupSlug: "group-b" };
@@ -291,5 +294,36 @@ describe("M9.2-1 — Match community and roster isolation", () => {
     expect(JSON.stringify(v.roster)).not.toMatch(/"rating"|"stamina"/);
     expect(tgCalls).toEqual([]);
     expect(otherNetwork).toBe(0);
+  });
+});
+
+describe("M9.2-2 — Players API: Community memberships and the 0–10 Rating", () => {
+  type Row = { id: string; rating?: string; stamina?: number; playerRating?: number; communityIds: string[] };
+  const list = async (at = A) => (await call(playersRoute.GET(json("GET"), g(at)))) as { status: number; body: unknown };
+  it("OWNER / ADMIN: every Player once, with its memberships and a rating derived from skill + stamina (Group config)", async () => {
+    for (const who of ["owner", "admin"]) {
+      await signIn(who);
+      const rows = (await list()).body as Row[];
+      expect(rows.map((r) => r.id).sort()).toEqual([...new Set([...UCCNE, ...FUNNY, "nobody"])].sort());
+      const shared = rows.find((r) => r.id === "shared")!;
+      expect(shared.communityIds.sort()).toEqual(["c-funny", "c-uccne"]);
+      expect(rows.find((r) => r.id === "nobody")!.communityIds).toEqual([]);
+      for (const r of rows) expect(r.playerRating).toBe(playerRating({ rating: r.rating!, stamina: r.stamina! }, 1));
+    }
+    // The Group's own stamina coefficient is used (organizer configuration).
+    await signIn("owner");
+    expect((await call(weightsRoute.PUT(json("PUT", { weights: { staminaCoef: 3, positionWeights: {} } }), g()))).status).toBe(200);
+    const rows = (await list()).body as Row[];
+    for (const r of rows) expect(r.playerRating).toBe(playerRating({ rating: r.rating!, stamina: r.stamina! }, 3));
+  });
+  it("MEMBER: memberships but never skill / stamina / rating; other tenants 404", async () => {
+    await signIn("member");
+    const res = await list();
+    expect(res.status).toBe(200);
+    const raw = JSON.stringify(res.body);
+    expect(raw).not.toMatch(/"rating"|"stamina"|"playerRating"/);
+    expect(((res.body as Row[]).find((r) => r.id === "shared")!.communityIds).sort()).toEqual(["c-funny", "c-uccne"]);
+    await signIn("other");
+    expect((await list()).status).toBe(404);
   });
 });

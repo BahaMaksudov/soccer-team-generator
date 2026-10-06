@@ -145,6 +145,8 @@ describe("UI primitives are presentation-only", () => {
         "src/app/admin/o/[organizationSlug]/g/[groupSlug]/matches/CreateMatchForm.tsx",
         "src/app/admin/o/[organizationSlug]/g/[groupSlug]/matches/[matchId]/MatchWorkspace.tsx",
         "src/app/admin/o/[organizationSlug]/g/[groupSlug]/matches/[matchId]/PostGameSection.tsx",
+        // M9.2 — Group Settings: Communities.
+        "src/app/admin/o/[organizationSlug]/g/[groupSlug]/settings/CommunitiesSection.tsx",
         // M9.1 — Telegram team-post recovery in the Match Workspace.
         "src/app/admin/o/[organizationSlug]/g/[groupSlug]/matches/[matchId]/TeamsTelegramPost.tsx",
         "src/components/game-day/MatchList.tsx",
