@@ -1,16 +1,20 @@
 "use client";
 
-import Link from "next/link";
 import { signIn } from "next-auth/react";
 import { useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { safeCallbackPath } from "@/lib/safeRedirect";
+import { authErrorMessage } from "@/lib/authErrors";
+import { Field, GoogleButton, SubmitButton } from "@/components/auth/fields";
+import { FormAlert, OrDivider, SuccessNote, TextLink } from "@/components/auth/parts";
 
-export default function LoginClient() {
+export default function LoginClient({ googleEnabled }: { googleEnabled: boolean }) {
   const sp = useSearchParams();
   // Only internal paths are honored (no open redirect); see src/lib/safeRedirect.ts.
   const callbackUrl = safeCallbackPath(sp.get("callbackUrl"));
   const passwordChanged = sp.get("passwordChanged") === "1";
+  // OAuth / Google outcomes come back as ?error=<code> (known codes only; never echoed).
+  const oauthError = authErrorMessage(sp.get("error"));
 
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -37,47 +41,50 @@ export default function LoginClient() {
     window.location.href = callbackUrl;
   }
 
-  return (
-    <div className="min-h-[70vh] flex items-center justify-center p-6">
-      <form onSubmit={submit} className="w-full max-w-sm border rounded-xl p-6 bg-white">
-        <h1 className="text-xl font-semibold mb-4">Sign in</h1>
-        {passwordChanged && !err && (
-          <div className="text-sm text-green-700 mb-3">Password changed. Please sign in again.</div>
-        )}
-        {err && <div className="text-sm text-red-600 mb-3" role="alert">{err}</div>}
+  const alert = err ?? oauthError;
 
-        <label className="block text-sm mb-1" htmlFor="email">Email</label>
-        <input
+  return (
+    <>
+      {passwordChanged && !alert && (
+        <div className="mb-6">
+          <SuccessNote>Password changed. Please sign in again.</SuccessNote>
+        </div>
+      )}
+      {googleEnabled && (
+        <>
+          <GoogleButton callbackUrl={callbackUrl} />
+          <OrDivider label="or continue with email" />
+        </>
+      )}
+      <form onSubmit={submit} className="space-y-5">
+        {alert && <FormAlert>{alert}</FormAlert>}
+        <Field
           id="email"
-          className="w-full border rounded-md px-3 py-2 mb-3"
+          label="Email address"
+          type="email"
+          inputMode="email"
+          autoComplete="username"
+          placeholder="you@example.com"
           value={email}
           onChange={(e) => setEmail(e.target.value)}
-          placeholder="you@example.com"
-          autoComplete="username"
+          required
         />
-
-        <label className="block text-sm mb-1" htmlFor="password">Password</label>
-        <input
+        <Field
           id="password"
-          className="w-full border rounded-md px-3 py-2 mb-4"
+          label="Password"
           type="password"
+          autoComplete="current-password"
           value={password}
           onChange={(e) => setPassword(e.target.value)}
-          placeholder="Your password"
-          autoComplete="current-password"
+          required
         />
-
-        <button type="submit" className="w-full bg-black text-white rounded-md py-2 disabled:opacity-60" disabled={loading}>
-          {loading ? "Signing in..." : "Sign in"}
-        </button>
-
-        <div className="text-sm text-gray-600 mt-4">
-          New here?{" "}
-          <Link className="underline" href="/signup">
-            Create an account
-          </Link>
-        </div>
+        <SubmitButton loading={loading} loadingText="Signing in…">
+          Sign In
+        </SubmitButton>
       </form>
-    </div>
+      <p className="mt-6 text-center text-sm text-muted-foreground">
+        New to Team Balance Pro? <TextLink href="/signup">Create an account</TextLink>
+      </p>
+    </>
   );
 }

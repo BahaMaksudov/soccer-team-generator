@@ -1,3 +1,59 @@
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+/*
+ * UI-0 — Team Balance Pro design tokens (approved Lovable palette, light only).
+ * Values are oklch CHANNELS ("L C H"); tailwind.config.js wraps them as
+ * oklch(var(--tbp-x) / <alpha-value>). Defining variables changes nothing
+ * visually — only components that opt into the new utilities use them.
+ * No element selectors are styled here on purpose (no global restyle in UI-0).
+ */
+@layer base {
+  :root {
+    --tbp-radius: 0.875rem;
+
+    --tbp-background: 0.985 0.004 95;
+    --tbp-foreground: 0.2 0.02 160;
+    --tbp-card: 1 0 0;
+    --tbp-card-foreground: 0.2 0.02 160;
+    --tbp-primary: 0.42 0.1 158; /* pitch green */
+    --tbp-primary-foreground: 0.985 0.004 95;
+    --tbp-secondary: 0.95 0.012 150;
+    --tbp-secondary-foreground: 0.25 0.04 158;
+    --tbp-muted: 0.955 0.006 95;
+    --tbp-muted-foreground: 0.47 0.02 160;
+    --tbp-accent: 0.72 0.17 55; /* orange */
+    --tbp-accent-foreground: 0.2 0.03 50;
+    --tbp-destructive: 0.577 0.245 27.325;
+    --tbp-destructive-foreground: 0.985 0 0;
+    --tbp-border: 0.9 0.01 120;
+    --tbp-input: 0.9 0.01 120;
+    --tbp-ring: 0.55 0.12 158;
+    --tbp-pitch: 0.24 0.04 160; /* dark navigation green */
+    --tbp-pitch-foreground: 0.96 0.01 120;
+    --tbp-team-a: 0.45 0.11 158;
+    --tbp-team-b: 0.62 0.16 50;
+
+    --tbp-shadow-card: 0 1px 2px oklch(0.2 0.02 160 / 6%), 0 8px 24px -12px oklch(0.2 0.02 160 / 18%);
+    --tbp-shadow-lift: 0 2px 4px oklch(0.2 0.02 160 / 6%), 0 24px 48px -20px oklch(0.2 0.04 160 / 30%);
+  }
+}
+
+/* Opt-in utilities (emitted only where a component uses the class). */
+@layer utilities {
+  .eyebrow {
+    font-size: 0.75rem;
+    font-weight: 700;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: oklch(var(--tbp-primary));
+  }
+
+  .pitch-lines {
+    background-image:
+      linear-gradient(oklch(1 0 0 / 5%) 1px, transparent 1px),
+      linear-gradient(90deg, oklch(1 0 0 / 5%) 1px, transparent 1px);
+    background-size: 48px 48px;
+  }
+}

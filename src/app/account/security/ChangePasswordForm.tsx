@@ -50,28 +50,28 @@ export default function ChangePasswordForm() {
     }
   }
 
-  if (done) return <div className="text-sm text-green-700">Password changed. Signing you out…</div>;
+  if (done) return <div role="status" className="text-sm font-semibold text-primary">Password changed. Signing you out…</div>;
 
   return (
     <form onSubmit={submit} className="space-y-3">
-      {err && <div className="text-sm text-red-600" role="alert">{err}</div>}
+      {err && <div className="text-sm text-destructive" role="alert">{err}</div>}
       <div>
-        <label className="block text-sm mb-1" htmlFor="currentPassword">Current password</label>
-        <input id="currentPassword" type="password" className="w-full border rounded-md px-3 py-2" value={currentPassword}
+        <label className="mb-1 block text-sm font-semibold" htmlFor="currentPassword">Current password</label>
+        <input id="currentPassword" type="password" className="h-11 w-full rounded-tbp-md border border-input bg-card px-3 text-base focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring md:text-sm" value={currentPassword}
           onChange={(e) => setCurrentPassword(e.target.value)} autoComplete="current-password" required />
       </div>
       <div>
-        <label className="block text-sm mb-1" htmlFor="newPassword">New password</label>
-        <input id="newPassword" type="password" className="w-full border rounded-md px-3 py-2" value={newPassword}
+        <label className="mb-1 block text-sm font-semibold" htmlFor="newPassword">New password</label>
+        <input id="newPassword" type="password" className="h-11 w-full rounded-tbp-md border border-input bg-card px-3 text-base focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring md:text-sm" value={newPassword}
           onChange={(e) => setNewPassword(e.target.value)} autoComplete="new-password" minLength={8} required />
-        <div className="text-xs text-gray-500 mt-1">At least 8 characters.</div>
+        <div className="mt-1 text-xs text-muted-foreground">At least 8 characters.</div>
       </div>
       <div>
-        <label className="block text-sm mb-1" htmlFor="confirmPassword">Confirm new password</label>
-        <input id="confirmPassword" type="password" className="w-full border rounded-md px-3 py-2" value={confirmPassword}
+        <label className="mb-1 block text-sm font-semibold" htmlFor="confirmPassword">Confirm new password</label>
+        <input id="confirmPassword" type="password" className="h-11 w-full rounded-tbp-md border border-input bg-card px-3 text-base focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring md:text-sm" value={confirmPassword}
           onChange={(e) => setConfirmPassword(e.target.value)} autoComplete="new-password" required />
       </div>
-      <button type="submit" className="w-full bg-black text-white rounded-md py-2 disabled:opacity-60" disabled={loading}>
+      <button type="submit" className="inline-flex min-h-11 items-center rounded-full bg-primary px-5 text-sm font-semibold text-primary-foreground hover:bg-primary/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:opacity-60" disabled={loading} aria-busy={loading}>
         {loading ? "Changing..." : "Change password"}
       </button>
     </form>

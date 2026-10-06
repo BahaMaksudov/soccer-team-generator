@@ -8,6 +8,7 @@ import { ENGINE_VERSION, resolveBalanceConfig } from "@/lib/balanceEngine";
 import { buildStoredMetrics } from "@/lib/balanceAnalysis";
 import { findSport, type SportDefinition } from "@/lib/sports";
 import { loadStoredBalanceWeights } from "@/lib/groupSettings";
+import { managersOnlyResponse } from "@/lib/tenantRoute";
 
 /**
  * Phase 2D.6D.3 — shared Publish core, originally extracted from the
@@ -126,6 +127,9 @@ export function buildGenerationMetadata(
 }
 
 export async function publishTeamsForContext(context: TenantContext, req: Request): Promise<NextResponse> {
+  // UI-4A — organizer mutation: OWNER/ADMIN only (MEMBER gets the generic 404).
+  const denied = managersOnlyResponse(context);
+  if (denied) return denied;
   const activeGroupId = context.activeGroup.id;
 
   const body = await req.json().catch(() => ({}));
@@ -238,6 +242,9 @@ export async function publishTeamsForContext(context: TenantContext, req: Reques
 }
 
 export async function deletePublishedTeamsForContext(context: TenantContext, req: Request): Promise<NextResponse> {
+  // UI-4A — organizer mutation: OWNER/ADMIN only (MEMBER gets the generic 404).
+  const denied = managersOnlyResponse(context);
+  if (denied) return denied;
   const url = new URL(req.url);
   const dateStr = url.searchParams.get("date"); // expected YYYY-MM-DD
 
@@ -261,8 +268,11 @@ export async function deletePublishedTeamsForContext(context: TenantContext, req
   // here is fully atomic and correct: a tenant can only ever delete
   // rows that are both in this date range AND already owned by their
   // own active Group.
+  // UI-7 — legacy by-date sets ONLY (matchId NULL). Teams published for a
+  // Match are that Match's record (result / Player of the Match / Match
+  // Summary depend on them) and are never removed by this date-wide action.
   const result = await prisma.teamGeneration.deleteMany({
-    where: { date: { gte: start, lt: end }, groupId: context.activeGroup.id },
+    where: { date: { gte: start, lt: end }, groupId: context.activeGroup.id, matchId: null },
   });
 
   revalidatePath("/");

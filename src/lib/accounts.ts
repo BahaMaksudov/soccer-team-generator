@@ -3,6 +3,7 @@ import { randomBytes } from "node:crypto";
 import { z } from "zod";
 import { prisma } from "@/lib/prisma";
 import { normalizeEmail, emailSchema } from "@/lib/emailAddress";
+import { PASSWORD_MAX_BYTES, PASSWORD_MIN_LENGTH } from "@/lib/passwordRules";
 
 /**
  * M5 — database-backed accounts (sign-up + credential verification).
@@ -18,10 +19,8 @@ import { normalizeEmail, emailSchema } from "@/lib/emailAddress";
 
 export { normalizeEmail, emailSchema };
 
-// bcrypt only uses the first 72 BYTES of its input; longer passwords
-// would be silently truncated, so they are rejected instead.
-export const PASSWORD_MIN_LENGTH = 8;
-export const PASSWORD_MAX_BYTES = 72;
+// Shared with the sign-up form (client-safe module); see src/lib/passwordRules.ts.
+export { PASSWORD_MIN_LENGTH, PASSWORD_MAX_BYTES };
 const BCRYPT_COST = 12;
 
 export const passwordSchema = z
@@ -57,7 +56,8 @@ export function hashPassword(password: string): Promise<string> {
   return bcrypt.hash(password, BCRYPT_COST);
 }
 
-export function verifyPassword(password: string, passwordHash: string): Promise<boolean> {
+export function verifyPassword(password: string, passwordHash: string | null): Promise<boolean> {
+  if (!passwordHash) return Promise.resolve(false); // UI-2 — Google-only account
   return bcrypt.compare(password, passwordHash).catch(() => false);
 }
 
@@ -72,7 +72,7 @@ export type AuthenticatedUser = { id: string; email: string; name: string | null
 
 type UserLookup = {
   user: {
-    findUnique(args: { where: { email: string } }): Promise<{ id: string; email: string; name: string | null; passwordHash: string } | null>;
+    findUnique(args: { where: { email: string } }): Promise<{ id: string; email: string; name: string | null; passwordHash: string | null } | null>;
   };
 };
 
@@ -83,6 +83,9 @@ type UserLookup = {
  * transition fallback was retired in M5.1 after the owner moved onto a
  * database password). Unknown emails still cost one bcrypt compare, so
  * timing does not reveal which accounts exist.
+ *
+ * UI-2 — a Google-only account has no passwordHash (NULL): no password can
+ * ever match it, and it costs the same dummy compare as an unknown email.
  */
 export async function authenticateCredentials(
   rawEmail: string | undefined,
@@ -93,7 +96,7 @@ export async function authenticateCredentials(
   if (!email || !password) return null;
 
   const user = await db.user.findUnique({ where: { email } });
-  if (!user) {
+  if (!user || !user.passwordHash) {
     await verifyPassword(password, await getDummyHash());
     return null;
   }

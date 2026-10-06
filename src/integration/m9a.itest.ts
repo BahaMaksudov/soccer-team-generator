@@ -245,14 +245,21 @@ describe("migration #18", () => {
 
 // =================================================================== matches
 describe("Matches", () => {
-  it("two matches on the same date; MEMBER may create/edit; list splits upcoming/past", async () => {
+  it("two matches on the same date; UI-4A: ADMIN creates/edits, MEMBER may only list; list splits upcoming/past", async () => {
     await signInAs("member@example.test");
+    expect((await createMatch({ date: "2099-05-02" })).res.status).toBe(404); // organizer mutation
+    expect(await prisma.match.count()).toBe(0);
+    await signInAs("admin@example.test");
     const m1 = await createMatch({ date: "2099-05-02", startTime: "10:00" });
     const m2 = await createMatch({ date: "2099-05-02", startTime: "18:00", locationName: "Gym" });
     expect([m1.res.status, m2.res.status]).toEqual([201, 201]);
     expect(m1.data.match.id).not.toBe(m2.data.match.id);
+    await signInAs("member@example.test");
+    expect((await matchRoute.PATCH(json("PATCH", { locationName: "Nope", status: "CANCELED" }), gm(A, m1.data.match.id))).status).toBe(404);
+    await signInAs("admin@example.test");
     const edit = await matchRoute.PATCH(json("PATCH", { locationName: "Field 9", status: "COMPLETED" }), gm(A, m1.data.match.id));
     expect(edit.status).toBe(200);
+    await signInAs("member@example.test"); // MEMBER may still view
     const list = await (await matchesRoute.GET(json("GET"), g(A))).json();
     expect(list.upcoming.map((m: { id: string }) => m.id)).toEqual([m2.data.match.id]);
     expect(list.past.map((m: { id: string }) => m.id)).toEqual([m1.data.match.id]);
@@ -278,7 +285,7 @@ describe("Matches", () => {
 
 // =================================================================== attendance
 describe("Attendance", () => {
-  it("override is authoritative over later Telegram answers until cleared; late answers flagged; nothing sent", async () => {
+  it("override is authoritative over later Telegram answers until cleared; UI-4B: answers while closed don't change attendance; nothing sent", async () => {
     await signInAs("owner@example.test");
     const id = (await createMatch()).data.match.id;
     await postPoll(id);
@@ -287,7 +294,10 @@ describe("Attendance", () => {
     let v = await view(id);
     expect(v.roster.find((p: { id: string }) => p.id === "ga-p1").attendance).toMatchObject({ status: "MAYBE", source: "TELEGRAM", overridden: false });
 
-    await signInAs("member@example.test"); // MEMBER manages attendance (internal)
+    await signInAs("member@example.test"); // UI-4A — MEMBER cannot manage attendance
+    expect((await overrideRoute.POST(json("POST", { playerId: "ga-p1", status: "PLAYING" }), gm(A, id))).status).toBe(404);
+    expect((await closeRoute.POST(json("POST", { closed: true }), gm(A, id))).status).toBe(404);
+    await signInAs("admin@example.test"); // ADMIN manages attendance (internal)
     expect((await overrideRoute.POST(json("POST", { playerId: "ga-p1", status: "PLAYING" }), gm(A, id))).status).toBe(200);
     await vote(pollId, 111, [1]); // later Telegram: NOT_PLAYING
     v = await view(id);
@@ -301,7 +311,14 @@ describe("Attendance", () => {
     await vote(pollId, 222, [0]);
     v = await view(id);
     expect(v.match.attendanceClosed).toBe(true);
-    expect(v.roster.find((p: { id: string }) => p.id === "ga-p2").attendance).toMatchObject({ status: "PLAYING", late: true });
+    // UI-4B — closed attendance is read-only: the Telegram answer is kept provider-side only…
+    expect(v.roster.find((p: { id: string }) => p.id === "ga-p2").attendance).toMatchObject({ status: null, late: false });
+    expect(await prisma.telegramPollAnswer.count({ where: { pollId, userId: 222n } })).toBe(1);
+    // …and after an explicit reopen, the organizer's sync applies it.
+    expect((await closeRoute.POST(json("POST", { closed: false }), gm(A, id))).status).toBe(200);
+    expect((await syncRoute.POST(json("POST", {}), gm(A, id))).status).toBe(200);
+    v = await view(id);
+    expect(v.roster.find((p: { id: string }) => p.id === "ga-p2").attendance).toMatchObject({ status: "PLAYING", source: "TELEGRAM" });
     expect(sends("sendMessage")).toEqual([]);
   });
 
@@ -406,6 +423,8 @@ describe("Telegram attendance poll", () => {
     await prisma.attendanceResponse.deleteMany(); // webhook "missed"
     await prisma.attendanceResponse.create({ data: { matchId: id, groupId: "ga", playerId: "ga-p2", participantStatus: "PLAYING", participantSource: "WEB", participantRespondedAt: new Date(Date.now() + 60_000) } });
     await signInAs("member@example.test");
+    expect((await syncRoute.POST(json("POST", {}), gm(A, id))).status).toBe(404); // UI-4A — organizer action
+    await signInAs("admin@example.test");
     const res = await syncRoute.POST(json("POST", {}), gm(A, id));
     expect(await res.json()).toMatchObject({ ok: true, recorded: 1, stale: 1, unlinked: 0 });
     const rows = await prisma.attendanceResponse.findMany({ where: { matchId: id }, orderBy: { playerId: "asc" }, select: { playerId: true, participantStatus: true, participantSource: true } });
@@ -550,12 +569,19 @@ describe("Generate, publish and post for a Match", () => {
     for (const pid of ["ga-p1", "ga-p2", "ga-p5", "ga-p6"]) await overrideRoute.POST(json("POST", { playerId: pid, status: "PLAYING" }), gm(A, id));
     await overrideRoute.POST(json("POST", { playerId: "ga-p4", status: "MAYBE" }), gm(A, id));
     await signInAs("member@example.test");
-    const v = await view(id);
+    const v = await view(id); // MEMBER may view
     expect(v.defaultSelection).toEqual(["ga-p1", "ga-p2", "ga-p5", "ga-p6"]);
+    expect((await generateRoute.POST(json("POST", { teamCount: 2, date: "2026-10-12", selectedIds: v.defaultSelection }), g(A))).status).toBe(404); // UI-4A
+    await signInAs("admin@example.test");
     const gen = await (await generateRoute.POST(json("POST", { teamCount: 2, date: "2026-10-12", selectedIds: v.defaultSelection }), g(A))).json();
     expect(gen.analysis).toBeDefined();
+    await signInAs("member@example.test");
+    expect((await publishRoute.POST(json("POST", { date: gen.date, teams: gen.teams, matchId: id }), g(A))).status).toBe(404); // UI-4A
+    expect(await prisma.teamGeneration.count()).toBe(0);
+    await signInAs("admin@example.test");
     const pub = await publishRoute.POST(json("POST", { date: gen.date, teams: gen.teams, matchId: id }), g(A));
     expect(pub.status).toBe(200);
+    await signInAs("member@example.test");
     const genRow = await prisma.teamGeneration.findFirstOrThrow({ where: { groupId: "ga" } });
     expect(genRow.matchId).toBe(id);
     expect(sends("sendMessage")).toEqual([]); // Publish != Send
@@ -1260,7 +1286,7 @@ async function startMvp(id: string) {
 const OPTION = { p1: 0, p2: 1, p3: 2, p4: 3 } as const;
 
 describe("M9-D — result", () => {
-  it("1–8: save (draft, hidden, no send) → publish (visible, COMPLETED, no send) → explicit post → edit keeps it published → explicit updated post; validation; MEMBER may save, not post", async () => {
+  it("1–8: save (draft, hidden, no send) → publish (visible, COMPLETED, no send) → explicit post → edit keeps it published → explicit updated post; validation; UI-4A: MEMBER may neither save nor post", async () => {
     vi.stubEnv("APP_BASE_URL", BASE);
     const id = await playedMatch();
     for (const bad of [
@@ -1271,9 +1297,12 @@ describe("M9-D — result", () => {
       [{ teamNumber: 1, score: 1000 }, { teamNumber: 2, score: 5 }],
     ]) expect((await pg(id, { action: "save_result", scores: bad })).status, JSON.stringify(bad)).toBe(400);
 
-    await signInAs("member@example.test"); // Match editing role semantics: MEMBER may save
-    expect((await pg(id, { action: "save_result", scores: [{ teamNumber: 2, score: 5 }, { teamNumber: 1, score: 7 }] })).status).toBe(200);
+    await signInAs("member@example.test"); // UI-4A — result entry is an organizer mutation
+    expect((await pg(id, { action: "save_result", scores: [{ teamNumber: 2, score: 5 }, { teamNumber: 1, score: 7 }] })).status).toBe(404);
+    expect(await prisma.matchResult.count()).toBe(0);
     expect((await pgJson(id, { action: "post_message", kind: "summary" })).status).toBe(404); // Telegram is OWNER/ADMIN
+    await signInAs("admin@example.test");
+    expect((await pg(id, { action: "save_result", scores: [{ teamNumber: 2, score: 5 }, { teamNumber: 1, score: 7 }] })).status).toBe(200);
     session = null;
     expect((await pageView(id))!.result).toBeNull(); // draft is invisible
     await signInAs("owner@example.test");
@@ -1390,7 +1419,9 @@ describe("M9-D — MVP voting", () => {
 
     session = null;
     expect((await pageView(id))!.mvp).toBeNull(); // not published yet
-    await signInAs("member@example.test"); // publishing data follows Match editing
+    await signInAs("member@example.test"); // UI-4A — publishing is an organizer mutation
+    expect((await pgJson(id, { action: "publish_mvp" })).status).toBe(404);
+    await signInAs("admin@example.test");
     expect((await pgJson(id, { action: "publish_mvp" })).body.decision).toBe("VOTES");
     session = null;
     expect((await pageView(id))!.mvp).toEqual({ names: ["A1 Player"], shared: false });

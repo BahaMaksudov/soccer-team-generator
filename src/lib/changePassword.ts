@@ -13,6 +13,8 @@ import { hashPassword, passwordSchema, verifyPassword } from "@/lib/accounts";
  * - Only User.passwordHash is written (bcrypt, same cost as sign-up),
  *   guarded by the hash that was just verified so a concurrent change
  *   cannot be silently overwritten.
+ * - UI-2 — an account that signs in with Google only (passwordHash NULL)
+ *   has no password to change; setting a first password is not supported.
  */
 
 export const changePasswordSchema = z
@@ -34,11 +36,18 @@ export type ChangePasswordInput = z.infer<typeof changePasswordSchema>;
 
 export type ChangePasswordResult =
   | { ok: true }
-  | { ok: false; code: "CURRENT_PASSWORD_INCORRECT" | "CONFLICT" };
+  | { ok: false; code: "CURRENT_PASSWORD_INCORRECT" | "CONFLICT" | "NO_PASSWORD" };
+
+/** UI-2 — whether the account has a password (false for Google-only accounts). */
+export async function accountHasPassword(userId: string): Promise<boolean> {
+  const user = await prisma.user.findUnique({ where: { id: userId }, select: { passwordHash: true } });
+  return !!user?.passwordHash;
+}
 
 export async function changePassword(userId: string, input: ChangePasswordInput): Promise<ChangePasswordResult> {
   const user = await prisma.user.findUnique({ where: { id: userId }, select: { email: true, passwordHash: true } });
   if (!user) return { ok: false, code: "CURRENT_PASSWORD_INCORRECT" };
+  if (!user.passwordHash) return { ok: false, code: "NO_PASSWORD" };
 
   if (!(await verifyPassword(input.currentPassword, user.passwordHash))) return { ok: false, code: "CURRENT_PASSWORD_INCORRECT" };
   // newPassword !== currentPassword is enforced by changePasswordSchema.

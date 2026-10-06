@@ -1,21 +1,24 @@
 import { Suspense } from "react";
+import AuthLayout from "@/components/auth/AuthLayout";
+import { FormHead, InfoNote } from "@/components/auth/parts";
+import { isGoogleAuthConfigured } from "@/lib/googleAuth";
 import LoginClient from "./LoginClient";
+
+export const metadata = {
+  title: "Sign In — Team Balance Pro",
+  description: "Sign in to manage your groups, matches, players, and teams.",
+};
 
 export default function LoginPage() {
   return (
-    <Suspense fallback={<LoginFallback />}>
-      <LoginClient />
-    </Suspense>
-  );
-}
-
-function LoginFallback() {
-  return (
-    <div className="min-h-[70vh] flex items-center justify-center p-6">
-      <div className="w-full max-w-sm border rounded-xl p-6 bg-white">
-        <h1 className="text-xl font-semibold mb-2">Sign in</h1>
-        <div className="text-sm text-gray-600">Loading…</div>
-      </div>
-    </div>
+    <AuthLayout headline="Welcome back to game day." body="Sign in to manage your groups, matches, players, and teams.">
+      <FormHead title="Sign in" body="Welcome back to Team Balance Pro." />
+      <Suspense fallback={<p className="text-sm text-muted-foreground">Loading…</p>}>
+        <LoginClient googleEnabled={isGoogleAuthConfigured()} />
+      </Suspense>
+      <InfoNote title="Just here for your game?">
+        Players can view shared teams and match information without creating an account when their organizer sends them a match link.
+      </InfoNote>
+    </AuthLayout>
   );
 }

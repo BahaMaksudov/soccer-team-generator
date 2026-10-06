@@ -27,6 +27,8 @@ export type MyPlayer = {
     locationName: string | null;
     myStatus: "PLAYING" | "NOT_PLAYING" | "MAYBE" | null;
     myStatusByOrganizer: boolean;
+    /** UI-4B — closed attendance is read-only for the player too. */
+    attendanceClosed: boolean;
     myTeam: { teamNumber: number; teammates: string[] } | null;
   } | null;
 };
@@ -104,6 +106,7 @@ export async function loadMyPlayers(userId: string): Promise<MyPlayer[]> {
           locationName: match.locationName,
           myStatus: eff.status,
           myStatusByOrganizer: eff.overridden,
+          attendanceClosed: match.attendanceClosedAt !== null,
           myTeam,
         };
       }

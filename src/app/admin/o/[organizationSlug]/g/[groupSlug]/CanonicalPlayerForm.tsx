@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, type FormEvent } from "react";
+import { useId, useState, type FormEvent } from "react";
 import { ratingLabel } from "@/lib/labels";
 import type { SportClientView } from "@/lib/sports";
 import {
@@ -41,6 +41,7 @@ export default function CanonicalPlayerForm({
   const [values, setValues] = useState<PlayerFormValues>(initial);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const uid = useId();
 
   function set<K extends keyof PlayerFormValues>(key: K, value: PlayerFormValues[K]) {
     setValues((v) => ({ ...v, [key]: value }));
@@ -67,34 +68,23 @@ export default function CanonicalPlayerForm({
     }
   }
 
+  // UI-5 — redesigned presentation (same six fields, validation and request body).
+  const control = "h-11 w-full rounded-tbp-md border border-input bg-card px-3 text-base focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring md:text-sm";
+  const labelCls = "mb-1 block text-sm font-semibold";
   return (
-    <form onSubmit={handleSubmit} className="space-y-2">
-      <div className="flex flex-wrap items-end gap-2">
+    <form onSubmit={handleSubmit} className="space-y-4">
+      <div className="grid gap-3 sm:grid-cols-2">
         <div>
-          <label className="block text-xs">First Name</label>
-          <input
-            className="border rounded px-2 py-1 text-sm"
-            value={values.firstName}
-            onChange={(e) => set("firstName", e.target.value)}
-            required
-          />
+          <label className={labelCls} htmlFor={`${uid}-first`}>First Name</label>
+          <input id={`${uid}-first`} className={control} value={values.firstName} onChange={(e) => set("firstName", e.target.value)} autoComplete="off" required />
         </div>
         <div>
-          <label className="block text-xs">Last Name</label>
-          <input
-            className="border rounded px-2 py-1 text-sm"
-            value={values.lastName}
-            onChange={(e) => set("lastName", e.target.value)}
-            required
-          />
+          <label className={labelCls} htmlFor={`${uid}-last`}>Last Name</label>
+          <input id={`${uid}-last`} className={control} value={values.lastName} onChange={(e) => set("lastName", e.target.value)} autoComplete="off" required />
         </div>
         <div>
-          <label className="block text-xs">{sport.terminology.roleNoun}</label>
-          <select
-            className="border rounded px-2 py-1 text-sm"
-            value={values.position}
-            onChange={(e) => set("position", e.target.value)}
-          >
+          <label className={labelCls} htmlFor={`${uid}-role`}>{sport.terminology.roleNoun}</label>
+          <select id={`${uid}-role`} className={control} value={values.position} onChange={(e) => set("position", e.target.value)}>
             {/* A legacy/unknown stored role stays selectable so editing other fields never rewrites it. */}
             {!sport.roles.some((r) => r.key === values.position) && <option value={values.position}>{values.position}</option>}
             {sport.roles.map((r) => (
@@ -105,12 +95,8 @@ export default function CanonicalPlayerForm({
           </select>
         </div>
         <div>
-          <label className="block text-xs" title="This player's skill level in this group's sport">Skill</label>
-          <select
-            className="border rounded px-2 py-1 text-sm"
-            value={values.rating}
-            onChange={(e) => set("rating", e.target.value as PlayerFormValues["rating"])}
-          >
+          <label className={labelCls} htmlFor={`${uid}-skill`} title="This player's skill level in this group's sport">Skill</label>
+          <select id={`${uid}-skill`} className={control} value={values.rating} onChange={(e) => set("rating", e.target.value as PlayerFormValues["rating"])}>
             {PLAYER_RATINGS.map((r) => (
               <option key={r} value={r}>
                 {ratingLabel(r)}
@@ -118,41 +104,43 @@ export default function CanonicalPlayerForm({
             ))}
           </select>
         </div>
-        <label className="flex items-center gap-1 text-xs pb-1">
-          <input type="checkbox" checked={values.isActive} onChange={(e) => set("isActive", e.target.checked)} />
-          Active
-        </label>
-        <button
-          type="submit"
-          className="bg-black text-white rounded px-3 py-1 text-sm disabled:opacity-60"
-          disabled={busy}
-        >
-          {busy ? busyLabel : submitLabel}
-        </button>
-        {onCancel && (
-          <button type="button" className="border rounded px-3 py-1 text-sm" onClick={onCancel} disabled={busy}>
-            Cancel
-          </button>
-        )}
-      </div>
-      <details className="text-xs">
-        <summary className="cursor-pointer text-gray-600">More</summary>
-        <div className="mt-1">
-          <label className="block text-xs">Stamina (optional, 1–5)</label>
-          <select
-            className="border rounded px-2 py-1 text-sm"
-            value={values.stamina}
-            onChange={(e) => set("stamina", Number(e.target.value))}
-          >
+        <div>
+          <label className={labelCls} htmlFor={`${uid}-stamina`}>Stamina (1–5)</label>
+          <select id={`${uid}-stamina`} aria-describedby={`${uid}-stamina-hint`} className={control} value={values.stamina} onChange={(e) => set("stamina", Number(e.target.value))}>
             {STAMINA_OPTIONS.map((s) => (
               <option key={s} value={s}>
                 {s}
               </option>
             ))}
           </select>
+          <p id={`${uid}-stamina-hint`} className="mt-1 text-xs text-muted-foreground">1 = lower endurance · 5 = higher endurance. Used for balancing only.</p>
         </div>
-      </details>
-      {error && <div className="text-sm text-rose-700">{error}</div>}
+        <label className="flex min-h-11 items-center gap-2 self-end text-sm font-semibold">
+          <input type="checkbox" className="size-5 accent-primary" checked={values.isActive} onChange={(e) => set("isActive", e.target.checked)} />
+          Active
+        </label>
+      </div>
+      {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
+      <div className="flex flex-wrap gap-2">
+        <button
+          type="submit"
+          className="inline-flex min-h-11 items-center rounded-full bg-primary px-5 text-sm font-semibold text-primary-foreground hover:bg-primary/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:opacity-60"
+          disabled={busy}
+          aria-busy={busy}
+        >
+          {busy ? busyLabel : submitLabel}
+        </button>
+        {onCancel && (
+          <button
+            type="button"
+            className="inline-flex min-h-11 items-center rounded-full border border-input bg-card px-5 text-sm font-semibold hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+            onClick={onCancel}
+            disabled={busy}
+          >
+            Cancel
+          </button>
+        )}
+      </div>
     </form>
   );
 }

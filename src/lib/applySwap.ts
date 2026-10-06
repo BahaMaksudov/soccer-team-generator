@@ -6,6 +6,7 @@ import { evaluateTeams, resolveBalanceConfig } from "@/lib/balanceEngine";
 import { analyzeTeams, applySwap, METRICS_VERSION } from "@/lib/balanceAnalysis";
 import { findSport } from "@/lib/sports";
 import { loadStoredBalanceWeights } from "@/lib/groupSettings";
+import { managersOnlyResponse } from "@/lib/tenantRoute";
 
 /**
  * M8-A — apply the deterministic best-swap suggestion to the organizer's
@@ -24,6 +25,9 @@ const INVALID_PLAYERS_MESSAGE = "One or more players are invalid or unavailable.
 const PREVIEW_PLAYER_SELECT = { id: true, firstName: true, lastName: true, position: true, rating: true, stamina: true } as const;
 
 export async function applySuggestedSwapForContext(context: TenantContext, req: Request): Promise<NextResponse> {
+  // UI-4A — organizer mutation: OWNER/ADMIN only (MEMBER gets the generic 404).
+  const denied = managersOnlyResponse(context);
+  if (denied) return denied;
   const body = await req.json().catch(() => null);
   const parsed = applySwapSchema.safeParse(body ?? {});
   if (!parsed.success) return NextResponse.json(zodErrorResponse(parsed.error), { status: 400 });

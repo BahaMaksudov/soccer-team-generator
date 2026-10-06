@@ -165,7 +165,9 @@ enum OrgRole {
 model User {
   id              String    @id @default(cuid())
   email           String    @unique
-  passwordHash    String
+  // UI-2 — NULL for accounts that sign in with Google only (no password is
+  // ever invented). Credentials login and Change Password require a hash.
+  passwordHash    String?
   name            String?
   // M5 — set only by a successful email verification (or, once, by
   // migration #13 for Users who already owned an Organization before

@@ -286,3 +286,49 @@ describe("Post-game Telegram: Match Summary is the only post action (wiring)", (
     expect(fs.readFileSync(path.join(process.cwd(), "src/lib/validation.ts"), "utf8")).toContain('kind: z.enum(["summary"])');
   });
 });
+
+// UI-5 — recap editor dirty state (manual-test finding: Save Recap stayed enabled after save/publish).
+import { recapEditorState } from "@/lib/postGameUi";
+import { createElement as h } from "react";
+import { renderToStaticMarkup as html } from "react-dom/server";
+import PostGameSectionForDirty, { type PostGameView as DirtyView } from "@/app/admin/o/[organizationSlug]/g/[groupSlug]/matches/[matchId]/PostGameSection";
+
+describe("UI-5 recap dirty state", () => {
+  it("no saved recap: Save needs non-empty text", () => {
+    expect(recapEditorState("", null)).toEqual({ dirty: false, canSave: false });
+    expect(recapEditorState("   ", undefined)).toEqual({ dirty: false, canSave: false });
+    expect(recapEditorState("Great game", null)).toEqual({ dirty: true, canSave: true });
+  });
+  it("saved (or saved + published) recap loaded unchanged: Save disabled", () => {
+    expect(recapEditorState("Great game", "Great game")).toEqual({ dirty: false, canSave: false });
+    expect(recapEditorState("Great game  ", "Great game")).toEqual({ dirty: false, canSave: false }); // stored trimmed
+  });
+  it("edited: Save enabled; emptied: not saveable (the server rejects an empty recap)", () => {
+    expect(recapEditorState("Great game!", "Great game")).toEqual({ dirty: true, canSave: true });
+    expect(recapEditorState("", "Great game")).toEqual({ dirty: true, canSave: false });
+  });
+  it("rendered: a saved+published recap shows Save Recap disabled; Publish Recap hidden while edits are unsaved", () => {
+    const view = (recap: DirtyView["recap"]): DirtyView => ({
+      canceled: false,
+      teamNumbers: [1, 2],
+      participants: [{ playerId: "a", name: "A", teamNumber: 1 }, { playerId: "b", name: "B", teamNumber: 2 }],
+      result: { scores: [{ teamNumber: 1, score: 1 }, { teamNumber: 2, score: 0 }], published: true },
+      mvp: null,
+      mvpMaxCandidates: 10,
+      recap,
+      standardRecap: "Standard.",
+      aiConfigured: false,
+      messages: null,
+    });
+    const render = (recap: DirtyView["recap"]) =>
+      html(h(PostGameSectionForDirty, { pg: view(recap), canManage: true, busy: false, act: vi.fn(), request: vi.fn(), notify: vi.fn() }));
+    const recapOf = (out: string) => out.slice(out.indexOf('id="recap"'), out.indexOf('id="summary"'));
+    const published = recapOf(render({ content: "Saved text.", source: "MANUAL", published: true, hasAiDraft: false }));
+    expect(published).toMatch(/<button[^>]*disabled=""[^>]*>Save Recap<\/button>/);
+    expect(published).toContain("Saved.");
+    expect(published).not.toContain("Unsaved changes");
+    const savedNotPublished = recapOf(render({ content: "Saved text.", source: "MANUAL", published: false, hasAiDraft: false }));
+    expect(savedNotPublished).toMatch(/<button[^>]*disabled=""[^>]*>Save Recap<\/button>/);
+    expect(savedNotPublished).toContain("Publish Recap");
+  });
+});

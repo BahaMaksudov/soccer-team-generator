@@ -1,6 +1,11 @@
 import { redirect } from "next/navigation";
 import { findSport } from "@/lib/sports";
 import Link from "next/link";
+import { ChevronRight, Plus } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
+import { Card, CardContent, CardHeader } from "@/components/ui/card";
+import { ROLE_LABELS } from "@/lib/appShell";
 import { listAccessibleTenants, TenantContextError, type AccessibleOrganization } from "@/lib/tenantContext";
 import { resolveAdminEntry } from "./adminEntry";
 
@@ -44,58 +49,69 @@ export default async function AdminEntryPage() {
 
   const shown = entry.kind === "select" ? entry.organizations : [entry.organization];
 
+  // UI-3 — redesigned presentation (app shell); same data, roles and links as before.
   return (
-    <div className="rounded-2xl border bg-white shadow-sm p-5 space-y-4">
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <h1 className="text-2xl font-semibold">Your workspaces</h1>
-        <div className="flex flex-wrap items-center gap-3">
-          <Link className="text-sm underline" href="/me">
-            My teams
-          </Link>
-          <Link className="text-sm underline" href="/account/security">
-            Account
-          </Link>
-          <Link className="text-sm rounded-md border px-3 py-1.5 hover:bg-gray-50" href="/onboarding">
+    <div className="space-y-6">
+      <div className="flex flex-wrap items-end justify-between gap-3">
+        <div>
+          <p className="eyebrow">Workspaces</p>
+          <h1 className="mt-1 text-3xl font-extrabold">Your workspaces</h1>
+          <p className="mt-1 text-muted-foreground">Choose a group to manage its players, matches and teams.</p>
+        </div>
+        <Button asChild variant="outline">
+          <Link href="/onboarding">
+            <Plus aria-hidden="true" />
             Create organization
           </Link>
-        </div>
+        </Button>
       </div>
+
       {shown.map((org) => (
-        <div key={org.id} className="border rounded-xl p-4">
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <div className="font-semibold">
-              {org.name} <span className="text-xs text-gray-500 font-normal">({org.role})</span>
+        <Card key={org.id}>
+          <CardHeader className="flex flex-row flex-wrap items-center justify-between gap-3 space-y-0">
+            <div className="flex min-w-0 items-center gap-3">
+              <span className="grid size-10 shrink-0 place-items-center rounded-tbp-sm bg-accent font-display font-black text-accent-foreground" aria-hidden="true">
+                {org.name.slice(0, 1).toUpperCase()}
+              </span>
+              <div className="min-w-0">
+                <h2 className="truncate text-lg font-extrabold">{org.name}</h2>
+                <Badge variant="secondary">{ROLE_LABELS[org.role]}</Badge>
+              </div>
             </div>
-            <div className="flex gap-3">
+            <div className="flex flex-wrap gap-2">
               {(org.role === "OWNER" || org.role === "ADMIN") && (
-                <Link className="text-sm underline" href={`/admin/o/${encodeURIComponent(org.slug)}/groups/new`}>
-                  Add group
-                </Link>
+                <Button asChild variant="ghost" size="sm">
+                  <Link href={`/admin/o/${encodeURIComponent(org.slug)}/groups/new`}>Add group</Link>
+                </Button>
               )}
               {org.role === "OWNER" && (
-                <Link className="text-sm underline" href={`/admin/o/${encodeURIComponent(org.slug)}/members`}>
-                  Members
-                </Link>
+                <Button asChild variant="ghost" size="sm">
+                  <Link href={`/admin/o/${encodeURIComponent(org.slug)}/members`}>Members</Link>
+                </Button>
               )}
             </div>
-          </div>
-          {org.groups.length === 0 ? (
-            <div className="text-sm text-gray-500 mt-2">No active groups.</div>
-          ) : (
-            <ul className="mt-2 space-y-1">
-              {org.groups.map((g) => (
-                <li key={g.id}>
-                  <Link
-                    className="text-sm underline"
-                    href={`/admin/o/${encodeURIComponent(org.slug)}/g/${encodeURIComponent(g.slug)}`}
-                  >
-                    {g.name} ({findSport(g.sportKey)?.label ?? g.sportKey})
-                  </Link>
-                </li>
-              ))}
-            </ul>
-          )}
-        </div>
+          </CardHeader>
+          <CardContent>
+            {org.groups.length === 0 ? (
+              <p className="text-sm text-muted-foreground">No active groups.</p>
+            ) : (
+              <ul className="divide-y divide-border rounded-tbp border border-border">
+                {org.groups.map((g) => (
+                  <li key={g.id}>
+                    <Link
+                      className="flex min-h-12 items-center gap-3 px-4 py-2 hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+                      href={`/admin/o/${encodeURIComponent(org.slug)}/g/${encodeURIComponent(g.slug)}`}
+                    >
+                      <span className="min-w-0 flex-1 truncate font-semibold">{g.name}</span>
+                      <span className="shrink-0 text-sm text-muted-foreground">{findSport(g.sportKey)?.label ?? g.sportKey}</span>
+                      <ChevronRight className="size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
+                    </Link>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </CardContent>
+        </Card>
       ))}
     </div>
   );

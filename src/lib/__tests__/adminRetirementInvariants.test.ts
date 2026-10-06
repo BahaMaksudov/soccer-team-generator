@@ -160,7 +160,8 @@ describe("single-tenant resolver is gone (Phase 2D.6D.6)", () => {
     );
     const listing = tenantEntry.filter((f) => /\blistAccessibleTenants\(/.test(code.get(f)!));
     // M5: /onboarding uses the listing only to count the User's own Organizations.
-    expect(listing).toEqual([rel("src/app/admin/page.tsx"), rel("src/app/onboarding/page.tsx")]);
+    // UI-6: Account lists the session User's OWN memberships/roles (display only, links to URL-bound pages).
+    expect(listing.sort()).toEqual([rel("src/app/account/security/page.tsx"), rel("src/app/admin/page.tsx"), rel("src/app/onboarding/page.tsx")].sort());
     for (const f of tenantEntry.filter((x) => !listing.includes(x))) {
       expect(f.startsWith(rel("src/app/api/admin/o/")) || f.startsWith(rel("src/app/admin/o/")), f).toBe(true);
     }

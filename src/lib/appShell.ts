@@ -1,0 +1,145 @@
+/**
+ * UI-3 — authenticated application shell: pure navigation model.
+ *
+ * PRESENTATION ONLY. Every input comes from the server-authorized shell data
+ * (src/lib/appShellData.ts: the session User's own OrganizationMemberships
+ * and their active Groups) plus the current URL path. Nothing here grants
+ * access: each linked page re-resolves the tenant from its URL and re-checks
+ * membership server-side (src/lib/tenantContext.ts). A role only decides
+ * which links are SHOWN; hiding a link never replaces a server check.
+ *
+ * Roles are the real OrgRole values: OWNER, ADMIN, MEMBER. Player identity
+ * (a claimed Player.userId) only adds the personal "My Games" link and never
+ * organizer navigation.
+ */
+
+export type ShellRole = "OWNER" | "ADMIN" | "MEMBER";
+
+export type ShellGroup = { slug: string; name: string; sportLabel: string };
+export type ShellOrganization = { slug: string; name: string; role: ShellRole; groups: ShellGroup[] };
+
+export type ShellData = {
+  user: { name: string | null; email: string };
+  organizations: ShellOrganization[];
+  /** The User has at least one claimed Player profile (Player.userId). */
+  hasPlayerProfile: boolean;
+  /** `/admin` lists workspaces (false when it would just redirect to the only Group). */
+  workspaceListAvailable: boolean;
+};
+
+export type ShellContext = { organization: ShellOrganization; group: ShellGroup | null } | null;
+
+export type NavKey = "overview" | "matches" | "players" | "groups" | "my-games" | "organization" | "account";
+export type NavItem = {
+  key: NavKey;
+  label: string;
+  href: string;
+  active: boolean;
+  section: "main" | "personal" | "admin";
+  /** Shown in the mobile bottom bar (the rest go under "More"). */
+  mobilePrimary: boolean;
+};
+
+/** Where Sign Out lands: a relative, same-origin path (never an absolute URL). */
+export const SIGN_OUT_DESTINATION = "/login";
+
+export const ROLE_LABELS: Record<ShellRole, string> = { OWNER: "Owner", ADMIN: "Admin", MEMBER: "Member" };
+
+const enc = encodeURIComponent;
+
+export const groupAdminHref = (organizationSlug: string, groupSlug: string) => `/admin/o/${enc(organizationSlug)}/g/${enc(groupSlug)}`;
+export const membersHref = (organizationSlug: string) => `/admin/o/${enc(organizationSlug)}/members`;
+export const organizationHref = (organizationSlug: string) => `/admin/o/${enc(organizationSlug)}`;
+export const groupsHrefOf = (organizationSlug: string) => `/admin/o/${enc(organizationSlug)}/groups`;
+
+function decodeSegment(s: string | undefined): string | null {
+  if (!s) return null;
+  try {
+    return decodeURIComponent(s);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The Organization/Group the URL names — but ONLY if it is in the
+ * server-authorized list. An unknown or foreign slug yields a neutral
+ * (null) context; the page itself 404s it.
+ */
+export function shellContextFromPath(pathname: string | null | undefined, organizations: ShellOrganization[]): ShellContext {
+  if (!pathname) return null;
+  const m = /^\/admin\/o\/([^/]+)(?:\/g\/([^/]+))?(?:\/|$)/.exec(pathname);
+  if (!m) return null;
+  const orgSlug = decodeSegment(m[1]);
+  const organization = organizations.find((o) => o.slug === orgSlug);
+  if (!organization) return null;
+  if (m[2] === undefined) return { organization, group: null };
+  const groupSlug = decodeSegment(m[2]);
+  const group = organization.groups.find((g) => g.slug === groupSlug);
+  return group ? { organization, group } : null;
+}
+
+export function buildShellNav(params: { data: ShellData; pathname: string; hash?: string }): NavItem[] {
+  const { data, pathname } = params;
+  const hash = (params.hash ?? "").replace(/^#/, "");
+  const ctx = shellContextFromPath(pathname, data.organizations);
+  const items: NavItem[] = [];
+
+  if (ctx?.group) {
+    const base = groupAdminHref(ctx.organization.slug, ctx.group.slug);
+    const onGroupPage = pathname === base || pathname === `${base}/`;
+    const matchesBase = `${base}/matches`;
+    const onMatches = pathname === matchesBase || pathname.startsWith(`${matchesBase}/`);
+    const playersBase = `${base}/players`;
+    // UI-4/UI-5 — Matches and Players are real pages of the Group.
+    items.push(
+      { key: "overview", label: "Overview", href: base, active: onGroupPage, section: "main", mobilePrimary: true },
+      { key: "matches", label: "Matches", href: matchesBase, active: onMatches, section: "main", mobilePrimary: true },
+      { key: "players", label: "Players", href: playersBase, active: pathname === playersBase || pathname.startsWith(`${playersBase}/`), section: "main", mobilePrimary: true }
+    );
+  }
+
+  // UI-5 — inside an Organization, Groups is that Organization's Groups page
+  // (any member may view it); elsewhere the /admin workspace list (when it lists).
+  if (ctx) {
+    const groupsHref = groupsHrefOf(ctx.organization.slug);
+    items.push({ key: "groups", label: "Groups", href: groupsHref, active: pathname === groupsHref || pathname.startsWith(`${groupsHref}/`), section: "main", mobilePrimary: !ctx.group });
+  } else if (data.organizations.length > 0) {
+    // Outside an Organization (e.g. My Games, Account): a way back to the workspace —
+    // /admin lists workspaces, or opens the only Group directly.
+    items.push({ key: "groups", label: "Groups", href: "/admin", active: pathname === "/admin", section: "main", mobilePrimary: true });
+  }
+
+  if (data.hasPlayerProfile || pathname === "/me" || pathname.startsWith("/me/")) {
+    items.push({ key: "my-games", label: "My Games", href: "/me", active: pathname === "/me" || pathname.startsWith("/me/"), section: "personal", mobilePrimary: true });
+  }
+
+  // UI-6 — Organization overview for any member of the current Organization
+  // (Members & invitations inside it stay OWNER-only server-side).
+  if (ctx) {
+    const href = organizationHref(ctx.organization.slug);
+    const members = membersHref(ctx.organization.slug);
+    items.push({ key: "organization", label: "Organization", href, active: pathname === href || pathname === members, section: "admin", mobilePrimary: false });
+  }
+
+  items.push({ key: "account", label: "Account", href: "/account/security", active: pathname.startsWith("/account/"), section: "admin", mobilePrimary: false });
+  return items;
+}
+
+/** Group switcher entries: every authorized active Group, by Organization, with canonical URLs. */
+export function switcherEntries(organizations: ShellOrganization[], ctx: ShellContext) {
+  return organizations.map((o) => ({
+    organization: { slug: o.slug, name: o.name, roleLabel: ROLE_LABELS[o.role] },
+    groups: o.groups.map((g) => ({
+      ...g,
+      href: groupAdminHref(o.slug, g.slug),
+      current: ctx?.group != null && ctx.organization.slug === o.slug && ctx.group.slug === g.slug,
+    })),
+  }));
+}
+
+export function initialsOf(name: string | null, email: string): string {
+  const source = name?.trim() || email;
+  const parts = source.split(/[\s@._-]+/).filter(Boolean);
+  return ((parts[0]?.[0] ?? "") + (parts[1]?.[0] ?? "")).toUpperCase() || "?";
+}

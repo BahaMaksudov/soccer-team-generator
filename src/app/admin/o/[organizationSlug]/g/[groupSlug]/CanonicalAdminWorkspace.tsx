@@ -12,7 +12,6 @@ import CanonicalGenerateSection from "./CanonicalGenerateSection";
 import CanonicalSettingsSection from "./CanonicalSettingsSection";
 import CanonicalVisibilitySection from "./CanonicalVisibilitySection";
 import CanonicalTelegramSection from "./CanonicalTelegramSection";
-import CanonicalMatchesSection from "./CanonicalMatchesSection";
 import CommunicationChannelsSection from "./CommunicationChannelsSection";
 
 /**
@@ -148,8 +147,8 @@ export default function CanonicalAdminWorkspace({
     <div>
       {message && <div className="text-sm text-blue-700 mt-2">{message}</div>}
 
-      <CanonicalMatchesSection organizationSlug={organizationSlug} groupSlug={groupSlug} />
-
+      {/* UI-3 — in-page target for the app shell's Players navigation (UI-4: Matches has its own page). */}
+      <div id="players" className="scroll-mt-20">
       <CanonicalPlayersSection
         canManage={canManage}
         organizationSlug={organizationSlug}
@@ -163,7 +162,11 @@ export default function CanonicalAdminWorkspace({
         refreshPlayers={loadPlayers}
         sport={sport}
       />
+      </div>
 
+      {/* UI-4A — team generation, settings, sharing and Telegram are organizer surfaces (OWNER/ADMIN; enforced server-side). */}
+      {canManage && (
+      <>
       <CanonicalGenerateSection
         organizationSlug={organizationSlug}
         groupSlug={groupSlug}
@@ -178,6 +181,8 @@ export default function CanonicalAdminWorkspace({
         onPanelModeChange={setPanelMode}
       />
 
+      {/* UI-5 — target of the Groups page "Settings" action. */}
+      <div id="settings" className="scroll-mt-20">
       <CanonicalSettingsSection
         organizationSlug={organizationSlug}
         groupSlug={groupSlug}
@@ -186,6 +191,9 @@ export default function CanonicalAdminWorkspace({
       />
 
       <CanonicalVisibilitySection organizationSlug={organizationSlug} groupSlug={groupSlug} />
+      </div>
+      </>
+      )}
 
       {canManage ? (
         <>
@@ -201,7 +209,7 @@ export default function CanonicalAdminWorkspace({
         </>
       ) : (
         <div className="border rounded-xl p-4 mt-4 text-sm text-gray-600">
-          Telegram and communication channels are managed by the group&apos;s owners and admins.
+          Teams, settings, sharing, Telegram and communication channels are managed by the group&apos;s owners and admins.
         </div>
       )}
     </div>

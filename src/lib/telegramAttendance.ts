@@ -9,7 +9,7 @@ import { attendanceFromTelegramOptions, recordParticipantResponse } from "@/lib/
 import { attendancePollContent, renderTelegramPoll } from "@/lib/messaging";
 import { contentHashOf, STALE_SENDING_MS } from "@/lib/messaging/deliveryState";
 import { callTelegram, TelegramApiRejectionError } from "@/lib/telegramApi";
-import { findGroupMatch } from "@/lib/matches";
+import { attendanceClosedResponse, findGroupMatch } from "@/lib/matches";
 
 /**
  * M9-A — Telegram adapter for channel-neutral Match attendance.
@@ -32,7 +32,12 @@ const CHANNEL = "TELEGRAM" as const;
 export async function applyTelegramAttendanceAnswer(
   tx: Prisma.TransactionClient,
   input: { matchId: string; groupId: string; telegramUserId: bigint; optionIds: unknown; at: Date }
-): Promise<"recorded" | "stale" | "unlinked"> {
+): Promise<"recorded" | "stale" | "unlinked" | "closed"> {
+  // UI-4B — closed attendance is read-only: the raw provider answer
+  // (TelegramPollAnswer) is still stored by the webhook, but core attendance
+  // is not changed. After reopening, the explicit sync can apply it.
+  const match = await tx.match.findFirst({ where: { id: input.matchId, groupId: input.groupId }, select: { attendanceClosedAt: true } });
+  if (!match || match.attendanceClosedAt) return "closed";
   const link = await tx.telegramUserLink.findUnique({
     where: { groupId_userId: { groupId: input.groupId, userId: input.telegramUserId } },
     select: { playerId: true },
@@ -53,16 +58,20 @@ export async function applyTelegramAttendanceAnswer(
 
 /** Explicit recovery sync from stored answers of the Match's attendance polls (same mapping as the webhook). */
 export async function syncTelegramAttendance(context: TenantContext, matchId: string): Promise<NextResponse> {
+  // UI-4A — organizer mutation: OWNER/ADMIN only (MEMBER gets the generic 404).
+  const denied = managersOnlyResponse(context);
+  if (denied) return denied;
   const groupId = context.activeGroup.id;
   const match = await findGroupMatch(context, matchId);
   if (!match) return NextResponse.json({ error: "Match not found" }, { status: 404 });
+  if (match.attendanceClosedAt) return attendanceClosedResponse(); // UI-4B — reopen first
   const polls = await prisma.telegramPoll.findMany({ where: { matchId, groupId, kind: "ATTENDANCE" }, select: { pollId: true } });
   const answers = await prisma.telegramPollAnswer.findMany({
     where: { groupId, pollId: { in: polls.map((p) => p.pollId) } },
     orderBy: { updatedAt: "asc" },
     select: { userId: true, optionIdsJson: true, updatedAt: true },
   });
-  const tally = { recorded: 0, stale: 0, unlinked: 0 };
+  const tally = { recorded: 0, stale: 0, unlinked: 0, closed: 0 };
   for (const a of answers) {
     let optionIds: unknown = [];
     try {

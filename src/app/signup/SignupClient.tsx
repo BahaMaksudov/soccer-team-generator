@@ -1,8 +1,10 @@
 "use client";
 
-import Link from "next/link";
 import { useState } from "react";
 import { signIn } from "next-auth/react";
+import { PASSWORD_MIN_LENGTH } from "@/lib/passwordRules";
+import { Field, GoogleButton, SubmitButton } from "@/components/auth/fields";
+import { FormAlert, FormHead, OrDivider, TextLink } from "@/components/auth/parts";
 
 type Invite = { token: string; email: string; organizationName: string } | null;
 
@@ -12,7 +14,7 @@ function firstError(data: unknown): string {
   return field || d?.issues?.formErrors?.[0] || d?.error || "Sign up failed. Please try again.";
 }
 
-export default function SignupClient({ invite, next = null }: { invite: Invite; next?: string | null }) {
+export default function SignupClient({ invite, next = null, googleEnabled = false }: { invite: Invite; next?: string | null; googleEnabled?: boolean }) {
   const [name, setName] = useState("");
   const [email, setEmail] = useState(invite?.email ?? "");
   const [password, setPassword] = useState("");
@@ -59,47 +61,72 @@ export default function SignupClient({ invite, next = null }: { invite: Invite; 
     }
   }
 
+  // Google: a verified Google email needs no verification email. Invitations
+  // still go through /invite/<token> (acceptance checks the invited email).
+  const googleCallback = invite ? `/invite/${invite.token}` : next || "/admin";
+
   return (
-    <div className="min-h-[70vh] flex items-center justify-center p-6">
-      <form onSubmit={submit} className="w-full max-w-sm border rounded-xl p-6 bg-white">
-        <h1 className="text-xl font-semibold mb-1">Create your account</h1>
-        {invite ? (
-          <p className="text-sm text-gray-600 mb-4">
-            You were invited to join <span className="font-medium">{invite.organizationName}</span>.
-          </p>
-        ) : (
-          <p className="text-sm text-gray-600 mb-4">Organize your pickup games and generate balanced teams.</p>
-        )}
-        {err && <div className="text-sm text-red-600 mb-3" role="alert">{err}</div>}
-
-        <label className="block text-sm mb-1" htmlFor="name">Name</label>
-        <input id="name" className="w-full border rounded-md px-3 py-2 mb-3" value={name}
-          onChange={(e) => setName(e.target.value)} autoComplete="name" required />
-
-        <label className="block text-sm mb-1" htmlFor="email">Email</label>
-        <input id="email" type="email" className="w-full border rounded-md px-3 py-2 mb-3 read-only:bg-gray-100"
-          value={email} onChange={(e) => setEmail(e.target.value)} readOnly={!!invite} autoComplete="email" required />
-
-        <label className="block text-sm mb-1" htmlFor="password">Password</label>
-        <input id="password" type="password" className="w-full border rounded-md px-3 py-2 mb-1" value={password}
-          onChange={(e) => setPassword(e.target.value)} autoComplete="new-password" minLength={8} required />
-        <div className="text-xs text-gray-500 mb-3">At least 8 characters.</div>
-
-        <label className="block text-sm mb-1" htmlFor="confirmPassword">Confirm password</label>
-        <input id="confirmPassword" type="password" className="w-full border rounded-md px-3 py-2 mb-4"
-          value={confirmPassword} onChange={(e) => setConfirmPassword(e.target.value)} autoComplete="new-password" required />
-
-        <button type="submit" className="w-full bg-black text-white rounded-md py-2 disabled:opacity-60" disabled={loading}>
-          {loading ? "Creating account..." : "Create account"}
-        </button>
-
-        <div className="text-sm text-gray-600 mt-4">
-          Already have an account?{" "}
-          <Link className="underline" href={invite ? `/login?callbackUrl=${encodeURIComponent(`/invite/${invite.token}`)}` : "/login"}>
-            Sign in
-          </Link>
-        </div>
+    <>
+      <FormHead
+        title="Create your account"
+        body={
+          invite ? (
+            <>
+              You were invited to join <span className="font-semibold text-foreground">{invite.organizationName}</span>.
+            </>
+          ) : (
+            "Start organizing fairer, easier game days."
+          )
+        }
+      />
+      {googleEnabled && (
+        <>
+          <GoogleButton callbackUrl={googleCallback} />
+          <OrDivider label="or create an account with email" />
+        </>
+      )}
+      <form onSubmit={submit} className="space-y-5">
+        {err && <FormAlert>{err}</FormAlert>}
+        <Field id="name" label="Full name" autoComplete="name" value={name} onChange={(e) => setName(e.target.value)} required />
+        <Field
+          id="email"
+          label="Email address"
+          type="email"
+          inputMode="email"
+          autoComplete="email"
+          value={email}
+          onChange={(e) => setEmail(e.target.value)}
+          readOnly={!!invite}
+          required
+        />
+        <Field
+          id="password"
+          label="Password"
+          type="password"
+          autoComplete="new-password"
+          value={password}
+          onChange={(e) => setPassword(e.target.value)}
+          minLength={PASSWORD_MIN_LENGTH}
+          hint={`At least ${PASSWORD_MIN_LENGTH} characters.`}
+          required
+        />
+        <Field
+          id="confirmPassword"
+          label="Confirm password"
+          type="password"
+          autoComplete="new-password"
+          value={confirmPassword}
+          onChange={(e) => setConfirmPassword(e.target.value)}
+          required
+        />
+        <SubmitButton loading={loading} loadingText="Creating account…">
+          Create Account
+        </SubmitButton>
       </form>
-    </div>
+      <p className="mt-6 text-center text-sm text-muted-foreground">
+        Already have an account?{" "}
+        <TextLink href={invite ? `/login?callbackUrl=${encodeURIComponent(`/invite/${invite.token}`)}` : "/login"}>Sign in</TextLink>
+      </p>
+    </>
   );
 }

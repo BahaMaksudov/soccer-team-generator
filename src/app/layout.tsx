@@ -69,8 +69,19 @@
 
 
 import "./globals.css";
-import SiteHeader from "@/components/SiteHeader";
+import { Archivo, Manrope } from "next/font/google";
+import { headers } from "next/headers";
+import LegacyChrome from "@/components/LegacyChrome";
+import ChromeBoundaryGuard from "@/components/ChromeBoundaryGuard";
+import { CHROME_HEADER, chromeModeFromHeader } from "@/lib/chrome";
 import { getTeamName } from "@/lib/settings";
+
+// UI-0 — design-system fonts, self-hosted by next/font at build time (no
+// runtime Google Fonts request). Only the CSS VARIABLES are attached to
+// <html>; nothing uses them until a redesigned component opts in via the
+// display/body font-family utilities, so existing pages are unchanged.
+const displayFont = Archivo({ subsets: ["latin"], weight: ["600", "700", "800", "900"], variable: "--font-tbp-display", display: "swap" });
+const bodyFont = Manrope({ subsets: ["latin"], weight: ["400", "500", "600", "700"], variable: "--font-tbp-body", display: "swap" });
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
@@ -83,31 +94,16 @@ export const metadata = {
 };
 
 export default async function RootLayout({ children }: { children: React.ReactNode }) {
-  const teamName = await getTeamName();
+  // UI-1 — server-side chrome decision from the middleware tag (src/lib/chrome.ts).
+  const mode = chromeModeFromHeader((await headers()).get(CHROME_HEADER));
+  const teamName = mode === "legacy" ? await getTeamName() : "";
 
   return (
-    <html lang="en">
+    <html lang="en" className={`${displayFont.variable} ${bodyFont.variable}`}>
       <body className="min-h-screen text-slate-900 relative overflow-x-hidden">
-        <div
-          className="fixed inset-0 -z-10 bg-center bg-cover"
-          style={{
-            backgroundImage: "url('/SoccerTeam.jpg')",
-            opacity: 0.85,
-          }}
-        />
-
-        <div className="fixed inset-0 -z-10 bg-white/70" />
-
-        {/* ✅ pass the actual string */}
-        <SiteHeader teamName={teamName} />
-
-        <main className="max-w-6xl mx-auto px-4 py-6">{children}</main>
-
-        <footer className="border-t bg-white/80 mt-12 print:hidden">
-          <div className="max-w-6xl mx-auto px-4 py-6 text-sm text-slate-600">
-            © {new Date().getFullYear()} Team Balance Pro
-          </div>
-        </footer>
+        {/* UI-1/UI-2 — old global chrome for every route except the redesigned homepage and auth screens. */}
+        <ChromeBoundaryGuard mode={mode} />
+        {mode === "redesign" ? children : <LegacyChrome teamName={teamName}>{children}</LegacyChrome>}
       </body>
     </html>
   );

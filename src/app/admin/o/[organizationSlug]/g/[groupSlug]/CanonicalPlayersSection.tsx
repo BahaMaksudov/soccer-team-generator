@@ -151,10 +151,13 @@ export default function CanonicalPlayersSection({
     <div className="border rounded-xl p-4 mt-4 space-y-3">
       <div className="font-semibold">Players</div>
       <p className="text-xs text-gray-500">
-        Tenant-bound workspace — every request targets the canonical API for this Group only. Check a player to
-        select them for team generation below.
+        {canManage
+          ? "Tenant-bound workspace — every request targets the canonical API for this Group only. Check a player to select them for team generation below."
+          : "The group's roster. Owners and admins manage players."}
       </p>
 
+      {/* UI-4A — roster changes are organizer mutations (OWNER/ADMIN; enforced server-side). */}
+      {canManage && (
       <div className="space-y-1">
         <div className="text-sm font-medium">Add Player</div>
         <CanonicalPlayerForm
@@ -166,8 +169,9 @@ export default function CanonicalPlayersSection({
           onSubmit={createPlayer}
         />
       </div>
+      )}
 
-      {editing && (
+      {canManage && editing && (
         <div className="space-y-1 border rounded-lg p-3 bg-gray-50">
           <div className="text-sm font-medium">
             Edit Player: {editing.firstName} {editing.lastName}
@@ -192,6 +196,7 @@ export default function CanonicalPlayersSection({
         <table className="w-full text-sm">
           <thead>
             <tr className="text-left border-b">
+              {canManage && (
               <th className="py-1">
                 <label className="flex items-center gap-1 text-xs text-gray-600" title="Select all active players">
                   <input
@@ -204,19 +209,22 @@ export default function CanonicalPlayersSection({
                   All
                 </label>
               </th>
+              )}
               <th>Name</th>
               <th>{sport.terminology.roleNoun}</th>
-              <th>Skill</th>
-              <th>Stamina</th>
+              {/* UI-7 — skill/stamina are not sent to MEMBER at all. */}
+              {canManage && <th>Skill</th>}
+              {canManage && <th>Stamina</th>}
               <th>Status</th>
               <th title="Optional Team Balance Pro account (players never need one)">Account</th>
               <th title="Telegram connection used to match poll votes in this group">Telegram</th>
-              <th></th>
+              {canManage && <th></th>}
             </tr>
           </thead>
           <tbody>
             {players.map((p) => (
               <tr key={p.id} className="border-b">
+                {canManage && (
                 <td className="py-1">
                   <input
                     type="checkbox"
@@ -225,18 +233,26 @@ export default function CanonicalPlayersSection({
                     onChange={() => onToggleSelected(p.id)}
                   />
                 </td>
+                )}
                 <td>
                   {p.firstName} {p.lastName}
                 </td>
                 <td>{roleLabel(sport.key, p.position)}</td>
-                <td>{ratingLabel(p.rating)}</td>
-                <td>{Number(p.stamina)}</td>
+                {canManage && <td>{ratingLabel(p.rating)}</td>}
+                {canManage && <td>{Number(p.stamina)}</td>}
                 <td>
+                  {canManage ? (
                   <button className="underline text-xs" onClick={() => toggleActive(p)}>
                     {p.isActive ? "Active" : "Inactive"}
                   </button>
+                  ) : (
+                    <span className="text-xs">{p.isActive ? "Active" : "Inactive"}</span>
+                  )}
                 </td>
                 <td>
+                  {!canManage ? (
+                    <span className="text-xs text-gray-600">{p.accountClaimed ? "Claimed" : "—"}</span>
+                  ) : (
                   <PlayerAccountCell
                     organizationSlug={organizationSlug}
                     groupSlug={groupSlug}
@@ -247,6 +263,7 @@ export default function CanonicalPlayersSection({
                     onChanged={refreshPlayers}
                     onMessage={onMessage}
                   />
+                  )}
                 </td>
                 <td>
                   <PlayerTelegramCell
@@ -258,6 +275,7 @@ export default function CanonicalPlayersSection({
                     onMessage={onMessage}
                   />
                 </td>
+                {canManage && (
                 <td className="whitespace-nowrap">
                   {confirmDeleteId === p.id ? (
                     <span className="text-xs">
@@ -280,6 +298,7 @@ export default function CanonicalPlayersSection({
                     </span>
                   )}
                 </td>
+                )}
               </tr>
             ))}
             {players.length === 0 && (
