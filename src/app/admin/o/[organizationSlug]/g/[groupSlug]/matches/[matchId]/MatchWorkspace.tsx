@@ -510,6 +510,15 @@ export default function MatchWorkspace({
             ))}
         </div>
         {view.canManage && view.telegram.pollDelivery && <p className="mt-2 text-xs text-muted-foreground">Last poll post: {view.telegram.pollDelivery.status.toLowerCase()}</p>}
+        {/* M9.2 — publishing teams closes the attendance poll; if Telegram didn't confirm, close it again here (safe to repeat). */}
+        {view.canManage && view.telegram.poll && !view.telegram.poll.closed && view.generation && (
+          <div className="mt-2 flex flex-wrap items-center gap-2 text-xs">
+            <span className="text-muted-foreground">The Telegram attendance poll is still open.</span>
+            <Button type="button" variant="outline" size="sm" disabled={busy} onClick={() => call("/poll/close", {}, "Attendance poll closed in Telegram.")}>
+              Close Telegram poll
+            </Button>
+          </div>
+        )}
         {view.telegram.unlinkedVoters > 0 && (
           <p className="mt-2 text-xs text-accent-foreground">
             {view.telegram.unlinkedVoters} Telegram voter(s) aren&apos;t linked to players{view.canManage ? <> — link them in <Link className="font-semibold text-primary underline" href={`${adminGroupSettingsPath(organizationSlug, groupSlug)}#telegram`}>Group settings</Link>.</> : "."}

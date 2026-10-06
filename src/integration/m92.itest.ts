@@ -29,6 +29,7 @@ import * as playersRoute from "@/app/api/admin/o/[organizationSlug]/g/[groupSlug
 import * as weightsRoute from "@/app/api/admin/o/[organizationSlug]/g/[groupSlug]/settings/balance-weights/route";
 import { playerRating } from "@/lib/playerRating";
 import * as postGameRoute from "@/app/api/admin/o/[organizationSlug]/g/[groupSlug]/matches/[matchId]/post-game/route";
+import * as pollCloseRoute from "@/app/api/admin/o/[organizationSlug]/g/[groupSlug]/matches/[matchId]/poll/close/route";
 
 const A = { organizationSlug: "org-a", groupSlug: "group-a" };
 const B = { organizationSlug: "org-b", groupSlug: "group-b" };
@@ -38,6 +39,7 @@ const DAY = "2026-10-12";
 // ------------------------------------------------------------ network guard (Telegram stub)
 let tgCalls: Array<{ method: string; body: Record<string, unknown> }> = [];
 let otherNetwork = 0;
+let stopPollMode: "ok" | "already" | "reject" | "ambiguous" = "ok";
 const originalFetch = global.fetch;
 async function fakeFetch(url: unknown, init?: RequestInit): Promise<Response> {
   const u = String(url);
@@ -47,6 +49,9 @@ async function fakeFetch(url: unknown, init?: RequestInit): Promise<Response> {
   }
   const method = u.split("/").pop()!;
   tgCalls.push({ method, body: JSON.parse(String(init?.body ?? "{}")) });
+  if (method === "stopPoll" && stopPollMode === "ambiguous") throw new TypeError("fetch failed");
+  if (method === "stopPoll" && (stopPollMode === "reject" || stopPollMode === "already"))
+    return { ok: true, status: 200, json: async () => ({ ok: false, error_code: 400, description: stopPollMode === "already" ? "Bad Request: poll has already been closed" : "Bad Request: message can't be stopped" }) } as unknown as Response;
   return { ok: true, status: 200, json: async () => ({ ok: true, result: method === "sendPoll" ? { message_id: 7, poll: { id: `tg-poll-${tgCalls.length}` } } : { message_id: 1 } }) } as unknown as Response;
 }
 
@@ -120,6 +125,7 @@ beforeEach(async () => {
   session = null;
   tgCalls = [];
   otherNetwork = 0;
+  stopPollMode = "ok";
   await seed();
   await signIn("owner");
 });
@@ -359,5 +365,86 @@ describe("M9.2-3 — Player of the Match eligibility = actual participants of th
     const ok = await call(generateRoute.POST(json("POST", { teamCount: 2, date: DAY, selectedIds: ["u1", "u2", "u3", "u4"], matchId: id }), g()));
     await call(publishRoute.POST(json("POST", { date: DAY, teams: ok.body.teams, matchId: id }), g()));
     expect((await pg(id, { action: "save_mvp_selection", playerId: "u1" })).body.error).toBe("Publish the final result before choosing Player of the Match.");
+  });
+});
+
+describe("M9.2-4 — publishing teams closes the Match's Telegram attendance poll (server-side)", () => {
+  async function matchWithOpenPoll() {
+    await prisma.telegramChat.create({ data: { chatId: -9200n, title: "UCCNE chat", groupId: "ga", communityId: "c-uccne" } });
+    const id = ((await createMatch({ communityId: "c-uccne" })).body.match as { id: string }).id;
+    await prisma.telegramPoll.create({ data: { pollId: "att-1", chatId: -9200n, messageId: 55n, question: "Playing?", optionsJson: "[]", pollDate: new Date(DAY), isClosed: false, groupId: "ga", matchId: id, kind: "ATTENDANCE" } });
+    // A linked voter answered "Playing" but the webhook update was missed: the final sync records it before closing.
+    await prisma.telegramUserLink.create({ data: { groupId: "ga", userId: 777n, playerId: "u5" } });
+    await prisma.telegramPollAnswer.create({ data: { pollId: "att-1", userId: 777n, optionIdsJson: "[0]", groupId: "ga" } });
+    return id;
+  }
+  const publish = async (id: string, at = A) => {
+    const gen = await call(generateRoute.POST(json("POST", { teamCount: 2, date: DAY, selectedIds: ["u1", "u2", "u3", "u4"], matchId: id }), g(at)));
+    return call(publishRoute.POST(json("POST", { date: DAY, teams: gen.body.teams, matchId: id }), g(at)));
+  };
+  const sends = () => tgCalls.filter((c) => c.method === "sendMessage" || c.method === "sendPoll").length;
+  const stopPolls = () => tgCalls.filter((c) => c.method === "stopPoll").length;
+  const pollRow = () => prisma.telegramPoll.findUniqueOrThrow({ where: { pollId: "att-1" } });
+
+  it("open poll: final sync, stopPoll once, poll closed; repeating Publish is idempotent; no team post is ever sent", async () => {
+    const id = await matchWithOpenPoll();
+    const first = await publish(id);
+    expect(first).toMatchObject({ status: 200, body: { ok: true, poll: { status: "closed" } } });
+    expect(stopPolls()).toBe(1);
+    expect(tgCalls.find((c) => c.method === "stopPoll")!.body).toEqual({ chat_id: "-9200", message_id: 55 });
+    expect((await pollRow()).isClosed).toBe(true);
+    expect(await prisma.attendanceResponse.findFirst({ where: { matchId: id, playerId: "u5" }, select: { participantStatus: true } })).toEqual({ participantStatus: "PLAYING" });
+    const again = await publish(id);
+    expect(again.body).toMatchObject({ ok: true, poll: { status: "already_closed" } });
+    expect(stopPolls()).toBe(1);
+    expect(sends()).toBe(0);
+    expect(await prisma.messageDelivery.count()).toBe(0);
+  });
+
+  it("already closed on Telegram → recorded as closed", async () => {
+    const id = await matchWithOpenPoll();
+    stopPollMode = "already";
+    expect((await publish(id)).body).toMatchObject({ ok: true, poll: { status: "closed" } });
+    expect((await pollRow()).isClosed).toBe(true);
+  });
+
+  it("definite Telegram refusal → teams stay published, poll reported FAILED and left open; retry closes it", async () => {
+    const id = await matchWithOpenPoll();
+    stopPollMode = "reject";
+    const r = await publish(id);
+    expect(r).toMatchObject({ status: 200, body: { ok: true, poll: { status: "failed" } } });
+    expect(String((r.body.poll as { message: string }).message)).toMatch(/refused/);
+    expect(await prisma.teamGeneration.count({ where: { matchId: id } })).toBe(1);
+    expect((await pollRow()).isClosed).toBe(false);
+    expect((await call(pollCloseRoute.POST(json("POST", {}), gm(id)))).status).toBe(502);
+    stopPollMode = "ok";
+    expect((await call(pollCloseRoute.POST(json("POST", {}), gm(id)))).body).toMatchObject({ ok: true, status: "closed" });
+    expect((await pollRow()).isClosed).toBe(true);
+  });
+
+  it("uncertain Telegram response → never shown as success; poll left open; a retry is safe", async () => {
+    const id = await matchWithOpenPoll();
+    stopPollMode = "ambiguous";
+    const r = await publish(id);
+    expect(r.body).toMatchObject({ ok: true, poll: { status: "uncertain" } });
+    expect((await pollRow()).isClosed).toBe(false);
+    expect(await prisma.teamGeneration.count({ where: { matchId: id } })).toBe(1);
+    stopPollMode = "already"; // Telegram had in fact closed it
+    expect((await call(pollCloseRoute.POST(json("POST", {}), gm(id)))).body).toMatchObject({ ok: true, status: "closed" });
+    expect(sends()).toBe(0);
+  });
+
+  it("a Match without a poll publishes normally; MEMBER and other tenants can neither close nor publish (no Telegram call)", async () => {
+    const plain = ((await createMatch({ communityId: "c-uccne" })).body.match as { id: string }).id;
+    expect((await publish(plain)).body).toMatchObject({ ok: true, poll: { status: "no_poll", message: null } });
+    const id = await matchWithOpenPoll();
+    await signIn("member");
+    expect((await call(pollCloseRoute.POST(json("POST", {}), gm(id)))).status).toBe(404);
+    await signIn("other");
+    expect((await call(pollCloseRoute.POST(json("POST", {}), gm(id)))).status).toBe(404);
+    expect((await call(pollCloseRoute.POST(json("POST", {}), gm(id, B)))).status).toBe(404);
+    expect((await call(publishRoute.POST(json("POST", { date: DAY, teams: [{ teamNumber: 1, players: [{ id: "b1" }] }], matchId: id }), g(B)))).status).toBe(404);
+    expect(stopPolls()).toBe(0);
+    expect((await pollRow()).isClosed).toBe(false);
   });
 });
