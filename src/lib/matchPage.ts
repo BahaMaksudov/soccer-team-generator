@@ -4,7 +4,7 @@ import { resolveGroupForViewer } from "@/lib/groupAccess";
 import { findSport, roleLabel } from "@/lib/sports";
 import { playerDisplayName, toPlayerFacingTeams } from "@/lib/playerFacing";
 import { formatYMDFromDate } from "@/lib/telegramFormat";
-import { publishedPostGame } from "@/lib/postGame";
+import { publishedPostGame, type ResultView } from "@/lib/postGame";
 
 /**
  * M9-C — the player-facing Match page (canonical online destination of a
@@ -37,7 +37,8 @@ export type PlayerMatchView = {
   /** Display-only: no Player ids, ratings, stamina, metrics or identities. */
   teams: Array<{ teamNumber: number; players: Array<{ name: string; role: string }> }>;
   /** M9-D — PUBLISHED post-game data only (drafts, votes, voters and AI metadata never appear). */
-  result: { teams: Array<{ teamNumber: number; score: number }>; winnerTeamNumber: number | null; draw: boolean } | null;
+  /** M8.1 — PUBLISHED fixtures (every pair of teams once), or labeled pre-M8.1 per-team standings. */
+  result: ResultView | null;
   mvp: { names: string[]; shared: boolean } | null;
   recap: { text: string } | null;
 };

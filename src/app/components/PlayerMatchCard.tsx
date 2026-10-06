@@ -29,13 +29,29 @@ export default function PlayerMatchCard({ view, signInHref }: { view: PlayerMatc
       {view.result && (
         <div className="rounded-2xl border bg-white shadow-sm p-5 space-y-1">
           <div className="font-semibold">Final Result</div>
-          {view.result.teams.map((t) => (
-            <div key={t.teamNumber} className="flex justify-between max-w-xs">
-              <span>Team {t.teamNumber}</span>
-              <span className="font-semibold">{t.score}</span>
-            </div>
-          ))}
-          <div className="text-sm text-gray-600">{view.result.draw ? "Draw" : `Team ${view.result.winnerTeamNumber} won`}</div>
+          {/* M8.1 — one row per fixture (every pair of teams once), each with its own winner or draw. */}
+          {view.result.legacyStandings ? (
+            <>
+              {view.result.legacyStandings.map((t) => (
+                <div key={t.teamNumber} className="flex justify-between max-w-xs">
+                  <span>Team {t.teamNumber}</span>
+                  <span className="font-semibold">{t.score}</span>
+                </div>
+              ))}
+              <div className="text-xs text-gray-500">Recorded as one score per team.</div>
+            </>
+          ) : (
+            <ul className="space-y-1">
+              {view.result.fixtures.map((f) => (
+                <li key={`${f.teamA}-${f.teamB}`} className="flex flex-wrap items-baseline justify-between gap-x-4 max-w-sm">
+                  <span>
+                    Team {f.teamA} <span className="font-semibold tabular-nums">{f.scoreA} – {f.scoreB}</span> Team {f.teamB}
+                  </span>
+                  <span className="text-sm text-gray-600">{f.winner === null ? "Draw" : `Team ${f.winner} won`}</span>
+                </li>
+              ))}
+            </ul>
+          )}
         </div>
       )}
 

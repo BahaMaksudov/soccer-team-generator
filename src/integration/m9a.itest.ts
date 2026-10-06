@@ -1306,12 +1306,12 @@ describe("M9-D — result", () => {
     session = null;
     expect((await pageView(id))!.result).toBeNull(); // draft is invisible
     await signInAs("owner@example.test");
-    expect((await postGameOf(id)).result).toEqual({ scores: [{ teamNumber: 1, score: 7 }, { teamNumber: 2, score: 5 }], published: false });
+    expect((await postGameOf(id)).result).toEqual({ fixtures: [{ teamA: 1, teamB: 2, scoreA: 7, scoreB: 5, winner: 1 }], legacyStandings: null, published: false, complete: true });
     expect((await pgJson(id, { action: "post_message", kind: "summary" })).body.error).toBe("Publish the result before posting the match summary.");
 
     expect((await pg(id, { action: "publish_result" })).status).toBe(200);
     session = null;
-    expect((await pageView(id))!.result).toEqual({ teams: [{ teamNumber: 1, score: 7 }, { teamNumber: 2, score: 5 }], winnerTeamNumber: 1, draw: false });
+    expect((await pageView(id))!.result).toEqual({ fixtures: [{ teamA: 1, teamB: 2, scoreA: 7, scoreB: 5, winner: 1 }], legacyStandings: null });
     expect((await prisma.match.findUniqueOrThrow({ where: { id } })).status).toBe("COMPLETED");
     expect(tgCalls).toHaveLength(0); // save + publish sent nothing
 
@@ -1327,7 +1327,7 @@ describe("M9-D — result", () => {
     // Correction: stays published, the page shows it, Telegram is NOT updated automatically.
     expect((await pgJson(id, { action: "save_result", scores: [{ teamNumber: 1, score: 7 }, { teamNumber: 2, score: 6 }] })).body.published).toBe(true);
     session = null;
-    expect((await pageView(id))!.result!.teams[1].score).toBe(6);
+    expect((await pageView(id))!.result!.fixtures[0].scoreB).toBe(6);
     await signInAs("owner@example.test");
     expect(msgs()).toHaveLength(1);
     expect((await postGameOf(id)).messages.summary).toBe("updated_available");
@@ -1342,7 +1342,7 @@ describe("M9-D — result", () => {
     await pg(id, { action: "save_result", scores: [{ teamNumber: 1, score: 5 }, { teamNumber: 2, score: 5 }] });
     await pg(id, { action: "publish_result" });
     session = null;
-    expect((await pageView(id))!.result).toMatchObject({ draw: true, winnerTeamNumber: null });
+    expect((await pageView(id))!.result).toMatchObject({ fixtures: [{ winner: null }] });
     await signInAs("owner@example.test");
     sendMessageMode = "reject";
     expect((await pgJson(id, { action: "post_message", kind: "summary" })).body.state).toBe("failed");
@@ -1361,7 +1361,7 @@ describe("M9-D — result", () => {
     await pg(b, { action: "save_result", scores: [{ teamNumber: 1, score: 0 }, { teamNumber: 2, score: 2 }] });
     await pg(a, { action: "publish_result" });
     session = null;
-    expect((await pageView(a))!.result!.winnerTeamNumber).toBe(1);
+    expect((await pageView(a))!.result!.fixtures[0].winner).toBe(1);
     expect((await pageView(b))!.result).toBeNull(); // B still a draft
     await signInAs("owner-b@example.test");
     expect((await pg(a, { action: "publish_result" }, B)).status).toBe(404); // A's Match via B's URL
@@ -1596,7 +1596,7 @@ describe("M9-D — no automatic sends, canceled Matches, access modes, same-day"
     session = null;
     expect(await pageView(id)).toBeNull();
     const viaLink = await shareView(token, id);
-    expect(viaLink.body).toMatchObject({ result: { winnerTeamNumber: 1 }, recap: { text: "Thanks all!" }, mvp: null });
+    expect(viaLink.body).toMatchObject({ result: { fixtures: [{ winner: 1 }] }, recap: { text: "Thanks all!" }, mvp: null });
     expect(JSON.stringify(viaLink.body)).not.toMatch(FORBIDDEN);
     await setVisibility("ga", "PRIVATE");
     expect((await shareView(token, id)).status).toBe(404);
@@ -1629,7 +1629,7 @@ describe("M9-D — no automatic sends, canceled Matches, access modes, same-day"
     expect(String(msgs().at(-1)!.body.text)).toContain("⚽ Team 1  0 — 4  Team 2");
     session = null;
     const [pa, pb] = [(await pageView(a))!, (await pageView(b))!];
-    expect([pa.result!.winnerTeamNumber, pb.result!.winnerTeamNumber]).toEqual([1, 2]);
+    expect([pa.result!.fixtures[0].winner, pb.result!.fixtures[0].winner]).toEqual([1, 2]);
     expect([pa.recap!.text, pb.recap!.text]).toEqual(["Recap A", "Recap B"]);
     expect(await prisma.messageDelivery.count({ where: { matchId: a, eventType: "MATCH_SUMMARY_POSTED" } })).toBe(1);
     expect(await prisma.messageDelivery.count({ where: { matchId: b, eventType: "MATCH_SUMMARY_POSTED" } })).toBe(1);
@@ -2110,7 +2110,7 @@ describe("M9 post-game streamlining — published change → stale summary; agen
     expect((await pgJson(id, { action: "save_result", scores: [{ teamNumber: 1, score: 6 }, { teamNumber: 2, score: 3 }] })).body).toEqual({ ok: true, published: true });
     expect(msgs()).toHaveLength(before); // 7
     session = null;
-    expect((await pageView(id))!.result!.teams[0].score).toBe(6); // published correction
+    expect((await pageView(id))!.result!.fixtures[0].scoreA).toBe(6); // published correction
     await signInAs("owner@example.test");
     expect((await postGameOf(id)).messages.summary).toBe("updated_available"); // 8
     expect((await pgJson(id, { action: "post_message", kind: "summary", intent: "post_updated" })).body.state).toBe("posted");

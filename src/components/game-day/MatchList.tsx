@@ -3,7 +3,7 @@ import { ChevronRight } from "lucide-react";
 import { formatLongDateOnly } from "@/lib/dateOnly";
 import { formatStartTime } from "@/lib/messaging/content";
 import type { OverviewMatch } from "@/lib/groupOverview";
-import { focusRing, PhasePill, ScoreLine, StateChip } from "./parts";
+import { focusRing, PhasePill, ResultSummary, StateChip } from "./parts";
 import { cn } from "@/lib/cn";
 
 /** UI-4 — list of real Matches; each row opens its canonical Match workspace. */
@@ -24,8 +24,8 @@ export function MatchList({ matches, emptyText }: { matches: OverviewMatch[]; em
                 {m.locationName && <span className="block truncate text-sm text-muted-foreground">{m.locationName}</span>}
               </span>
               <span className="flex flex-wrap items-center gap-2">
-                {m.publishedScores && m.publishedScores.length > 0 ? (
-                  <ScoreLine scores={m.publishedScores} />
+                {m.publishedResult && (m.publishedResult.fixtures.length > 0 || m.publishedResult.legacyStandings) ? (
+                  <ResultSummary result={m.publishedResult} />
                 ) : m.status !== "CANCELED" && !m.upcoming ? (
                   <StateChip tone={m.resultSaved ? "pending" : "neutral"}>{m.resultSaved ? "Result not published" : "No result yet"}</StateChip>
                 ) : m.upcoming ? (

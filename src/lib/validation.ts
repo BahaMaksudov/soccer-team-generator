@@ -110,12 +110,28 @@ export const attendanceClosedSchema = z.object({ closed: z.boolean() });
  */
 const postIntent = z.enum(["post", "post_updated", "retry_uncertain"]).optional().default("post");
 export const postGameSchema = z.discriminatedUnion("action", [
+  // M8.1 — `fixtures`: one entry per pair of published teams (validated against the
+  // published team set server-side). `scores` (one per team) is the pre-M8.1 shape,
+  // still accepted for a two-team match only.
   z.object({
     action: z.literal("save_result"),
+    fixtures: z
+      .array(
+        z.object({
+          teamA: z.number().int().min(1).max(50),
+          teamB: z.number().int().min(1).max(50),
+          scoreA: z.number().int().min(0, "Scores can't be negative.").max(999, "That score is too high."),
+          scoreB: z.number().int().min(0, "Scores can't be negative.").max(999, "That score is too high."),
+        })
+      )
+      .min(1)
+      .max(45)
+      .optional(),
     scores: z
       .array(z.object({ teamNumber: z.number().int().min(1).max(50), score: z.number().int().min(0, "Scores can't be negative.").max(999, "That score is too high.") }))
       .min(2)
-      .max(50),
+      .max(50)
+      .optional(),
   }),
   z.object({ action: z.literal("publish_result") }),
   z.object({ action: z.literal("start_mvp"), candidateIds: z.array(z.string().trim().min(1)).min(2).max(10).optional(), intent: postIntent }),

@@ -179,3 +179,79 @@ export function ScoreLine({ scores }: { scores: Array<{ teamNumber: number; scor
     </span>
   );
 }
+
+/** M8.1 — what any published result renders from (fixtures, or labeled pre-M8.1 per-team standings). */
+export type ResultDisplay = {
+  fixtures: Array<{ teamA: number; teamB: number; scoreA: number; scoreB: number; winner: number | null }>;
+  legacyStandings: Array<{ teamNumber: number; score: number }> | null;
+};
+
+/**
+ * Compact published result for lists: a two-team match keeps its familiar
+ * "5 – 3"; 3+ teams show each fixture ("T1 5–3 T2"); a pre-M8.1 per-team row
+ * shows labeled team scores — never a misleading "5 – 3 – 2".
+ */
+export function ResultSummary({ result }: { result: ResultDisplay }) {
+  if (result.legacyStandings) {
+    return (
+      <span className="text-sm font-semibold tabular-nums">
+        {result.legacyStandings.map((t, i) => (
+          <span key={t.teamNumber}>
+            {i > 0 && <span className="mx-1 font-normal text-muted-foreground">·</span>}T{t.teamNumber} {t.score}
+          </span>
+        ))}
+      </span>
+    );
+  }
+  if (result.fixtures.length === 1) {
+    const f = result.fixtures[0];
+    return <ScoreLine scores={[{ teamNumber: f.teamA, score: f.scoreA }, { teamNumber: f.teamB, score: f.scoreB }]} />;
+  }
+  return (
+    <ul className="space-y-0.5 text-sm font-semibold tabular-nums" aria-label="Fixture results">
+      {result.fixtures.map((f) => (
+        <li key={`${f.teamA}-${f.teamB}`} className="whitespace-nowrap">
+          <span className="sr-only">Team </span>T{f.teamA} {f.scoreA}–{f.scoreB} <span className="sr-only">Team </span>T{f.teamB}
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+/**
+ * Full published result (match pages): one row per fixture, "Team 1 vs Team 2"
+ * with both scores and the fixture's winner or draw. `highlightTeam` marks the
+ * viewer's team (My Games) without inventing an overall result.
+ */
+export function FixtureResults({ result, highlightTeam }: { result: ResultDisplay; highlightTeam?: number | null }) {
+  if (result.legacyStandings) {
+    return (
+      <div className="space-y-1 text-sm">
+        <ul className="flex flex-wrap gap-x-4 gap-y-1">
+          {result.legacyStandings.map((t) => (
+            <li key={t.teamNumber} className={cn("tabular-nums", highlightTeam === t.teamNumber && "font-bold")}>
+              Team {t.teamNumber}: <span className="font-semibold">{t.score}</span>
+            </li>
+          ))}
+        </ul>
+        <p className="text-xs text-muted-foreground">Recorded as one score per team (before fixture results).</p>
+      </div>
+    );
+  }
+  return (
+    <ul className="space-y-2" aria-label="Fixture results">
+      {result.fixtures.map((f) => (
+        <li key={`${f.teamA}-${f.teamB}`} className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 rounded-tbp border border-border bg-card px-3 py-2">
+          <span className="flex items-center gap-2 font-semibold tabular-nums">
+            <span className={cn(highlightTeam === f.teamA && "underline decoration-2 underline-offset-4")}>Team {f.teamA}</span>
+            <span className="font-display text-lg font-black">
+              {f.scoreA} <span className="font-normal text-muted-foreground">–</span> {f.scoreB}
+            </span>
+            <span className={cn(highlightTeam === f.teamB && "underline decoration-2 underline-offset-4")}>Team {f.teamB}</span>
+          </span>
+          <span className="text-xs font-semibold text-muted-foreground">{f.winner === null ? "Draw" : `Team ${f.winner} won`}</span>
+        </li>
+      ))}
+    </ul>
+  );
+}

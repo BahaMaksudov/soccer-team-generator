@@ -23,11 +23,12 @@ const G = "src/app/admin/o/[organizationSlug]/g/[groupSlug]";
 const pg = (over: Partial<PostGameView> = {}): PostGameView => ({
   canceled: false,
   teamNumbers: [1, 2],
+  fixturePairs: [[1, 2]],
   participants: [
     { playerId: "a", name: "Ann One", teamNumber: 1 },
     { playerId: "b", name: "Bo Two", teamNumber: 2 },
   ],
-  result: { scores: [{ teamNumber: 1, score: 3 }, { teamNumber: 2, score: 2 }], published: true },
+  result: { fixtures: [{ teamA: 1, teamB: 2, scoreA: 3, scoreB: 2, winner: 1 }], legacyStandings: null, published: true, complete: true },
   mvp: null,
   mvpMaxCandidates: 10,
   recap: { content: "A tight game.", source: "DETERMINISTIC", published: false, hasAiDraft: false },
@@ -49,7 +50,7 @@ describe("post-game section", () => {
     for (const id of ["result", "mvp", "recap", "summary"]) expect(html).toContain(`id="${id}"`);
   });
   it("OWNER/ADMIN: the approved UI-4 editors are unchanged", () => {
-    const html = render(true, pg({ result: { scores: [{ teamNumber: 1, score: 3 }, { teamNumber: 2, score: 2 }], published: false } }));
+    const html = render(true, pg({ result: { fixtures: [{ teamA: 1, teamB: 2, scoreA: 3, scoreB: 2, winner: 1 }], legacyStandings: null, published: false, complete: true } }));
     expect(html).toMatch(/Save Result|Save Changes/); // (Publish appears once the saved scores load client-side)
     expect(html).toMatch(/<input[^>]*type="number"/);
     expect(html).toMatch(/<textarea/);

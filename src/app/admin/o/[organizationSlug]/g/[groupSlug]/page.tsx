@@ -8,7 +8,7 @@ import { findSport } from "@/lib/sports";
 import { loadGroupOverview, type GroupOverview } from "@/lib/groupOverview";
 import { adminGroupPath, adminGroupSettingsPath, adminMatchesPath } from "@/lib/matchPaths";
 import { ROLE_LABELS } from "@/lib/appShell";
-import { ActionLink, focusRing, LifecycleSteps, PhasePill, SectionCard } from "@/components/game-day/parts";
+import { ActionLink, focusRing, LifecycleSteps, PhasePill, ResultSummary, SectionCard } from "@/components/game-day/parts";
 import { MatchList } from "@/components/game-day/MatchList";
 import { cn } from "@/lib/cn";
 
@@ -169,7 +169,7 @@ function FocusMatch({ focus }: { focus: NonNullable<GroupOverview["focus"]> }) {
           <dt className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wider opacity-70">
             <CircleCheck className="size-4" aria-hidden="true" /> Result
           </dt>
-          <dd className="mt-1.5 font-semibold">{m.publishedScores ? m.publishedScores.map((s) => s.score).join(" – ") : m.resultSaved ? "Saved, not published" : m.upcoming ? "After the game" : "Not entered"}</dd>
+          <dd className="mt-1.5 font-semibold">{m.publishedResult ? <ResultSummary result={m.publishedResult} /> : m.resultSaved ? "Saved, not published" : m.upcoming ? "After the game" : "Not entered"}</dd>
         </div>
       </dl>
       <div className="space-y-4 p-5 sm:p-6">

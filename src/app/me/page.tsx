@@ -192,8 +192,10 @@ function NextGame({ g }: { g: MyUpcomingGame }) {
 }
 
 function RecentGame({ g }: { g: MyRecentGame }) {
-  const mine = g.result?.teams.find((t) => t.teamNumber === g.myTeam.teamNumber);
-  const outcome = !g.result ? null : g.result.draw ? "Draw" : g.result.winnerTeamNumber === g.myTeam.teamNumber ? "Win" : "Loss";
+  // M8.1 — one game (two teams): the familiar score + my W/D/L. 3+ teams: my team's own
+  // fixtures, each with its own W/D/L — never an invented overall result.
+  const single = g.result && !g.result.legacyStandings && g.result.fixtures.length === 1 ? g.result.fixtures[0] : null;
+  const OUTCOME = { W: "Win", D: "Draw", L: "Loss" } as const;
   return (
     <li className="rounded-tbp-xl border border-border bg-card p-4 shadow-card">
       <div className="flex flex-wrap items-start justify-between gap-2">
@@ -204,14 +206,31 @@ function RecentGame({ g }: { g: MyRecentGame }) {
             {g.myTeam.teammates.length > 0 && <span className="text-muted-foreground"> — with {g.myTeam.teammates.join(", ")}</span>}
           </p>
         </div>
-        {g.result ? (
+        {single ? (
           <div className="text-right">
             <p className="font-display text-xl font-black tabular-nums">
-              {g.result.teams.map((t) => t.score).join(" – ")}
-              <span className="sr-only"> ({g.result.teams.map((t) => `Team ${t.teamNumber} ${t.score}`).join(", ")})</span>
+              {single.scoreA} – {single.scoreB}
+              <span className="sr-only"> (Team {single.teamA} {single.scoreA}, Team {single.teamB} {single.scoreB})</span>
             </p>
-            {outcome && mine && <p className="text-xs font-bold uppercase tracking-wider text-primary">{outcome}</p>}
+            {g.myRecord[0] && <p className="text-xs font-bold uppercase tracking-wider text-primary">{OUTCOME[g.myRecord[0].outcome]}</p>}
           </div>
+        ) : g.result && g.myRecord.length > 0 ? (
+          <ul className="space-y-0.5 text-right text-sm" aria-label={`Team ${g.myTeam.teamNumber} fixtures`}>
+            {g.myRecord.map((r) => (
+              <li key={r.opponent} className="tabular-nums">
+                <span className="text-muted-foreground">vs Team {r.opponent}</span>{" "}
+                <span className="font-bold text-primary">
+                  {r.outcome}
+                  <span className="sr-only"> ({OUTCOME[r.outcome]})</span>
+                </span>{" "}
+                <span className="font-display font-black">
+                  {r.scoreFor}–{r.scoreAgainst}
+                </span>
+              </li>
+            ))}
+          </ul>
+        ) : g.result?.legacyStandings ? (
+          <p className="text-right text-sm font-semibold tabular-nums">{g.result.legacyStandings.map((t) => `Team ${t.teamNumber} ${t.score}`).join(" · ")}</p>
         ) : (
           <span className="rounded-full bg-muted px-2.5 py-0.5 text-xs font-semibold text-muted-foreground">Result not published</span>
         )}

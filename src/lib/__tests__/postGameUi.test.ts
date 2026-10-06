@@ -239,29 +239,43 @@ describe("Match Summary readiness", () => {
 });
 
 // ------------------------------------------------------------------ result editor dirty state + Match Summary only
-import { normalizeScore, resultEditorState } from "@/lib/postGameUi";
+import { fieldsFromFixtures, fixtureEditorState, fixturesFromFields, normalizeScore } from "@/lib/postGameUi";
 
+// M8.1 — the editor works on fixtures (every pair of published teams once); two teams = one fixture.
 describe("Result editor dirty state", () => {
-  const teams = [1, 2];
-  const saved = [{ teamNumber: 1, score: 5 }, { teamNumber: 2, score: 3 }];
+  const pairs: Array<[number, number]> = [[1, 2]];
+  const saved = [{ teamA: 1, teamB: 2, scoreA: 5, scoreB: 3 }];
+  const f = (a: string, b: string) => ({ "1-2:A": a, "1-2:B": b });
   it("1: no saved result → Save Result (enabled only when every score is valid)", () => {
-    expect(resultEditorState(teams, null, {})).toEqual({ action: "SAVE_RESULT", valid: false, dirty: false });
-    expect(resultEditorState(teams, null, { 1: "5", 2: "3" })).toEqual({ action: "SAVE_RESULT", valid: true, dirty: true });
+    expect(fixtureEditorState(pairs, null, {})).toEqual({ action: "SAVE_RESULT", valid: false, dirty: false });
+    expect(fixtureEditorState(pairs, null, f("5", "3"))).toEqual({ action: "SAVE_RESULT", valid: true, dirty: true });
   });
   it("2: saved and unchanged → no action (\"Saved\")", () => {
-    expect(resultEditorState(teams, saved, { 1: "5", 2: "3" })).toEqual({ action: null, valid: true, dirty: false });
+    expect(fixtureEditorState(pairs, saved, f("5", "3"))).toEqual({ action: null, valid: true, dirty: false });
   });
   it("3/6: a changed score (published or not) → Save Changes", () => {
-    expect(resultEditorState(teams, saved, { 1: "6", 2: "3" })).toEqual({ action: "SAVE_CHANGES", valid: true, dirty: true });
-    expect(resultEditorState(teams, saved, { 1: "", 2: "3" })).toEqual({ action: "SAVE_CHANGES", valid: false, dirty: true });
+    expect(fixtureEditorState(pairs, saved, f("6", "3"))).toEqual({ action: "SAVE_CHANGES", valid: true, dirty: true });
+    expect(fixtureEditorState(pairs, saved, f("", "3"))).toEqual({ action: "SAVE_CHANGES", valid: false, dirty: true });
   });
   it("4/F: reverting to the saved values clears the dirty state; numbers are compared normalized", () => {
-    expect(resultEditorState(teams, saved, { 1: "05", 2: " 3 " }).action).toBeNull();
-    expect(resultEditorState(teams, saved, { 1: "5", 2: "3" }).dirty).toBe(false);
+    expect(fixtureEditorState(pairs, saved, f("05", " 3 ")).action).toBeNull();
+    expect(fixtureEditorState(pairs, saved, f("5", "3")).dirty).toBe(false);
   });
   it("5: after a successful save the saved values equal the fields again → Saved", () => {
-    const after = [{ teamNumber: 1, score: 6 }, { teamNumber: 2, score: 3 }];
-    expect(resultEditorState(teams, after, { 1: "6", 2: "3" }).action).toBeNull();
+    expect(fixtureEditorState(pairs, [{ teamA: 1, teamB: 2, scoreA: 6, scoreB: 3 }], f("6", "3")).action).toBeNull();
+  });
+  it("M8.1: three teams = three fixtures; valid only when all six scores are entered", () => {
+    const three: Array<[number, number]> = [[1, 2], [1, 3], [2, 3]];
+    const full = { "1-2:A": "5", "1-2:B": "3", "1-3:A": "3", "1-3:B": "3", "2-3:A": "4", "2-3:B": "2" };
+    expect(fixtureEditorState(three, null, { ...full, "2-3:B": "" }).valid).toBe(false);
+    expect(fixtureEditorState(three, null, full)).toEqual({ action: "SAVE_RESULT", valid: true, dirty: true });
+    const payload = fixturesFromFields(three, full);
+    expect(payload).toEqual([
+      { teamA: 1, teamB: 2, scoreA: 5, scoreB: 3 },
+      { teamA: 1, teamB: 3, scoreA: 3, scoreB: 3 },
+      { teamA: 2, teamB: 3, scoreA: 4, scoreB: 2 },
+    ]);
+    expect(fixtureEditorState(three, payload, fieldsFromFixtures(payload)).action).toBeNull();
   });
   it("normalizeScore: non-negative integers up to 999 only", () => {
     expect([normalizeScore("0"), normalizeScore("07"), normalizeScore("999")]).toEqual([0, 7, 999]);
@@ -277,7 +291,7 @@ describe("Post-game Telegram: Match Summary is the only post action (wiring)", (
     expect(src).toContain('<PostButton state={m.summary} label="Match Summary"');
     expect(src).not.toMatch(/kind: "(result|mvp|recap)"|Post (Updated )?(Result|Recap|Player of the Match) to Telegram|label="(Result|Recap|Player of the Match)"/);
     expect(src).toContain("Save Changes");
-    expect(src).toContain("resultEditorState(");
+    expect(src).toContain("fixtureEditorState(");
   });
   it("the server accepts only the summary kind and posts only MATCH_SUMMARY_POSTED; the Player Vote poll stays", () => {
     expect(server).not.toMatch(/"MATCH_RESULT_POSTED"|"MVP_ANNOUNCED"|"MATCH_RECAP_POSTED"/);
@@ -311,8 +325,9 @@ describe("UI-5 recap dirty state", () => {
     const view = (recap: DirtyView["recap"]): DirtyView => ({
       canceled: false,
       teamNumbers: [1, 2],
+      fixturePairs: [[1, 2]],
       participants: [{ playerId: "a", name: "A", teamNumber: 1 }, { playerId: "b", name: "B", teamNumber: 2 }],
-      result: { scores: [{ teamNumber: 1, score: 1 }, { teamNumber: 2, score: 0 }], published: true },
+      result: { fixtures: [{ teamA: 1, teamB: 2, scoreA: 1, scoreB: 0, winner: 1 }], legacyStandings: null, published: true, complete: true },
       mvp: null,
       mvpMaxCandidates: 10,
       recap,

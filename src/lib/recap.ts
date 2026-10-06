@@ -1,4 +1,5 @@
 import { AiError, openAiCompleter, type AiErrorCode, type ChatCompleter } from "@/lib/ai/openai";
+import { fixtureWinner, type MatchResultData } from "@/lib/matchResults";
 
 /**
  * M9-D — Match recap facts, deterministic recap and the AI language layer.
@@ -15,7 +16,8 @@ export const RECAP_MAX_LENGTH = 1200;
 /** Responses API max_output_tokens for one recap (reasoning + visible text). */
 export const RECAP_MAX_OUTPUT_TOKENS = 1000;
 
-export type RecapFacts = {
+/** One game between two teams (two-team match, or one game of an M8.1 fixture set). */
+export type HeadToHeadFacts = {
   sport: string;
   date: string; // YYYY-MM-DD
   venue: string | null;
@@ -26,17 +28,63 @@ export type RecapFacts = {
   participants: number;
 };
 
-/** Accepts any (possibly over-rich) context and keeps ONLY the approved facts. */
+/**
+ * M8.1 — a 3+ team match: separate games between every pair of teams. Each
+ * fixture carries its own score and winner/draw; there is NO overall winner.
+ */
+export type FixtureSetFacts = {
+  sport: string;
+  date: string;
+  venue: string | null;
+  fixtures: Array<{ teams: [string, string]; score: string; outcome: { kind: "WIN"; winner: string } | { kind: "DRAW" } }>;
+  mvp: string[];
+  participants: number;
+};
+
+export type RecapFacts = HeadToHeadFacts | FixtureSetFacts;
+export const isFixtureSet = (f: RecapFacts): f is FixtureSetFacts => "fixtures" in f;
+
+/**
+ * Accepts any (possibly over-rich) context and keeps ONLY the approved facts.
+ * `result` is the M8.1 result model (PUBLISHED result only — the caller
+ * guarantees that); `scores` (one score per team) is the pre-M8.1 input.
+ */
 export function buildRecapFacts(input: {
   sportLabel?: unknown;
   date?: unknown;
   locationName?: unknown;
+  result?: MatchResultData | null;
   scores?: unknown;
   mvpNames?: unknown;
   participantCount?: unknown;
   [extra: string]: unknown;
 }): RecapFacts | null {
-  const scores = Array.isArray(input.scores) ? input.scores : [];
+  const result = input.result ?? null;
+  if (result?.kind === "fixtures" && result.fixtures.length > 1) {
+    if (typeof input.date !== "string") return null;
+    return {
+      sport: typeof input.sportLabel === "string" ? input.sportLabel : "",
+      date: input.date,
+      venue: typeof input.locationName === "string" && input.locationName.trim() ? input.locationName.trim() : null,
+      fixtures: result.fixtures.map((f) => {
+        const w = fixtureWinner(f);
+        return { teams: [`Team ${f.teamA}`, `Team ${f.teamB}`], score: `${f.scoreA}–${f.scoreB}`, outcome: w === null ? { kind: "DRAW" } : { kind: "WIN", winner: `Team ${w}` } };
+      }),
+      mvp: mvpList(input.mvpNames),
+      participants: Number.isInteger(input.participantCount) ? (input.participantCount as number) : 0,
+    };
+  }
+  // One fixture (two teams) or a pre-M8.1 per-team row: the historical facts, unchanged.
+  const scores = result
+    ? result.kind === "fixtures"
+      ? [
+          { teamNumber: result.fixtures[0].teamA, score: result.fixtures[0].scoreA },
+          { teamNumber: result.fixtures[0].teamB, score: result.fixtures[0].scoreB },
+        ]
+      : result.teams
+    : Array.isArray(input.scores)
+      ? input.scores
+      : [];
   const teams = scores
     .map((s) => s as { teamNumber?: unknown; score?: unknown })
     .filter((s) => Number.isInteger(s.teamNumber) && Number.isInteger(s.score))
@@ -52,9 +100,21 @@ export function buildRecapFacts(input: {
     teams,
     outcome: leaders.length === 1 ? { kind: "WIN", winner: leaders[0].name } : { kind: "DRAW" },
     scoreLine: teams.map((t) => t.score).join("–"),
-    mvp: Array.isArray(input.mvpNames) ? input.mvpNames.filter((n): n is string => typeof n === "string" && n.trim().length > 0).map((n) => n.trim()) : [],
+    mvp: mvpList(input.mvpNames),
     participants: Number.isInteger(input.participantCount) ? (input.participantCount as number) : 0,
   };
+}
+
+function mvpList(v: unknown): string[] {
+  return Array.isArray(v) ? v.filter((n): n is string => typeof n === "string" && n.trim().length > 0).map((n) => n.trim()) : [];
+}
+
+/** "Team 1 beat Team 2 5–3" / "Team 1 drew with Team 3 3–3" — winner's score first. */
+function fixtureSentencePart(f: FixtureSetFacts["fixtures"][number]): string {
+  const [a, b] = f.teams;
+  const [sa, sb] = f.score.split("–");
+  if (f.outcome.kind === "DRAW") return `${a} drew with ${b} ${f.score}`;
+  return f.outcome.winner === a ? `${a} beat ${b} ${sa}–${sb}` : `${b} beat ${a} ${sb}–${sa}`;
 }
 
 const joinNames = (names: string[]) => (names.length <= 1 ? names.join("") : `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`);
@@ -62,7 +122,10 @@ const joinNames = (names: string[]) => (names.length <= 1 ? names.join("") : `${
 /** Facts only — no invented events or performances. */
 export function deterministicRecap(f: RecapFacts): string {
   const lines: string[] = [];
-  if (f.teams.length === 2) {
+  if (isFixtureSet(f)) {
+    const parts = f.fixtures.map(fixtureSentencePart);
+    lines.push(`${parts.length > 1 ? `${parts.slice(0, -1).join(", ")}, and ${parts[parts.length - 1]}` : parts[0]}.`);
+  } else if (f.teams.length === 2) {
     const [a, b] = f.teams;
     if (f.outcome.kind === "DRAW") lines.push(`The match finished ${a.score}–${b.score}.`);
     else {
@@ -95,6 +158,7 @@ export const RECAP_SYSTEM_PROMPT = [
   "- `participants` is the number of players; you may mention it.",
   "- For a draw (`outcome.kind` = DRAW): playful and neutral — nobody won; do not explain how it ended level.",
   "- There may be more than two teams; mention every team as given.",
+  "- If the JSON has `fixtures`, the match was a set of separate games between pairs of teams. Report each fixture's score and winner or draw exactly as given (the score is in the order of that fixture's `teams`). There is NO overall winner: never combine fixtures into one, and never call any team the overall winner or champion.",
   "",
   "NEVER INVENT (none of this is in the facts): goal scorers, assists, saves, tackles, cards, penalties, overtime or extra time, halftime scores, lead changes, comebacks, individual performances or specific plays, injuries, weather, crowd or player behavior, rivalries, previous results, records or streaks. Banter must never imply that any such event happened.",
   "",
@@ -118,9 +182,11 @@ export function sanitizeRecapText(raw: string): string | null {
   return text.length === 0 ? null : text;
 }
 
-/** Light consistency guard: any "X–Y" score in the text must be the real score (either order for two teams). */
+/** Light consistency guard: any "X–Y" score in the text must be a real score (either order). */
 export function contradictsFacts(text: string, f: RecapFacts): boolean {
-  const allowed = new Set([f.scoreLine, [...f.teams].reverse().map((t) => t.score).join("–")]);
+  const allowed = isFixtureSet(f)
+    ? new Set(f.fixtures.flatMap((x) => [x.score, x.score.split("–").reverse().join("–")]))
+    : new Set([f.scoreLine, [...f.teams].reverse().map((t) => t.score).join("–")]);
   for (const m of text.matchAll(/\b(\d{1,3})\s*[–—-]\s*(\d{1,3})\b/g)) {
     if (!allowed.has(`${m[1]}–${m[2]}`)) return true;
   }
@@ -134,6 +200,7 @@ export function contradictsFacts(text: string, f: RecapFacts): boolean {
 const UNSUPPORTED_EVENT = /\b(come-?backs?|came back|hat[- ]?tricks?|penalt(y|ies)|overtime|extra[- ]time|half[- ]?time|injur(y|ies|ed)|(red|yellow) cards?|assists?|own goals?|equali[sz](er|ed|ing)|saves|stoppage time|shoot-?out)\b/i;
 const MVP_MENTION = /\b(MVPs?|players? of the match)\b/i;
 const WIN_WORDS = "(won|wins|win|beat|beats|defeated|victory|triumph(ed)?|took (it|the win))";
+const OVERALL_WINNER = /\b(overall (winner|win|champions?)|champions?|won the (match|day|night|tournament)|took the (match|day|crown|title))\b/i;
 
 /**
  * Light fact guard beyond the score check: no invented events; an MVP may be
@@ -143,6 +210,8 @@ const WIN_WORDS = "(won|wins|win|beat|beats|defeated|victory|triumph(ed)?|took (
 export function unsupportedClaims(text: string, f: RecapFacts): string | null {
   if (UNSUPPORTED_EVENT.test(text)) return "event";
   if (MVP_MENTION.test(text) && (f.mvp.length === 0 || !f.mvp.some((n) => text.toLowerCase().includes(n.toLowerCase())))) return "mvp";
+  // M8.1 — a fixture set has no overall winner (each team can win one fixture and lose another).
+  if (isFixtureSet(f)) return OVERALL_WINNER.test(text) ? "outcome" : null;
   const esc = (x: string) => x.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   if (f.outcome.kind === "DRAW") {
     for (const t of f.teams) if (new RegExp(`\\b${esc(t.name)}\\s+${WIN_WORDS}\\b`, "i").test(text)) return "outcome";

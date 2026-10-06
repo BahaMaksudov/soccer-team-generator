@@ -9,14 +9,16 @@ import type { RoleRule, SportDefinition } from "@/lib/sports";
  * warnings. Sport specifics (goalkeepers, setters, quarterbacks…) live
  * only in the sport definitions' roleRules — this file never names a role.
  *
- * Soccer compatibility contract: for a soccer Group with the same stored
- * weights and the same rng, generateTeams() assigns players exactly as
- * the pre-M7 generateBalancedTeams() did — same impact formula, same
- * shuffle/sort/tie-break order, same rng call sequence
- * (src/lib/__tests__/balanceEngine.parity.test.ts).
+ * Soccer compatibility contract (M8.1): steps 1–2 are still exactly the
+ * pre-M7 generateBalancedTeams() (same impact formula, shuffle/sort/
+ * tie-break order and rng call sequence). Step 3 (M8.1) then only moves
+ * players when that spreads a role more evenly within the impact-spread
+ * budget — so the result equals the pre-M7 split whenever that split is
+ * already as even as the roster allows, and otherwise is strictly better
+ * distributed (src/lib/__tests__/balanceEngine.parity.test.ts).
  */
 
-export const ENGINE_VERSION = "balance-v2";
+export const ENGINE_VERSION = "balance-v3";
 
 export type SkillRating = "FAIR" | "GOOD" | "VERY_GOOD" | "EXCELLENT";
 
@@ -160,6 +162,13 @@ export type BalanceMetrics = {
   averageSkillSpread: number;
   averageStaminaSpread: number;
   ruleCoverage: Array<{ roleKey: string; mode: RoleRule["mode"]; perTeam: number; available: number; teamsCovered: number; teamCount: number }>;
+  /**
+   * M8.1 — how each distributable role is spread across teams (team order).
+   * `excess` = players above/below the most even split possible for that
+   * role (0 = as even as the roster allows). Optional: absent on metrics
+   * stored before M8.1.
+   */
+  roleDistribution?: Array<{ roleKey: string; available: number; perTeam: number[]; excess: number }>;
 };
 
 const round = (n: number, places = 3) => {
@@ -227,8 +236,62 @@ export function evaluateTeams(
         teamsCovered: teamMetrics.filter((t) => (t.roleCounts[r.roleKey] ?? 0) >= r.perTeam).length,
         teamCount: teams.length,
       })),
+    roleDistribution: distributedRoles(sport, config)
+      .map((roleKey) => {
+        const perTeam = teamMetrics.map((t) => t.roleCounts[roleKey] ?? 0);
+        const available = perTeam.reduce((a, b) => a + b, 0);
+        return { roleKey, available, perTeam, excess: roleExcess(perTeam) };
+      })
+      .filter((d) => d.available > 0),
   };
 }
+
+// ------------------------------------------------------------------ role distribution (M8.1)
+
+/**
+ * Roles whose players should be spread evenly across teams: every sport role
+ * except the generic default ("Any" / "All-around" / "Athlete" / "Player" —
+ * flexible by definition) and roles whose rule says IGNORE. Read from the
+ * SportDefinition only — no role is named here.
+ */
+export function distributedRoles(sport: Pick<SportDefinition, "roles" | "defaultRoleKey">, config: Pick<BalanceConfig, "roleRules">): string[] {
+  const ignored = new Set(config.roleRules.filter((r) => r.mode === "IGNORE").map((r) => r.roleKey));
+  return sport.roles.map((r) => r.key).filter((k) => k !== sport.defaultRoleKey && !ignored.has(k));
+}
+
+/**
+ * How far one role's per-team counts are from the most even split possible:
+ * with c players over T teams every team should hold ⌊c/T⌋ or ⌈c/T⌉; each
+ * player above ⌈c/T⌉ or missing below ⌊c/T⌋ counts 1. 4 defenders / 3 teams:
+ * 2/1/1 → 0, 2/2/0 or 2/0/2 → 1, 3/1/0 → 2. 2 over 3: 1/1/0 → 0, 2/0/0 → 1.
+ */
+export function roleExcess(perTeam: number[]): number {
+  const total = perTeam.reduce((a, b) => a + b, 0);
+  if (total === 0 || perTeam.length === 0) return 0;
+  const lo = Math.floor(total / perTeam.length);
+  const hi = Math.ceil(total / perTeam.length);
+  return perTeam.reduce((n, c) => n + Math.max(0, c - hi) + Math.max(0, lo - c), 0);
+}
+
+/** Total excess over every distributable role (0 = every role spread as evenly as possible). */
+export function roleDistributionPenalty(
+  sport: Pick<SportDefinition, "roles" | "defaultRoleKey">,
+  config: Pick<BalanceConfig, "roleRules">,
+  teams: Array<{ players: Array<Pick<EnginePlayer, "position">> }>
+): number {
+  return distributedRoles(sport, config).reduce(
+    (n, roleKey) => n + roleExcess(teams.map((t) => t.players.filter((p) => effectiveRole(sport, p.position) === roleKey).length)),
+    0
+  );
+}
+
+/**
+ * Impact-spread budget for position improvements: never above the greedy
+ * split's own spread or 5% of the mean team impact, whichever is larger
+ * (about one skill step on one player for 6-a-side teams). A better
+ * position spread never buys an obviously unbalanced split.
+ */
+export const POSITION_SPREAD_TOLERANCE = 0.05;
 
 // ------------------------------------------------------------------ generation
 
@@ -238,6 +301,11 @@ export type GenerateTeamsInput<P extends EnginePlayer> = {
   sport: SportDefinition;
   config: BalanceConfig;
   rng?: () => number;
+  /**
+   * M8.1 — diagnostic only: false skips step 3 (the pre-M8.1 greedy split,
+   * for comparisons/tests). Production generation never passes it.
+   */
+  balanceRoles?: boolean;
 };
 
 export type GenerateTeamsResult<P extends EnginePlayer> = {
@@ -258,6 +326,127 @@ function shuffle<T>(arr: T[], rng: () => number): T[] {
   return a;
 }
 
+/**
+ * M8.1 — step 3, deterministic position balancing on top of the greedy split.
+ *
+ * Quality is compared lexicographically:
+ *   (1) rule-role coverage shortfall (teams still short of a SEED/SPREAD role
+ *       the roster could cover),
+ *   (2) the role-distribution penalty (roleExcess over every distributable role),
+ *   (3) impact spread.
+ * Moves are single cross-team swaps (team sizes never change), applied
+ * best-first: lowest (1, 2), then lowest spread, then first in stable
+ * (team, player) order. No rng — the same greedy split always gives the same
+ * result, and a split that is already as even as the roster allows is never
+ * touched.
+ *
+ * Skill guard: the final impact spread never exceeds
+ *   max(greedy spread, POSITION_SPREAD_TOLERANCE × mean team impact).
+ * To find position fixes that need a little re-balancing, a first attempt
+ * allows position swaps up to twice that budget and then applies skill-repair
+ * swaps (never worsening (1) or (2)); if it still ends above the budget, the
+ * strict attempt (position swaps within the budget only) is used instead.
+ */
+function improveRoleDistribution<P extends EnginePlayer>(
+  sport: SportDefinition,
+  config: BalanceConfig,
+  teams: Array<{ players: P[]; score: number }>,
+  score: (p: P) => number,
+  roleOf: (p: P) => string
+) {
+  const rules = config.roleRules.filter((r) => r.mode !== "IGNORE");
+  const roles = distributedRoles(sport, config);
+  if (roles.length === 0 && rules.length === 0) return;
+
+  type State = { players: P[][]; scores: number[] };
+  const quality = (st: State) => {
+    const counts = (roleKey: string) => st.players.map((ps) => ps.filter((p) => roleOf(p) === roleKey).length);
+    const shortfall = rules.reduce((n, r) => {
+      const c = counts(r.roleKey);
+      const achievable = Math.min(st.players.length, Math.floor(c.reduce((a, b) => a + b, 0) / r.perTeam));
+      return n + Math.max(0, achievable - c.filter((x) => x >= r.perTeam).length);
+    }, 0);
+    const penalty = roles.reduce((n, k) => n + roleExcess(counts(k)), 0);
+    return { shortfall, penalty, spread: spread(st.scores) };
+  };
+  type Q = ReturnType<typeof quality>;
+  const positionBetter = (a: Q, b: Q) => a.shortfall < b.shortfall || (a.shortfall === b.shortfall && a.penalty < b.penalty);
+  const positionNotWorse = (a: Q, b: Q) => a.shortfall < b.shortfall || (a.shortfall === b.shortfall && a.penalty <= b.penalty);
+
+  const start: State = { players: teams.map((t) => [...t.players]), scores: teams.map((t) => t.score) };
+  const q0 = quality(start);
+  if (q0.shortfall === 0 && q0.penalty === 0) return;
+  const mean = start.scores.reduce((a, b) => a + b, 0) / start.scores.length;
+  const budget = Math.max(q0.spread, POSITION_SPREAD_TOLERANCE * mean) + 1e-9;
+  const maxSteps = 4 * teams.reduce((n, t) => n + t.players.length, 0);
+
+  /** Best single swap by `accept` + ranking; null when none. */
+  const bestSwap = (st: State, cur: Q, accept: (c: Q, cur: Q) => boolean) => {
+    let best: { a: number; i: number; b: number; j: number; q: Q } | null = null;
+    for (let a = 0; a < st.players.length; a++) {
+      for (let b = a + 1; b < st.players.length; b++) {
+        for (let i = 0; i < st.players[a].length; i++) {
+          for (let j = 0; j < st.players[b].length; j++) {
+            const pa = st.players[a][i];
+            const pb = st.players[b][j];
+            if (roleOf(pa) === roleOf(pb) && score(pa) === score(pb)) continue; // changes nothing
+            st.players[a][i] = pb;
+            st.players[b][j] = pa;
+            const d = score(pb) - score(pa);
+            st.scores[a] += d;
+            st.scores[b] -= d;
+            const q = quality(st);
+            st.scores[a] -= d;
+            st.scores[b] += d;
+            st.players[a][i] = pa;
+            st.players[b][j] = pb;
+            if (!accept(q, cur)) continue;
+            if (!best || positionBetter(q, best.q) || (!positionBetter(best.q, q) && q.spread < best.q.spread)) best = { a, i, b, j, q };
+          }
+        }
+      }
+    }
+    return best;
+  };
+  const apply = (st: State, m: { a: number; i: number; b: number; j: number }) => {
+    const pa = st.players[m.a][m.i];
+    const pb = st.players[m.b][m.j];
+    st.players[m.a][m.i] = pb;
+    st.players[m.b][m.j] = pa;
+    st.scores[m.a] += score(pb) - score(pa);
+    st.scores[m.b] += score(pa) - score(pb);
+  };
+  const clone = (st: State): State => ({ players: st.players.map((ps) => [...ps]), scores: [...st.scores] });
+
+  const attempt = (positionBudget: number, repair: boolean): State => {
+    const st = clone(start);
+    let cur = q0;
+    for (let n = 0; n < maxSteps; n++) {
+      const m = bestSwap(st, cur, (c, k) => positionBetter(c, k) && c.spread <= positionBudget);
+      if (!m) break;
+      apply(st, m);
+      cur = m.q;
+    }
+    if (repair) {
+      for (let n = 0; n < maxSteps && cur.spread > budget; n++) {
+        const m = bestSwap(st, cur, (c, k) => positionNotWorse(c, k) && c.spread < k.spread - 1e-9);
+        if (!m) break;
+        apply(st, m);
+        cur = m.q;
+      }
+    }
+    return st;
+  };
+
+  let chosen = attempt(2 * budget, true);
+  if (quality(chosen).spread > budget) chosen = attempt(budget, false);
+  if (!positionBetter(quality(chosen), q0)) return;
+  teams.forEach((t, k) => {
+    t.players = chosen.players[k];
+    t.score = chosen.scores[k];
+  });
+}
+
 function buildCapacities(playerCount: number, teamCount: number): number[] {
   const base = Math.floor(playerCount / teamCount);
   const rem = playerCount % teamCount;
@@ -276,6 +465,10 @@ function buildCapacities(playerCount: number, teamCount: number): number[] {
  *     the pre-M7 loop.
  * Live generation passes Math.random (re-running Generate may give a
  * different valid split, by design); tests pass a seeded rng.
+ *
+ * 3) M8.1 — improveRoleDistribution(): deterministic swaps that spread every
+ *    distributable role (and rule roles' coverage) as evenly as the roster
+ *    allows, within a bounded impact-spread budget.
  *
  * Hard constraints only: ≥2 teams, ≥teamCount players, sizes within ±1,
  * no duplicated or dropped players. Role shortages are warnings.
@@ -361,6 +554,8 @@ export function generateTeams<P extends EnginePlayer>(input: GenerateTeamsInput<
     team.players.push(p);
     team.score += score(p);
   }
+
+  if (input.balanceRoles !== false) improveRoleDistribution(sport, config, teams, score, roleOf);
 
   const result = teams.map(({ teamNumber, players: ps }) => ({ teamNumber, players: ps }));
   const placed = result.reduce((n, t) => n + t.players.length, 0);
