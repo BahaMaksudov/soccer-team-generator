@@ -3,8 +3,9 @@ import { createHash, timingSafeEqual } from "node:crypto";
 /**
  * M9.2 — authorization for scheduled automation endpoints.
  *
- * Vercel Cron calls the endpoint with `Authorization: Bearer <CRON_SECRET>`
- * when the CRON_SECRET environment variable is set on the project. Fail
+ * The scheduler (GitHub Actions, secret TBP_CRON_SECRET) calls the endpoint
+ * with `Authorization: Bearer <CRON_SECRET>`, matching the CRON_SECRET
+ * environment variable of the deployment. Header only — never a query string. Fail
  * closed: without a configured secret (or with a wrong/missing header) the
  * endpoint does nothing. Constant-time comparison of SHA-256 digests (equal
  * lengths, no early exit). The secret is never logged or returned.

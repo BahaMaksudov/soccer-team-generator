@@ -9,7 +9,7 @@ import { countAttendance, type AttendanceRow } from "@/lib/attendance";
 import { postAttendancePollFor } from "@/lib/telegramAttendance";
 import { closeMatchAttendancePolls, POLL_CLOSE_MESSAGE } from "@/lib/matchPollClose";
 import { sendAttendanceReadyEmail } from "@/lib/email";
-import { dueForPoll, type WeeklySchedule } from "@/lib/scheduleTime";
+import { CUTOFF_CATCH_UP_MS, dueForPoll, type WeeklySchedule } from "@/lib/scheduleTime";
 
 /**
  * M9.2 — the Match Automation Agent: deterministic orchestration (no AI).
@@ -29,20 +29,29 @@ import { dueForPoll, type WeeklySchedule } from "@/lib/scheduleTime";
  *  3. CUTOFF — when the cutoff has passed: close the Telegram poll (final sync
  *     first), close Team Balance Pro attendance, mark the step done
  *     (conditional update — once).
- *  4. NOTIFY — email the organizers (OWNER/ADMIN with a verified email) the
- *     Playing / Maybe / Not playing / Not responded counts, claimed with a
- *     conditional update (a failed send is released and retried; a claim older
- *     than 15 minutes is considered abandoned).
+ *  4. NOTIFY — email each organizer (OWNER/ADMIN) the Playing / Maybe / Not
+ *     playing / Not responded counts, idempotent PER RECIPIENT through
+ *     MatchAutomationEmail: a recipient already sent to is never sent again, a
+ *     failed one is retried on the next run, one recipient's failure never
+ *     blocks the others; an organizer without a verified, well-formed email is
+ *     skipped with a reason. The step completes (notifiedAt) once every
+ *     organizer is sent or skipped.
  *  5. TEAMS — NEVER. Generating and publishing teams stays with the organizer.
  *
  * Every step runs as a real OWNER/ADMIN of the Group (the schedule's creator
  * while they are still an organizer, else the earliest OWNER), so all existing
  * authorization and tenant scoping apply unchanged. Failures are recorded on
  * MatchAutomation (lastError) for the organizer — never swallowed.
+ *
+ * Catch-up: steps are driven by durable due state, not by running inside an
+ * exact window. A poll is posted any time after its due instant while
+ * attendance is still open (before the cutoff) — never after. A cutoff (and
+ * its email) is finalized any time within CUTOFF_CATCH_UP_MS (48 h) after it
+ * is due; an organizer's "Run now" on one Match is not limited by that window.
  */
 
 const NOTIFY_CLAIM_TIMEOUT_MS = 15 * 60_000;
-const GAME_GRACE_MS = 12 * 3600_000; // finalize a missed cutoff up to 12 h after the game
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 export type AutomationRun = {
   schedules: number;
@@ -182,7 +191,50 @@ export async function attendanceSummary(groupId: string, matchId: string) {
   return { counts: countAttendance(ids, m.attendance as AttendanceRow[], m.attendanceClosedAt), rosterSize: ids.length, communityName: m.community?.name ?? null, date: m.date };
 }
 
-/** Step 4 — email the organizers once (claimed; released on failure). */
+type Recipient = { userId: string; email: string; emailVerifiedAt: Date | null };
+type RecipientOutcome = "sent" | "already_sent" | "skipped" | "in_progress" | "failed";
+
+/** Send to one organizer at most once: claim its row (unique per automation + user), send, record. */
+async function notifyRecipient(automationId: string, r: Recipient, now: Date, send: (to: string) => Promise<unknown>): Promise<RecipientOutcome> {
+  const key = { automationId_userId: { automationId, userId: r.userId } };
+  const existing = await prisma.matchAutomationEmail.findUnique({ where: key, select: { id: true, sentAt: true } });
+  if (existing?.sentAt) return "already_sent";
+  const skippedReason = !r.emailVerifiedAt ? "EMAIL_NOT_VERIFIED" : !EMAIL_RE.test(r.email) ? "INVALID_EMAIL" : null;
+  if (skippedReason) {
+    await prisma.matchAutomationEmail.upsert({ where: key, update: { skippedReason, claimedAt: null }, create: { automationId, userId: r.userId, skippedReason } });
+    return "skipped";
+  }
+  const stale = new Date(now.getTime() - NOTIFY_CLAIM_TIMEOUT_MS);
+  let claimed = false;
+  if (!existing) {
+    try {
+      await prisma.matchAutomationEmail.create({ data: { automationId, userId: r.userId, claimedAt: now } });
+      claimed = true;
+    } catch (e) {
+      if (!(e instanceof Prisma.PrismaClientKnownRequestError && e.code === "P2002")) throw e; // a concurrent run claimed it
+    }
+  }
+  if (!claimed) {
+    const { count } = await prisma.matchAutomationEmail.updateMany({
+      where: { automationId, userId: r.userId, sentAt: null, OR: [{ claimedAt: null }, { claimedAt: { lt: stale } }] },
+      data: { claimedAt: now, skippedReason: null },
+    });
+    if (count !== 1) return "in_progress";
+  }
+  try {
+    await send(r.email);
+  } catch (e) {
+    await prisma.matchAutomationEmail.update({
+      where: key,
+      data: { claimedAt: null, attempts: { increment: 1 }, lastError: (e instanceof Error ? e.message : "Email delivery failed.").slice(0, 200) },
+    });
+    return "failed";
+  }
+  await prisma.matchAutomationEmail.update({ where: key, data: { sentAt: new Date(), claimedAt: null, skippedReason: null, lastError: null, attempts: { increment: 1 } } });
+  return "sent";
+}
+
+/** Step 4 — email every organizer once (per-recipient; see notifyRecipient). */
 async function stepNotify(ctx: TenantContext, matchId: string, automationId: string, now: Date): Promise<boolean> {
   const stale = new Date(now.getTime() - NOTIFY_CLAIM_TIMEOUT_MS);
   const { count } = await prisma.matchAutomation.updateMany({
@@ -193,15 +245,17 @@ async function stepNotify(ctx: TenantContext, matchId: string, automationId: str
   try {
     const groupId = ctx.activeGroup.id;
     const summary = await attendanceSummary(groupId, matchId);
-    const recipients = await prisma.organizationMembership.findMany({
-      where: { organizationId: ctx.organization.id, role: { in: ["OWNER", "ADMIN"] }, user: { emailVerifiedAt: { not: null } } },
-      select: { user: { select: { email: true } } },
+    // Every OWNER/ADMIN of the Organization (MEMBERs never), as of this run.
+    const organizers = await prisma.organizationMembership.findMany({
+      where: { organizationId: ctx.organization.id, role: { in: ["OWNER", "ADMIN"] } },
+      orderBy: { createdAt: "asc" },
+      select: { user: { select: { id: true, email: true, emailVerifiedAt: true } } },
     });
     const a = await prisma.matchAutomation.findUniqueOrThrow({ where: { id: automationId }, select: { lastError: true } });
     const ymd = summary.date.toISOString().slice(0, 10);
-    for (const r of recipients) {
-      await sendAttendanceReadyEmail({
-        to: r.user.email,
+    const send = (to: string) =>
+      sendAttendanceReadyEmail({
+        to,
         groupName: ctx.activeGroup.name,
         communityName: summary.communityName,
         matchLabel: formatLongDateOnly(ymd),
@@ -210,8 +264,17 @@ async function stepNotify(ctx: TenantContext, matchId: string, automationId: str
         pollNote: a.lastError?.includes("attendance poll") ? a.lastError : null,
         matchPath: canonicalAdminMatchPath(ctx.organization.slug, ctx.activeGroup.slug, matchId),
       });
+    const outcomes: RecipientOutcome[] = [];
+    for (const o of organizers) outcomes.push(await notifyRecipient(automationId, { userId: o.user.id, email: o.user.email, emailVerifiedAt: o.user.emailVerifiedAt }, now, send));
+    const failed = outcomes.filter((x) => x === "failed").length;
+    if (failed > 0 || outcomes.includes("in_progress")) {
+      await prisma.matchAutomation.update({ where: { id: automationId }, data: { notifyClaimedAt: null } });
+      if (failed > 0) await recordError(automationId, `The organizer email could not be sent to ${failed} of ${organizers.length} organizers; it will be retried (organizers already emailed are not emailed again).`);
+      return false;
     }
+    // Complete: every organizer was sent (now or earlier) or safely skipped.
     await prisma.matchAutomation.update({ where: { id: automationId }, data: { notifiedAt: new Date() } });
+    await prisma.matchAutomation.updateMany({ where: { id: automationId, lastError: { startsWith: "The organizer email" } }, data: { lastError: null } });
     return true;
   } catch (e) {
     await prisma.matchAutomation.update({ where: { id: automationId }, data: { notifyClaimedAt: null } });
@@ -222,6 +285,8 @@ async function stepNotify(ctx: TenantContext, matchId: string, automationId: str
 
 /** Run every due step (optionally for one Group / one Match). Never publishes teams. */
 export async function runMatchAutomation(now: Date = new Date(), scope: { groupId?: string; matchId?: string } = {}): Promise<AutomationRun> {
+  // Automatic runs finalize cutoffs within the catch-up window; an organizer's run for one Match is not limited by it.
+  const cutoffFloor = scope.matchId ? undefined : new Date(now.getTime() - CUTOFF_CATCH_UP_MS);
   const run: AutomationRun = { schedules: 0, created: 0, pollsPosted: 0, cutoffs: 0, notified: 0, errors: [] };
   const schedules = (await prisma.matchSchedule.findMany({
     where: { isActive: true, group: { isActive: true }, community: { isActive: true }, ...(scope.groupId ? { groupId: scope.groupId } : {}) },
@@ -276,24 +341,21 @@ export async function runMatchAutomation(now: Date = new Date(), scope: { groupI
     }
   }
 
-  // 3 + 4 — cutoffs and notifications of scheduled Matches (active schedules only).
+  // 3 + 4 — cutoffs and notifications of scheduled Matches (active schedules only), within the catch-up window.
   const pending = await prisma.matchAutomation.findMany({
     where: {
       ...(scope.groupId ? { groupId: scope.groupId } : {}),
       ...(scope.matchId ? { matchId: scope.matchId } : {}),
-      cutoffDueAt: { lte: now },
+      cutoffDueAt: { lte: now, ...(cutoffFloor ? { gte: cutoffFloor } : {}) },
       OR: [{ cutoffCompletedAt: null }, { notifiedAt: null }],
       match: { status: { not: "CANCELED" }, schedule: { isActive: true } },
     },
-    select: { id: true, matchId: true, groupId: true, cutoffCompletedAt: true, notifiedAt: true, match: { select: { date: true, startTime: true, schedule: { select: { createdByUserId: true } } } } },
+    select: { id: true, matchId: true, groupId: true, match: { select: { schedule: { select: { createdByUserId: true } } } } },
   });
   for (const a of pending) {
     const ctx = await ctxFor(a.groupId, a.match.schedule?.createdByUserId ?? null);
     if (!ctx) continue;
     try {
-      // A cutoff missed by more than the grace period after the game day is not finalized automatically.
-      const gameEnd = a.match.date.getTime() + 36 * 3600_000 + GAME_GRACE_MS;
-      if (!a.cutoffCompletedAt && now.getTime() > gameEnd) continue;
       const done = await withMatchLock(a.matchId, async () => {
         const fresh = await prisma.matchAutomation.findUniqueOrThrow({ where: { id: a.id }, select: { cutoffCompletedAt: true, notifiedAt: true } });
         const cut = !fresh.cutoffCompletedAt && (await stepCutoff(ctx, a.matchId, a.id, now));

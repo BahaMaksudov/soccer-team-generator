@@ -1,0 +1,72 @@
+# Team Balance Pro — Production Match Automation trigger (M9.2).
+#
+# This workflow is ONLY a clock. Every 15 minutes (and on manual dispatch) it
+# POSTs to the protected Production endpoint; Team Balance Pro decides what is
+# due (create Match, post poll, close at cutoff, email organizers) and is
+# idempotent, so a late, repeated or manual run never duplicates anything.
+# Teams are never published by automation.
+#
+# Target is fixed to Production — never a Preview URL, localhost or anything
+# derived from the branch. Runs only for the main branch of this repository,
+# so a pull request or feature branch cannot redirect or reuse it.
+#
+# Required repository secret: TBP_CRON_SECRET (= CRON_SECRET in Vercel).
+# GitHub may start scheduled runs several minutes late; due work is caught up
+# on the next run.
+
+name: Match automation (Production)
+
+on:
+  schedule:
+    - cron: "*/15 * * * *"
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: tbp-match-automation
+  cancel-in-progress: false
+
+jobs:
+  trigger:
+    if: github.repository == 'BahaMaksudov/soccer-team-generator' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Run Team Balance Pro automation
+        env:
+          TBP_CRON_SECRET: ${{ secrets.TBP_CRON_SECRET }}
+          ENDPOINT: https://teambalancepro.com/api/cron/automation
+        run: |
+          set -euo pipefail
+          echo "Started at $(date -u +%Y-%m-%dT%H:%M:%SZ) (${GITHUB_EVENT_NAME})"
+          if [ -z "${TBP_CRON_SECRET}" ]; then
+            echo "::error::Repository secret TBP_CRON_SECRET is not configured."
+            exit 1
+          fi
+          # The Authorization header is passed to curl on stdin (--config -),
+          # never on the command line and never echoed.
+          rm -f response.json
+          status=0
+          printf 'header = "Authorization: Bearer %s"\n' "${TBP_CRON_SECRET}" | curl \
+            --config - \
+            --silent --show-error \
+            --fail-with-body \
+            --request POST \
+            --max-time 90 \
+            --retry 2 --retry-delay 15 --retry-connrefused \
+            --output response.json \
+            --write-out 'HTTP %{http_code}\n' \
+            "${ENDPOINT}" || status=$?
+          echo "Response:"
+          cat response.json 2>/dev/null || true
+          echo
+          if [ "${status}" -ne 0 ]; then
+            echo "::error::Automation request failed (curl exit ${status})."
+            exit "${status}"
+          fi
+          if ! jq -e '.ok == true' response.json > /dev/null; then
+            echo "::error::Team Balance Pro reported an automation failure."
+            exit 1
+          fi
+          echo "Finished at $(date -u +%Y-%m-%dT%H:%M:%SZ)"

@@ -71,6 +71,8 @@ type MatchView = {
     notifiedAt: string | null;
     lastError: string | null;
     lastErrorAt: string | null;
+    emails?: { sent: number; skipped: number; pending: number };
+    catchUpExpired?: boolean;
   } | null;
   defaultSelection: string[];
   generation: { id: string; date: string; updatedAt: string; teams: Array<{ teamNumber: number; players: Array<{ id: string; firstName: string; lastName: string; position: string }> }> } | null;
@@ -799,19 +801,36 @@ export default function MatchWorkspace({
 function AutomationCard({ a, teamsPublished, busy, onRun }: { a: NonNullable<MatchView["automation"]>; teamsPublished: boolean; busy: boolean; onRun: () => void }) {
   const at = (iso: string) => new Intl.DateTimeFormat("en-US", { weekday: "short", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }).format(new Date(iso));
   const now = Date.now();
+  const e = a.emails ?? { sent: 0, skipped: 0, pending: 0 };
+  const plural = (n: number) => `${n} organizer${n === 1 ? "" : "s"}`;
+  const cutoffPassed = new Date(a.cutoffDueAt).getTime() <= now;
   const steps: Array<{ label: string; state: string; done: boolean }> = [
-    { label: "Match created", state: "Scheduled", done: true },
+    { label: "Match", state: "Scheduled", done: true },
     {
       label: "Attendance poll",
-      state: a.pollPostedAt ? `Sent ${at(a.pollPostedAt)}` : new Date(a.pollDueAt).getTime() > now ? `Scheduled for ${at(a.pollDueAt)}` : "Not sent yet",
+      state: a.pollPostedAt
+        ? `Sent ${at(a.pollPostedAt)}`
+        : new Date(a.pollDueAt).getTime() > now
+          ? `Scheduled for ${at(a.pollDueAt)}`
+          : cutoffPassed
+            ? "Not sent"
+            : "Pending",
       done: Boolean(a.pollPostedAt),
     },
     {
       label: "Attendance",
-      state: a.cutoffCompletedAt ? `Ready (closed ${at(a.cutoffCompletedAt)})` : `Open until ${at(a.cutoffDueAt)}`,
+      state: a.cutoffCompletedAt ? `Ready (closed ${at(a.cutoffCompletedAt)})` : cutoffPassed ? "Closing pending" : `Open until ${at(a.cutoffDueAt)}`,
       done: Boolean(a.cutoffCompletedAt),
     },
-    { label: "Organizers notified", state: a.notifiedAt ? `Emailed ${at(a.notifiedAt)}` : "After the cutoff", done: Boolean(a.notifiedAt) },
+    {
+      label: "Organizers notified",
+      state: a.notifiedAt
+        ? `Emailed ${plural(e.sent)} ${at(a.notifiedAt)}${e.skipped ? ` · ${e.skipped} skipped (no verified email)` : ""}`
+        : a.cutoffCompletedAt
+          ? `Pending${e.sent ? ` (${e.sent} sent, ${e.pending} to retry)` : ""}`
+          : "After the cutoff",
+      done: Boolean(a.notifiedAt),
+    },
     { label: "Teams", state: teamsPublished ? "Published" : a.cutoffCompletedAt ? "Awaiting organizer" : "After attendance", done: teamsPublished },
   ];
   return (
@@ -824,6 +843,11 @@ function AutomationCard({ a, teamsPublished, busy, onRun }: { a: NonNullable<Mat
           </li>
         ))}
       </ol>
+      {a.catchUpExpired && (
+        <p role="status" className="mt-3 rounded-tbp border border-border bg-secondary px-3 py-2 text-sm">
+          The automatic window for this cutoff has passed (48 hours). Use Run now to close attendance and email organizers, or manage the Match yourself.
+        </p>
+      )}
       {a.lastError && (
         <div role="alert" className="mt-3 flex flex-wrap items-center gap-2 rounded-tbp-xl border border-destructive/30 bg-destructive/5 p-3 text-sm">
           <span className="min-w-0 flex-1 basis-56 text-destructive">{a.lastError}</span>

@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import type { AttendanceStatus, MatchStatus } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
+import { CUTOFF_CATCH_UP_MS } from "@/lib/scheduleTime";
 import type { TenantContext } from "@/lib/tenantContext";
 import { toDateOnlyUTC } from "@/lib/dateOnly";
 import { formatYMDFromDate } from "@/lib/telegramFormat";
@@ -372,10 +373,22 @@ export async function getMatchView(context: TenantContext, matchId: string): Pro
 async function automationView(groupId: string, matchId: string) {
   const a = await prisma.matchAutomation.findFirst({
     where: { matchId, groupId },
-    select: { pollDueAt: true, cutoffDueAt: true, pollPostedAt: true, cutoffCompletedAt: true, notifiedAt: true, lastError: true, lastErrorAt: true, match: { select: { schedule: { select: { isActive: true } } } } },
+    select: {
+      pollDueAt: true,
+      cutoffDueAt: true,
+      pollPostedAt: true,
+      cutoffCompletedAt: true,
+      notifiedAt: true,
+      lastError: true,
+      lastErrorAt: true,
+      match: { select: { schedule: { select: { isActive: true } } } },
+      emails: { select: { sentAt: true, skippedReason: true } },
+    },
   });
   if (!a) return null;
   const iso = (d: Date | null) => (d ? d.toISOString() : null);
+  const sent = a.emails.filter((e) => e.sentAt).length;
+  const skipped = a.emails.filter((e) => !e.sentAt && e.skippedReason).length;
   return {
     scheduleActive: a.match.schedule?.isActive ?? false,
     pollDueAt: iso(a.pollDueAt),
@@ -385,6 +398,10 @@ async function automationView(groupId: string, matchId: string) {
     notifiedAt: iso(a.notifiedAt),
     lastError: a.lastError,
     lastErrorAt: iso(a.lastErrorAt),
+    // Per-organizer attendance-ready email (counts only).
+    emails: { sent, skipped, pending: a.emails.length - sent - skipped },
+    // The cutoff was not finalized within the automatic catch-up window ("Run now" still finishes it).
+    catchUpExpired: !a.cutoffCompletedAt && Date.now() > a.cutoffDueAt.getTime() + CUTOFF_CATCH_UP_MS,
   };
 }
 

@@ -129,6 +129,15 @@ export function dueForPoll(s: WeeklySchedule, now: Date): Occurrence[] {
   return occurrencesAround(s, now).filter((o) => o.pollAt.getTime() <= t && t < o.cutoffAt.getTime());
 }
 
+/**
+ * Catch-up window of the attendance CUTOFF (and the organizer email that
+ * follows it): an automatic run finalizes a cutoff any time from its due
+ * instant until 48 hours after it, so a delayed trigger or an outage of hours
+ * recovers on the next run. Older cutoffs are left to the organizer (the
+ * Match shows it; "Run now" on that Match still finishes it).
+ */
+export const CUTOFF_CATCH_UP_MS = 48 * 3600_000;
+
 /** Validation: poll before cutoff, cutoff no later than the game. */
 export function scheduleOrderError(s: WeeklySchedule): string | null {
   const o = occurrenceFor(s, "2030-01-07"); // any reference week; order is wall-clock based

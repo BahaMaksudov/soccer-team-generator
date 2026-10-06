@@ -676,21 +676,212 @@ describe("M9.2-6/7 — weekly schedules and the Match Automation Agent", () => {
   });
 
   it("cron endpoint is fail-closed (503 without CRON_SECRET, 401 for wrong/missing token); organizer run endpoint is OWNER/ADMIN + tenant-scoped", async () => {
-    const req = (auth?: string) => new Request("http://itest.local/api/cron/automation", { headers: auth ? { authorization: auth } : {} });
-    vi.stubEnv("CRON_SECRET", "");
-    expect((await cronRoute.GET(req("Bearer anything"))).status).toBe(503);
-    vi.stubEnv("CRON_SECRET", "a-long-enough-test-secret");
-    expect((await cronRoute.GET(req())).status).toBe(401);
-    expect((await cronRoute.GET(req("Bearer wrong-secret-value"))).status).toBe(401);
-    expect((await cronRoute.GET(req("Bearer a-long-enough-test-secret"))).status).toBe(200);
-    vi.stubEnv("CRON_SECRET", "");
-    await setup();
-    await runMatchAutomation(T.afterPoll);
+    const req = (auth?: string, url = "http://itest.local/api/cron/automation") => new Request(url, { method: "POST", headers: auth ? { authorization: auth } : {} });
+    const logs: string[] = [];
+    const spies = (["log", "info", "warn", "error"] as const).map((k) => vi.spyOn(console, k).mockImplementation((...args: unknown[]) => void logs.push(args.map(String).join(" "))));
+    try {
+      vi.stubEnv("CRON_SECRET", "");
+      expect((await cronRoute.POST(req("Bearer anything"))).status).toBe(503);
+      vi.stubEnv("CRON_SECRET", "a-long-enough-test-secret");
+      expect((await cronRoute.POST(req())).status).toBe(401);
+      expect((await cronRoute.POST(req("Bearer wrong-secret-value"))).status).toBe(401);
+      expect((await cronRoute.POST(req("a-long-enough-test-secret"))).status).toBe(401); // not a Bearer header
+      expect((await cronRoute.POST(req(undefined, "http://itest.local/api/cron/automation?secret=a-long-enough-test-secret"))).status).toBe(401); // never a query string
+      // Correct (fake) secret: the scheduler runs (a real schedule is due → the Match + poll are created).
+      await setup();
+      vi.useFakeTimers({ toFake: ["Date"] });
+      vi.setSystemTime(T.afterPoll);
+      const ok = await call(cronRoute.POST(req("Bearer a-long-enough-test-secret")));
+      vi.useRealTimers();
+      expect(ok).toMatchObject({ status: 200, body: { ok: true, created: 1, pollsPosted: 1, errorCount: 0 } });
+      expect(JSON.stringify(ok.body)).not.toContain("a-long-enough-test-secret");
+      expect(logs.join("\n")).not.toContain("a-long-enough-test-secret");
+    } finally {
+      vi.useRealTimers();
+      spies.forEach((s) => s.mockRestore());
+      vi.stubEnv("CRON_SECRET", "");
+    }
     const [m] = await scheduledMatches();
     await signIn("member");
     expect((await call(automationRoute.POST(json("POST", {}), gm(m.id)))).status).toBe(404);
     await signIn("other");
     expect((await call(automationRoute.POST(json("POST", {}), gm(m.id, B)))).status).toBe(404);
+  });
+
+  // ---------------------------------------------------------------- per-recipient organizer email
+  async function toCutoff() {
+    await setup();
+    await runMatchAutomation(T.afterPoll);
+    const [m] = await scheduledMatches();
+    return m;
+  }
+  const emailRows = async (matchId: string) =>
+    prisma.matchAutomationEmail.findMany({ where: { automation: { matchId } }, select: { userId: true, sentAt: true, skippedReason: true, attempts: true }, orderBy: { userId: "asc" } });
+  function failFor(addresses: string[]) {
+    const fail = new Set(addresses);
+    const original = testOutbox.send.bind(testOutbox);
+    return vi.spyOn(testOutbox, "send").mockImplementation(async (msg) => {
+      if (fail.has(msg.to)) throw new Error("Email delivery failed (http 503).");
+      return original(msg);
+    });
+  }
+
+  it("email is idempotent PER RECIPIENT: OWNER sent + ADMIN failed → retry sends only the ADMIN; MEMBER never; unverified / malformed addresses skipped", async () => {
+    await prisma.user.createMany({
+      data: [
+        { id: "u-admin2", email: "admin2@example.test", name: "admin2", passwordHash: null, emailVerifiedAt: null }, // not verified
+        { id: "u-admin3", email: "not-an-email", name: "admin3", passwordHash: null, emailVerifiedAt: VERIFIED }, // malformed
+      ],
+    });
+    await prisma.organizationMembership.createMany({
+      data: [
+        { userId: "u-admin2", organizationId: "org-a", role: "ADMIN" },
+        { userId: "u-admin3", organizationId: "org-a", role: "ADMIN" },
+      ],
+    });
+    const m = await toCutoff();
+    const spy = failFor(["admin@example.test"]);
+    try {
+      await runMatchAutomation(T.afterCutoff);
+    } finally {
+      spy.mockRestore();
+    }
+    expect(testOutbox.sent.map((e) => e.to)).toEqual(["owner@example.test"]);
+    let a = await prisma.matchAutomation.findUniqueOrThrow({ where: { matchId: m.id } });
+    expect(a.cutoffCompletedAt).not.toBeNull();
+    expect(a.notifiedAt).toBeNull(); // still retryable
+    expect(a.lastError).toMatch(/could not be sent to 1 of 4 organizers/);
+    expect(await emailRows(m.id)).toEqual([
+      { userId: "u-admin", sentAt: null, skippedReason: null, attempts: 1 },
+      { userId: "u-admin2", sentAt: null, skippedReason: "EMAIL_NOT_VERIFIED", attempts: 0 },
+      { userId: "u-admin3", sentAt: null, skippedReason: "INVALID_EMAIL", attempts: 0 },
+      { userId: "u-owner", sentAt: expect.any(Date), skippedReason: null, attempts: 1 },
+    ]);
+    // The organizer's view shows the partial state.
+    expect(((await call(matchRoute.GET(json("GET"), gm(m.id)))).body.automation as Record<string, unknown>).emails).toEqual({ sent: 1, skipped: 2, pending: 1 });
+
+    // Retry (a new run = a new process as far as state goes): only the ADMIN is sent; the OWNER is not emailed again.
+    await runMatchAutomation(T.afterCutoff);
+    expect(testOutbox.sent.map((e) => e.to)).toEqual(["owner@example.test", "admin@example.test"]);
+    a = await prisma.matchAutomation.findUniqueOrThrow({ where: { matchId: m.id } });
+    expect(a.notifiedAt).not.toBeNull();
+    expect(a.lastError).toBeNull();
+    // Complete → further runs send nothing.
+    await runMatchAutomation(T.afterCutoff);
+    await runMatchAutomation(new Date(T.afterCutoff.getTime() + 3600_000));
+    expect(testOutbox.sent).toHaveLength(2);
+    expect(testOutbox.sent.some((e) => e.to === "member@example.test" || e.to === "admin2@example.test" || e.to === "not-an-email")).toBe(false);
+    expect(((await call(matchRoute.GET(json("GET"), gm(m.id)))).body.automation as Record<string, unknown>).emails).toEqual({ sent: 2, skipped: 2, pending: 0 });
+  });
+
+  it("concurrent scheduler runs never duplicate a recipient's email (also after a partial failure)", async () => {
+    const m = await toCutoff();
+    const spy = failFor(["admin@example.test"]);
+    try {
+      await Promise.all([runMatchAutomation(T.afterCutoff), runMatchAutomation(T.afterCutoff), runMatchAutomation(T.afterCutoff)]);
+    } finally {
+      spy.mockRestore();
+    }
+    expect(testOutbox.sent.map((e) => e.to)).toEqual(["owner@example.test"]);
+    await Promise.all([runMatchAutomation(T.afterCutoff), runMatchAutomation(T.afterCutoff), runMatchAutomation(T.afterCutoff)]);
+    await runMatchAutomation(T.afterCutoff);
+    expect(testOutbox.sent.map((e) => e.to).sort()).toEqual(["admin@example.test", "owner@example.test"]);
+    expect((await prisma.matchAutomation.findUniqueOrThrow({ where: { matchId: m.id } })).notifiedAt).not.toBeNull();
+    expect(sends("stopPoll")).toBe(1);
+  });
+
+  it("a recipient claimed by a crashed run is retried only after the claim is stale (15 min)", async () => {
+    const m = await toCutoff();
+    const a = await prisma.matchAutomation.findUniqueOrThrow({ where: { matchId: m.id } });
+    // A previous process claimed the ADMIN and died before recording the outcome.
+    await prisma.matchAutomationEmail.create({ data: { automationId: a.id, userId: "u-admin", claimedAt: T.afterCutoff } });
+    await runMatchAutomation(new Date(T.afterCutoff.getTime() + 60_000));
+    expect(testOutbox.sent.map((e) => e.to)).toEqual(["owner@example.test"]);
+    expect((await prisma.matchAutomation.findUniqueOrThrow({ where: { matchId: m.id } })).notifiedAt).toBeNull();
+    await runMatchAutomation(new Date(T.afterCutoff.getTime() + 16 * 60_000));
+    expect(testOutbox.sent.map((e) => e.to)).toEqual(["owner@example.test", "admin@example.test"]);
+    expect((await prisma.matchAutomation.findUniqueOrThrow({ where: { matchId: m.id } })).notifiedAt).not.toBeNull();
+  });
+
+  // ---------------------------------------------------------------- catch-up semantics (durable due state)
+  const POLL_DUE = new Date("2026-10-12T00:00:00Z"); // Sun 20:00 EDT
+  const CUTOFF_DUE = new Date("2026-10-13T00:00:00Z"); // Mon 20:00 EDT
+  const plus = (d: Date, minutes: number) => new Date(d.getTime() + minutes * 60_000);
+
+  it("a late trigger still posts the poll once: due 8:00 → runs at 8:15, 8:30 and 8:45 post exactly one poll", async () => {
+    await setup();
+    expect(await runMatchAutomation(plus(POLL_DUE, 15))).toMatchObject({ created: 1, pollsPosted: 1 });
+    expect(await runMatchAutomation(plus(POLL_DUE, 30))).toMatchObject({ created: 0, pollsPosted: 0 });
+    expect(await runMatchAutomation(plus(POLL_DUE, 45))).toMatchObject({ created: 0, pollsPosted: 0 });
+    expect(sends("sendPoll")).toBe(1);
+    expect(await scheduledMatches()).toHaveLength(1);
+  });
+
+  it("an outage of hours recovers: first run 22 h after the poll time (still before the cutoff) creates the Match and posts the poll once", async () => {
+    await setup();
+    expect(await runMatchAutomation(plus(POLL_DUE, 22 * 60))).toMatchObject({ created: 1, pollsPosted: 1 });
+    await runMatchAutomation(plus(POLL_DUE, 22 * 60 + 15));
+    expect(sends("sendPoll")).toBe(1);
+  });
+
+  it("a late cutoff is still processed once: due Mon 8:00 PM → first run 8:27 PM closes poll + attendance and emails once; 5 h later nothing repeats", async () => {
+    const m = await toCutoff();
+    expect(await runMatchAutomation(plus(CUTOFF_DUE, 27))).toMatchObject({ cutoffs: 1, notified: 1 });
+    expect(await runMatchAutomation(plus(CUTOFF_DUE, 5 * 60))).toMatchObject({ cutoffs: 0, notified: 0, pollsPosted: 0 });
+    expect(sends("stopPoll")).toBe(1);
+    expect(sends("sendPoll")).toBe(1);
+    expect(testOutbox.sent).toHaveLength(2);
+    expect((await prisma.match.findUniqueOrThrow({ where: { id: m.id } })).attendanceClosedAt).toEqual(plus(CUTOFF_DUE, 27));
+  });
+
+  it("a cutoff missed for 47 h is caught up; one missed for more than 48 h is left to the organizer (shown) and Run now finishes it", async () => {
+    let m = await toCutoff();
+    expect(await runMatchAutomation(plus(CUTOFF_DUE, 47 * 60))).toMatchObject({ cutoffs: 1, notified: 1 });
+
+    await seed();
+    await signIn("owner");
+    tgCalls = [];
+    testOutbox.clear();
+    m = await toCutoff();
+    expect(await runMatchAutomation(plus(CUTOFF_DUE, 49 * 60))).toMatchObject({ cutoffs: 0, notified: 0 });
+    expect(sends("stopPoll")).toBe(0);
+    expect(testOutbox.sent).toHaveLength(0);
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(plus(CUTOFF_DUE, 49 * 60));
+    try {
+      expect(((await call(matchRoute.GET(json("GET"), gm(m.id)))).body.automation as Record<string, unknown>).catchUpExpired).toBe(true);
+      expect((await call(automationRoute.POST(json("POST", {}), gm(m.id)))).body).toMatchObject({ cutoffs: 1, notified: 1 });
+      expect(((await call(matchRoute.GET(json("GET"), gm(m.id)))).body.automation as Record<string, unknown>).catchUpExpired).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+    expect(sends("stopPoll")).toBe(1);
+    expect(sends("sendPoll")).toBe(1);
+  });
+
+  it("obsolete Match: a poll that never went out is NOT posted once the cutoff has passed, even after the problem is fixed", async () => {
+    await setup({ chat: false });
+    await runMatchAutomation(T.afterPoll); // no Telegram group → poll pending
+    await prisma.telegramChat.create({ data: { chatId: -9600n, title: "UCCNE chat", groupId: "ga", communityId: "c-uccne" } });
+    await runMatchAutomation(plus(CUTOFF_DUE, 5));
+    await runMatchAutomation(plus(CUTOFF_DUE, 5 * 24 * 60)); // days later (next week's poll window has not opened yet)
+    expect(sends("sendPoll")).toBe(0);
+    const [m] = await scheduledMatches();
+    expect(m.automation!.pollPostedAt).toBeNull();
+    expect(m.automation!.cutoffCompletedAt).not.toBeNull(); // attendance still closed + organizers told
+    expect(await scheduledMatches()).toHaveLength(1);
+  });
+
+  it("paused schedule and already-completed steps: nothing runs", async () => {
+    const id = await setup();
+    await runMatchAutomation(T.afterPoll);
+    await runMatchAutomation(T.afterCutoff);
+    const before = { polls: sends("sendPoll"), stops: sends("stopPoll"), emails: testOutbox.sent.length };
+    expect(await runMatchAutomation(plus(CUTOFF_DUE, 60))).toMatchObject({ created: 0, pollsPosted: 0, cutoffs: 0, notified: 0 });
+    await call(scheduleRoute.PATCH(json("PATCH", { isActive: false }), gs(id)));
+    expect(await runMatchAutomation(new Date("2026-10-19T00:05:00Z"))).toMatchObject({ created: 0, pollsPosted: 0, cutoffs: 0, notified: 0 }); // next week's poll time
+    expect({ polls: sends("sendPoll"), stops: sends("stopPoll"), emails: testOutbox.sent.length }).toEqual(before);
+    expect(await scheduledMatches()).toHaveLength(1);
   });
 });
 

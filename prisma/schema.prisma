@@ -208,8 +208,9 @@ model User {
   recapsGenerated            MatchRecap[]           @relation("RecapGeneratedBy")
   recapsPublished            MatchRecap[]           @relation("RecapPublishedBy")
   recapsUpdated              MatchRecap[]           @relation("RecapUpdatedBy")
-  communityPlayersCreated CommunityPlayer[] @relation("CommunityPlayerCreatedBy")
-  schedulesCreated        MatchSchedule[]   @relation("ScheduleCreatedBy")
+  communityPlayersCreated    CommunityPlayer[]      @relation("CommunityPlayerCreatedBy")
+  schedulesCreated           MatchSchedule[]        @relation("ScheduleCreatedBy")
+  automationEmails           MatchAutomationEmail[]
 }
 
 model Organization {
@@ -798,12 +799,12 @@ model Match {
   mvpVotes      MatchMvpVote[]
   recap         MatchRecap?
 
+  @@unique([scheduleId, date])
   @@index([groupId])
   @@index([groupId, date])
   @@index([telegramChatId])
   @@index([communityId])
   @@index([venueId])
-  @@unique([scheduleId, date])
 }
 
 // M9.2 — a reusable Venue / ground of an Organization (any of its Groups may
@@ -818,7 +819,7 @@ model Venue {
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
 
-  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  organization Organization    @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   matches      Match[]
   schedules    MatchSchedule[]
 
@@ -877,11 +878,36 @@ model MatchAutomation {
   createdAt         DateTime  @default(now())
   updatedAt         DateTime  @updatedAt
 
-  group Group @relation(fields: [groupId], references: [id], onDelete: Cascade)
-  match Match @relation(fields: [matchId], references: [id], onDelete: Cascade)
+  group  Group                  @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  match  Match                  @relation(fields: [matchId], references: [id], onDelete: Cascade)
+  emails MatchAutomationEmail[]
 
   @@index([groupId])
   @@index([cutoffDueAt])
+}
+
+// M9.2 — the attendance-ready email, PER ORGANIZER (one row per automation +
+// OWNER/ADMIN user). sentAt = delivered (never sent again); skippedReason =
+// safely skipped this round (EMAIL_NOT_VERIFIED / INVALID_EMAIL; re-evaluated
+// until the step completes); claimedAt = a send in progress (a claim older
+// than 15 minutes is considered abandoned). Not a notification platform.
+model MatchAutomationEmail {
+  id            String    @id @default(cuid())
+  automationId  String
+  userId        String
+  claimedAt     DateTime?
+  sentAt        DateTime?
+  skippedReason String?
+  attempts      Int       @default(0)
+  lastError     String?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  automation MatchAutomation @relation(fields: [automationId], references: [id], onDelete: Cascade)
+  user       User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([automationId, userId])
+  @@index([userId])
 }
 
 // M9-D — the factual final result of a Match (entered by an organizer; AI
