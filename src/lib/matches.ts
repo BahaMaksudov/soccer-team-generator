@@ -440,10 +440,12 @@ export async function setAttendanceClosed(context: TenantContext, matchId: strin
  * ("closed" is reported only to a claimed participant of that Match's Group).
  */
 export async function setOwnAttendance(userId: string, matchId: string, status: AttendanceStatus): Promise<"ok" | "not_found" | "closed"> {
-  const match = await prisma.match.findFirst({ where: { id: matchId, status: { not: "CANCELED" } }, select: { id: true, groupId: true, attendanceClosedAt: true } });
+  const match = await prisma.match.findFirst({ where: { id: matchId, status: { not: "CANCELED" } }, select: { id: true, groupId: true, attendanceClosedAt: true, communityId: true } });
   if (!match) return "not_found";
   const player = await prisma.player.findFirst({ where: { groupId: match.groupId, userId }, select: { id: true } });
   if (!player) return "not_found";
+  // M9.2 — a Community Match accepts answers only from that Community's players (indistinguishable from unknown).
+  if (match.communityId && !(await prisma.communityPlayer.findFirst({ where: { groupId: match.groupId, communityId: match.communityId, playerId: player.id }, select: { id: true } }))) return "not_found";
   if (match.attendanceClosedAt) return "closed";
   await prisma.$transaction((tx) =>
     recordParticipantResponse(tx, { matchId: match.id, groupId: match.groupId, playerId: player.id, status, source: "WEB", at: new Date() })

@@ -41,6 +41,8 @@ import * as cronRoute from "@/app/api/cron/automation/route";
 import { runMatchAutomation } from "@/lib/matchAutomation";
 import { applyTelegramAttendanceAnswer } from "@/lib/telegramAttendance";
 import { testOutbox } from "@/lib/email/transport";
+import { loadMyGames } from "@/lib/myGames";
+import { setOwnAttendance } from "@/lib/matches";
 
 const A = { organizationSlug: "org-a", groupSlug: "group-a" };
 const B = { organizationSlug: "org-b", groupSlug: "group-b" };
@@ -689,5 +691,19 @@ describe("M9.2-6/7 — weekly schedules and the Match Automation Agent", () => {
     expect((await call(automationRoute.POST(json("POST", {}), gm(m.id)))).status).toBe(404);
     await signIn("other");
     expect((await call(automationRoute.POST(json("POST", {}), gm(m.id, B)))).status).toBe(404);
+  });
+});
+
+describe("M9.2-8 — player-facing surfaces respect the Match's Community", () => {
+  it("My Games lists only the player's own Communities' matches; self-attendance is refused for another Community's match", async () => {
+    await prisma.player.update({ where: { id: "f1" }, data: { userId: "u-member" } }); // FunnyStuff-only player
+    const uccne = ((await createMatch({ communityId: "c-uccne", date: "2099-01-05" })).body.match as { id: string }).id;
+    const funny = ((await createMatch({ communityId: "c-funny", date: "2099-01-06" })).body.match as { id: string }).id;
+    const legacy = await prisma.match.create({ data: { groupId: "ga", date: new Date("2099-01-07") } });
+    const [profile] = await loadMyGames("u-member", new Date("2098-12-30T00:00:00Z"));
+    expect(profile.upcoming.map((g) => g.matchId)).toEqual([funny, legacy.id]);
+    expect(await setOwnAttendance("u-member", uccne, "PLAYING")).toBe("not_found");
+    expect(await setOwnAttendance("u-member", funny, "PLAYING")).toBe("ok");
+    expect(await prisma.attendanceResponse.count({ where: { matchId: uccne } })).toBe(0);
   });
 });

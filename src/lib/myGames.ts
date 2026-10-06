@@ -115,7 +115,8 @@ export async function loadMyGames(userId: string, now: Date = new Date()): Promi
       const href = (matchId: string) => canonicalMatchPath(p.group.organization.slug, p.group.slug, matchId);
       const [upcomingRows, pastRows] = await Promise.all([
         prisma.match.findMany({
-          where: { groupId: p.group.id, status: "SCHEDULED", date: { gte: today } },
+          // M9.2 — only Matches of the player's own Communities (or legacy Matches without one).
+          where: { groupId: p.group.id, status: "SCHEDULED", date: { gte: today }, OR: [{ communityId: null }, { community: { players: { some: { playerId: p.id } } } }] },
           orderBy: [{ date: "asc" }, { startTime: "asc" }, { createdAt: "asc" }],
           take: UPCOMING,
           select: {

@@ -586,9 +586,12 @@ export default function MatchWorkspace({
             <span className="text-muted-foreground">
               Showing {view.telegram.selectedChat ? `${view.telegram.selectedChat.title}'s` : "this Telegram group's"} players and anyone already in this match.
             </span>
-            <label className="flex items-center gap-1.5">
-              <input type="checkbox" className="size-4 accent-primary" checked={showAll} onChange={(e) => setShowAll(e.target.checked)} /> Show all Group players
-            </label>
+            {/* M9.2 — a Community Match already lists its whole roster (other Communities' players can't play in it). */}
+            {!view.community && (
+              <label className="flex items-center gap-1.5">
+                <input type="checkbox" className="size-4 accent-primary" checked={showAll} onChange={(e) => setShowAll(e.target.checked)} /> Show all Group players
+              </label>
+            )}
             {view.canManage && hiddenPlayers.length > 0 && (
               <>
                 <label className="sr-only" htmlFor="add-player-pick">Add another player</label>
