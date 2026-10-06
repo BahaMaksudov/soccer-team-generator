@@ -1,6 +1,6 @@
 import { appUrl, getEmailFrom } from "./config";
 import { getEmailTransport, type SendResult } from "./transport";
-import { buildInvitationEmail, buildVerificationEmail } from "./templates";
+import { buildAttendanceReadyEmail, buildInvitationEmail, buildVerificationEmail } from "./templates";
 import { safeCallbackPath } from "@/lib/safeRedirect";
 
 /**
@@ -39,6 +39,13 @@ export async function sendInvitationEmail(params: {
     url: appUrl(`/invite/${encodeURIComponent(params.token)}`),
     expiresAt: params.expiresAt,
   });
+  return getEmailTransport().send({ ...message, from: getEmailFrom() });
+}
+
+/** M9.2 — Match Automation: attendance ready (one organizer per call). */
+export async function sendAttendanceReadyEmail(params: Omit<Parameters<typeof buildAttendanceReadyEmail>[0], "url"> & { matchPath: string }): Promise<SendResult> {
+  const { matchPath, ...rest } = params;
+  const message = buildAttendanceReadyEmail({ ...rest, url: appUrl(matchPath) });
   return getEmailTransport().send({ ...message, from: getEmailFrom() });
 }
 

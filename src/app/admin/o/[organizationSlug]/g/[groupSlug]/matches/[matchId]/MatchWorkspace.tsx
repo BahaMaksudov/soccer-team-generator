@@ -15,7 +15,7 @@ import PostGameSection, { type PostGameView } from "./PostGameSection";
 import { MATCH_TELEGRAM_GROUP_SELECTOR_ID } from "@/lib/postGameUi";
 import CanonicalGenerateSection from "../../CanonicalGenerateSection";
 import { PublishedTeams } from "@/components/game-day/PublishedTeams";
-import { ArrowDown, CircleCheck, Send, Shuffle, Users } from "lucide-react";
+import { ArrowDown, CalendarClock, CircleCheck, Send, Shuffle, Users } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { focusRing, LifecycleSteps, MatchMeta, PhasePill, SectionCard, StateChip } from "@/components/game-day/parts";
 import { matchLifecycle, todayUtcYmd } from "@/lib/matchLifecycle";
@@ -61,6 +61,17 @@ type MatchView = {
   community?: { id: string; name: string; isActive: boolean } | null;
   /** OWNER/ADMIN: the Group's active Communities (to assign one to a legacy Match). */
   communities?: Array<{ id: string; name: string }>;
+  /** M9.2 — what Match Automation did (organizers; null when the Match was not created by a schedule). */
+  automation?: {
+    scheduleActive: boolean;
+    pollDueAt: string;
+    cutoffDueAt: string;
+    pollPostedAt: string | null;
+    cutoffCompletedAt: string | null;
+    notifiedAt: string | null;
+    lastError: string | null;
+    lastErrorAt: string | null;
+  } | null;
   defaultSelection: string[];
   generation: { id: string; date: string; updatedAt: string; teams: Array<{ teamNumber: number; players: Array<{ id: string; firstName: string; lastName: string; position: string }> }> } | null;
   // M9-B — selected chat's default player scope (ids only); chats/selection/suggestions are OWNER/ADMIN only.
@@ -450,6 +461,9 @@ export default function MatchWorkspace({
         <LifecycleSteps lifecycle={lifecycle} linkBase="" onDark />
       </section>
 
+      {/* M9.2 — Match Automation status (organizers) */}
+      {view.canManage && view.automation && <AutomationCard a={view.automation} teamsPublished={view.generation !== null} busy={busy} onRun={() => call("/automation", {}, "Automation ran for this match. Nothing is published automatically.")} />}
+
       {/* Attendance */}
       <SectionCard
         id="attendance"
@@ -775,5 +789,55 @@ export default function MatchWorkspace({
         />
       )}
     </div>
+  );
+}
+
+/** M9.2 — what Match Automation did for this scheduled Match, and a safe Retry / Run now (only what is due runs). */
+function AutomationCard({ a, teamsPublished, busy, onRun }: { a: NonNullable<MatchView["automation"]>; teamsPublished: boolean; busy: boolean; onRun: () => void }) {
+  const at = (iso: string) => new Intl.DateTimeFormat("en-US", { weekday: "short", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }).format(new Date(iso));
+  const now = Date.now();
+  const steps: Array<{ label: string; state: string; done: boolean }> = [
+    { label: "Match created", state: "Scheduled", done: true },
+    {
+      label: "Attendance poll",
+      state: a.pollPostedAt ? `Sent ${at(a.pollPostedAt)}` : new Date(a.pollDueAt).getTime() > now ? `Scheduled for ${at(a.pollDueAt)}` : "Not sent yet",
+      done: Boolean(a.pollPostedAt),
+    },
+    {
+      label: "Attendance",
+      state: a.cutoffCompletedAt ? `Ready (closed ${at(a.cutoffCompletedAt)})` : `Open until ${at(a.cutoffDueAt)}`,
+      done: Boolean(a.cutoffCompletedAt),
+    },
+    { label: "Organizers notified", state: a.notifiedAt ? `Emailed ${at(a.notifiedAt)}` : "After the cutoff", done: Boolean(a.notifiedAt) },
+    { label: "Teams", state: teamsPublished ? "Published" : a.cutoffCompletedAt ? "Awaiting organizer" : "After attendance", done: teamsPublished },
+  ];
+  return (
+    <SectionCard id="automation" title="Automation" icon={<CalendarClock className="size-5" />} meta={a.scheduleActive ? "Recurring schedule" : "Schedule paused"}>
+      <ol className="grid gap-2 text-sm sm:grid-cols-2 lg:grid-cols-5">
+        {steps.map((s) => (
+          <li key={s.label} className={cn("rounded-tbp border px-3 py-2", s.done ? "border-primary/25 bg-primary/5" : "border-border")}>
+            <p className="text-xs font-semibold text-muted-foreground">{s.label}</p>
+            <p className="font-semibold">{s.state}</p>
+          </li>
+        ))}
+      </ol>
+      {a.lastError && (
+        <div role="alert" className="mt-3 flex flex-wrap items-center gap-2 rounded-tbp-xl border border-destructive/30 bg-destructive/5 p-3 text-sm">
+          <span className="min-w-0 flex-1 basis-56 text-destructive">{a.lastError}</span>
+          <Button type="button" size="sm" variant="outline" disabled={busy || !a.scheduleActive} onClick={onRun}>
+            Retry
+          </Button>
+        </div>
+      )}
+      {!a.lastError && a.scheduleActive && (
+        <p className="mt-3 text-xs text-muted-foreground">
+          Runs automatically on schedule.{" "}
+          <button type="button" className="font-semibold text-primary underline disabled:opacity-50" disabled={busy} onClick={onRun}>
+            Run now
+          </button>{" "}
+          (only what is due runs; teams are never published automatically).
+        </p>
+      )}
+    </SectionCard>
   );
 }

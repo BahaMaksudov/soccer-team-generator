@@ -34,6 +34,13 @@ import * as venuesRoute from "@/app/api/admin/o/[organizationSlug]/g/[groupSlug]
 import * as venueRoute from "@/app/api/admin/o/[organizationSlug]/g/[groupSlug]/venues/[venueId]/route";
 import * as closePostRoute from "@/app/api/admin/o/[organizationSlug]/g/[groupSlug]/telegram/close-and-post/route";
 import { loadMatchForViewer } from "@/lib/matchPage";
+import * as schedulesRoute from "@/app/api/admin/o/[organizationSlug]/g/[groupSlug]/schedules/route";
+import * as scheduleRoute from "@/app/api/admin/o/[organizationSlug]/g/[groupSlug]/schedules/[scheduleId]/route";
+import * as automationRoute from "@/app/api/admin/o/[organizationSlug]/g/[groupSlug]/matches/[matchId]/automation/route";
+import * as cronRoute from "@/app/api/cron/automation/route";
+import { runMatchAutomation } from "@/lib/matchAutomation";
+import { applyTelegramAttendanceAnswer } from "@/lib/telegramAttendance";
+import { testOutbox } from "@/lib/email/transport";
 
 const A = { organizationSlug: "org-a", groupSlug: "group-a" };
 const B = { organizationSlug: "org-b", groupSlug: "group-b" };
@@ -124,12 +131,15 @@ beforeAll(async () => {
   vi.stubEnv("TELEGRAM_BOT_TOKEN", "test-bot-token");
   vi.stubEnv("APP_BASE_URL", "https://tbp.itest");
   vi.stubEnv("OPENAI_API_KEY", "");
+  vi.stubEnv("EMAIL_FROM", "Team Balance Pro <no-reply@tbp.itest>");
 });
 beforeEach(async () => {
   session = null;
   tgCalls = [];
   otherNetwork = 0;
   stopPollMode = "ok";
+  testOutbox.clear();
+  testOutbox.failNext = 0;
   await seed();
   await signIn("owner");
 });
@@ -506,5 +516,178 @@ describe("M9.2-5 — reusable Venues, match location and the Telegram maps link"
     // Re-posting the same teams is "already posted" even though the stored hash never included the venue.
     expect((await call(closePostRoute.POST(json("POST", { pollId: "att-v", teamGenerationId: pub.body.id, intent: "post" }), g()))).body).toMatchObject({ status: "already_posted" });
     expect(tgCalls.filter((c) => c.method === "sendMessage")).toHaveLength(1);
+  });
+});
+
+describe("M9.2-6/7 — weekly schedules and the Match Automation Agent", () => {
+  // Monday 9 PM New York; poll Sunday 8 PM; cutoff Monday 8 PM.
+  const SCHED = { communityId: "c-uccne", timezone: "America/New_York", weekday: 1, startTime: "21:00", pollDaysBefore: 1, pollTime: "20:00", cutoffDaysBefore: 0, cutoffTime: "20:00" };
+  const T = {
+    beforePoll: new Date("2026-10-11T23:00:00Z"), // Sun 19:00 EDT
+    afterPoll: new Date("2026-10-12T00:05:00Z"), // Sun 20:05 EDT
+    afterCutoff: new Date("2026-10-13T00:05:00Z"), // Mon 20:05 EDT
+  };
+  const gs = (scheduleId: string, at = A) => ({ params: Promise.resolve({ ...at, scheduleId }) });
+  const sends = (m: string) => tgCalls.filter((c) => c.method === m).length;
+  async function setup(opts: { chat?: boolean } = {}) {
+    if (opts.chat !== false) await prisma.telegramChat.create({ data: { chatId: -9400n, title: "UCCNE chat", groupId: "ga", communityId: "c-uccne" } });
+    const venue = await prisma.venue.create({ data: { organizationId: "org-a", name: "ForeKicks", address: "10 Pine Street, Norfolk, MA" } });
+    const created = await call(schedulesRoute.POST(json("POST", { ...SCHED, venueId: venue.id }), g()));
+    expect(created.status).toBe(201);
+    return (created.body.schedule as { id: string }).id;
+  }
+  const scheduledMatches = () => prisma.match.findMany({ where: { scheduleId: { not: null } }, include: { automation: true } });
+
+  it("schedule CRUD: validation, next occurrence, organizer-only, tenant-scoped", async () => {
+    const id = await setup();
+    const list = await call(schedulesRoute.GET(json("GET"), g()));
+    const s = (list.body.schedules as Array<Record<string, unknown>>)[0];
+    expect(s).toMatchObject({ communityName: "UCCNE - Indoor Soccer", venueName: "ForeKicks", weekday: 1, startTime: "21:00", isActive: true });
+    for (const [body, status] of [
+      [{ ...SCHED, timezone: "Mars/Base" }, 400],
+      [{ ...SCHED, cutoffDaysBefore: 1, cutoffTime: "19:00" }, 400], // cutoff before poll
+      [{ ...SCHED, cutoffTime: "22:00" }, 400], // cutoff after game
+      [{ ...SCHED, communityId: "c-b" }, 404],
+      [{ ...SCHED, weekday: 7 }, 400],
+    ] as const) expect((await call(schedulesRoute.POST(json("POST", body), g()))).status, JSON.stringify(body)).toBe(status);
+    expect((await call(scheduleRoute.PATCH(json("PATCH", { startTime: "21:30" }), gs(id)))).body).toMatchObject({ ok: true, schedule: { startTime: "21:30" } });
+    await signIn("member");
+    expect((await call(schedulesRoute.GET(json("GET"), g()))).status).toBe(404);
+    expect((await call(scheduleRoute.PATCH(json("PATCH", { isActive: false }), gs(id)))).status).toBe(404);
+    await signIn("other");
+    expect((await call(scheduleRoute.PATCH(json("PATCH", { isActive: false }), gs(id, B)))).status).toBe(404);
+    expect((await prisma.matchSchedule.findUniqueOrThrow({ where: { id } })).isActive).toBe(true);
+  });
+
+  it("full cycle: nothing before poll time → Match + poll exactly once (repeat & concurrent runs) → cutoff closes poll + attendance → organizers emailed once → teams NEVER published", async () => {
+    await setup();
+    expect(await runMatchAutomation(T.beforePoll)).toMatchObject({ created: 0, pollsPosted: 0 });
+    expect(await scheduledMatches()).toHaveLength(0);
+
+    const runs = await Promise.all([runMatchAutomation(T.afterPoll), runMatchAutomation(T.afterPoll), runMatchAutomation(T.afterPoll)]);
+    await runMatchAutomation(T.afterPoll);
+    expect(runs.reduce((n, r) => n + r.created, 0)).toBe(1);
+    const [m] = await scheduledMatches();
+    expect(await scheduledMatches()).toHaveLength(1);
+    expect(m).toMatchObject({ communityId: "c-uccne", startTime: "21:00", locationName: "ForeKicks", date: new Date("2026-10-12T00:00:00Z") });
+    expect(m.automation).toMatchObject({ pollDueAt: new Date("2026-10-12T00:00:00Z"), cutoffDueAt: new Date("2026-10-13T00:00:00Z") });
+    expect(m.automation!.pollPostedAt).not.toBeNull();
+    expect(sends("sendPoll")).toBe(1);
+    expect(await prisma.messageDelivery.count({ where: { eventType: "ATTENDANCE_POLL_POSTED", status: "SENT" } })).toBe(1);
+
+    // Answers arrive (linked voters).
+    const poll = await prisma.telegramPoll.findFirstOrThrow({ where: { matchId: m.id, kind: "ATTENDANCE" } });
+    for (const [uid, pid, option] of [[1n, "u1", 0], [2n, "u2", 0], [3n, "u3", 1], [4n, "u4", 2]] as const) {
+      await prisma.telegramUserLink.create({ data: { groupId: "ga", userId: uid, playerId: pid } });
+      await prisma.telegramPollAnswer.create({ data: { pollId: poll.pollId, userId: uid, optionIdsJson: JSON.stringify([option]), groupId: "ga" } });
+      await prisma.$transaction((tx) => applyTelegramAttendanceAnswer(tx, { matchId: m.id, groupId: "ga", telegramUserId: uid, optionIds: [option], at: T.afterPoll }));
+    }
+
+    await Promise.all([runMatchAutomation(T.afterCutoff), runMatchAutomation(T.afterCutoff)]);
+    await runMatchAutomation(T.afterCutoff);
+    const after = await prisma.match.findUniqueOrThrow({ where: { id: m.id }, include: { automation: true } });
+    expect(after.attendanceClosedAt).not.toBeNull();
+    expect(after.automation!.cutoffCompletedAt).not.toBeNull();
+    expect(after.automation!.notifiedAt).not.toBeNull();
+    expect(sends("stopPoll")).toBe(1);
+    expect((await prisma.telegramPoll.findUniqueOrThrow({ where: { pollId: poll.pollId } })).isClosed).toBe(true);
+
+    // One email per organizer (OWNER + ADMIN), counts over UCCNE's 7-player roster: 2 playing, 1 maybe? (option 1), 1 not playing, 3 not responded.
+    expect(testOutbox.sent.map((e) => e.to).sort()).toEqual(["admin@example.test", "owner@example.test"]);
+    const text = testOutbox.sent[0].text;
+    expect(text).toMatch(/Playing: 2 · Maybe: \d · Not playing: \d · Not responded: 3 \(roster 7\)/);
+    expect(text).toContain("https://tbp.itest/admin/o/org-a/g/group-a/matches/" + m.id);
+    expect(text).toContain("Teams are never published automatically");
+    expect(testOutbox.sent.some((e) => e.to === "member@example.test")).toBe(false);
+
+    // Never: teams, team posts or any other message.
+    expect(await prisma.teamGeneration.count()).toBe(0);
+    expect(sends("sendMessage")).toBe(0);
+    expect(otherNetwork).toBe(0);
+  });
+
+  it("not retroactive: a schedule created after the cutoff creates nothing for that week", async () => {
+    await setup();
+    expect(await runMatchAutomation(T.afterCutoff)).toMatchObject({ created: 0, pollsPosted: 0 });
+    expect(await scheduledMatches()).toHaveLength(0);
+  });
+
+  it("a paused schedule does nothing (and its pending cutoff stops)", async () => {
+    const id = await setup();
+    await runMatchAutomation(T.afterPoll);
+    await call(scheduleRoute.PATCH(json("PATCH", { isActive: false }), gs(id)));
+    await runMatchAutomation(T.afterCutoff);
+    const [m] = await scheduledMatches();
+    expect(m.automation!.cutoffCompletedAt).toBeNull();
+    expect(testOutbox.sent).toHaveLength(0);
+    expect(sends("stopPoll")).toBe(0);
+  });
+
+  it("failures are recorded for the organizer and retried safely: missing Telegram group, then email failure", async () => {
+    await setup({ chat: false });
+    const r = await runMatchAutomation(T.afterPoll);
+    expect(r.created).toBe(1);
+    const [m] = await scheduledMatches();
+    expect(m.automation!.lastError).toMatch(/no connected Telegram group for UCCNE/);
+    expect(m.automation!.pollPostedAt).toBeNull();
+    // The organizer connects a group and retries from the Match (only what is due runs).
+    await prisma.telegramChat.create({ data: { chatId: -9500n, title: "UCCNE chat", groupId: "ga", communityId: "c-uccne" } });
+    // The route runs at the real clock: pin it to the poll window for this check.
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(T.afterPoll);
+    try {
+      expect((await call(automationRoute.POST(json("POST", {}), gm(m.id)))).body).toMatchObject({ pollsPosted: 1 });
+      expect(sends("sendPoll")).toBe(1);
+      expect((await call(automationRoute.POST(json("POST", {}), gm(m.id)))).body).toMatchObject({ pollsPosted: 0 });
+      expect(sends("sendPoll")).toBe(1);
+    } finally {
+      vi.useRealTimers();
+    }
+
+    testOutbox.failNext = 1;
+    await runMatchAutomation(T.afterCutoff);
+    let a = await prisma.matchAutomation.findUniqueOrThrow({ where: { matchId: m.id } });
+    expect(a.cutoffCompletedAt).not.toBeNull();
+    expect(a.notifiedAt).toBeNull();
+    expect(a.lastError).toMatch(/email could not be sent/);
+    await runMatchAutomation(T.afterCutoff);
+    a = await prisma.matchAutomation.findUniqueOrThrow({ where: { matchId: m.id } });
+    expect(a.notifiedAt).not.toBeNull();
+    await runMatchAutomation(T.afterCutoff);
+    expect(sends("stopPoll")).toBe(1);
+  });
+
+  it("editing a schedule affects new Matches only; existing due times are kept", async () => {
+    const id = await setup();
+    await runMatchAutomation(T.afterPoll);
+    await call(scheduleRoute.PATCH(json("PATCH", { cutoffTime: "18:00" }), gs(id)));
+    const [m] = await scheduledMatches();
+    expect(m.automation!.cutoffDueAt).toEqual(new Date("2026-10-13T00:00:00Z"));
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(T.beforePoll);
+    try {
+      const next = (await call(schedulesRoute.GET(json("GET"), g()))).body.schedules as Array<{ next: { cutoffAt: string } }>;
+      expect(next[0].next.cutoffAt).toBe("2026-10-12T22:00:00.000Z"); // the same game, now with the new cutoff (Mon 18:00 EDT)
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("cron endpoint is fail-closed (503 without CRON_SECRET, 401 for wrong/missing token); organizer run endpoint is OWNER/ADMIN + tenant-scoped", async () => {
+    const req = (auth?: string) => new Request("http://itest.local/api/cron/automation", { headers: auth ? { authorization: auth } : {} });
+    vi.stubEnv("CRON_SECRET", "");
+    expect((await cronRoute.GET(req("Bearer anything"))).status).toBe(503);
+    vi.stubEnv("CRON_SECRET", "a-long-enough-test-secret");
+    expect((await cronRoute.GET(req())).status).toBe(401);
+    expect((await cronRoute.GET(req("Bearer wrong-secret-value"))).status).toBe(401);
+    expect((await cronRoute.GET(req("Bearer a-long-enough-test-secret"))).status).toBe(200);
+    vi.stubEnv("CRON_SECRET", "");
+    await setup();
+    await runMatchAutomation(T.afterPoll);
+    const [m] = await scheduledMatches();
+    await signIn("member");
+    expect((await call(automationRoute.POST(json("POST", {}), gm(m.id)))).status).toBe(404);
+    await signIn("other");
+    expect((await call(automationRoute.POST(json("POST", {}), gm(m.id, B)))).status).toBe(404);
   });
 });

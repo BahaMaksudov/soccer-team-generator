@@ -4,6 +4,7 @@ import { loadGroupOverview } from "@/lib/groupOverview";
 import { MatchList } from "@/components/game-day/MatchList";
 import { isManager } from "@/lib/tenantRoute";
 import CreateMatchForm from "./CreateMatchForm";
+import SchedulesSection from "./SchedulesSection";
 import { prisma } from "@/lib/prisma";
 
 /**
@@ -39,6 +40,9 @@ export default async function MatchesPage({ params }: { params: Params }) {
         </div>
       </header>
       {isManager(context) && <CreateMatchForm organizationSlug={context.organization.slug} groupSlug={context.activeGroup.slug} communities={communities} venues={venues} />}
+      {isManager(context) && (
+        <SchedulesSection organizationSlug={context.organization.slug} groupSlug={context.activeGroup.slug} communities={communities} venues={venues} defaultTimezone={context.activeGroup.timezone} />
+      )}
 
       <section aria-labelledby="upcoming-h" className="space-y-3">
         <h2 id="upcoming-h" className="text-xl font-extrabold">Upcoming <span className="text-base font-semibold text-muted-foreground">({overview.upcoming.length})</span></h2>

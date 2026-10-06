@@ -236,7 +236,9 @@ describe("migration #18", () => {
     ]);
     expect(cols.find((c) => c.column_name === "kind")?.column_default).toContain("ATTENDANCE");
     const uniques = await prisma.$queryRawUnsafe<Array<{ indexdef: string }>>(`SELECT indexdef FROM pg_indexes WHERE tablename='Match' AND indexdef LIKE '%UNIQUE%'`);
-    expect(uniques.map((u) => u.indexdef)).toEqual([expect.stringContaining("Match_pkey")]);
+    // M9.2 — the only other unique key is (scheduleId, date): one Match per schedule per day.
+    // Matches not created by a schedule (scheduleId NULL) are still never unique by date.
+    expect(uniques.map((u) => u.indexdef).sort()).toEqual([expect.stringContaining("Match_pkey"), expect.stringContaining('"Match_scheduleId_date_key" ON public."Match" USING btree ("scheduleId", date)')].sort());
     // legacy-style poll row (no matchId/kind given) reads as ATTENDANCE
     await prisma.telegramPoll.create({ data: { pollId: "legacy", chatId: -1001n, question: "Q", optionsJson: "[]", groupId: "ga" } });
     expect(await prisma.telegramPoll.findUniqueOrThrow({ where: { pollId: "legacy" } })).toMatchObject({ kind: "ATTENDANCE", matchId: null });

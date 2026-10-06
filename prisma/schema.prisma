@@ -209,6 +209,7 @@ model User {
   recapsPublished            MatchRecap[]           @relation("RecapPublishedBy")
   recapsUpdated              MatchRecap[]           @relation("RecapUpdatedBy")
   communityPlayersCreated CommunityPlayer[] @relation("CommunityPlayerCreatedBy")
+  schedulesCreated        MatchSchedule[]   @relation("ScheduleCreatedBy")
 }
 
 model Organization {
@@ -326,6 +327,8 @@ model Group {
   matchRecaps           MatchRecap[]
   communities           Community[]
   communityPlayers      CommunityPlayer[]
+  matchSchedules        MatchSchedule[]
+  matchAutomations      MatchAutomation[]
 
   @@unique([organizationId, slug])
 }
@@ -722,6 +725,7 @@ model Community {
   players       CommunityPlayer[]
   telegramChats TelegramChat[]
   matches       Match[]
+  schedules     MatchSchedule[]
 
   @@unique([id, groupId])
   @@index([groupId])
@@ -770,6 +774,9 @@ model Match {
   // M9.2 — the reusable Venue (Organization-level; same Organization enforced
   // server-side). locationName stays the display name snapshot.
   venueId            String?
+  // M9.2 — the weekly schedule that created this Match (one Match per schedule
+  // and game date — the idempotency key of automatic creation).
+  scheduleId         String?
   createdByUserId    String?
   createdAt          DateTime    @default(now())
   updatedAt          DateTime    @updatedAt
@@ -779,6 +786,8 @@ model Match {
   telegramChat  TelegramChat?        @relation(fields: [telegramChatId], references: [id], onDelete: SetNull)
   community     Community?           @relation(fields: [communityId, groupId], references: [id, groupId], onDelete: Restrict)
   venue         Venue?               @relation(fields: [venueId], references: [id], onDelete: SetNull)
+  schedule      MatchSchedule?       @relation(fields: [scheduleId], references: [id], onDelete: SetNull)
+  automation    MatchAutomation?
   attendance    AttendanceResponse[]
   generation    TeamGeneration?
   telegramPolls TelegramPoll[]
@@ -794,6 +803,7 @@ model Match {
   @@index([telegramChatId])
   @@index([communityId])
   @@index([venueId])
+  @@unique([scheduleId, date])
 }
 
 // M9.2 — a reusable Venue / ground of an Organization (any of its Groups may
@@ -810,8 +820,68 @@ model Venue {
 
   organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   matches      Match[]
+  schedules    MatchSchedule[]
 
   @@index([organizationId])
+}
+
+// M9.2 — a weekly recurring Match of a Community, in LOCAL wall-clock terms of
+// an IANA timezone (src/lib/scheduleTime.ts): game weekday + time; attendance
+// poll "N days before at HH:MM"; attendance cutoff "N days before at HH:MM".
+// Automation creates the Match and posts the poll at poll time, closes and
+// finalizes attendance at the cutoff and notifies organizers. It never
+// generates or publishes teams.
+model MatchSchedule {
+  id               String   @id @default(cuid())
+  groupId          String
+  communityId      String
+  venueId          String?
+  timezone         String
+  weekday          Int
+  startTime        String
+  pollDaysBefore   Int
+  pollTime         String
+  cutoffDaysBefore Int
+  cutoffTime       String
+  isActive         Boolean  @default(true)
+  createdByUserId  String?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  group     Group     @relation(fields: [groupId], references: [id], onDelete: Restrict)
+  community Community @relation(fields: [communityId, groupId], references: [id, groupId], onDelete: Restrict)
+  venue     Venue?    @relation(fields: [venueId], references: [id], onDelete: SetNull)
+  createdBy User?     @relation("ScheduleCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
+  matches   Match[]
+
+  @@index([groupId])
+  @@index([isActive])
+}
+
+// M9.2 — what automation did for one scheduled Match (one row per Match).
+// Due instants are fixed when the Match is created; each step is claimed with
+// a conditional update so repeated or concurrent runs never repeat a side effect.
+model MatchAutomation {
+  id                String    @id @default(cuid())
+  matchId           String    @unique
+  groupId           String
+  pollDueAt         DateTime
+  cutoffDueAt       DateTime
+  pollPostedAt      DateTime?
+  cutoffCompletedAt DateTime?
+  notifyClaimedAt   DateTime?
+  notifiedAt        DateTime?
+  lastError         String?
+  lastErrorAt       DateTime?
+  attempts          Int       @default(0)
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  group Group @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  match Match @relation(fields: [matchId], references: [id], onDelete: Cascade)
+
+  @@index([groupId])
+  @@index([cutoffDueAt])
 }
 
 // M9-D — the factual final result of a Match (entered by an organizer; AI

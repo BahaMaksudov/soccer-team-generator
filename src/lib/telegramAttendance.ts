@@ -106,7 +106,21 @@ export async function postAttendancePoll(context: TenantContext, matchId: string
   if (denied) return denied;
   const parsed = attendancePollSchema.safeParse((await req.json().catch(() => null)) ?? {});
   if (!parsed.success) return NextResponse.json(zodErrorResponse(parsed.error), { status: 400 });
-  const { chatRef, intent } = parsed.data;
+  return postAttendancePollFor(context, matchId, parsed.data);
+}
+
+/**
+ * The posting core (M9.2: shared by the explicit organizer action and the
+ * Match Automation runner, which passes an OWNER/ADMIN acting context). Same
+ * reserve → send → finalize delivery protection either way.
+ */
+export async function postAttendancePollFor(
+  context: TenantContext,
+  matchId: string,
+  { chatRef, intent }: { chatRef: number; intent: "post" | "post_updated" | "retry_uncertain" }
+): Promise<NextResponse> {
+  const denied = managersOnlyResponse(context);
+  if (denied) return denied;
   const groupId = context.activeGroup.id;
 
   const match = await findGroupMatch(context, matchId);

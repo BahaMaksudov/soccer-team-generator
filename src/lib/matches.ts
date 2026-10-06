@@ -311,6 +311,8 @@ export async function getMatchView(context: TenantContext, matchId: string): Pro
     match: toSummary(match),
     canManage: manager,
     community: community ? { id: community.id, name: community.name, isActive: community.isActive } : null,
+    // M9.2 — what Match Automation did (organizers only; null for a Match not created by a schedule).
+    automation: manager ? await automationView(groupId, matchId) : null,
     communities: communities,
     roster: listed.map(({ rating, stamina, ...safe }) => {
       const p = { ...safe, inCommunity: inCommunity(safe.id) };
@@ -364,6 +366,26 @@ export async function getMatchView(context: TenantContext, matchId: string): Pro
       pollDelivery: pollDeliveries[0] ? { status: pollDeliveries[0].status, sentAt: pollDeliveries[0].sentAt?.toISOString() ?? null } : null,
     },
   });
+}
+
+/** M9.2 — organizer-facing automation status of a scheduled Match. */
+async function automationView(groupId: string, matchId: string) {
+  const a = await prisma.matchAutomation.findFirst({
+    where: { matchId, groupId },
+    select: { pollDueAt: true, cutoffDueAt: true, pollPostedAt: true, cutoffCompletedAt: true, notifiedAt: true, lastError: true, lastErrorAt: true, match: { select: { schedule: { select: { isActive: true } } } } },
+  });
+  if (!a) return null;
+  const iso = (d: Date | null) => (d ? d.toISOString() : null);
+  return {
+    scheduleActive: a.match.schedule?.isActive ?? false,
+    pollDueAt: iso(a.pollDueAt),
+    cutoffDueAt: iso(a.cutoffDueAt),
+    pollPostedAt: iso(a.pollPostedAt),
+    cutoffCompletedAt: iso(a.cutoffCompletedAt),
+    notifiedAt: iso(a.notifiedAt),
+    lastError: a.lastError,
+    lastErrorAt: iso(a.lastErrorAt),
+  };
 }
 
 /** Organizer override (set or clear). Authoritative until cleared; participant responses are kept. */
