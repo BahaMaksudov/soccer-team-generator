@@ -41,6 +41,8 @@ export const generateTeamsSchema = z.object({
   teamCount: z.coerce.number().int().min(2),
   date: z.string().trim().min(1, "Date is required."),
   selectedIds: z.array(z.string().min(1)).min(1, "Select at least one player."),
+  // M9.2 — generating for a Match: its Community's roster is enforced server-side.
+  matchId: z.string().trim().min(1).max(64).optional(),
   // DEPRECATED (M7): a soccer "N-a-side" hint that never affected generation.
   // Still accepted for API compatibility and ignored; team sizes come only
   // from selected players ÷ number of teams.
@@ -90,6 +92,8 @@ export const matchCreateSchema = z.object({
   date: ymd,
   startTime: hhmm.optional().or(z.literal("")),
   locationName: z.string().trim().max(80, "Location is too long.").optional(),
+  // M9.2 — the Match's Community (roster); validated against the URL-bound Group server-side.
+  communityId: z.string().trim().min(1).max(64).optional(),
 });
 
 export const matchUpdateSchema = z.object({
@@ -97,6 +101,8 @@ export const matchUpdateSchema = z.object({
   startTime: hhmm.optional().or(z.literal("")).nullable(),
   locationName: z.string().trim().max(80, "Location is too long.").optional().nullable(),
   status: z.enum(["SCHEDULED", "COMPLETED", "CANCELED"]).optional(),
+  // M9.2 — set (or change) the Match's Community; never cleared once set.
+  communityId: z.string().trim().min(1).max(64).optional(),
 });
 
 /** Organizer override: a status sets it, null clears it. */

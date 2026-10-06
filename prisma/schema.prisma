@@ -208,6 +208,7 @@ model User {
   recapsGenerated            MatchRecap[]           @relation("RecapGeneratedBy")
   recapsPublished            MatchRecap[]           @relation("RecapPublishedBy")
   recapsUpdated              MatchRecap[]           @relation("RecapUpdatedBy")
+  communityPlayersCreated CommunityPlayer[] @relation("CommunityPlayerCreatedBy")
 }
 
 model Organization {
@@ -322,6 +323,8 @@ model Group {
   matchMvps             MatchMvp[]
   matchMvpVotes         MatchMvpVote[]
   matchRecaps           MatchRecap[]
+  communities           Community[]
+  communityPlayers      CommunityPlayer[]
 
   @@unique([organizationId, slug])
 }
@@ -497,6 +500,7 @@ model Player {
   telegramConnectCodes TelegramConnectCode[]
   attendanceResponses  AttendanceResponse[]
   telegramChatPlayers  TelegramChatPlayer[]
+  communityPlayers     CommunityPlayer[]
   mvpVotesCast         MatchMvpVote[]        @relation("MvpVoter")
   mvpVotesReceived     MatchMvpVote[]        @relation("MvpCandidate")
 
@@ -661,12 +665,19 @@ model TelegramChat {
   groupId String
   group   Group  @relation(fields: [groupId], references: [id], onDelete: Restrict)
 
+  // M9.2 — the Community this chat is a communication channel of (the roster
+  // lives on the Community, not on the chat). Same Group enforced by the
+  // composite key.
+  communityId String?
+  community   Community? @relation(fields: [communityId, groupId], references: [id, groupId], onDelete: Restrict)
+
   players TelegramChatPlayer[]
   matches Match[]
 
   @@unique([chatId, groupId])
   // Composite target for TelegramChatPlayer's (telegramChatId, groupId) FK.
   @@unique([id, groupId])
+  @@index([communityId])
 }
 
 // M9-B — DEFAULT player scope of one connected Telegram chat (who is usually
@@ -694,6 +705,47 @@ model TelegramChatPlayer {
   @@index([playerId])
 }
 
+// M9.2 — a provider-neutral Community: one roster of a Group (e.g. "UCCNE
+// Indoor Soccer", "FunnyStuff"). Communication channels (Telegram today) attach
+// to it; Players join it through CommunityPlayer (a Player is never duplicated
+// per community). Communities are deactivated, never deleted.
+model Community {
+  id        String   @id @default(cuid())
+  groupId   String
+  name      String
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  group         Group             @relation(fields: [groupId], references: [id], onDelete: Restrict)
+  players       CommunityPlayer[]
+  telegramChats TelegramChat[]
+  matches       Match[]
+
+  @@unique([id, groupId])
+  @@index([groupId])
+}
+
+// M9.2 — a Player's membership in a Community (same Group enforced by both
+// composite keys). Removing a membership never touches the Player.
+model CommunityPlayer {
+  id              String   @id @default(cuid())
+  groupId         String
+  communityId     String
+  playerId        String
+  createdByUserId String?
+  createdAt       DateTime @default(now())
+
+  group     Group     @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  community Community @relation(fields: [communityId, groupId], references: [id, groupId], onDelete: Cascade)
+  player    Player    @relation(fields: [playerId, groupId], references: [id, groupId], onDelete: Cascade)
+  createdBy User?     @relation("CommunityPlayerCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
+
+  @@unique([communityId, playerId])
+  @@index([groupId])
+  @@index([playerId])
+}
+
 // M9-A — a scheduled game of one Group. Identity is the id, NOT the date: a
 // Group may have several Matches on the same day. The date is a date-only
 // value (UTC midnight, like TeamGeneration.date) interpreted in the Group's
@@ -711,6 +763,9 @@ model Match {
   // default player scope). NOT evidence that anything was sent: TelegramPoll /
   // MessageDelivery record actual sends. Server-validated to be this Group's.
   telegramChatId     Int?
+  // M9.2 — the Community (roster) this Match belongs to. NULL only for legacy
+  // Matches that could not be mapped safely (organizer remediation).
+  communityId        String?
   createdByUserId    String?
   createdAt          DateTime    @default(now())
   updatedAt          DateTime    @updatedAt
@@ -718,6 +773,7 @@ model Match {
   group         Group                @relation(fields: [groupId], references: [id], onDelete: Restrict)
   createdBy     User?                @relation("MatchCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
   telegramChat  TelegramChat?        @relation(fields: [telegramChatId], references: [id], onDelete: SetNull)
+  community     Community?           @relation(fields: [communityId, groupId], references: [id, groupId], onDelete: Restrict)
   attendance    AttendanceResponse[]
   generation    TeamGeneration?
   telegramPolls TelegramPoll[]
@@ -731,6 +787,7 @@ model Match {
   @@index([groupId])
   @@index([groupId, date])
   @@index([telegramChatId])
+  @@index([communityId])
 }
 
 // M9-D — the factual final result of a Match (entered by an organizer; AI

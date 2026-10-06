@@ -354,6 +354,9 @@ describe("Phase 2D.7 — PostgreSQL enforces groupId NOT NULL on every tenant-ow
     const byName = Object.fromEntries(fks.map((f) => [f.conname, `${f.del}/${f.upd}`]));
     // 'r' = RESTRICT on delete, 'c' = CASCADE on update; GroupSetting keeps CASCADE/CASCADE (unchanged).
     expect(byName).toEqual({
+      // M9.2 — Communities follow the same rule (memberships cascade with their Group, like GroupSetting).
+      Community_groupId_fkey: "r/c",
+      CommunityPlayer_groupId_fkey: "c/c",
       Player_groupId_fkey: "r/c",
       TeamGeneration_groupId_fkey: "r/c",
       TelegramChat_groupId_fkey: "r/c",

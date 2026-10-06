@@ -731,6 +731,14 @@ const team1Block = (teamsJson: string) => {
 };
 
 /** Group A: chat A = the seeded "Group A chat"; chat B is a second connected chat of the same Group. */
+/**
+ * M9.2 — a Match created before Communities existed (communityId NULL, as the
+ * migration leaves Matches without a selected chat): for it the M9-B chat scope
+ * stays a presentation default only. New Matches in a Group with several
+ * Communities must name one (covered in m92.itest).
+ */
+const legacyMatch = async () => (await prisma.match.create({ data: { groupId: "ga", date: new Date("2026-10-12T00:00:00Z"), startTime: "20:00", locationName: "Field 2" } })).id;
+
 async function twoChats() {
   const chatA = await chatRef();
   const chatB = (await prisma.telegramChat.create({ data: { chatId: -1002n, title: "Second chat", groupId: "ga" } })).id;
@@ -814,8 +822,9 @@ describe("M9-B — Telegram chat ↔ Player scope", () => {
     const { chatA } = await twoChats();
     expect((await scopeAdd(chatA, "ga-p1")).status).toBe(200);
     expect((await scopeAdd(chatA, "ga-p1")).status).toBe(200);
-    expect(await prisma.telegramChatPlayer.count({ where: { telegramChatId: chatA } })).toBe(1);
-    await expect(prisma.telegramChatPlayer.create({ data: { groupId: "ga", telegramChatId: chatA, playerId: "ga-p1" } })).rejects.toMatchObject({ code: "P2002" });
+    expect(await prisma.communityPlayer.count({ where: { community: { telegramChats: { some: { id: chatA } } } } })).toBe(1);
+    const communityId = (await prisma.telegramChat.findUniqueOrThrow({ where: { id: chatA } })).communityId!;
+    await expect(prisma.communityPlayer.create({ data: { groupId: "ga", communityId, playerId: "ga-p1" } })).rejects.toMatchObject({ code: "P2002" });
   });
 
   it("3: cross-Group associations are impossible (API 404 and database FK)", async () => {
@@ -844,7 +853,7 @@ describe("M9-B — Telegram chat ↔ Player scope", () => {
     await signInAs("owner@example.test");
     const { chatA, chatB } = await twoChats();
     for (const [ref, pid] of [[chatA, "ga-p1"], [chatB, "ga-p2"], [chatA, "ga-p3"], [chatB, "ga-p3"]] as const) expect((await scopeAdd(ref, pid)).status).toBe(200);
-    const id = (await createMatch()).data.match.id;
+    const id = await legacyMatch();
     expect((await view(id)).scope).toEqual({ chatSelected: false, playerIds: [] });
 
     expect((await selectChat(id, chatA)).status).toBe(200);
@@ -876,14 +885,14 @@ describe("M9-B — Telegram chat ↔ Player scope", () => {
 
     // remove works and is scoped
     expect((await scopeRemove(chatB, "ga-p3")).status).toBe(200);
-    expect(await prisma.telegramChatPlayer.count({ where: { playerId: "ga-p3" } })).toBe(1);
+    expect(await prisma.communityPlayer.count({ where: { playerId: "ga-p3" } })).toBe(1);
   });
 
   it("7/8: a linked voter outside the scope still counts and is SUGGESTED (never auto-added); an unlinked voter creates no Player", async () => {
     await signInAs("owner@example.test");
     const { chatA } = await twoChats();
     await scopeAdd(chatA, "ga-p1");
-    const id = (await createMatch()).data.match.id;
+    const id = await legacyMatch();
     await selectChat(id, chatA);
     await pollRoute.POST(json("POST", { chatRef: chatA }), gm(A, id));
     const pollId = (await prisma.telegramPoll.findFirstOrThrow({ where: { matchId: id } })).pollId;
@@ -894,16 +903,17 @@ describe("M9-B — Telegram chat ↔ Player scope", () => {
     expect(v.defaultSelection).toEqual(["ga-p2"]);
     expect(v.telegram.suggestedPlayerIds).toEqual(["ga-p2"]);
     expect(v.telegram.unlinkedVoters).toBe(1);
-    expect(await prisma.telegramChatPlayer.count()).toBe(1); // not auto-added
+    expect(await prisma.communityPlayer.count()).toBe(1); // not auto-added
     expect(await prisma.player.count()).toBe(players); // no Player invented
     expect(stringify(v)).not.toMatch(/\b999\b|\b222\b/); // no Telegram identity in the view
 
     expect((await scopeAdd(chatA, "ga-p2", A, true)).status).toBe(200);
-    expect(await prisma.telegramChatPlayer.findFirstOrThrow({ where: { playerId: "ga-p2" } })).toMatchObject({ source: "SUGGESTED_VOTE" });
+    // M9.2 — scope = Community membership (provenance is not recorded on CommunityPlayer).
+    expect(await prisma.communityPlayer.count({ where: { playerId: "ga-p2" } })).toBe(1);
     expect((await view(id)).telegram.suggestedPlayerIds).toEqual([]);
     // A forged "fromSuggestion" for a non-suggested Player is labelled ORGANIZER.
     await scopeAdd(chatA, "ga-p6", A, true);
-    expect(await prisma.telegramChatPlayer.findFirstOrThrow({ where: { playerId: "ga-p6" } })).toMatchObject({ source: "ORGANIZER" });
+    expect(await prisma.communityPlayer.count({ where: { playerId: "ga-p6" } })).toBe(1);
     // The scope endpoint returns Player ids only.
     const scope = await (await chatScopeRoute.GET(json("GET"), gr(A, chatA))).json();
     expect(scope.playerIds.sort()).toEqual(["ga-p1", "ga-p2", "ga-p6"]);
@@ -914,7 +924,7 @@ describe("M9-B — Telegram chat ↔ Player scope", () => {
     await signInAs("owner@example.test");
     const { chatA } = await twoChats();
     await scopeAdd(chatA, "ga-p1");
-    const id = (await createMatch()).data.match.id;
+    const id = await legacyMatch();
     await selectChat(id, chatA);
     await signInAs("member@example.test");
     expect((await chatScopeRoute.GET(json("GET"), gr(A, chatA))).status).toBe(404);
@@ -926,7 +936,7 @@ describe("M9-B — Telegram chat ↔ Player scope", () => {
     expect(v.telegram.chats).toEqual([]);
     expect(v.telegram.selectedChat).toBeNull();
     expect(v.telegram.suggestedPlayerIds).toEqual([]);
-    expect(await prisma.telegramChatPlayer.count()).toBe(1);
+    expect(await prisma.communityPlayer.count()).toBe(1);
     expect((await prisma.match.findUniqueOrThrow({ where: { id } })).telegramChatId).toBe(chatA);
   });
 });
@@ -938,12 +948,12 @@ describe("M9-B — disconnect / reconnect / bot removal / bind codes", () => {
     await signInAs("owner@example.test");
     const { chatA } = await twoChats();
     await scopeAdd(chatA, "ga-p1");
-    const id = (await createMatch()).data.match.id;
+    const id = await legacyMatch();
     await selectChat(id, chatA);
     await postPoll(id);
     expect((await channelRoute.DELETE(json("DELETE"), gr(A, chatA))).status).toBe(200);
     expect(await prisma.telegramChat.findUniqueOrThrow({ where: { id: chatA } })).toMatchObject({ disconnectedAt: expect.any(Date) });
-    expect(await prisma.telegramChatPlayer.count({ where: { telegramChatId: chatA } })).toBe(1);
+    expect(await prisma.communityPlayer.count({ where: { community: { telegramChats: { some: { id: chatA } } } } })).toBe(1);
     expect(await prisma.telegramPoll.count({ where: { matchId: id } })).toBe(1);
     const list = await (await channelsRoute.GET(json("GET"), g(A))).json();
     expect(list.telegram.map((c: { ref: number }) => c.ref)).not.toContain(chatA);
@@ -962,7 +972,7 @@ describe("M9-B — disconnect / reconnect / bot removal / bind codes", () => {
     const row = await prisma.telegramChat.findUniqueOrThrow({ where: { id: chatA } });
     expect(row).toMatchObject({ disconnectedAt: null, title: "Group A chat (renamed)", groupId: "ga" });
     expect(await prisma.telegramChat.count({ where: { chatId: -1001n } })).toBe(1); // no duplicate binding
-    expect(await prisma.telegramChatPlayer.count({ where: { telegramChatId: chatA } })).toBe(1);
+    expect(await prisma.communityPlayer.count({ where: { community: { telegramChats: { some: { id: chatA } } } } })).toBe(1);
     expect((await view(id)).telegram.selectedChat).toMatchObject({ ref: chatA, connected: true });
   });
 
@@ -983,7 +993,7 @@ describe("M9-B — disconnect / reconnect / bot removal / bind codes", () => {
     await groupMessage(`/connectgroup ${b2.code}`, 900, { id: -1001, type: "supergroup", title: "Now B" });
     const rows = await prisma.telegramChat.findMany({ where: { chatId: -1001n }, orderBy: { id: "asc" } });
     expect(rows.map((r) => [r.groupId, r.disconnectedAt === null])).toEqual([["ga", false], ["gb", true]]);
-    expect(await prisma.telegramChatPlayer.findMany({ select: { groupId: true, telegramChatId: true } })).toEqual([{ groupId: "ga", telegramChatId: chatA }]);
+    expect(await prisma.communityPlayer.findMany({ select: { groupId: true, communityId: true } })).toEqual([{ groupId: "ga", communityId: (await prisma.telegramChat.findUniqueOrThrow({ where: { id: chatA } })).communityId }]);
     // While B holds it, A cannot reactivate its old row.
     await signInAs("owner@example.test");
     const a = await issueA();
@@ -1001,7 +1011,7 @@ describe("M9-B — disconnect / reconnect / bot removal / bind codes", () => {
     expect((await prisma.telegramChat.findUniqueOrThrow({ where: { id: chatA } })).disconnectedAt).toBeNull();
     await member("kicked");
     expect((await prisma.telegramChat.findUniqueOrThrow({ where: { id: chatA } })).disconnectedAt).not.toBeNull();
-    expect(await prisma.telegramChatPlayer.count()).toBe(1);
+    expect(await prisma.communityPlayer.count()).toBe(1);
     await member("member");
     expect((await prisma.telegramChat.findUniqueOrThrow({ where: { id: chatA } })).disconnectedAt).not.toBeNull();
     // an unknown chat is ignored
@@ -1094,7 +1104,7 @@ describe("M9-C — PUBLIC Match page", () => {
     await signInAs("owner@example.test");
     const { chatA } = await twoChats();
     await scopeAdd(chatA, "ga-p1");
-    const id = (await createMatch()).data.match.id;
+    const id = await legacyMatch();
     await selectChat(id, chatA);
     await publishFor(id, teamsOf([["ga-p1"], ["ga-p4"]]));
     session = null;

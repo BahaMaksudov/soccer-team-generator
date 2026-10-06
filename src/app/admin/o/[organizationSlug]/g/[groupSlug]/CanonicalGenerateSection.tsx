@@ -139,7 +139,7 @@ export default function CanonicalGenerateSection({
     const res = await fetch(adminTenantApiPath({ organizationSlug, groupSlug, path: "/generate" }), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ teamCount, date: new Date(date).toISOString(), selectedIds }),
+      body: JSON.stringify({ teamCount, date: new Date(date).toISOString(), selectedIds, ...(matchId ? { matchId } : {}) }),
     });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) {

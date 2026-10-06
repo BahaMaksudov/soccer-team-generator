@@ -9,6 +9,7 @@ import { buildStoredMetrics } from "@/lib/balanceAnalysis";
 import { findSport, type SportDefinition } from "@/lib/sports";
 import { loadStoredBalanceWeights } from "@/lib/groupSettings";
 import { managersOnlyResponse } from "@/lib/tenantRoute";
+import { idsOutsideCommunity, OUTSIDE_COMMUNITY_MESSAGE } from "@/lib/communities";
 
 /**
  * Phase 2D.6D.3 — shared Publish core, originally extracted from the
@@ -195,8 +196,12 @@ export async function publishTeamsForContext(context: TenantContext, req: Reques
   try {
     if (matchId) {
       // The Match must be this Group's and on the same date.
-      const match = await prisma.match.findFirst({ where: { id: matchId, groupId: activeGroupId }, select: { id: true, date: true } });
+      const match = await prisma.match.findFirst({ where: { id: matchId, groupId: activeGroupId }, select: { id: true, date: true, communityId: true } });
       if (!match) return NextResponse.json({ error: "Match not found" }, { status: 404 });
+      // M9.2 — a Community Match's teams may only contain that Community's Players.
+      if (match.communityId && (await idsOutsideCommunity(activeGroupId, match.communityId, playerIds)).length > 0) {
+        return NextResponse.json({ error: OUTSIDE_COMMUNITY_MESSAGE }, { status: 400 });
+      }
       if (match.date.getTime() !== normalizedDate.getTime()) {
         return NextResponse.json({ error: "The teams date must be the match date." }, { status: 400 });
       }

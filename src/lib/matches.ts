@@ -13,6 +13,7 @@ import {
   zodErrorResponse,
 } from "@/lib/validation";
 import { scopePlayerIds, suggestedPlayerIds } from "@/lib/telegramChatScope";
+import { communityMemberIds, communityTelegramChat, groupCommunity } from "@/lib/communities";
 import { canonicalMatchPath } from "@/lib/matchPaths";
 import { postGameView } from "@/lib/postGame";
 import { countAttendance, defaultSelection, effectiveAttendance, recordParticipantResponse, type AttendanceRow } from "@/lib/attendance";
@@ -49,6 +50,7 @@ const MATCH_SELECT = {
   locationName: true,
   status: true,
   attendanceClosedAt: true,
+  communityId: true,
   createdAt: true,
 } as const;
 
@@ -59,9 +61,11 @@ export type MatchSummary = {
   locationName: string | null;
   status: MatchStatus;
   attendanceClosed: boolean;
+  /** M9.2 — the Match's Community (null: legacy Match not mapped yet). */
+  communityId: string | null;
 };
 
-function toSummary(m: { id: string; date: Date; startTime: string | null; locationName: string | null; status: MatchStatus; attendanceClosedAt: Date | null }): MatchSummary {
+function toSummary(m: { id: string; date: Date; startTime: string | null; locationName: string | null; status: MatchStatus; attendanceClosedAt: Date | null; communityId: string | null }): MatchSummary {
   return {
     id: m.id,
     date: formatYMDFromDate(m.date),
@@ -69,7 +73,29 @@ function toSummary(m: { id: string; date: Date; startTime: string | null; locati
     locationName: m.locationName,
     status: m.status,
     attendanceClosed: m.attendanceClosedAt !== null,
+    communityId: m.communityId,
   };
+}
+
+/**
+ * M9.2 — resolve a submitted communityId inside the Group (active only) and
+ * the Telegram chat that goes with it. New Matches: the only active Community
+ * is the default; with several the organizer must choose; foreign/unknown/
+ * inactive ids are rejected.
+ */
+async function resolveMatchCommunity(groupId: string, communityId: string | undefined, required: boolean) {
+  if (!communityId) {
+    if (!required) return { ok: true as const, community: null, chatRef: null };
+    // One active Community → it is the default; several → the organizer must choose; none → no roster split.
+    const active = await prisma.community.findMany({ where: { groupId, isActive: true }, select: { id: true }, take: 2 });
+    if (active.length >= 2) return { ok: false as const, response: NextResponse.json({ error: "Choose the community this match is for." }, { status: 400 }) };
+    if (active.length === 0) return { ok: true as const, community: null, chatRef: null };
+    communityId = active[0].id;
+  }
+  const community = await groupCommunity(groupId, communityId, true);
+  if (!community) return { ok: false as const, response: NextResponse.json({ error: "Community not found" }, { status: 404 }) };
+  const chat = await communityTelegramChat(groupId, community.id);
+  return { ok: true as const, community, chatRef: chat?.id ?? null };
 }
 
 /** Published snapshot → organizer-facing teams (only id, names and role key). */
@@ -94,7 +120,7 @@ export function publishedTeamsOf(teamsJson: string): Array<{ teamNumber: number;
 }
 
 export async function findGroupMatch(context: TenantContext, matchId: string) {
-  return prisma.match.findFirst({ where: { id: matchId, groupId: context.activeGroup.id }, select: { ...MATCH_SELECT, groupId: true, telegramChatId: true } });
+  return prisma.match.findFirst({ where: { id: matchId, groupId: context.activeGroup.id }, select: { ...MATCH_SELECT, groupId: true, telegramChatId: true, communityId: true } });
 }
 
 export async function createMatch(context: TenantContext, req: Request): Promise<NextResponse> {
@@ -103,7 +129,9 @@ export async function createMatch(context: TenantContext, req: Request): Promise
   if (denied) return denied;
   const parsed = matchCreateSchema.safeParse((await req.json().catch(() => null)) ?? {});
   if (!parsed.success) return NextResponse.json(zodErrorResponse(parsed.error), { status: 400 });
-  const { date, startTime, locationName } = parsed.data;
+  const { date, startTime, locationName, communityId } = parsed.data;
+  const resolved = await resolveMatchCommunity(context.activeGroup.id, communityId, true);
+  if (!resolved.ok) return resolved.response;
   const match = await prisma.match.create({
     data: {
       groupId: context.activeGroup.id,
@@ -111,6 +139,9 @@ export async function createMatch(context: TenantContext, req: Request): Promise
       startTime: startTime || null,
       locationName: locationName || null,
       createdByUserId: context.user.id,
+      // M9.2 — the Community's roster; its connected Telegram chat is the Match's default channel.
+      communityId: resolved.community?.id ?? null,
+      telegramChatId: resolved.chatRef,
     },
     select: MATCH_SELECT,
   });
@@ -123,10 +154,20 @@ export async function updateMatch(context: TenantContext, matchId: string, req: 
   if (denied) return denied;
   const parsed = matchUpdateSchema.safeParse((await req.json().catch(() => null)) ?? {});
   if (!parsed.success) return NextResponse.json(zodErrorResponse(parsed.error), { status: 400 });
-  const { date, startTime, locationName, status } = parsed.data;
+  const { date, startTime, locationName, status, communityId } = parsed.data;
+  let communityData: { communityId: string; telegramChatId?: number | null } | null = null;
+  if (communityId !== undefined) {
+    const resolved = await resolveMatchCommunity(context.activeGroup.id, communityId, false);
+    if (!resolved.ok) return resolved.response;
+    const current = await prisma.match.findFirst({ where: { id: matchId, groupId: context.activeGroup.id }, select: { communityId: true, telegramChatId: true } });
+    if (!current) return NOT_FOUND();
+    // Switching Community also switches the default Telegram chat to the new Community's chat.
+    communityData = current.communityId === resolved.community!.id ? { communityId: resolved.community!.id } : { communityId: resolved.community!.id, telegramChatId: resolved.chatRef };
+  }
   const { count } = await prisma.match.updateMany({
     where: { id: matchId, groupId: context.activeGroup.id },
     data: {
+      ...(communityData ?? {}),
       ...(date !== undefined ? { date: toDateOnlyUTC(date) } : {}),
       ...(startTime !== undefined ? { startTime: startTime || null } : {}),
       ...(locationName !== undefined ? { locationName: locationName || null } : {}),
@@ -194,6 +235,18 @@ export async function getMatchView(context: TenantContext, matchId: string): Pro
     unlinkedVoters = answers.filter((a) => !linkedSet.has(a.userId.toString())).length;
   }
 
+  // M9.2 — the Match's Community is its roster. Eligible = ACTIVE members;
+  // Players outside it appear only when they already have state on this
+  // Match (an answer, an override, a published team place) or are a linked-
+  // voter suggestion, flagged inCommunity:false — never counted, never
+  // selected by default. Legacy Matches without a Community keep the
+  // whole-Group roster until an organizer assigns one.
+  const community = match.communityId ? await prisma.community.findFirst({ where: { id: match.communityId, groupId }, select: { id: true, name: true, isActive: true } }) : null;
+  const members = community ? new Set(await communityMemberIds(groupId, community.id)) : null;
+  const communities = manager
+    ? await prisma.community.findMany({ where: { groupId, isActive: true }, orderBy: { createdAt: "asc" }, select: { id: true, name: true } })
+    : [];
+
   // M9-B — the selected Telegram chat's DEFAULT player scope. Player ids only
   // (everyone who can open the workspace sees the same default roster); chat
   // titles, the chat list and linked-voter suggestions are OWNER/ADMIN only.
@@ -210,6 +263,13 @@ export async function getMatchView(context: TenantContext, matchId: string): Pro
 
   const rows = attendance as AttendanceRow[];
   const byPlayer = new Map(rows.map((r) => [r.playerId, r]));
+  const onTeams = new Set(generation ? publishedTeamsOf(generation.teamsJson).flatMap((t) => t.players.map((p) => p.id)) : []);
+  const inCommunity = (id: string) => (members ? members.has(id) : true);
+  const listed = members
+    ? players.filter((p) => members.has(p.id) || byPlayer.has(p.id) || onTeams.has(p.id) || suggestions.includes(p.id))
+    : players;
+  // The eligible roster everything roster-dependent is counted against.
+  const eligible = players.filter((p) => p.isActive && inCommunity(p.id));
   const pollDeliveries = manager
     ? await prisma.messageDelivery.findMany({
         where: { matchId, groupId, eventType: "ATTENDANCE_POLL_POSTED" },
@@ -222,8 +282,10 @@ export async function getMatchView(context: TenantContext, matchId: string): Pro
   return NextResponse.json({
     match: toSummary(match),
     canManage: manager,
-    roster: players.map(({ rating, stamina, ...safe }) => {
-      const p = safe;
+    community: community ? { id: community.id, name: community.name, isActive: community.isActive } : null,
+    communities: communities,
+    roster: listed.map(({ rating, stamina, ...safe }) => {
+      const p = { ...safe, inCommunity: inCommunity(safe.id) };
       const r = byPlayer.get(p.id);
       const eff = effectiveAttendance(r, match.attendanceClosedAt);
       return {
@@ -238,18 +300,22 @@ export async function getMatchView(context: TenantContext, matchId: string): Pro
         },
       };
     }),
+    // M9.2 — Playing / Maybe / Not Playing / Not Responded (NO_RESPONSE) over the
+    // eligible roster only: they always add up to rosterSize.
     counts: countAttendance(
-      players.filter((p) => p.isActive).map((p) => p.id),
+      eligible.map((p) => p.id),
       rows,
       match.attendanceClosedAt
     ),
-    defaultSelection: defaultSelection(players, rows, match.attendanceClosedAt),
+    rosterSize: eligible.length,
+    defaultSelection: defaultSelection(eligible, rows, match.attendanceClosedAt),
     // The PUBLISHED teams for this Match (organizer view: ids/names/roles only),
     // so the workspace can tell them apart from a working preview after a reload.
     generation: generation
       ? { id: generation.id, date: formatYMDFromDate(generation.date), updatedAt: generation.updatedAt.toISOString(), teams: publishedTeamsOf(generation.teamsJson) }
       : null,
-    scope: { chatSelected: selectedChat !== null, playerIds: scopeIds },
+    // M9.2 — with a Community the default roster is its members (the chat scope IS the Community).
+    scope: community ? { chatSelected: true, playerIds: [...members!] } : { chatSelected: selectedChat !== null, playerIds: scopeIds },
     // M9-D — result / MVP / recap (organizer view; aggregate MVP counts only).
     postGame: await postGameView(context, matchId),
     // M9-C — the player-facing Match page (no token: LINK Groups share it via the Group's share link).
