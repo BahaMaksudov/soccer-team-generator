@@ -1065,6 +1065,7 @@ describe("M9-C — PUBLIC Match page", () => {
     expect(v).toEqual({
       group: { name: "Group A", teamName: "", organizationName: "Org A", sportLabel: "Soccer" },
       match: { date: "2026-10-12", startTime: "20:00", locationName: "Field 2", status: "SCHEDULED" },
+      venue: null, // M9.2 — public venue data (none set here)
       teamsPublished: true,
       teams: [
         { teamNumber: 1, players: [{ name: "A1 Player", role: "Goalkeeper" }, { name: "A2 Player", role: "Forward" }] },

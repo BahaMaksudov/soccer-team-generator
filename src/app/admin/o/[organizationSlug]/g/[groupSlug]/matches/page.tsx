@@ -26,6 +26,9 @@ export default async function MatchesPage({ params }: { params: Params }) {
   const communities = isManager(context)
     ? await prisma.community.findMany({ where: { groupId: context.activeGroup.id, isActive: true }, orderBy: { createdAt: "asc" }, select: { id: true, name: true } })
     : [];
+  const venues = isManager(context)
+    ? await prisma.venue.findMany({ where: { organizationId: context.organization.id, isActive: true }, orderBy: { name: "asc" }, select: { id: true, name: true, address: true } })
+    : [];
 
   return (
     <div className="space-y-8">
@@ -35,7 +38,7 @@ export default async function MatchesPage({ params }: { params: Params }) {
           <h1 className="mt-1 text-3xl font-extrabold">Matches</h1>
         </div>
       </header>
-      {isManager(context) && <CreateMatchForm organizationSlug={context.organization.slug} groupSlug={context.activeGroup.slug} communities={communities} />}
+      {isManager(context) && <CreateMatchForm organizationSlug={context.organization.slug} groupSlug={context.activeGroup.slug} communities={communities} venues={venues} />}
 
       <section aria-labelledby="upcoming-h" className="space-y-3">
         <h2 id="upcoming-h" className="text-xl font-extrabold">Upcoming <span className="text-base font-semibold text-muted-foreground">({overview.upcoming.length})</span></h2>

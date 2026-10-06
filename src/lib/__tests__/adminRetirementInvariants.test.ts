@@ -86,6 +86,8 @@ describe("flat operational Admin APIs are deleted", () => {
         canonical("communities"), // M9.2
         canonical("communities/[communityId]"), // M9.2
         canonical("communities/[communityId]/players"), // M9.2
+        canonical("venues"), // M9.2
+        canonical("venues/[venueId]"), // M9.2
         canonical("matches/[matchId]/telegram-chat"), // M9-B
         canonical("matches/[matchId]/post-game"), // M9-D
         canonical("players"),

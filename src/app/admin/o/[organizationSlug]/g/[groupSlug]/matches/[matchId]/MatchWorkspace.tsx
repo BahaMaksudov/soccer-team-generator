@@ -42,7 +42,16 @@ type RosterPlayer = Player & {
   attendance: { status: Status | null; source: "WEB" | "TELEGRAM" | "OVERRIDE" | null; overridden: boolean; late: boolean; participantStatus: Status | null; participantSource: "WEB" | "TELEGRAM" | null };
 };
 type MatchView = {
-  match: { id: string; date: string; startTime: string | null; locationName: string | null; status: "SCHEDULED" | "COMPLETED" | "CANCELED"; attendanceClosed: boolean };
+  match: {
+    id: string;
+    date: string;
+    startTime: string | null;
+    locationName: string | null;
+    status: "SCHEDULED" | "COMPLETED" | "CANCELED";
+    attendanceClosed: boolean;
+    /** M9.2 — reusable Venue (address + keyless maps link). */
+    venue?: { id: string; name: string; address: string | null; mapsUrl: string | null } | null;
+  };
   canManage: boolean;
   roster: RosterPlayer[];
   counts: { PLAYING: number; MAYBE: number; NOT_PLAYING: number; NO_RESPONSE: number };
@@ -104,7 +113,16 @@ export default function MatchWorkspace({
   // M9-C — LINK Groups: the organizer pastes the Group's CURRENT share link; the
   // server validates it and links the post to this Match (/share/m/<id>#token).
   const [shareUrl, setShareUrl] = useState("");
-  const [edit, setEdit] = useState<{ date: string; startTime: string; locationName: string } | null>(null);
+  const [edit, setEdit] = useState<{ date: string; startTime: string; locationName: string; venueId: string } | null>(null);
+  // M9.2 — the Organization's Venues (loaded when the organizer edits the match).
+  const [venues, setVenues] = useState<Array<{ id: string; name: string; address: string | null; isActive: boolean }>>([]);
+  useEffect(() => {
+    if (!edit || venues.length) return;
+    fetch(adminTenantApiPath({ organizationSlug, groupSlug, path: "/venues" }), { cache: "no-store" })
+      .then((r) => (r.ok ? r.json() : { venues: [] }))
+      .then((d) => setVenues(d.venues ?? []))
+      .catch(() => {});
+  }, [edit, venues.length, organizationSlug, groupSlug]);
   // Telegram state of the PUBLISHED teams, from durable MessageDelivery content hashes (server).
   const [teamsDelivery, setTeamsDelivery] = useState<TeamsDeliveryState | null>(null);
   // M9.1 — the delivery record recovery actions target (uncertain → mark as sent / retry).
@@ -340,11 +358,16 @@ export default function MatchWorkspace({
             </div>
             <h1 className="mt-2 text-2xl font-extrabold sm:text-3xl">{formatLongDateOnly(m.date)}</h1>
             <MatchMeta date={m.date} startTime={m.startTime} locationName={m.locationName} className="mt-1 [&>li:first-child]:hidden" />
+            {m.venue?.address && m.venue.mapsUrl && (
+              <a className={cn("mt-1 inline-block break-words text-sm font-semibold text-primary underline", focusRing)} href={m.venue.mapsUrl} target="_blank" rel="noopener noreferrer">
+                📍 {m.venue.address}
+              </a>
+            )}
           </div>
           {/* UI-4A — match management is OWNER/ADMIN only (enforced server-side). */}
           {view.canManage && (
           <div className="flex flex-wrap gap-1.5">
-            <button type="button" className={cn(smallBtn, "border border-input hover:bg-muted", focusRing)} onClick={() => setEdit({ date: m.date, startTime: m.startTime ?? "", locationName: m.locationName ?? "" })}>Edit</button>
+            <button type="button" className={cn(smallBtn, "border border-input hover:bg-muted", focusRing)} onClick={() => setEdit({ date: m.date, startTime: m.startTime ?? "", locationName: m.locationName ?? "", venueId: m.venue?.id ?? "" })}>Edit</button>
             {m.status === "SCHEDULED" ? (
               <>
                 <button type="button" className={cn(smallBtn, "border border-input hover:bg-muted", focusRing)} disabled={busy} onClick={() => saveMatch({ status: "COMPLETED" }, "Marked as completed.")}>Mark completed</button>
@@ -358,15 +381,34 @@ export default function MatchWorkspace({
         </div>
         {view.canManage && edit && (
           <form
-            className="mt-4 grid gap-3 border-t border-border pt-4 sm:grid-cols-[repeat(3,minmax(0,1fr))_auto]"
+            className="mt-4 grid gap-3 border-t border-border pt-4 sm:grid-cols-2 lg:grid-cols-[repeat(4,minmax(0,1fr))_auto]"
             onSubmit={(e) => {
               e.preventDefault();
-              saveMatch(edit, "Match saved. Nothing was sent.");
+              const { venueId, ...rest } = edit;
+              saveMatch({ ...rest, venueId: venueId || null }, "Match saved. Nothing was sent.");
             }}
           >
             <label className="text-sm font-semibold">Date<input type="date" className={cn(input, "mt-1 block w-full font-normal")} value={edit.date} onChange={(e) => setEdit({ ...edit, date: e.target.value })} /></label>
             <label className="text-sm font-semibold">Start time<input type="time" className={cn(input, "mt-1 block w-full font-normal")} value={edit.startTime} onChange={(e) => setEdit({ ...edit, startTime: e.target.value })} /></label>
-            <label className="text-sm font-semibold">Location<input className={cn(input, "mt-1 block w-full font-normal")} maxLength={80} placeholder="Location" value={edit.locationName} onChange={(e) => setEdit({ ...edit, locationName: e.target.value })} /></label>
+            <label className="text-sm font-semibold">
+              Venue
+              <select
+                className={cn(input, "mt-1 block w-full font-normal")}
+                value={edit.venueId}
+                onChange={(e) => {
+                  const v = venues.find((x) => x.id === e.target.value);
+                  setEdit({ ...edit, venueId: e.target.value, ...(v ? { locationName: v.name } : {}) });
+                }}
+              >
+                <option value="">No saved venue</option>
+                {venues.filter((v) => v.isActive || v.id === edit.venueId).map((v) => (
+                  <option key={v.id} value={v.id}>
+                    {v.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="text-sm font-semibold">Location name<input className={cn(input, "mt-1 block w-full font-normal")} maxLength={80} placeholder="Location" value={edit.locationName} onChange={(e) => setEdit({ ...edit, locationName: e.target.value })} /></label>
             <div className="flex items-end gap-2">
               <Button type="submit" disabled={busy}>Save</Button>
               <Button type="button" variant="ghost" onClick={() => setEdit(null)}>Cancel</Button>

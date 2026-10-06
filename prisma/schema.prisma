@@ -221,6 +221,7 @@ model Organization {
   memberships OrganizationMembership[]
   groups      Group[]
   invitations OrganizationInvitation[]
+  venues      Venue[]
 }
 
 model OrganizationMembership {
@@ -766,6 +767,9 @@ model Match {
   // M9.2 — the Community (roster) this Match belongs to. NULL only for legacy
   // Matches that could not be mapped safely (organizer remediation).
   communityId        String?
+  // M9.2 — the reusable Venue (Organization-level; same Organization enforced
+  // server-side). locationName stays the display name snapshot.
+  venueId            String?
   createdByUserId    String?
   createdAt          DateTime    @default(now())
   updatedAt          DateTime    @updatedAt
@@ -774,6 +778,7 @@ model Match {
   createdBy     User?                @relation("MatchCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
   telegramChat  TelegramChat?        @relation(fields: [telegramChatId], references: [id], onDelete: SetNull)
   community     Community?           @relation(fields: [communityId, groupId], references: [id, groupId], onDelete: Restrict)
+  venue         Venue?               @relation(fields: [venueId], references: [id], onDelete: SetNull)
   attendance    AttendanceResponse[]
   generation    TeamGeneration?
   telegramPolls TelegramPoll[]
@@ -788,6 +793,25 @@ model Match {
   @@index([groupId, date])
   @@index([telegramChatId])
   @@index([communityId])
+  @@index([venueId])
+}
+
+// M9.2 — a reusable Venue / ground of an Organization (any of its Groups may
+// use it). Address is free text; maps links are built from it on the fly (no
+// geocoding, no paid service). Deactivated, never deleted.
+model Venue {
+  id             String   @id @default(cuid())
+  organizationId String
+  name           String
+  address        String?
+  isActive       Boolean  @default(true)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  matches      Match[]
+
+  @@index([organizationId])
 }
 
 // M9-D — the factual final result of a Match (entered by an organizer; AI

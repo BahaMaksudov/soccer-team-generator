@@ -94,6 +94,8 @@ export const matchCreateSchema = z.object({
   locationName: z.string().trim().max(80, "Location is too long.").optional(),
   // M9.2 — the Match's Community (roster); validated against the URL-bound Group server-side.
   communityId: z.string().trim().min(1).max(64).optional(),
+  // M9.2 — a reusable Venue of the Organization (validated server-side).
+  venueId: z.string().trim().min(1).max(64).optional(),
 });
 
 export const matchUpdateSchema = z.object({
@@ -103,6 +105,8 @@ export const matchUpdateSchema = z.object({
   status: z.enum(["SCHEDULED", "COMPLETED", "CANCELED"]).optional(),
   // M9.2 — set (or change) the Match's Community; never cleared once set.
   communityId: z.string().trim().min(1).max(64).optional(),
+  // M9.2 — set, change or clear (null) the Match's Venue.
+  venueId: z.string().trim().min(1).max(64).optional().nullable(),
 });
 
 /** Organizer override: a status sets it, null clears it. */

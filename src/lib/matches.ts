@@ -14,6 +14,7 @@ import {
 } from "@/lib/validation";
 import { scopePlayerIds, suggestedPlayerIds } from "@/lib/telegramChatScope";
 import { communityMemberIds, communityTelegramChat, groupCommunity } from "@/lib/communities";
+import { mapsUrl, organizationVenue } from "@/lib/venues";
 import { canonicalMatchPath } from "@/lib/matchPaths";
 import { postGameView } from "@/lib/postGame";
 import { countAttendance, defaultSelection, effectiveAttendance, recordParticipantResponse, type AttendanceRow } from "@/lib/attendance";
@@ -51,6 +52,7 @@ const MATCH_SELECT = {
   status: true,
   attendanceClosedAt: true,
   communityId: true,
+  venue: { select: { id: true, name: true, address: true } },
   createdAt: true,
 } as const;
 
@@ -63,9 +65,20 @@ export type MatchSummary = {
   attendanceClosed: boolean;
   /** M9.2 — the Match's Community (null: legacy Match not mapped yet). */
   communityId: string | null;
+  /** M9.2 — the reusable Venue (address + keyless maps link), if any. */
+  venue: { id: string; name: string; address: string | null; mapsUrl: string | null } | null;
 };
 
-function toSummary(m: { id: string; date: Date; startTime: string | null; locationName: string | null; status: MatchStatus; attendanceClosedAt: Date | null; communityId: string | null }): MatchSummary {
+function toSummary(m: {
+  id: string;
+  date: Date;
+  startTime: string | null;
+  locationName: string | null;
+  status: MatchStatus;
+  attendanceClosedAt: Date | null;
+  communityId: string | null;
+  venue?: { id: string; name: string; address: string | null } | null;
+}): MatchSummary {
   return {
     id: m.id,
     date: formatYMDFromDate(m.date),
@@ -74,6 +87,7 @@ function toSummary(m: { id: string; date: Date; startTime: string | null; locati
     status: m.status,
     attendanceClosed: m.attendanceClosedAt !== null,
     communityId: m.communityId,
+    venue: m.venue ? { id: m.venue.id, name: m.venue.name, address: m.venue.address, mapsUrl: mapsUrl(m.venue.address) } : null,
   };
 }
 
@@ -129,15 +143,19 @@ export async function createMatch(context: TenantContext, req: Request): Promise
   if (denied) return denied;
   const parsed = matchCreateSchema.safeParse((await req.json().catch(() => null)) ?? {});
   if (!parsed.success) return NextResponse.json(zodErrorResponse(parsed.error), { status: 400 });
-  const { date, startTime, locationName, communityId } = parsed.data;
+  const { date, startTime, locationName, communityId, venueId } = parsed.data;
   const resolved = await resolveMatchCommunity(context.activeGroup.id, communityId, true);
   if (!resolved.ok) return resolved.response;
+  const venue = venueId ? await organizationVenue(context.organization.id, venueId, true) : null;
+  if (venueId && !venue) return NextResponse.json({ error: "Venue not found" }, { status: 404 });
   const match = await prisma.match.create({
     data: {
       groupId: context.activeGroup.id,
       date: toDateOnlyUTC(date),
       startTime: startTime || null,
-      locationName: locationName || null,
+      // M9.2 — the Venue's name is the location shown everywhere (unless a free-text one is given).
+      locationName: locationName || venue?.name || null,
+      venueId: venue?.id ?? null,
       createdByUserId: context.user.id,
       // M9.2 — the Community's roster; its connected Telegram chat is the Match's default channel.
       communityId: resolved.community?.id ?? null,
@@ -154,7 +172,16 @@ export async function updateMatch(context: TenantContext, matchId: string, req: 
   if (denied) return denied;
   const parsed = matchUpdateSchema.safeParse((await req.json().catch(() => null)) ?? {});
   if (!parsed.success) return NextResponse.json(zodErrorResponse(parsed.error), { status: 400 });
-  const { date, startTime, locationName, status, communityId } = parsed.data;
+  const { date, startTime, locationName, status, communityId, venueId } = parsed.data;
+  let venueData: { venueId: string | null; locationName?: string } | null = null;
+  if (venueId !== undefined) {
+    if (venueId === null) venueData = { venueId: null };
+    else {
+      const venue = await organizationVenue(context.organization.id, venueId, true);
+      if (!venue) return NextResponse.json({ error: "Venue not found" }, { status: 404 });
+      venueData = { venueId: venue.id, ...(locationName === undefined ? { locationName: venue.name } : {}) };
+    }
+  }
   let communityData: { communityId: string; telegramChatId?: number | null } | null = null;
   if (communityId !== undefined) {
     const resolved = await resolveMatchCommunity(context.activeGroup.id, communityId, false);
@@ -168,6 +195,7 @@ export async function updateMatch(context: TenantContext, matchId: string, req: 
     where: { id: matchId, groupId: context.activeGroup.id },
     data: {
       ...(communityData ?? {}),
+      ...(venueData ?? {}),
       ...(date !== undefined ? { date: toDateOnlyUTC(date) } : {}),
       ...(startTime !== undefined ? { startTime: startTime || null } : {}),
       ...(locationName !== undefined ? { locationName: locationName || null } : {}),

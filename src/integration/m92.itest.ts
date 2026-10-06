@@ -30,6 +30,10 @@ import * as weightsRoute from "@/app/api/admin/o/[organizationSlug]/g/[groupSlug
 import { playerRating } from "@/lib/playerRating";
 import * as postGameRoute from "@/app/api/admin/o/[organizationSlug]/g/[groupSlug]/matches/[matchId]/post-game/route";
 import * as pollCloseRoute from "@/app/api/admin/o/[organizationSlug]/g/[groupSlug]/matches/[matchId]/poll/close/route";
+import * as venuesRoute from "@/app/api/admin/o/[organizationSlug]/g/[groupSlug]/venues/route";
+import * as venueRoute from "@/app/api/admin/o/[organizationSlug]/g/[groupSlug]/venues/[venueId]/route";
+import * as closePostRoute from "@/app/api/admin/o/[organizationSlug]/g/[groupSlug]/telegram/close-and-post/route";
+import { loadMatchForViewer } from "@/lib/matchPage";
 
 const A = { organizationSlug: "org-a", groupSlug: "group-a" };
 const B = { organizationSlug: "org-b", groupSlug: "group-b" };
@@ -446,5 +450,61 @@ describe("M9.2-4 — publishing teams closes the Match's Telegram attendance pol
     expect((await call(publishRoute.POST(json("POST", { date: DAY, teams: [{ teamNumber: 1, players: [{ id: "b1" }] }], matchId: id }), g(B)))).status).toBe(404);
     expect(stopPolls()).toBe(0);
     expect((await pollRow()).isClosed).toBe(false);
+  });
+});
+
+describe("M9.2-5 — reusable Venues, match location and the Telegram maps link", () => {
+  const gv = (venueId: string, at = A) => ({ params: Promise.resolve({ ...at, venueId }) });
+  const addVenue = async (body: unknown, at = A) => call(venuesRoute.POST(json("POST", body), g(at)));
+  it("OWNER / ADMIN manage the Organization's venues; MEMBER and other tenants cannot see or change them", async () => {
+    const v = await addVenue({ name: "ForeKicks", address: "10 Pine Street, Norfolk, MA" });
+    expect(v.status).toBe(201);
+    const id = (v.body.venue as { id: string }).id;
+    await signIn("admin");
+    expect((await call(venueRoute.PATCH(json("PATCH", { address: "11 Pine Street, Norfolk, MA" }), gv(id)))).status).toBe(200);
+    const list = await call(venuesRoute.GET(json("GET"), g()));
+    expect(list.body.venues).toEqual([{ id, name: "ForeKicks", address: "11 Pine Street, Norfolk, MA", isActive: true, mapsUrl: "https://www.google.com/maps/search/?api=1&query=11%20Pine%20Street%2C%20Norfolk%2C%20MA" }]);
+    await signIn("member");
+    expect((await call(venuesRoute.GET(json("GET"), g()))).status).toBe(404);
+    expect((await addVenue({ name: "x" })).status).toBe(404);
+    await signIn("other");
+    expect((await call(venueRoute.PATCH(json("PATCH", { name: "pwned" }), gv(id, B)))).status).toBe(404);
+    expect((await prisma.venue.findUniqueOrThrow({ where: { id } })).name).toBe("ForeKicks");
+  });
+
+  it("a Match uses a Venue of its own Organization only; name becomes the location; address → maps link (organizer + public views)", async () => {
+    const id = ((await addVenue({ name: "ForeKicks", address: "10 Pine Street, Norfolk, MA" })).body.venue as { id: string }).id;
+    const bVenue = await prisma.venue.create({ data: { organizationId: "org-b", name: "Secret B", address: "B street" } });
+    expect((await createMatch({ communityId: "c-uccne", venueId: bVenue.id })).status).toBe(404);
+    const created = await createMatch({ communityId: "c-uccne", venueId: id });
+    expect(created.status).toBe(201);
+    const m = created.body.match as { id: string; locationName: string; venue: { name: string; address: string; mapsUrl: string } };
+    expect(m.locationName).toBe("ForeKicks");
+    expect(m.venue).toMatchObject({ name: "ForeKicks", address: "10 Pine Street, Norfolk, MA", mapsUrl: expect.stringContaining("query=10%20Pine%20Street") });
+    expect((await call(matchRoute.PATCH(json("PATCH", { venueId: bVenue.id }), gm(m.id)))).status).toBe(404);
+    session = null;
+    const pub = await loadMatchForViewer({ ...A, matchId: m.id });
+    expect(pub?.venue).toEqual({ name: "ForeKicks", address: "10 Pine Street, Norfolk, MA", mapsUrl: expect.stringContaining("google.com/maps/search") });
+    await signIn("owner");
+    expect((await call(matchRoute.PATCH(json("PATCH", { venueId: null }), gm(m.id)))).status).toBe(200);
+    expect((await prisma.match.findUniqueOrThrow({ where: { id: m.id } })).venueId).toBeNull();
+  });
+
+  it("the Telegram team post shows 📍 venue + a clickable maps link (explicit post only; hash unaffected)", async () => {
+    const venueId = ((await addVenue({ name: "ForeKicks", address: "10 Pine Street, Norfolk, MA" })).body.venue as { id: string }).id;
+    await prisma.telegramChat.create({ data: { chatId: -9300n, title: "UCCNE chat", groupId: "ga", communityId: "c-uccne" } });
+    const id = ((await createMatch({ communityId: "c-uccne", venueId })).body.match as { id: string }).id;
+    await prisma.telegramPoll.create({ data: { pollId: "att-v", chatId: -9300n, messageId: 9n, question: "Playing?", optionsJson: "[]", pollDate: new Date(DAY), isClosed: true, groupId: "ga", matchId: id, kind: "ATTENDANCE" } });
+    const gen = await call(generateRoute.POST(json("POST", { teamCount: 2, date: DAY, selectedIds: ["u1", "u2", "u3", "u4"], matchId: id }), g()));
+    const pub = await call(publishRoute.POST(json("POST", { date: DAY, teams: gen.body.teams, matchId: id }), g()));
+    expect(tgCalls.filter((c) => c.method === "sendMessage")).toHaveLength(0); // publishing never posts
+    const posted = await call(closePostRoute.POST(json("POST", { pollId: "att-v", teamGenerationId: pub.body.id, intent: "post" }), g()));
+    expect(posted.body).toMatchObject({ ok: true, status: "posted" });
+    const text = String(tgCalls.find((c) => c.method === "sendMessage")!.body.text);
+    expect(text).toContain("📍 ForeKicks");
+    expect(text).toContain('Location: <a href="https://www.google.com/maps/search/?api=1&amp;query=10%20Pine%20Street%2C%20Norfolk%2C%20MA">10 Pine Street, Norfolk, MA</a>');
+    // Re-posting the same teams is "already posted" even though the stored hash never included the venue.
+    expect((await call(closePostRoute.POST(json("POST", { pollId: "att-v", teamGenerationId: pub.body.id, intent: "post" }), g()))).body).toMatchObject({ status: "already_posted" });
+    expect(tgCalls.filter((c) => c.method === "sendMessage")).toHaveLength(1);
   });
 });

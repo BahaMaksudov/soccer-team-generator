@@ -21,6 +21,15 @@ export default function PlayerMatchCard({ view, signInHref }: { view: PlayerMatc
           {time ? ` · ${time}` : ""}
         </div>
         {match.locationName && <div className="text-sm text-gray-700">{match.locationName}</div>}
+        {/* M9.2 — venue address with a keyless maps link (only when an address exists). */}
+        {view.venue?.address && view.venue.mapsUrl && (
+          <div className="text-sm">
+            📍{" "}
+            <a className="underline" href={view.venue.mapsUrl} target="_blank" rel="noopener noreferrer">
+              {view.venue.address}
+            </a>
+          </div>
+        )}
         {match.status === "CANCELED" && <div className="text-sm font-medium text-rose-700">This match was canceled.</div>}
         {match.status === "COMPLETED" && <div className="text-sm text-gray-600">This match is completed.</div>}
       </div>

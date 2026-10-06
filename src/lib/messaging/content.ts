@@ -39,6 +39,8 @@ export type TextContent = {
   /** M9-D — optional plain-text paragraph(s) after the title (absent for teams: their rendering is unchanged). */
   body?: string;
   sections: Array<{ heading: string; items: string[] }>;
+  /** M9.2 — venue line(s) after the sections ("📍 Name" + a maps link for the address). */
+  location?: { name: string; address: string | null; mapsUrl: string | null } | null;
   link: { label: string; url: string } | null;
 };
 
@@ -68,6 +70,7 @@ export function teamsContent(event: Extract<MessagingEvent, { type: "TEAMS_PUBLI
       heading: `Team #${t.teamNumber}`,
       items: (Array.isArray(t.players) ? t.players : []).map((p) => playerDisplayName(p ?? {})),
     })),
+    location: event.location ?? null,
     link: event.viewUrl ? { label: "View teams online", url: event.viewUrl } : null,
   };
 }
