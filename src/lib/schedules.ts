@@ -96,7 +96,7 @@ async function validate(context: TenantContext, input: z.infer<typeof scheduleUp
 export async function listSchedules(context: TenantContext): Promise<NextResponse> {
   const denied = managersOnlyResponse(context);
   if (denied) return denied;
-  const rows = await prisma.matchSchedule.findMany({ where: { groupId: context.activeGroup.id }, orderBy: [{ isActive: "desc" }, { createdAt: "asc" }], select: SELECT });
+  const rows = await prisma.matchSchedule.findMany({ where: { groupId: context.activeGroup.id }, orderBy: [{ createdAt: "asc" }, { id: "asc" }], select: SELECT /* stable: pausing never moves a card */ });
   return NextResponse.json({ schedules: (rows as Row[]).map((r) => scheduleView(r)) });
 }
 
