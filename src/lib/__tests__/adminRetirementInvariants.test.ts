@@ -78,9 +78,19 @@ describe("flat operational Admin APIs are deleted", () => {
         canonical("matches/[matchId]/attendance/close"),
         canonical("matches/[matchId]/attendance/sync"),
         canonical("matches/[matchId]/poll"),
+        canonical("matches/[matchId]/poll/close"), // M9.2
         canonical("channels/telegram"),
         canonical("channels/telegram/[ref]"),
         canonical("channels/telegram/[ref]/players"), // M9-B
+        canonical("channels/telegram/[ref]/community"), // M9.2
+        canonical("communities"), // M9.2
+        canonical("communities/[communityId]"), // M9.2
+        canonical("communities/[communityId]/players"), // M9.2
+        canonical("venues"), // M9.2
+        canonical("schedules"), // M9.2
+        canonical("schedules/[scheduleId]"), // M9.2
+        canonical("matches/[matchId]/automation"), // M9.2
+        canonical("venues/[venueId]"), // M9.2
         canonical("matches/[matchId]/telegram-chat"), // M9-B
         canonical("matches/[matchId]/post-game"), // M9-D
         canonical("players"),
@@ -231,7 +241,8 @@ describe("Telegram delivery invariant", () => {
       rel("src/lib/telegramCloseAndPost.ts"),
     ]);
     // M9-D — closing a Match's MVP vote also stops its Telegram poll (an explicit OWNER/ADMIN action).
-    expect(filesMatching(/["']stopPoll["']/)).toEqual([rel("src/lib/postGame.ts"), rel("src/lib/telegramCloseAndPost.ts")].sort());
+    // M9.2 — publishing a Match's teams (and the attendance cutoff) closes its attendance poll.
+    expect(filesMatching(/["']stopPoll["']/)).toEqual([rel("src/lib/matchPollClose.ts"), rel("src/lib/postGame.ts"), rel("src/lib/telegramCloseAndPost.ts")].sort());
     expect(filesMatching(/teamsPostStatus/)).toEqual([rel("src/lib/telegramCloseAndPost.ts")]);
   });
 

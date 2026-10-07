@@ -4,6 +4,7 @@ import { prisma } from "@/lib/prisma";
 import type { TenantContext } from "@/lib/tenantContext";
 import { managersOnlyResponse } from "@/lib/tenantRoute";
 import { matchTelegramChatSchema, telegramChatPlayerSchema, zodErrorResponse } from "@/lib/validation";
+import { ensureChatCommunity } from "@/lib/communities";
 
 /**
  * M9-B — Telegram chat ↔ Player DEFAULT scope and the Match's selected chat.
@@ -30,9 +31,15 @@ async function groupChat(groupId: string, ref: number, includeDisconnected = fal
   });
 }
 
-/** Player ids in a chat's scope (any caller of this Group may need them for the default roster). */
+/**
+ * Player ids in a chat's scope. M9.2 — the scope IS the chat's Community
+ * roster (CommunityPlayer); the M9-B TelegramChatPlayer rows were migrated
+ * into it and are no longer read or written.
+ */
 export async function scopePlayerIds(groupId: string, telegramChatId: number): Promise<string[]> {
-  const rows = await prisma.telegramChatPlayer.findMany({ where: { groupId, telegramChatId }, select: { playerId: true } });
+  const chat = await prisma.telegramChat.findFirst({ where: { id: telegramChatId, groupId }, select: { communityId: true } });
+  if (!chat?.communityId) return [];
+  const rows = await prisma.communityPlayer.findMany({ where: { groupId, communityId: chat.communityId }, select: { playerId: true } });
   return rows.map((r) => r.playerId);
 }
 
@@ -42,6 +49,8 @@ export async function scopePlayerIds(groupId: string, telegramChatId: number): P
  * never become Players here. Returns Player ids only — no Telegram identity.
  */
 export async function suggestedPlayerIds(groupId: string, chat: { id: number; chatId: bigint }): Promise<string[]> {
+  const owner = await prisma.telegramChat.findFirst({ where: { id: chat.id, groupId }, select: { communityId: true } });
+  const communityId = owner?.communityId ?? "";
   const rows = await prisma.$queryRaw<Array<{ playerId: string }>>(Prisma.sql`
     SELECT DISTINCT l."playerId"
     FROM "TelegramPollAnswer" a
@@ -50,7 +59,7 @@ export async function suggestedPlayerIds(groupId: string, chat: { id: number; ch
     JOIN "Player" pl ON pl."id" = l."playerId" AND pl."groupId" = ${groupId}
     WHERE a."groupId" = ${groupId}
       AND NOT EXISTS (
-        SELECT 1 FROM "TelegramChatPlayer" s WHERE s."telegramChatId" = ${chat.id} AND s."playerId" = l."playerId"
+        SELECT 1 FROM "CommunityPlayer" s WHERE s."communityId" = ${communityId} AND s."groupId" = ${groupId} AND s."playerId" = l."playerId"
       )
     ORDER BY l."playerId"`);
   return rows.map((r) => r.playerId);
@@ -83,17 +92,15 @@ export async function changeTelegramChatScope(context: TenantContext, ref: numbe
   const player = await prisma.player.findFirst({ where: { id: parsed.data.playerId, groupId }, select: { id: true } });
   if (!player) return notFound("Player");
 
+  // M9.2 — the chat's scope is its Community's membership.
+  const communityId = await ensureChatCommunity(groupId, chat.id);
+  if (!communityId) return notFound("Telegram group");
   if (action === "remove") {
-    await prisma.telegramChatPlayer.deleteMany({ where: { telegramChatId: chat.id, playerId: player.id, groupId } });
+    await prisma.communityPlayer.deleteMany({ where: { groupId, communityId, playerId: player.id } });
     return NextResponse.json({ ok: true });
   }
-  // The label is decided server-side: SUGGESTED_VOTE only if the Player really is a current suggestion.
-  const source =
-    parsed.data.fromSuggestion && (await suggestedPlayerIds(groupId, chat)).includes(player.id) ? "SUGGESTED_VOTE" : "ORGANIZER";
   try {
-    await prisma.telegramChatPlayer.create({
-      data: { groupId, telegramChatId: chat.id, playerId: player.id, source, createdByUserId: context.user.id },
-    });
+    await prisma.communityPlayer.create({ data: { groupId, communityId, playerId: player.id, createdByUserId: context.user.id } });
   } catch (e) {
     if (!(e instanceof Prisma.PrismaClientKnownRequestError && e.code === "P2002")) throw e; // already in scope → no-op
   }
@@ -110,12 +117,17 @@ export async function setMatchTelegramChat(context: TenantContext, matchId: stri
   const parsed = matchTelegramChatSchema.safeParse((await req.json().catch(() => null)) ?? {});
   if (!parsed.success) return NextResponse.json(zodErrorResponse(parsed.error), { status: 400 });
   const groupId = context.activeGroup.id;
-  const match = await prisma.match.findFirst({ where: { id: matchId, groupId }, select: { id: true } });
+  const match = await prisma.match.findFirst({ where: { id: matchId, groupId }, select: { id: true, communityId: true } });
   if (!match) return notFound("Match");
   const ref = parsed.data.chatRef;
   if (ref !== null) {
     const chat = await groupChat(groupId, ref);
     if (!chat) return notFound("Telegram group");
+    // M9.2 — a Community Match uses that Community's own channel only.
+    if (match.communityId) {
+      const owner = await prisma.telegramChat.findFirst({ where: { id: ref, groupId }, select: { communityId: true } });
+      if (owner?.communityId !== match.communityId) return NextResponse.json({ error: "This Telegram group belongs to another community." }, { status: 400 });
+    }
   }
   await prisma.match.updateMany({ where: { id: match.id, groupId }, data: { telegramChatId: ref } });
   return NextResponse.json({ ok: true, chatRef: ref });

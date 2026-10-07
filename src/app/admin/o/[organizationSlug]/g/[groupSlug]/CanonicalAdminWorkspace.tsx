@@ -44,6 +44,11 @@ export type Player = {
   accountClaimed?: boolean;
   claimPending?: boolean;
   telegramConnected?: boolean;
+  // M9.2 — organizer-only 0–10 rating (src/lib/playerRating.ts) and Community memberships.
+  playerRating?: number;
+  communityIds?: string[];
+  /** Match views: false for a Player outside the Match's Community. */
+  inCommunity?: boolean;
 };
 
 /** Today's date as YYYY-MM-DD in the browser's local calendar (the

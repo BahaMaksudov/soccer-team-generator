@@ -176,7 +176,10 @@ export async function redeemTelegramBindCode(
       await tx.telegramChat.update({ where: { id: own.id }, data: { title, disconnectedAt: null } });
       return { ok: true, state: "reconnected", groupName: code.group.name };
     }
-    await tx.telegramChat.create({ data: { chatId, title, groupId: code.groupId } });
+    // M9.2 — a newly connected chat becomes the channel of a new Community
+    // (named after the chat; organizers can rename it or move the chat).
+    const community = await tx.community.create({ data: { groupId: code.groupId, name: title || "Telegram group" }, select: { id: true } });
+    await tx.telegramChat.create({ data: { chatId, title, groupId: code.groupId, communityId: community.id } });
     return { ok: true, state: "connected", groupName: code.group.name };
   });
 }

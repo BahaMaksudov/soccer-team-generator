@@ -65,6 +65,17 @@ export async function syncTelegramAttendance(context: TenantContext, matchId: st
   const match = await findGroupMatch(context, matchId);
   if (!match) return NextResponse.json({ error: "Match not found" }, { status: 404 });
   if (match.attendanceClosedAt) return attendanceClosedResponse(); // UI-4B — reopen first
+  // Counts only — never Telegram identities.
+  return NextResponse.json({ ok: true, ...(await syncMatchAttendanceAnswers(groupId, matchId)) });
+}
+
+/**
+ * The sync core (no authorization — callers authorize): replays every stored
+ * answer of the Match's attendance polls through the one webhook mapping.
+ * Idempotent (older answers are "stale"). Used by the explicit sync, by
+ * Publish teams (M9.2, before the poll is closed) and by the attendance cutoff.
+ */
+export async function syncMatchAttendanceAnswers(groupId: string, matchId: string) {
   const polls = await prisma.telegramPoll.findMany({ where: { matchId, groupId, kind: "ATTENDANCE" }, select: { pollId: true } });
   const answers = await prisma.telegramPollAnswer.findMany({
     where: { groupId, pollId: { in: polls.map((p) => p.pollId) } },
@@ -84,8 +95,7 @@ export async function syncTelegramAttendance(context: TenantContext, matchId: st
     );
     tally[r]++;
   }
-  // Counts only — never Telegram identities.
-  return NextResponse.json({ ok: true, polls: polls.length, ...tally });
+  return { polls: polls.length, ...tally };
 }
 
 type PollDelivery = { id: string; status: "SENDING" | "SENT" | "FAILED" | "UNCERTAIN"; contentHash: string; claimedAt: Date };
@@ -96,7 +106,21 @@ export async function postAttendancePoll(context: TenantContext, matchId: string
   if (denied) return denied;
   const parsed = attendancePollSchema.safeParse((await req.json().catch(() => null)) ?? {});
   if (!parsed.success) return NextResponse.json(zodErrorResponse(parsed.error), { status: 400 });
-  const { chatRef, intent } = parsed.data;
+  return postAttendancePollFor(context, matchId, parsed.data);
+}
+
+/**
+ * The posting core (M9.2: shared by the explicit organizer action and the
+ * Match Automation runner, which passes an OWNER/ADMIN acting context). Same
+ * reserve → send → finalize delivery protection either way.
+ */
+export async function postAttendancePollFor(
+  context: TenantContext,
+  matchId: string,
+  { chatRef, intent }: { chatRef: number; intent: "post" | "post_updated" | "retry_uncertain" }
+): Promise<NextResponse> {
+  const denied = managersOnlyResponse(context);
+  if (denied) return denied;
   const groupId = context.activeGroup.id;
 
   const match = await findGroupMatch(context, matchId);

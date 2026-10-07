@@ -4,6 +4,9 @@ import { playerCreateSchema, playerUpdateSchema, zodErrorResponse } from "@/lib/
 import type { TenantContext } from "@/lib/tenantContext";
 import { findSport, isValidRoleKey } from "@/lib/sports";
 import { isManager, managersOnlyResponse } from "@/lib/tenantRoute";
+import { resolveBalanceConfig } from "@/lib/balanceEngine";
+import { loadStoredBalanceWeights } from "@/lib/groupSettings";
+import { playerRating } from "@/lib/playerRating";
 
 /**
  * Phase 2D.6D.1 — shared Player CRUD core, extracted verbatim from
@@ -43,9 +46,10 @@ type AdminPlayerRow = {
   userId?: string | null;
   telegramLink?: Array<{ id: string }>;
   claims?: Array<{ id: string }>;
+  communityPlayers?: Array<{ communityId: string }>;
 };
 
-function toAdminPlayer(p: AdminPlayerRow) {
+function toAdminPlayer(p: AdminPlayerRow, staminaCoef = 1) {
   return {
     id: p.id,
     firstName: p.firstName,
@@ -57,7 +61,18 @@ function toAdminPlayer(p: AdminPlayerRow) {
     accountClaimed: Boolean(p.userId),
     claimPending: (p.claims?.length ?? 0) > 0,
     telegramConnected: (p.telegramLink?.length ?? 0) > 0,
+    // M9.2 — 0.0–10.0 rating from the balance engine's personal strength terms (organizer-only).
+    playerRating: playerRating(p, staminaCoef),
+    communityIds: communityIdsOf(p),
   };
+}
+
+const communityIdsOf = (p: AdminPlayerRow) => (p.communityPlayers ?? []).map((c) => c.communityId);
+
+/** The Group's effective stamina coefficient (sport default + stored weights), for the displayed rating. */
+async function staminaCoefFor(context: TenantContext): Promise<number> {
+  const sport = findSport(context.activeGroup.sportKey);
+  return sport ? resolveBalanceConfig(sport, await loadStoredBalanceWeights(context.activeGroup.id)).staminaCoef : 1;
 }
 
 /**
@@ -84,6 +99,7 @@ export async function listPlayers(context: TenantContext): Promise<NextResponse>
       userId: true,
       telegramLink: { select: { id: true } },
       claims: { where: { usedAt: null, revokedAt: null, expiresAt: { gt: new Date() } }, select: { id: true } },
+      communityPlayers: { select: { communityId: true } },
     },
   });
   // UI-7 — balancing data (skill / stamina) and organizer-only claim-link state
@@ -91,7 +107,8 @@ export async function listPlayers(context: TenantContext): Promise<NextResponse>
   // the serialized response, not merely hidden in the UI). Role comes from the
   // URL-resolved, membership-verified context — never from the client.
   const manager = isManager(context);
-  return NextResponse.json((players as AdminPlayerRow[]).map((p) => (manager ? toAdminPlayer(p) : toMemberPlayer(p))));
+  const staminaCoef = manager ? await staminaCoefFor(context) : 1;
+  return NextResponse.json((players as AdminPlayerRow[]).map((p) => (manager ? toAdminPlayer(p, staminaCoef) : toMemberPlayer(p))));
 }
 
 /** UI-7 — MEMBER roster DTO: identity/status only; no rating, stamina or claim-link state. */
@@ -104,6 +121,8 @@ export function toMemberPlayer(p: AdminPlayerRow) {
     isActive: p.isActive,
     accountClaimed: Boolean(p.userId),
     telegramConnected: (p.telegramLink?.length ?? 0) > 0,
+    // M9.2 — Community memberships are roster data, not balancing data.
+    communityIds: communityIdsOf(p),
   };
 }
 
@@ -141,7 +160,7 @@ export async function createPlayer(context: TenantContext, req: Request): Promis
       select: { ...ADMIN_PLAYER_FIELDS, userId: true },
     });
 
-    return NextResponse.json(toAdminPlayer(created as AdminPlayerRow));
+    return NextResponse.json(toAdminPlayer(created as AdminPlayerRow, await staminaCoefFor(context)));
   } catch (e: unknown) {
     // Phase 2D.6E.6C — never return raw database/Prisma messages.
     console.error("createPlayer failed", e);
@@ -188,7 +207,7 @@ export async function updatePlayer(context: TenantContext, id: string, req: Requ
     if (!updated) {
       return NextResponse.json({ error: "Player not found" }, { status: 404 });
     }
-    return NextResponse.json(toAdminPlayer(updated as AdminPlayerRow));
+    return NextResponse.json(toAdminPlayer(updated as AdminPlayerRow, await staminaCoefFor(context)));
   } catch (e: unknown) {
     console.error("updatePlayer failed", e);
     return NextResponse.json({ error: "Failed to update player" }, { status: 500 });

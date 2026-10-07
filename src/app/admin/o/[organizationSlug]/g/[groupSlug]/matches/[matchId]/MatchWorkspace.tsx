@@ -15,7 +15,7 @@ import PostGameSection, { type PostGameView } from "./PostGameSection";
 import { MATCH_TELEGRAM_GROUP_SELECTOR_ID } from "@/lib/postGameUi";
 import CanonicalGenerateSection from "../../CanonicalGenerateSection";
 import { PublishedTeams } from "@/components/game-day/PublishedTeams";
-import { ArrowDown, CircleCheck, Send, Shuffle, Users } from "lucide-react";
+import { ArrowDown, CalendarClock, CircleCheck, Send, Shuffle, Users } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { focusRing, LifecycleSteps, MatchMeta, PhasePill, SectionCard, StateChip } from "@/components/game-day/parts";
 import { matchLifecycle, todayUtcYmd } from "@/lib/matchLifecycle";
@@ -42,10 +42,38 @@ type RosterPlayer = Player & {
   attendance: { status: Status | null; source: "WEB" | "TELEGRAM" | "OVERRIDE" | null; overridden: boolean; late: boolean; participantStatus: Status | null; participantSource: "WEB" | "TELEGRAM" | null };
 };
 type MatchView = {
-  match: { id: string; date: string; startTime: string | null; locationName: string | null; status: "SCHEDULED" | "COMPLETED" | "CANCELED"; attendanceClosed: boolean };
+  match: {
+    id: string;
+    date: string;
+    startTime: string | null;
+    locationName: string | null;
+    status: "SCHEDULED" | "COMPLETED" | "CANCELED";
+    attendanceClosed: boolean;
+    /** M9.2 — reusable Venue (address + keyless maps link). */
+    venue?: { id: string; name: string; address: string | null; mapsUrl: string | null } | null;
+  };
   canManage: boolean;
   roster: RosterPlayer[];
   counts: { PLAYING: number; MAYBE: number; NOT_PLAYING: number; NO_RESPONSE: number };
+  /** M9.2 — eligible roster size (the four counts add up to it). */
+  rosterSize?: number;
+  /** M9.2 — the Match's Community (null = legacy Match, whole-Group roster). */
+  community?: { id: string; name: string; isActive: boolean } | null;
+  /** OWNER/ADMIN: the Group's active Communities (to assign one to a legacy Match). */
+  communities?: Array<{ id: string; name: string }>;
+  /** M9.2 — what Match Automation did (organizers; null when the Match was not created by a schedule). */
+  automation?: {
+    scheduleActive: boolean;
+    pollDueAt: string;
+    cutoffDueAt: string;
+    pollPostedAt: string | null;
+    cutoffCompletedAt: string | null;
+    notifiedAt: string | null;
+    lastError: string | null;
+    lastErrorAt: string | null;
+    emails?: { sent: number; skipped: number; pending: number };
+    catchUpExpired?: boolean;
+  } | null;
   defaultSelection: string[];
   generation: { id: string; date: string; updatedAt: string; teams: Array<{ teamNumber: number; players: Array<{ id: string; firstName: string; lastName: string; position: string }> }> } | null;
   // M9-B — selected chat's default player scope (ids only); chats/selection/suggestions are OWNER/ADMIN only.
@@ -98,7 +126,16 @@ export default function MatchWorkspace({
   // M9-C — LINK Groups: the organizer pastes the Group's CURRENT share link; the
   // server validates it and links the post to this Match (/share/m/<id>#token).
   const [shareUrl, setShareUrl] = useState("");
-  const [edit, setEdit] = useState<{ date: string; startTime: string; locationName: string } | null>(null);
+  const [edit, setEdit] = useState<{ date: string; startTime: string; locationName: string; venueId: string } | null>(null);
+  // M9.2 — the Organization's Venues (loaded when the organizer edits the match).
+  const [venues, setVenues] = useState<Array<{ id: string; name: string; address: string | null; isActive: boolean }>>([]);
+  useEffect(() => {
+    if (!edit || venues.length) return;
+    fetch(adminTenantApiPath({ organizationSlug, groupSlug, path: "/venues" }), { cache: "no-store" })
+      .then((r) => (r.ok ? r.json() : { venues: [] }))
+      .then((d) => setVenues(d.venues ?? []))
+      .catch(() => {});
+  }, [edit, venues.length, organizationSlug, groupSlug]);
   // Telegram state of the PUBLISHED teams, from durable MessageDelivery content hashes (server).
   const [teamsDelivery, setTeamsDelivery] = useState<TeamsDeliveryState | null>(null);
   // M9.1 — the delivery record recovery actions target (uncertain → mark as sent / retry).
@@ -214,6 +251,36 @@ export default function MatchWorkspace({
     }
   }
 
+  // M9.2 — assign a Community to a legacy Match (server validates it is this Group's).
+  async function setCommunity(communityId: string) {
+    setBusy(true);
+    setMessage(null);
+    try {
+      const res = await fetch(api(""), { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ communityId }) });
+      const data = await res.json().catch(() => ({}));
+      setMessage(res.ok ? "Community saved for this match. Nothing was sent." : data?.error ?? "Could not save the community.");
+      await load();
+    } finally {
+      setBusy(false);
+    }
+  }
+  async function addToCommunity(playerId: string) {
+    if (!view?.community) return;
+    setBusy(true);
+    setMessage(null);
+    try {
+      const res = await fetch(adminTenantApiPath({ organizationSlug, groupSlug, path: `/communities/${view.community.id}/players` }), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ playerId }),
+      });
+      setMessage(res.ok ? `Added to ${view.community.name}.` : "Could not add the player to the community.");
+      await load();
+    } finally {
+      setBusy(false);
+    }
+  }
+
   // M9.1 — organizer recovery for an uncertain delivery: records the decision only (the server never sends here).
   async function markTeamsSent(deliveryId: string) {
     setBusy(true);
@@ -237,7 +304,14 @@ export default function MatchWorkspace({
   const selectedIds = useMemo(() => computeSelection(defaultIds, adjustments), [defaultIds, adjustments]);
   const selectedSet = useMemo(() => new Set(selectedIds), [selectedIds]);
   // M9-B — default roster = selected chat's scope + anyone with Match state + players added here.
-  const activeRoster = useMemo(() => (view?.roster ?? []).filter((p) => p.isActive), [view]);
+  // M9.2 — only the Match Community's players are selectable; outsiders with Match state are listed separately.
+  const activeRoster = useMemo(() => (view?.roster ?? []).filter((p) => p.isActive && p.inCommunity !== false), [view]);
+  const outsiders = useMemo(() => (view?.roster ?? []).filter((p) => p.inCommunity === false), [view]);
+  const namesBy = useMemo(() => {
+    const by: Record<"PLAYING" | "MAYBE" | "NOT_PLAYING" | "NO_RESPONSE", string[]> = { PLAYING: [], MAYBE: [], NOT_PLAYING: [], NO_RESPONSE: [] };
+    for (const p of activeRoster) by[p.attendance.status ?? "NO_RESPONSE"].push(`${p.firstName} ${p.lastName}`);
+    return by;
+  }, [activeRoster]);
   const scopeSet = useMemo(() => new Set(view?.scope.playerIds ?? []), [view]);
   const visibleIds = useMemo(() => {
     const withMatchState = new Set<string>(selectedIds);
@@ -297,11 +371,16 @@ export default function MatchWorkspace({
             </div>
             <h1 className="mt-2 text-2xl font-extrabold sm:text-3xl">{formatLongDateOnly(m.date)}</h1>
             <MatchMeta date={m.date} startTime={m.startTime} locationName={m.locationName} className="mt-1 [&>li:first-child]:hidden" />
+            {m.venue?.address && m.venue.mapsUrl && (
+              <a className={cn("mt-1 inline-block break-words text-sm font-semibold text-primary underline", focusRing)} href={m.venue.mapsUrl} target="_blank" rel="noopener noreferrer">
+                📍 {m.venue.address}
+              </a>
+            )}
           </div>
           {/* UI-4A — match management is OWNER/ADMIN only (enforced server-side). */}
           {view.canManage && (
           <div className="flex flex-wrap gap-1.5">
-            <button type="button" className={cn(smallBtn, "border border-input hover:bg-muted", focusRing)} onClick={() => setEdit({ date: m.date, startTime: m.startTime ?? "", locationName: m.locationName ?? "" })}>Edit</button>
+            <button type="button" className={cn(smallBtn, "border border-input hover:bg-muted", focusRing)} onClick={() => setEdit({ date: m.date, startTime: m.startTime ?? "", locationName: m.locationName ?? "", venueId: m.venue?.id ?? "" })}>Edit</button>
             {m.status === "SCHEDULED" ? (
               <>
                 <button type="button" className={cn(smallBtn, "border border-input hover:bg-muted", focusRing)} disabled={busy} onClick={() => saveMatch({ status: "COMPLETED" }, "Marked as completed.")}>Mark completed</button>
@@ -315,15 +394,34 @@ export default function MatchWorkspace({
         </div>
         {view.canManage && edit && (
           <form
-            className="mt-4 grid gap-3 border-t border-border pt-4 sm:grid-cols-[repeat(3,minmax(0,1fr))_auto]"
+            className="mt-4 grid gap-3 border-t border-border pt-4 sm:grid-cols-2 lg:grid-cols-[repeat(4,minmax(0,1fr))_auto]"
             onSubmit={(e) => {
               e.preventDefault();
-              saveMatch(edit, "Match saved. Nothing was sent.");
+              const { venueId, ...rest } = edit;
+              saveMatch({ ...rest, venueId: venueId || null }, "Match saved. Nothing was sent.");
             }}
           >
             <label className="text-sm font-semibold">Date<input type="date" className={cn(input, "mt-1 block w-full font-normal")} value={edit.date} onChange={(e) => setEdit({ ...edit, date: e.target.value })} /></label>
             <label className="text-sm font-semibold">Start time<input type="time" className={cn(input, "mt-1 block w-full font-normal")} value={edit.startTime} onChange={(e) => setEdit({ ...edit, startTime: e.target.value })} /></label>
-            <label className="text-sm font-semibold">Location<input className={cn(input, "mt-1 block w-full font-normal")} maxLength={80} placeholder="Location" value={edit.locationName} onChange={(e) => setEdit({ ...edit, locationName: e.target.value })} /></label>
+            <label className="text-sm font-semibold">
+              Venue
+              <select
+                className={cn(input, "mt-1 block w-full font-normal")}
+                value={edit.venueId}
+                onChange={(e) => {
+                  const v = venues.find((x) => x.id === e.target.value);
+                  setEdit({ ...edit, venueId: e.target.value, ...(v ? { locationName: v.name } : {}) });
+                }}
+              >
+                <option value="">No saved venue</option>
+                {venues.filter((v) => v.isActive || v.id === edit.venueId).map((v) => (
+                  <option key={v.id} value={v.id}>
+                    {v.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="text-sm font-semibold">Location name<input className={cn(input, "mt-1 block w-full font-normal")} maxLength={80} placeholder="Location" value={edit.locationName} onChange={(e) => setEdit({ ...edit, locationName: e.target.value })} /></label>
             <div className="flex items-end gap-2">
               <Button type="submit" disabled={busy}>Save</Button>
               <Button type="button" variant="ghost" onClick={() => setEdit(null)}>Cancel</Button>
@@ -365,6 +463,9 @@ export default function MatchWorkspace({
         <LifecycleSteps lifecycle={lifecycle} linkBase="" onDark />
       </section>
 
+      {/* M9.2 — Match Automation status (organizers) */}
+      {view.canManage && view.automation && <AutomationCard a={view.automation} teamsPublished={view.generation !== null} busy={busy} onRun={() => call("/automation", {}, "Automation ran for this match. Nothing is published automatically.")} />}
+
       {/* Attendance */}
       <SectionCard
         id="attendance"
@@ -372,19 +473,62 @@ export default function MatchWorkspace({
         icon={<Users className="size-5" />}
         meta={m.attendanceClosed ? "Attendance closed" : "Attendance open"}
       >
-        <dl className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+        {view.community ? (
+          <p className="mb-3 text-sm">
+            <span className="text-muted-foreground">Community:</span> <span className="font-semibold">{view.community.name}</span>
+          </p>
+        ) : (
+          view.canManage &&
+          (view.communities ?? []).length > 0 && (
+            <div role="note" className="mb-3 flex flex-wrap items-center gap-2 rounded-tbp-xl border border-accent/40 bg-accent/10 p-3 text-sm">
+              <span className="min-w-0 flex-1 basis-56">This match has no community yet, so every player in the group is listed. Choose the community it belongs to:</span>
+              <label className="sr-only" htmlFor="match-community">Community</label>
+              <select id="match-community" className="h-9 rounded-tbp-sm border border-input bg-card px-2" defaultValue="" disabled={busy} onChange={(e) => e.target.value && setCommunity(e.target.value)}>
+                <option value="">Choose…</option>
+                {(view.communities ?? []).map((c) => (
+                  <option key={c.id} value={c.id}>
+                    {c.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+          )
+        )}
+        <dl className="grid grid-cols-2 gap-2 sm:grid-cols-5">
           {([
             ["PLAYING", "Playing"],
             ["MAYBE", "Maybe"],
             ["NOT_PLAYING", "Not playing"],
-            ["NO_RESPONSE", "No response"],
+            ["NO_RESPONSE", "Not responded"],
           ] as const).map(([k, label]) => (
             <div key={k} className="rounded-tbp bg-muted px-3 py-2">
               <dt className="text-xs font-semibold text-muted-foreground">{label}</dt>
               <dd className="font-display text-2xl font-black tabular-nums">{view.counts[k]}</dd>
             </div>
           ))}
+          <div className="col-span-2 rounded-tbp border border-border px-3 py-2 sm:col-span-1">
+            <dt className="text-xs font-semibold text-muted-foreground">Roster</dt>
+            <dd className="font-display text-2xl font-black tabular-nums">{view.rosterSize ?? activeRoster.length}</dd>
+          </div>
         </dl>
+        {view.canManage && (
+          <details className="mt-3 text-sm">
+            <summary className={cn("cursor-pointer font-semibold text-primary", focusRing)}>Who is in each group</summary>
+            <dl className="mt-2 space-y-1">
+              {([
+                ["PLAYING", "Playing"],
+                ["MAYBE", "Maybe"],
+                ["NOT_PLAYING", "Not playing"],
+                ["NO_RESPONSE", "Not responded"],
+              ] as const).map(([k, label]) => (
+                <div key={k} className="flex flex-wrap gap-x-2">
+                  <dt className="font-semibold">{label} ({namesBy[k].length}):</dt>
+                  <dd className="min-w-0 break-words text-muted-foreground">{namesBy[k].length ? namesBy[k].join(", ") : "—"}</dd>
+                </div>
+              ))}
+            </dl>
+          </details>
+        )}
 
         <div className="mt-4 flex flex-wrap items-center gap-2 text-sm" id={MATCH_TELEGRAM_GROUP_SELECTOR_ID}>
           {view.canManage && (
@@ -424,6 +568,15 @@ export default function MatchWorkspace({
             ))}
         </div>
         {view.canManage && view.telegram.pollDelivery && <p className="mt-2 text-xs text-muted-foreground">Last poll post: {view.telegram.pollDelivery.status.toLowerCase()}</p>}
+        {/* M9.2 — publishing teams closes the attendance poll; if Telegram didn't confirm, close it again here (safe to repeat). */}
+        {view.canManage && view.telegram.poll && !view.telegram.poll.closed && view.generation && (
+          <div className="mt-2 flex flex-wrap items-center gap-2 text-xs">
+            <span className="text-muted-foreground">The Telegram attendance poll is still open.</span>
+            <Button type="button" variant="outline" size="sm" disabled={busy} onClick={() => call("/poll/close", {}, "Attendance poll closed in Telegram.")}>
+              Close Telegram poll
+            </Button>
+          </div>
+        )}
         {view.telegram.unlinkedVoters > 0 && (
           <p className="mt-2 text-xs text-accent-foreground">
             {view.telegram.unlinkedVoters} Telegram voter(s) aren&apos;t linked to players{view.canManage ? <> — link them in <Link className="font-semibold text-primary underline" href={`${adminGroupSettingsPath(organizationSlug, groupSlug)}#telegram`}>Group settings</Link>.</> : "."}
@@ -435,9 +588,12 @@ export default function MatchWorkspace({
             <span className="text-muted-foreground">
               Showing {view.telegram.selectedChat ? `${view.telegram.selectedChat.title}'s` : "this Telegram group's"} players and anyone already in this match.
             </span>
-            <label className="flex items-center gap-1.5">
-              <input type="checkbox" className="size-4 accent-primary" checked={showAll} onChange={(e) => setShowAll(e.target.checked)} /> Show all Group players
-            </label>
+            {/* M9.2 — a Community Match already lists its whole roster (other Communities' players can't play in it). */}
+            {!view.community && (
+              <label className="flex items-center gap-1.5">
+                <input type="checkbox" className="size-4 accent-primary" checked={showAll} onChange={(e) => setShowAll(e.target.checked)} /> Show all Group players
+              </label>
+            )}
             {view.canManage && hiddenPlayers.length > 0 && (
               <>
                 <label className="sr-only" htmlFor="add-player-pick">Add another player</label>
@@ -516,6 +672,27 @@ export default function MatchWorkspace({
             </li>
           ))}
         </ul>
+        {outsiders.length > 0 && view.community && (
+          <div className="mt-4 rounded-tbp-xl border border-dashed border-border p-3 text-sm">
+            <p className="font-semibold">Not in {view.community.name}</p>
+            <p className="text-xs text-muted-foreground">They answered or were added to this match but aren&apos;t members of its community, so they aren&apos;t counted or selected.</p>
+            <ul className="mt-2 space-y-1">
+              {outsiders.map((p) => (
+                <li key={p.id} className="flex flex-wrap items-center justify-between gap-2">
+                  <span className="min-w-0 truncate">
+                    {p.firstName} {p.lastName}
+                    <span className="text-muted-foreground"> · {p.attendance.status ? STATUS_LABEL[p.attendance.status] : "No response"}</span>
+                  </span>
+                  {view.canManage && (
+                    <Button type="button" size="sm" variant="outline" disabled={busy} onClick={() => addToCommunity(p.id)}>
+                      Add to {view.community!.name}
+                    </Button>
+                  )}
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
         {view.canManage &&
           (m.attendanceClosed ? (
             <p role="note" className="mt-2 text-sm font-medium text-muted-foreground">Attendance is closed. Reopen attendance to make changes.</p>
@@ -617,5 +794,77 @@ export default function MatchWorkspace({
         />
       )}
     </div>
+  );
+}
+
+/** M9.2 — what Match Automation did for this scheduled Match, and a safe Retry / Run now (only what is due runs). */
+function AutomationCard({ a, teamsPublished, busy, onRun }: { a: NonNullable<MatchView["automation"]>; teamsPublished: boolean; busy: boolean; onRun: () => void }) {
+  const at = (iso: string) => new Intl.DateTimeFormat("en-US", { weekday: "short", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }).format(new Date(iso));
+  const now = Date.now();
+  const e = a.emails ?? { sent: 0, skipped: 0, pending: 0 };
+  const plural = (n: number) => `${n} organizer${n === 1 ? "" : "s"}`;
+  const cutoffPassed = new Date(a.cutoffDueAt).getTime() <= now;
+  const steps: Array<{ label: string; state: string; done: boolean }> = [
+    { label: "Match", state: "Scheduled", done: true },
+    {
+      label: "Attendance poll",
+      state: a.pollPostedAt
+        ? `Sent ${at(a.pollPostedAt)}`
+        : new Date(a.pollDueAt).getTime() > now
+          ? `Scheduled for ${at(a.pollDueAt)}`
+          : cutoffPassed
+            ? "Not sent"
+            : "Pending",
+      done: Boolean(a.pollPostedAt),
+    },
+    {
+      label: "Attendance",
+      state: a.cutoffCompletedAt ? `Ready (closed ${at(a.cutoffCompletedAt)})` : cutoffPassed ? "Closing pending" : `Open until ${at(a.cutoffDueAt)}`,
+      done: Boolean(a.cutoffCompletedAt),
+    },
+    {
+      label: "Organizers notified",
+      state: a.notifiedAt
+        ? `Emailed ${plural(e.sent)} ${at(a.notifiedAt)}${e.skipped ? ` · ${e.skipped} skipped (no verified email)` : ""}`
+        : a.cutoffCompletedAt
+          ? `Pending${e.sent ? ` (${e.sent} sent, ${e.pending} to retry)` : ""}`
+          : "After the cutoff",
+      done: Boolean(a.notifiedAt),
+    },
+    { label: "Teams", state: teamsPublished ? "Published" : a.cutoffCompletedAt ? "Awaiting organizer" : "After attendance", done: teamsPublished },
+  ];
+  return (
+    <SectionCard id="automation" title="Automation" icon={<CalendarClock className="size-5" />} meta={a.scheduleActive ? "Recurring schedule" : "Schedule paused"}>
+      <ol className="grid gap-2 text-sm sm:grid-cols-2 lg:grid-cols-5">
+        {steps.map((s) => (
+          <li key={s.label} className={cn("rounded-tbp border px-3 py-2", s.done ? "border-primary/25 bg-primary/5" : "border-border")}>
+            <p className="text-xs font-semibold text-muted-foreground">{s.label}</p>
+            <p className="font-semibold">{s.state}</p>
+          </li>
+        ))}
+      </ol>
+      {a.catchUpExpired && (
+        <p role="status" className="mt-3 rounded-tbp border border-border bg-secondary px-3 py-2 text-sm">
+          The automatic window for this cutoff has passed (48 hours). Use Run now to close attendance and email organizers, or manage the Match yourself.
+        </p>
+      )}
+      {a.lastError && (
+        <div role="alert" className="mt-3 flex flex-wrap items-center gap-2 rounded-tbp-xl border border-destructive/30 bg-destructive/5 p-3 text-sm">
+          <span className="min-w-0 flex-1 basis-56 text-destructive">{a.lastError}</span>
+          <Button type="button" size="sm" variant="outline" disabled={busy || !a.scheduleActive} onClick={onRun}>
+            Retry
+          </Button>
+        </div>
+      )}
+      {!a.lastError && a.scheduleActive && (
+        <p className="mt-3 text-xs text-muted-foreground">
+          Runs automatically on schedule.{" "}
+          <button type="button" className="font-semibold text-primary underline disabled:opacity-50" disabled={busy} onClick={onRun}>
+            Run now
+          </button>{" "}
+          (only what is due runs; teams are never published automatically).
+        </p>
+      )}
+    </SectionCard>
   );
 }

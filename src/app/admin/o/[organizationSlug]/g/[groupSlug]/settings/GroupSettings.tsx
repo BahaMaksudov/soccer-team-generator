@@ -6,6 +6,9 @@ import CanonicalSettingsSection from "../CanonicalSettingsSection";
 import CanonicalVisibilitySection from "../CanonicalVisibilitySection";
 import CommunicationChannelsSection from "../CommunicationChannelsSection";
 import TelegramVoterLinks from "./TelegramVoterLinks";
+import CommunitiesSection from "./CommunitiesSection";
+import VenuesSection from "./VenuesSection";
+import { adminGroupPath } from "@/lib/matchPaths";
 
 /**
  * UI-8 — group Settings (OWNER/ADMIN; page-level guard + server-side API
@@ -37,6 +40,16 @@ export default function GroupSettings({
           {message}
         </p>
       )}
+
+      <section id="communities" aria-labelledby="communities-heading" className="scroll-mt-20">
+        <h2 id="communities-heading" className="text-xl font-extrabold">Communities</h2>
+        <CommunitiesSection organizationSlug={organizationSlug} groupSlug={groupSlug} playersHref={`${adminGroupPath(organizationSlug, groupSlug)}/players`} />
+      </section>
+
+      <section id="venues" aria-labelledby="venues-heading" className="scroll-mt-20">
+        <h2 id="venues-heading" className="text-xl font-extrabold">Venues</h2>
+        <VenuesSection organizationSlug={organizationSlug} groupSlug={groupSlug} />
+      </section>
 
       <section id="general" aria-labelledby="general-heading" className="scroll-mt-20">
         <h2 id="general-heading" className="text-xl font-extrabold">General</h2>

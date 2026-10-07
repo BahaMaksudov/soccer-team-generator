@@ -64,3 +64,33 @@ export function buildInvitationEmail(params: {
     html: layout(`Join ${params.organizationName}`, lines, { label: "View invitation", url: params.url }, footer),
   };
 }
+
+/**
+ * M9.2 — Match Automation: "attendance is ready" for organizers. Counts and
+ * names of the Match's Community roster only; never ratings or identities.
+ */
+export function buildAttendanceReadyEmail(params: {
+  to: string;
+  groupName: string;
+  communityName: string | null;
+  matchLabel: string; // e.g. "Monday, October 12"
+  counts: { PLAYING: number; MAYBE: number; NOT_PLAYING: number; NO_RESPONSE: number };
+  rosterSize: number;
+  pollNote: string | null;
+  url: string;
+}): OutgoingEmail {
+  const who = params.communityName ? `${params.groupName} — ${params.communityName}` : params.groupName;
+  const lines = [
+    `Attendance is ready for ${params.matchLabel} (${who}).`,
+    `Playing: ${params.counts.PLAYING} · Maybe: ${params.counts.MAYBE} · Not playing: ${params.counts.NOT_PLAYING} · Not responded: ${params.counts.NO_RESPONSE} (roster ${params.rosterSize}).`,
+    ...(params.pollNote ? [params.pollNote] : []),
+    "Review the attendance, then generate and publish the teams. Teams are never published automatically.",
+  ];
+  const footer = `You receive this because you are an organizer (owner or admin) of this group on ${BRAND}.`;
+  return {
+    to: params.to,
+    subject: `Attendance ready — ${params.matchLabel} · ${who}`,
+    text: [...lines, "", `Review match: ${params.url}`, "", footer].join("\n"),
+    html: layout("Attendance is ready", lines, { label: "Review Match", url: params.url }, footer),
+  };
+}

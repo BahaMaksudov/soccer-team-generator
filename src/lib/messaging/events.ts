@@ -34,6 +34,8 @@ export type MessagingEvent =
       teams: TeamsForMessage;
       /** Player-facing page for these teams, or null (see links.ts). */
       viewUrl?: string | null;
+      /** M9.2 — the Match's venue (never part of the delivery content hash). */
+      location?: { name: string; address: string | null; mapsUrl: string | null } | null;
     };
 
 export type MessagingEventType = MessagingEvent["type"];

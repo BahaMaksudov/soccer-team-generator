@@ -208,6 +208,9 @@ model User {
   recapsGenerated            MatchRecap[]           @relation("RecapGeneratedBy")
   recapsPublished            MatchRecap[]           @relation("RecapPublishedBy")
   recapsUpdated              MatchRecap[]           @relation("RecapUpdatedBy")
+  communityPlayersCreated    CommunityPlayer[]      @relation("CommunityPlayerCreatedBy")
+  schedulesCreated           MatchSchedule[]        @relation("ScheduleCreatedBy")
+  automationEmails           MatchAutomationEmail[]
 }
 
 model Organization {
@@ -220,6 +223,7 @@ model Organization {
   memberships OrganizationMembership[]
   groups      Group[]
   invitations OrganizationInvitation[]
+  venues      Venue[]
 }
 
 model OrganizationMembership {
@@ -322,6 +326,10 @@ model Group {
   matchMvps             MatchMvp[]
   matchMvpVotes         MatchMvpVote[]
   matchRecaps           MatchRecap[]
+  communities           Community[]
+  communityPlayers      CommunityPlayer[]
+  matchSchedules        MatchSchedule[]
+  matchAutomations      MatchAutomation[]
 
   @@unique([organizationId, slug])
 }
@@ -497,6 +505,7 @@ model Player {
   telegramConnectCodes TelegramConnectCode[]
   attendanceResponses  AttendanceResponse[]
   telegramChatPlayers  TelegramChatPlayer[]
+  communityPlayers     CommunityPlayer[]
   mvpVotesCast         MatchMvpVote[]        @relation("MvpVoter")
   mvpVotesReceived     MatchMvpVote[]        @relation("MvpCandidate")
 
@@ -661,12 +670,19 @@ model TelegramChat {
   groupId String
   group   Group  @relation(fields: [groupId], references: [id], onDelete: Restrict)
 
+  // M9.2 — the Community this chat is a communication channel of (the roster
+  // lives on the Community, not on the chat). Same Group enforced by the
+  // composite key.
+  communityId String?
+  community   Community? @relation(fields: [communityId, groupId], references: [id, groupId], onDelete: Restrict)
+
   players TelegramChatPlayer[]
   matches Match[]
 
   @@unique([chatId, groupId])
   // Composite target for TelegramChatPlayer's (telegramChatId, groupId) FK.
   @@unique([id, groupId])
+  @@index([communityId])
 }
 
 // M9-B — DEFAULT player scope of one connected Telegram chat (who is usually
@@ -694,6 +710,48 @@ model TelegramChatPlayer {
   @@index([playerId])
 }
 
+// M9.2 — a provider-neutral Community: one roster of a Group (e.g. "UCCNE
+// Indoor Soccer", "FunnyStuff"). Communication channels (Telegram today) attach
+// to it; Players join it through CommunityPlayer (a Player is never duplicated
+// per community). Communities are deactivated, never deleted.
+model Community {
+  id        String   @id @default(cuid())
+  groupId   String
+  name      String
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  group         Group             @relation(fields: [groupId], references: [id], onDelete: Restrict)
+  players       CommunityPlayer[]
+  telegramChats TelegramChat[]
+  matches       Match[]
+  schedules     MatchSchedule[]
+
+  @@unique([id, groupId])
+  @@index([groupId])
+}
+
+// M9.2 — a Player's membership in a Community (same Group enforced by both
+// composite keys). Removing a membership never touches the Player.
+model CommunityPlayer {
+  id              String   @id @default(cuid())
+  groupId         String
+  communityId     String
+  playerId        String
+  createdByUserId String?
+  createdAt       DateTime @default(now())
+
+  group     Group     @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  community Community @relation(fields: [communityId, groupId], references: [id, groupId], onDelete: Cascade)
+  player    Player    @relation(fields: [playerId, groupId], references: [id, groupId], onDelete: Cascade)
+  createdBy User?     @relation("CommunityPlayerCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
+
+  @@unique([communityId, playerId])
+  @@index([groupId])
+  @@index([playerId])
+}
+
 // M9-A — a scheduled game of one Group. Identity is the id, NOT the date: a
 // Group may have several Matches on the same day. The date is a date-only
 // value (UTC midnight, like TeamGeneration.date) interpreted in the Group's
@@ -711,6 +769,15 @@ model Match {
   // default player scope). NOT evidence that anything was sent: TelegramPoll /
   // MessageDelivery record actual sends. Server-validated to be this Group's.
   telegramChatId     Int?
+  // M9.2 — the Community (roster) this Match belongs to. NULL only for legacy
+  // Matches that could not be mapped safely (organizer remediation).
+  communityId        String?
+  // M9.2 — the reusable Venue (Organization-level; same Organization enforced
+  // server-side). locationName stays the display name snapshot.
+  venueId            String?
+  // M9.2 — the weekly schedule that created this Match (one Match per schedule
+  // and game date — the idempotency key of automatic creation).
+  scheduleId         String?
   createdByUserId    String?
   createdAt          DateTime    @default(now())
   updatedAt          DateTime    @updatedAt
@@ -718,6 +785,10 @@ model Match {
   group         Group                @relation(fields: [groupId], references: [id], onDelete: Restrict)
   createdBy     User?                @relation("MatchCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
   telegramChat  TelegramChat?        @relation(fields: [telegramChatId], references: [id], onDelete: SetNull)
+  community     Community?           @relation(fields: [communityId, groupId], references: [id, groupId], onDelete: Restrict)
+  venue         Venue?               @relation(fields: [venueId], references: [id], onDelete: SetNull)
+  schedule      MatchSchedule?       @relation(fields: [scheduleId], references: [id], onDelete: SetNull)
+  automation    MatchAutomation?
   attendance    AttendanceResponse[]
   generation    TeamGeneration?
   telegramPolls TelegramPoll[]
@@ -728,9 +799,115 @@ model Match {
   mvpVotes      MatchMvpVote[]
   recap         MatchRecap?
 
+  @@unique([scheduleId, date])
   @@index([groupId])
   @@index([groupId, date])
   @@index([telegramChatId])
+  @@index([communityId])
+  @@index([venueId])
+}
+
+// M9.2 — a reusable Venue / ground of an Organization (any of its Groups may
+// use it). Address is free text; maps links are built from it on the fly (no
+// geocoding, no paid service). Deactivated, never deleted.
+model Venue {
+  id             String   @id @default(cuid())
+  organizationId String
+  name           String
+  address        String?
+  isActive       Boolean  @default(true)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  organization Organization    @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  matches      Match[]
+  schedules    MatchSchedule[]
+
+  @@index([organizationId])
+}
+
+// M9.2 — a weekly recurring Match of a Community, in LOCAL wall-clock terms of
+// an IANA timezone (src/lib/scheduleTime.ts): game weekday + time; attendance
+// poll "N days before at HH:MM"; attendance cutoff "N days before at HH:MM".
+// Automation creates the Match and posts the poll at poll time, closes and
+// finalizes attendance at the cutoff and notifies organizers. It never
+// generates or publishes teams.
+model MatchSchedule {
+  id               String   @id @default(cuid())
+  groupId          String
+  communityId      String
+  venueId          String?
+  timezone         String
+  weekday          Int
+  startTime        String
+  pollDaysBefore   Int
+  pollTime         String
+  cutoffDaysBefore Int
+  cutoffTime       String
+  isActive         Boolean  @default(true)
+  createdByUserId  String?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  group     Group     @relation(fields: [groupId], references: [id], onDelete: Restrict)
+  community Community @relation(fields: [communityId, groupId], references: [id, groupId], onDelete: Restrict)
+  venue     Venue?    @relation(fields: [venueId], references: [id], onDelete: SetNull)
+  createdBy User?     @relation("ScheduleCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
+  matches   Match[]
+
+  @@index([groupId])
+  @@index([isActive])
+}
+
+// M9.2 — what automation did for one scheduled Match (one row per Match).
+// Due instants are fixed when the Match is created; each step is claimed with
+// a conditional update so repeated or concurrent runs never repeat a side effect.
+model MatchAutomation {
+  id                String    @id @default(cuid())
+  matchId           String    @unique
+  groupId           String
+  pollDueAt         DateTime
+  cutoffDueAt       DateTime
+  pollPostedAt      DateTime?
+  cutoffCompletedAt DateTime?
+  notifyClaimedAt   DateTime?
+  notifiedAt        DateTime?
+  lastError         String?
+  lastErrorAt       DateTime?
+  attempts          Int       @default(0)
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  group  Group                  @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  match  Match                  @relation(fields: [matchId], references: [id], onDelete: Cascade)
+  emails MatchAutomationEmail[]
+
+  @@index([groupId])
+  @@index([cutoffDueAt])
+}
+
+// M9.2 — the attendance-ready email, PER ORGANIZER (one row per automation +
+// OWNER/ADMIN user). sentAt = delivered (never sent again); skippedReason =
+// safely skipped this round (EMAIL_NOT_VERIFIED / INVALID_EMAIL; re-evaluated
+// until the step completes); claimedAt = a send in progress (a claim older
+// than 15 minutes is considered abandoned). Not a notification platform.
+model MatchAutomationEmail {
+  id            String    @id @default(cuid())
+  automationId  String
+  userId        String
+  claimedAt     DateTime?
+  sentAt        DateTime?
+  skippedReason String?
+  attempts      Int       @default(0)
+  lastError     String?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  automation MatchAutomation @relation(fields: [automationId], references: [id], onDelete: Cascade)
+  user       User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([automationId, userId])
+  @@index([userId])
 }
 
 // M9-D — the factual final result of a Match (entered by an organizer; AI

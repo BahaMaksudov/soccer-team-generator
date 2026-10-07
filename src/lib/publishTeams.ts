@@ -9,6 +9,8 @@ import { buildStoredMetrics } from "@/lib/balanceAnalysis";
 import { findSport, type SportDefinition } from "@/lib/sports";
 import { loadStoredBalanceWeights } from "@/lib/groupSettings";
 import { managersOnlyResponse } from "@/lib/tenantRoute";
+import { idsOutsideCommunity, OUTSIDE_COMMUNITY_MESSAGE } from "@/lib/communities";
+import { closeMatchAttendancePolls, POLL_CLOSE_MESSAGE } from "@/lib/matchPollClose";
 
 /**
  * Phase 2D.6D.3 — shared Publish core, originally extracted from the
@@ -195,8 +197,12 @@ export async function publishTeamsForContext(context: TenantContext, req: Reques
   try {
     if (matchId) {
       // The Match must be this Group's and on the same date.
-      const match = await prisma.match.findFirst({ where: { id: matchId, groupId: activeGroupId }, select: { id: true, date: true } });
+      const match = await prisma.match.findFirst({ where: { id: matchId, groupId: activeGroupId }, select: { id: true, date: true, communityId: true } });
       if (!match) return NextResponse.json({ error: "Match not found" }, { status: 404 });
+      // M9.2 — a Community Match's teams may only contain that Community's Players.
+      if (match.communityId && (await idsOutsideCommunity(activeGroupId, match.communityId, playerIds)).length > 0) {
+        return NextResponse.json({ error: OUTSIDE_COMMUNITY_MESSAGE }, { status: 400 });
+      }
       if (match.date.getTime() !== normalizedDate.getTime()) {
         return NextResponse.json({ error: "The teams date must be the match date." }, { status: 400 });
       }
@@ -238,6 +244,14 @@ export async function publishTeamsForContext(context: TenantContext, req: Reques
   revalidatePath(`/g/${context.organization.slug}/${context.activeGroup.slug}`);
   revalidatePath(`/g/${context.organization.slug}/${context.activeGroup.slug}/print/${saved.id}`);
 
+  // M9.2 — publishing a Match's teams closes its open Telegram attendance poll
+  // (after a final answer sync). The teams are already saved: a Telegram
+  // problem never undoes them, and its outcome is reported, never hidden.
+  // Posting the teams to Telegram stays the separate explicit action.
+  if (matchId) {
+    const poll = await closeMatchAttendancePolls(activeGroupId, matchId).catch(() => ({ status: "uncertain" as const, closed: 0, open: 1 }));
+    return NextResponse.json({ ok: true, id: saved.id, poll: { status: poll.status, message: POLL_CLOSE_MESSAGE[poll.status] } });
+  }
   return NextResponse.json({ ok: true, id: saved.id });
 }
 

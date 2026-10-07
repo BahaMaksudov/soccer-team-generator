@@ -139,7 +139,7 @@ export default function CanonicalGenerateSection({
     const res = await fetch(adminTenantApiPath({ organizationSlug, groupSlug, path: "/generate" }), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ teamCount, date: new Date(date).toISOString(), selectedIds }),
+      body: JSON.stringify({ teamCount, date: new Date(date).toISOString(), selectedIds, ...(matchId ? { matchId } : {}) }),
     });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) {
@@ -213,7 +213,9 @@ export default function CanonicalGenerateSection({
     }
     onPublishedGenerationChange(publishedGenerationFromPublishResponse(data, previewDate));
     setPublishedTeams(previewTeams);
-    onMessage("✅ Published! The public page for this Group is updated. Nothing was sent to Telegram.");
+    // M9.2 — a Match publish also closes its open Telegram attendance poll; its outcome is shown, never hidden.
+    const pollNote = typeof data?.poll?.message === "string" && data.poll.message ? ` ${data.poll.message}` : "";
+    onMessage(`✅ Published! The public page for this Group is updated. No message was sent to Telegram.${pollNote}`);
   }
 
 

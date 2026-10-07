@@ -5,6 +5,7 @@ import { findSport, roleLabel } from "@/lib/sports";
 import { playerDisplayName, toPlayerFacingTeams } from "@/lib/playerFacing";
 import { formatYMDFromDate } from "@/lib/telegramFormat";
 import { publishedPostGame, type ResultView } from "@/lib/postGame";
+import { mapsUrl } from "@/lib/venues";
 
 /**
  * M9-C — the player-facing Match page (canonical online destination of a
@@ -33,6 +34,8 @@ import { publishedPostGame, type ResultView } from "@/lib/postGame";
 export type PlayerMatchView = {
   group: { name: string; teamName: string; organizationName: string; sportLabel: string };
   match: { date: string; startTime: string | null; locationName: string | null; status: "SCHEDULED" | "COMPLETED" | "CANCELED" };
+  /** M9.2 — the Match's venue: name, address and a keyless maps link (public venue data only). */
+  venue: { name: string; address: string | null; mapsUrl: string | null } | null;
   teamsPublished: boolean;
   /** Display-only: no Player ids, ratings, stamina, metrics or identities. */
   teams: Array<{ teamNumber: number; players: Array<{ name: string; role: string }> }>;
@@ -56,6 +59,7 @@ async function buildPlayerMatchView(
       startTime: true,
       locationName: true,
       status: true,
+      venue: { select: { name: true, address: true } },
       generation: { select: { teamsJson: true, groupId: true } },
       result: { select: { scoresJson: true, publishedAt: true } },
       mvp: { select: { winnerPlayerIds: true, publishedAt: true } },
@@ -79,6 +83,7 @@ async function buildPlayerMatchView(
       sportLabel: findSport(group.sportKey)?.label ?? "",
     },
     match: { date: formatYMDFromDate(match.date), startTime: match.startTime, locationName: match.locationName, status: match.status },
+    venue: match.venue ? { name: match.venue.name, address: match.venue.address, mapsUrl: mapsUrl(match.venue.address) } : null,
     teamsPublished: generation !== null,
     teams,
     ...publishedPostGame(match, generation?.teamsJson ?? null),

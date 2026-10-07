@@ -8,6 +8,7 @@ import { analyzeTeams, METRICS_VERSION } from "@/lib/balanceAnalysis";
 import { findSport } from "@/lib/sports";
 import { loadStoredBalanceWeights } from "@/lib/groupSettings";
 import { managersOnlyResponse } from "@/lib/tenantRoute";
+import { idsOutsideCommunity, OUTSIDE_COMMUNITY_MESSAGE } from "@/lib/communities";
 
 /**
  * Phase 2D.6D.2 — shared Generate core, extracted verbatim from the
@@ -33,7 +34,16 @@ export async function generateTeamsForContext(context: TenantContext, req: Reque
   }
 
   // `format` (6|7|8) is deprecated: accepted for compatibility, ignored.
-  const { teamCount, date: dateStr, selectedIds } = parsed.data;
+  const { teamCount, date: dateStr, selectedIds, matchId } = parsed.data;
+
+  // M9.2 — for a Match, only its Community's Players may be generated (never trust the browser's list).
+  if (matchId) {
+    const match = await prisma.match.findFirst({ where: { id: matchId, groupId: context.activeGroup.id }, select: { communityId: true } });
+    if (!match) return NextResponse.json({ error: "Match not found" }, { status: 404 });
+    if (match.communityId && (await idsOutsideCommunity(context.activeGroup.id, match.communityId, selectedIds)).length > 0) {
+      return NextResponse.json({ error: OUTSIDE_COMMUNITY_MESSAGE }, { status: 400 });
+    }
+  }
 
   // M7 — the Group's own sport (URL-resolved context, never the request)
   // supplies roles and balancing rules. Unknown sport → fail closed.

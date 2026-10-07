@@ -24,6 +24,7 @@ import {
   type DeliveryState,
 } from "@/lib/messaging/deliveryState";
 import { hashToken, isWellFormedToken } from "@/lib/secureToken";
+import { mapsUrl } from "@/lib/venues";
 
 /**
  * Canonical Close Poll + Post Teams (Phase 2D.6D.5D), on durable
@@ -424,7 +425,12 @@ export async function closePollAndPostTeamsForContext(context: TenantContext, re
 
   // --- 2. TEAMS_PUBLISHED delivery (exactly one send per reservation) ---
   // The link never changes the content hash (computed from `body`).
-  const html = view.url ? renderTelegramHtml(teamsContent({ type: "TEAMS_PUBLISHED", displayDate, teams, viewUrl: view.url })) : body;
+  // M9.2 — the Match's venue (📍 + maps link) is added to the sent text only, never to the hash.
+  const venue = generation.matchId
+    ? (await prisma.match.findFirst({ where: { id: generation.matchId, groupId: activeGroupId }, select: { venue: { select: { name: true, address: true } } } }))?.venue ?? null
+    : null;
+  const location = venue ? { name: venue.name, address: venue.address, mapsUrl: mapsUrl(venue.address) } : null;
+  const html = view.url || location ? renderTelegramHtml(teamsContent({ type: "TEAMS_PUBLISHED", displayDate, teams, viewUrl: view.url, location })) : body;
   const reservedId = decision.deliveryId;
 
   let sent: { message_id?: unknown } | null;
