@@ -43,9 +43,9 @@ export async function sendInvitationEmail(params: {
 }
 
 /** M9.2 — Match Automation: attendance ready (one organizer per call). */
-export async function sendAttendanceReadyEmail(params: Omit<Parameters<typeof buildAttendanceReadyEmail>[0], "url"> & { matchPath: string }): Promise<SendResult> {
-  const { matchPath, ...rest } = params;
-  const message = buildAttendanceReadyEmail({ ...rest, url: appUrl(matchPath) });
+export async function sendAttendanceReadyEmail(params: Omit<Parameters<typeof buildAttendanceReadyEmail>[0], "url" | "matchLinkUrl"> & { matchPath: string; matchLinkPath?: string | null }): Promise<SendResult> {
+  const { matchPath, matchLinkPath, ...rest } = params;
+  const message = buildAttendanceReadyEmail({ ...rest, url: appUrl(matchPath), matchLinkUrl: matchLinkPath ? appUrl(matchLinkPath) : null });
   return getEmailTransport().send({ ...message, from: getEmailFrom() });
 }
 

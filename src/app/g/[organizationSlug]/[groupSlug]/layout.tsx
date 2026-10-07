@@ -18,6 +18,9 @@ import { loadPublicGroupLayoutData } from "./layout-data";
  * any nested page renders.
  */
 
+// M9.3 — player-facing group pages (names of real players) are never indexed, PUBLIC included.
+export const metadata = { robots: { index: false, follow: false } };
+
 type Params = Promise<{ organizationSlug: string; groupSlug: string }>;
 
 export default async function PublicGroupLayout({

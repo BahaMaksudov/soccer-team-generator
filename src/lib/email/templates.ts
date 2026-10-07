@@ -78,6 +78,8 @@ export function buildAttendanceReadyEmail(params: {
   rosterSize: number;
   pollNote: string | null;
   url: string;
+  /** M9.3 — the players' Match Link (absolute), when match links are available. */
+  matchLinkUrl?: string | null;
 }): OutgoingEmail {
   const who = params.communityName ? `${params.groupName} — ${params.communityName}` : params.groupName;
   const lines = [
@@ -85,6 +87,7 @@ export function buildAttendanceReadyEmail(params: {
     `Playing: ${params.counts.PLAYING} · Maybe: ${params.counts.MAYBE} · Not playing: ${params.counts.NOT_PLAYING} · Not responded: ${params.counts.NO_RESPONSE} (roster ${params.rosterSize}).`,
     ...(params.pollNote ? [params.pollNote] : []),
     "Review the attendance, then generate and publish the teams. Teams are never published automatically.",
+    ...(params.matchLinkUrl ? [`Players can still see the match and, after you publish, the teams on the match link: ${params.matchLinkUrl}`] : []),
   ];
   const footer = `You receive this because you are an organizer (owner or admin) of this group on ${BRAND}.`;
   return {

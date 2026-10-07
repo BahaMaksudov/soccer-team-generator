@@ -22,7 +22,8 @@ export const REDESIGN_CHROME = "redesign";
 
 /** Public redesigned pages (exact paths / subtrees). */
 export const REDESIGNED_PATHS: readonly string[] = ["/", "/login", "/signup", "/verify-email"];
-export const REDESIGNED_PREFIXES: readonly string[] = ["/verify-email/"];
+// M9.3 — /share/m/** is the redesigned player Match page (Match Link / share link; never auth-gated).
+export const REDESIGNED_PREFIXES: readonly string[] = ["/verify-email/", "/share/m/"];
 
 /** UI-3 — authenticated app-shell pages (exact paths / subtrees). */
 export const APP_SHELL_PATHS: readonly string[] = ["/admin", "/me", "/account", "/onboarding"];

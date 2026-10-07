@@ -128,7 +128,7 @@ function GroupCard({ g, canManage }: { g: OrganizationGroupCard; canManage: bool
           <div className="flex items-center gap-2 sm:col-span-2">
             <dt className="sr-only">Telegram</dt>
             <MessageCircle className="size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
-            <dd>{g.telegramConnected ? "Telegram group connected" : "Telegram not connected"}</dd>
+            <dd>{g.telegramConnected ? "Telegram group connected" : "Telegram (optional): not connected"}</dd>
           </div>
         )}
       </dl>

@@ -127,6 +127,8 @@ enum AttendanceStatus {
 enum AttendanceSource {
   WEB
   TELEGRAM
+  // M9.3 — an anonymous answer through the Match Link (name-pick; not authenticated).
+  LINK
 }
 
 // M9-A — what a Telegram poll is for. Legacy polls read as ATTENDANCE; MVP
@@ -778,6 +780,10 @@ model Match {
   // M9.2 — the weekly schedule that created this Match (one Match per schedule
   // and game date — the idempotency key of automatic creation).
   scheduleId         String?
+  // M9.3 — version of the Match Link (HMAC of matchId + shareVersion under
+  // MATCH_SHARE_SECRET; nothing secret is stored). Reset Link increments it,
+  // invalidating the previous link immediately.
+  shareVersion       Int         @default(1)
   createdByUserId    String?
   createdAt          DateTime    @default(now())
   updatedAt          DateTime    @updatedAt

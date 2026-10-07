@@ -151,6 +151,10 @@ describe("UI primitives are presentation-only", () => {
         "src/app/admin/o/[organizationSlug]/g/[groupSlug]/matches/SchedulesSection.tsx",
         // M9.1 — Telegram team-post recovery in the Match Workspace.
         "src/app/admin/o/[organizationSlug]/g/[groupSlug]/matches/[matchId]/TeamsTelegramPost.tsx",
+        // M9.3 — Share Match (organizer).
+        "src/app/admin/o/[organizationSlug]/g/[groupSlug]/matches/[matchId]/ShareMatchCard.tsx",
+        // M9.3 — the redesigned player Match page (Match Link).
+        "src/components/match-link/MatchLinkPage.tsx",
         "src/components/game-day/MatchList.tsx",
         "src/components/game-day/parts.tsx",
         "src/app/admin/o/[organizationSlug]/g/[groupSlug]/players/PlayersRoster.tsx",

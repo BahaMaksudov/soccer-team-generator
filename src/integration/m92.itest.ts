@@ -54,6 +54,8 @@ const DAY = "2026-10-12";
 let tgCalls: Array<{ method: string; body: Record<string, unknown> }> = [];
 let otherNetwork = 0;
 let stopPollMode: "ok" | "already" | "reject" | "ambiguous" = "ok";
+// M9.3 — a definite Telegram refusal of sendPoll (a real poll failure; "no Telegram group" is now web-only, not an error).
+let sendPollMode: "ok" | "reject" = "ok";
 const originalFetch = global.fetch;
 async function fakeFetch(url: unknown, init?: RequestInit): Promise<Response> {
   const u = String(url);
@@ -64,6 +66,8 @@ async function fakeFetch(url: unknown, init?: RequestInit): Promise<Response> {
   const method = u.split("/").pop()!;
   tgCalls.push({ method, body: JSON.parse(String(init?.body ?? "{}")) });
   if (method === "stopPoll" && stopPollMode === "ambiguous") throw new TypeError("fetch failed");
+  if (method === "sendPoll" && sendPollMode === "reject")
+    return { ok: true, status: 200, json: async () => ({ ok: false, error_code: 400, description: "Bad Request: chat not found" }) } as unknown as Response;
   if (method === "stopPoll" && (stopPollMode === "reject" || stopPollMode === "already"))
     return { ok: true, status: 200, json: async () => ({ ok: false, error_code: 400, description: stopPollMode === "already" ? "Bad Request: poll has already been closed" : "Bad Request: message can't be stopped" }) } as unknown as Response;
   return { ok: true, status: 200, json: async () => ({ ok: true, result: method === "sendPoll" ? { message_id: 7, poll: { id: `tg-poll-${tgCalls.length}` } } : { message_id: 1 } }) } as unknown as Response;
@@ -141,6 +145,7 @@ beforeEach(async () => {
   tgCalls = [];
   otherNetwork = 0;
   stopPollMode = "ok";
+  sendPollMode = "ok";
   testOutbox.clear();
   testOutbox.failNext = 0;
   await seed();
@@ -626,23 +631,26 @@ describe("M9.2-6/7 — weekly schedules and the Match Automation Agent", () => {
     expect(sends("stopPoll")).toBe(0);
   });
 
-  it("failures are recorded for the organizer and retried safely: missing Telegram group, then email failure", async () => {
-    await setup({ chat: false });
+  it("failures are recorded for the organizer and retried safely: Telegram refuses the poll, then email failure", async () => {
+    await setup();
+    sendPollMode = "reject";
     const r = await runMatchAutomation(T.afterPoll);
     expect(r.created).toBe(1);
     const [m] = await scheduledMatches();
-    expect(m.automation!.lastError).toMatch(/no connected Telegram group for UCCNE/);
+    expect(m.automation!.lastError).toMatch(/attendance poll could not be posted/);
     expect(m.automation!.pollPostedAt).toBeNull();
-    // The organizer connects a group and retries from the Match (only what is due runs).
-    await prisma.telegramChat.create({ data: { chatId: -9500n, title: "UCCNE chat", groupId: "ga", communityId: "c-uccne" } });
+    const refused = sends("sendPoll"); // definite refusals (the run's pending-poll pass retries once)
+    expect(refused).toBeGreaterThanOrEqual(1);
+    // Telegram recovers; the organizer retries from the Match (only what is due runs).
+    sendPollMode = "ok";
     // The route runs at the real clock: pin it to the poll window for this check.
     vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(T.afterPoll);
     try {
       expect((await call(automationRoute.POST(json("POST", {}), gm(m.id)))).body).toMatchObject({ pollsPosted: 1 });
-      expect(sends("sendPoll")).toBe(1);
+      expect(sends("sendPoll")).toBe(refused + 1);
       expect((await call(automationRoute.POST(json("POST", {}), gm(m.id)))).body).toMatchObject({ pollsPosted: 0 });
-      expect(sends("sendPoll")).toBe(1);
+      expect(sends("sendPoll")).toBe(refused + 1);
     } finally {
       vi.useRealTimers();
     }
@@ -658,6 +666,16 @@ describe("M9.2-6/7 — weekly schedules and the Match Automation Agent", () => {
     expect(a.notifiedAt).not.toBeNull();
     await runMatchAutomation(T.afterCutoff);
     expect(sends("stopPoll")).toBe(1);
+  });
+
+  it("M9.3 — a Community WITHOUT Telegram is web-only: no poll, no error, no Telegram call; attendance via the Match Link", async () => {
+    await setup({ chat: false });
+    expect(await runMatchAutomation(T.afterPoll)).toMatchObject({ created: 1, pollsPosted: 0, errors: [] });
+    const [m] = await scheduledMatches();
+    expect(m.automation!.lastError).toBeNull();
+    expect(m.automation!.pollPostedAt).not.toBeNull();
+    expect(await runMatchAutomation(T.afterCutoff)).toMatchObject({ cutoffs: 1, notified: 1, errors: [] });
+    expect(tgCalls).toHaveLength(0);
   });
 
   it("editing a schedule affects new Matches only; existing due times are kept", async () => {
@@ -861,12 +879,14 @@ describe("M9.2-6/7 — weekly schedules and the Match Automation Agent", () => {
   });
 
   it("obsolete Match: a poll that never went out is NOT posted once the cutoff has passed, even after the problem is fixed", async () => {
-    await setup({ chat: false });
-    await runMatchAutomation(T.afterPoll); // no Telegram group → poll pending
-    await prisma.telegramChat.create({ data: { chatId: -9600n, title: "UCCNE chat", groupId: "ga", communityId: "c-uccne" } });
+    await setup();
+    sendPollMode = "reject";
+    await runMatchAutomation(T.afterPoll); // Telegram refused → poll pending
+    const refused = sends("sendPoll");
+    sendPollMode = "ok";
     await runMatchAutomation(plus(CUTOFF_DUE, 5));
     await runMatchAutomation(plus(CUTOFF_DUE, 5 * 24 * 60)); // days later (next week's poll window has not opened yet)
-    expect(sends("sendPoll")).toBe(0);
+    expect(sends("sendPoll")).toBe(refused); // nothing after the cutoff
     const [m] = await scheduledMatches();
     expect(m.automation!.pollPostedAt).toBeNull();
     expect(m.automation!.cutoffCompletedAt).not.toBeNull(); // attendance still closed + organizers told
@@ -956,14 +976,16 @@ describe("M9.2-6/7 — weekly schedules and the Match Automation Agent", () => {
   });
 
   it("M9.2.1 — Run Now while active: same engine, idempotent; problems are reported in organizer terms", async () => {
-    const id = await setup({ chat: false });
+    const id = await setup();
+    sendPollMode = "reject";
     const first = (await runNow(id, T.afterPoll)).body;
     expect(first).toMatchObject({ ok: false, paused: false, created: 1, pollsPosted: 0 });
-    expect(first.issues).toEqual([expect.stringMatching(/no connected Telegram group for UCCNE/)]);
-    await prisma.telegramChat.create({ data: { chatId: -9700n, title: "UCCNE chat", groupId: "ga", communityId: "c-uccne" } });
+    expect(first.issues).toEqual([expect.stringMatching(/attendance poll could not be posted/)]);
+    const refused = sends("sendPoll");
+    sendPollMode = "ok";
     expect((await runNow(id, plus(T.afterPoll, 1))).body).toMatchObject({ ok: true, created: 0, pollsPosted: 1, issues: [] });
     expect((await runNow(id, plus(T.afterPoll, 2))).body).toMatchObject({ ok: true, created: 0, pollsPosted: 0 });
-    expect(sends("sendPoll")).toBe(1);
+    expect(sends("sendPoll")).toBe(refused + 1);
     expect(await isActive(id)).toBe(true);
   });
 

@@ -9,6 +9,7 @@ import { countAttendance, type AttendanceRow } from "@/lib/attendance";
 import { postAttendancePollFor } from "@/lib/telegramAttendance";
 import { closeMatchAttendancePolls, POLL_CLOSE_MESSAGE } from "@/lib/matchPollClose";
 import { sendAttendanceReadyEmail } from "@/lib/email";
+import { currentMatchLinkPath } from "@/lib/matchLink";
 import { CUTOFF_CATCH_UP_MS, dueForPoll, type WeeklySchedule } from "@/lib/scheduleTime";
 
 /**
@@ -22,8 +23,11 @@ import { CUTOFF_CATCH_UP_MS, dueForPoll, type WeeklySchedule } from "@/lib/sched
  *     whose cutoff has not: the Match (Group, Community, Venue, date/time) exists
  *     exactly once — UNIQUE (scheduleId, date) — with its MatchAutomation row
  *     (due instants fixed at creation).
- *  2. POLL — post the attendance poll to the Community's connected Telegram
- *     group through the existing poster (MessageDelivery reserve → send →
+ *  2. POLL — Telegram is optional (M9.3): a Community WITHOUT a connected
+ *     Telegram group collects attendance through the Match Link, so the step
+ *     simply completes (no Telegram call, no error). Otherwise post the
+ *     attendance poll to the Community's connected Telegram group through the
+ *     existing poster (MessageDelivery reserve → send →
  *     finalize: same content already SENT is a no-op; an UNCERTAIN delivery is
  *     never retried automatically — the organizer decides in the Match).
  *  3. CUTOFF — when the cutoff has passed: close the Telegram poll (final sync
@@ -150,7 +154,7 @@ async function ensureMatch(s: ScheduleRow, occ: ReturnType<typeof dueForPoll>[nu
 }
 
 /** Step 2 — post the attendance poll (once; never blindly retried after an uncertain delivery). */
-async function stepPoll(ctx: TenantContext, matchId: string, automationId: string): Promise<"posted" | "skipped" | "error"> {
+async function stepPoll(ctx: TenantContext, matchId: string, automationId: string): Promise<"posted" | "link" | "skipped" | "error"> {
   const a = await prisma.matchAutomation.findUniqueOrThrow({ where: { id: automationId } });
   if (a.pollPostedAt) return "skipped";
   const m = await prisma.match.findFirst({ where: { id: matchId, groupId: ctx.activeGroup.id }, select: { status: true, communityId: true, telegramChatId: true, community: { select: { name: true } } } });
@@ -162,8 +166,9 @@ async function stepPoll(ctx: TenantContext, matchId: string, automationId: strin
   }
   if (!chatRef && m.communityId) chatRef = (await communityTelegramChat(ctx.activeGroup.id, m.communityId))?.id ?? null;
   if (!chatRef) {
-    await recordError(automationId, `The attendance poll could not be posted: no connected Telegram group for ${m.community?.name ?? "this community"}.`);
-    return "error";
+    // M9.3 — web-only Community: players answer through the Match Link; nothing to post.
+    await prisma.matchAutomation.updateMany({ where: { id: automationId, pollPostedAt: null }, data: { pollPostedAt: new Date(), lastError: null } });
+    return "link";
   }
   if (chatRef !== m.telegramChatId) await prisma.match.updateMany({ where: { id: matchId, groupId: ctx.activeGroup.id }, data: { telegramChatId: chatRef } });
   const res = await postAttendancePollFor(ctx, matchId, { chatRef, intent: "post" });
@@ -258,6 +263,8 @@ async function stepNotify(ctx: TenantContext, matchId: string, automationId: str
     });
     const a = await prisma.matchAutomation.findUniqueOrThrow({ where: { id: automationId }, select: { lastError: true } });
     const ymd = summary.date.toISOString().slice(0, 10);
+    const share = await prisma.match.findFirstOrThrow({ where: { id: matchId, groupId }, select: { shareVersion: true, group: { select: { visibility: true } } } });
+    const linkPath = share.group.visibility === "PRIVATE" ? null : currentMatchLinkPath(matchId, share.shareVersion);
     const send = (to: string) =>
       sendAttendanceReadyEmail({
         to,
@@ -268,6 +275,7 @@ async function stepNotify(ctx: TenantContext, matchId: string, automationId: str
         rosterSize: summary.rosterSize,
         pollNote: a.lastError?.includes("attendance poll") ? a.lastError : null,
         matchPath: canonicalAdminMatchPath(ctx.organization.slug, ctx.activeGroup.slug, matchId),
+        matchLinkPath: linkPath,
       });
     const outcomes: RecipientOutcome[] = [];
     for (const o of organizers) outcomes.push(await notifyRecipient(automationId, { userId: o.user.id, email: o.user.email, emailVerifiedAt: o.user.emailVerifiedAt }, now, send));
