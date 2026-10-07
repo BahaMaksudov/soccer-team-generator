@@ -89,6 +89,7 @@ describe("flat operational Admin APIs are deleted", () => {
         canonical("venues"), // M9.2
         canonical("schedules"), // M9.2
         canonical("schedules/[scheduleId]"), // M9.2
+        canonical("schedules/[scheduleId]/run"), // M9.2.1 — organizer Run Now
         canonical("matches/[matchId]/automation"), // M9.2
         canonical("venues/[venueId]"), // M9.2
         canonical("matches/[matchId]/telegram-chat"), // M9-B

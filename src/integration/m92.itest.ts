@@ -36,6 +36,7 @@ import * as closePostRoute from "@/app/api/admin/o/[organizationSlug]/g/[groupSl
 import { loadMatchForViewer } from "@/lib/matchPage";
 import * as schedulesRoute from "@/app/api/admin/o/[organizationSlug]/g/[groupSlug]/schedules/route";
 import * as scheduleRoute from "@/app/api/admin/o/[organizationSlug]/g/[groupSlug]/schedules/[scheduleId]/route";
+import * as scheduleRunRoute from "@/app/api/admin/o/[organizationSlug]/g/[groupSlug]/schedules/[scheduleId]/run/route";
 import * as automationRoute from "@/app/api/admin/o/[organizationSlug]/g/[groupSlug]/matches/[matchId]/automation/route";
 import * as cronRoute from "@/app/api/cron/automation/route";
 import { runMatchAutomation } from "@/lib/matchAutomation";
@@ -882,6 +883,132 @@ describe("M9.2-6/7 — weekly schedules and the Match Automation Agent", () => {
     expect(await runMatchAutomation(new Date("2026-10-19T00:05:00Z"))).toMatchObject({ created: 0, pollsPosted: 0, cutoffs: 0, notified: 0 }); // next week's poll time
     expect({ polls: sends("sendPoll"), stops: sends("stopPoll"), emails: testOutbox.sent.length }).toEqual(before);
     expect(await scheduledMatches()).toHaveLength(1);
+  });
+  // ---------------------------------------------------------------- M9.2.1 — schedule automation controls
+  const runNow = async (scheduleId: string, at: Date, slugs = A) => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(at);
+    try {
+      return await call(scheduleRunRoute.POST(json("POST"), gs(scheduleId, slugs)));
+    } finally {
+      vi.useRealTimers();
+    }
+  };
+  const pause = (id: string, isActive: boolean) => call(scheduleRoute.PATCH(json("PATCH", { isActive }), gs(id)));
+  const isActive = async (id: string) => (await prisma.matchSchedule.findUniqueOrThrow({ where: { id } })).isActive;
+
+  it("M9.2.1 — OWNER and ADMIN pause / resume; MEMBER cannot pause, resume, edit or Run Now; foreign schedules are 404", async () => {
+    const id = await setup();
+    expect((await pause(id, false)).body).toMatchObject({ ok: true, schedule: { isActive: false } });
+    await signIn("admin");
+    expect((await pause(id, true)).body).toMatchObject({ ok: true, schedule: { isActive: true } });
+    expect((await pause(id, false)).status).toBe(200);
+    expect((await pause(id, true)).status).toBe(200);
+    await signIn("member");
+    expect((await pause(id, false)).status).toBe(404);
+    expect((await call(scheduleRoute.PATCH(json("PATCH", { startTime: "20:30" }), gs(id)))).status).toBe(404);
+    expect((await runNow(id, T.afterPoll)).status).toBe(404);
+    await signIn("other");
+    expect((await runNow(id, T.afterPoll, B)).status).toBe(404); // another Organization's URL
+    expect((await call(scheduleRoute.PATCH(json("PATCH", { isActive: false }), gs(id, B)))).status).toBe(404);
+    await signIn("owner");
+    expect((await runNow("does-not-exist", T.afterPoll)).status).toBe(404);
+    expect(await isActive(id)).toBe(true);
+    expect(await scheduledMatches()).toHaveLength(0); // nothing ran for the refused callers
+    expect(tgCalls).toHaveLength(0);
+  });
+
+  it("M9.2.1 — paused: the automatic scheduler ignores it; resume restores automatic eligibility without duplicates", async () => {
+    const id = await setup();
+    await pause(id, false);
+    expect(await runMatchAutomation(T.afterPoll)).toMatchObject({ created: 0, pollsPosted: 0 });
+    expect(await scheduledMatches()).toHaveLength(0);
+    await pause(id, true);
+    expect(await runMatchAutomation(plus(T.afterPoll, 15))).toMatchObject({ created: 1, pollsPosted: 1 });
+    await pause(id, false);
+    await pause(id, true);
+    expect(await runMatchAutomation(plus(T.afterPoll, 30))).toMatchObject({ created: 0, pollsPosted: 0 });
+    expect(await scheduledMatches()).toHaveLength(1);
+    expect(sends("sendPoll")).toBe(1);
+  });
+
+  it("M9.2.1 — Run Now while paused runs that schedule once, keeps it paused, and repeated Run Now never duplicates the Match, poll, cutoff or email; teams never published", async () => {
+    const id = await setup();
+    await pause(id, false);
+    // Nothing due yet → reported honestly.
+    expect((await runNow(id, T.beforePoll)).body).toEqual({ ok: true, paused: true, created: 0, pollsPosted: 0, cutoffs: 0, notified: 0, issues: [] });
+    expect((await runNow(id, T.afterPoll)).body).toMatchObject({ ok: true, paused: true, created: 1, pollsPosted: 1 });
+    expect((await runNow(id, plus(T.afterPoll, 5))).body).toMatchObject({ ok: true, created: 0, pollsPosted: 0, cutoffs: 0, notified: 0 });
+    expect(await isActive(id)).toBe(false);
+    // The automatic scheduler still ignores the paused schedule at the cutoff.
+    expect(await runMatchAutomation(T.afterCutoff)).toMatchObject({ cutoffs: 0, notified: 0 });
+    expect(sends("stopPoll")).toBe(0);
+    // Organizer finalizes it explicitly.
+    expect((await runNow(id, T.afterCutoff)).body).toMatchObject({ ok: true, paused: true, cutoffs: 1, notified: 1 });
+    for (const at of [T.afterCutoff, plus(T.afterCutoff, 60)]) expect((await runNow(id, at)).body).toMatchObject({ created: 0, pollsPosted: 0, cutoffs: 0, notified: 0, issues: [] });
+    expect(await scheduledMatches()).toHaveLength(1);
+    expect(sends("sendPoll")).toBe(1);
+    expect(sends("stopPoll")).toBe(1);
+    expect(testOutbox.sent.map((e) => e.to).sort()).toEqual(["admin@example.test", "owner@example.test"]);
+    expect(await isActive(id)).toBe(false);
+    expect(await prisma.teamGeneration.count()).toBe(0);
+    expect(sends("sendMessage")).toBe(0);
+  });
+
+  it("M9.2.1 — Run Now while active: same engine, idempotent; problems are reported in organizer terms", async () => {
+    const id = await setup({ chat: false });
+    const first = (await runNow(id, T.afterPoll)).body;
+    expect(first).toMatchObject({ ok: false, paused: false, created: 1, pollsPosted: 0 });
+    expect(first.issues).toEqual([expect.stringMatching(/no connected Telegram group for UCCNE/)]);
+    await prisma.telegramChat.create({ data: { chatId: -9700n, title: "UCCNE chat", groupId: "ga", communityId: "c-uccne" } });
+    expect((await runNow(id, plus(T.afterPoll, 1))).body).toMatchObject({ ok: true, created: 0, pollsPosted: 1, issues: [] });
+    expect((await runNow(id, plus(T.afterPoll, 2))).body).toMatchObject({ ok: true, created: 0, pollsPosted: 0 });
+    expect(sends("sendPoll")).toBe(1);
+    expect(await isActive(id)).toBe(true);
+  });
+
+  it("M9.2.1 — Run Now for one schedule never runs another (paused) schedule; match-level Run now works while paused", async () => {
+    const id = await setup();
+    const funnyChat = await prisma.telegramChat.create({ data: { chatId: -9800n, title: "Funny chat", groupId: "ga", communityId: "c-funny" } });
+    const other = ((await call(schedulesRoute.POST(json("POST", { ...SCHED, communityId: "c-funny" }), g()))).body.schedule as { id: string }).id;
+    await pause(other, false);
+    expect((await runNow(id, T.afterPoll)).body).toMatchObject({ created: 1, pollsPosted: 1 });
+    expect((await scheduledMatches()).map((m) => m.scheduleId)).toEqual([id]);
+    expect(funnyChat.id).toBeTruthy();
+    // Match-level Run now on a paused schedule's Match still runs it (and keeps it paused).
+    await pause(id, false);
+    const [m] = await scheduledMatches();
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(T.afterCutoff);
+    try {
+      expect((await call(automationRoute.POST(json("POST", {}), gm(m.id)))).body).toMatchObject({ ok: true, paused: true, cutoffs: 1, notified: 1 });
+    } finally {
+      vi.useRealTimers();
+    }
+    expect(await isActive(id)).toBe(false);
+    expect(await scheduledMatches()).toHaveLength(1); // the paused FunnyStuff schedule created nothing
+  });
+
+  it("M9.2.1 — pausing never deletes the schedule, its Matches, attendance, polls or automation state", async () => {
+    const id = await setup();
+    await runMatchAutomation(T.afterPoll);
+    const [m] = await scheduledMatches();
+    await prisma.attendanceResponse.create({ data: { groupId: "ga", matchId: m.id, playerId: "u1", participantStatus: "PLAYING", participantSource: "WEB", participantRespondedAt: T.afterPoll } });
+    await runMatchAutomation(T.afterCutoff);
+    const snapshot = async () => ({
+      schedules: await prisma.matchSchedule.count(),
+      matches: await prisma.match.count(),
+      automation: await prisma.matchAutomation.findUniqueOrThrow({ where: { matchId: m.id }, select: { pollPostedAt: true, cutoffCompletedAt: true, notifiedAt: true } }),
+      attendance: await prisma.attendanceResponse.count({ where: { matchId: m.id } }),
+      polls: await prisma.telegramPoll.count({ where: { matchId: m.id } }),
+      emails: await prisma.matchAutomationEmail.count(),
+      closed: (await prisma.match.findUniqueOrThrow({ where: { id: m.id } })).attendanceClosedAt,
+    });
+    const before = await snapshot();
+    await pause(id, false);
+    expect(await snapshot()).toEqual(before);
+    await pause(id, true);
+    expect(await snapshot()).toEqual(before);
   });
 });
 

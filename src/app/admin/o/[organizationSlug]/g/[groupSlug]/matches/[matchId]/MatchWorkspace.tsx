@@ -22,6 +22,7 @@ import { matchLifecycle, todayUtcYmd } from "@/lib/matchLifecycle";
 import { cn } from "@/lib/cn";
 import type { Player } from "../../CanonicalAdminWorkspace";
 import { computeSelection, NO_ADJUSTMENTS, reconcileAdjustments, toggleSelection, type EffectiveStatuses, type SelectionAdjustments } from "@/lib/matchSelection";
+import { runFeedback, type RunResult } from "@/lib/automationFeedback";
 
 /**
  * M9-A — the organizer's Match workspace. Sections, not a wizard:
@@ -464,7 +465,13 @@ export default function MatchWorkspace({
       </section>
 
       {/* M9.2 — Match Automation status (organizers) */}
-      {view.canManage && view.automation && <AutomationCard a={view.automation} teamsPublished={view.generation !== null} busy={busy} onRun={() => call("/automation", {}, "Automation ran for this match. Nothing is published automatically.")} />}
+      {view.canManage && view.automation && <AutomationCard a={view.automation} teamsPublished={view.generation !== null} busy={busy} onRun={async () => {
+            const r = await call("/automation", {}, "");
+            if (r.ok) {
+              const fb = runFeedback(r.data as RunResult);
+              setMessage([fb.text, ...(fb.details ?? [])].join(" "));
+            }
+          }} />}
 
       {/* Attendance */}
       <SectionCard
@@ -851,14 +858,14 @@ function AutomationCard({ a, teamsPublished, busy, onRun }: { a: NonNullable<Mat
       {a.lastError && (
         <div role="alert" className="mt-3 flex flex-wrap items-center gap-2 rounded-tbp-xl border border-destructive/30 bg-destructive/5 p-3 text-sm">
           <span className="min-w-0 flex-1 basis-56 text-destructive">{a.lastError}</span>
-          <Button type="button" size="sm" variant="outline" disabled={busy || !a.scheduleActive} onClick={onRun}>
+          <Button type="button" size="sm" variant="outline" disabled={busy} onClick={onRun}>
             Retry
           </Button>
         </div>
       )}
-      {!a.lastError && a.scheduleActive && (
+      {!a.lastError && (
         <p className="mt-3 text-xs text-muted-foreground">
-          Runs automatically on schedule.{" "}
+          {a.scheduleActive ? "Runs automatically on schedule." : "Automation is paused for this schedule; Run now still works and keeps it paused."}{" "}
           <button type="button" className="font-semibold text-primary underline disabled:opacity-50" disabled={busy} onClick={onRun}>
             Run now
           </button>{" "}

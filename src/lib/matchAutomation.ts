@@ -48,6 +48,11 @@ import { CUTOFF_CATCH_UP_MS, dueForPoll, type WeeklySchedule } from "@/lib/sched
  * attendance is still open (before the cutoff) — never after. A cutoff (and
  * its email) is finalized any time within CUTOFF_CATCH_UP_MS (48 h) after it
  * is due; an organizer's "Run now" on one Match is not limited by that window.
+ *
+ * Paused schedules: automatic (scheduler-triggered) runs ignore them entirely.
+ * An organizer's Run now (organizerRun) is an explicit override for ONE
+ * schedule: it runs that schedule's due steps even while paused — through the
+ * same steps and idempotency guards — and never changes isActive.
  */
 
 const NOTIFY_CLAIM_TIMEOUT_MS = 15 * 60_000;
@@ -284,12 +289,24 @@ async function stepNotify(ctx: TenantContext, matchId: string, automationId: str
 }
 
 /** Run every due step (optionally for one Group / one Match). Never publishes teams. */
-export async function runMatchAutomation(now: Date = new Date(), scope: { groupId?: string; matchId?: string } = {}): Promise<AutomationRun> {
+export type AutomationScope = {
+  groupId?: string;
+  /** Only this schedule (and its Matches). */
+  scheduleId?: string;
+  /** Only this Match's steps (requires scheduleId to include a paused schedule). */
+  matchId?: string;
+  /** Organizer override: include the scoped schedule even while paused. Ignored without scheduleId. */
+  includePaused?: boolean;
+};
+
+export async function runMatchAutomation(now: Date = new Date(), scope: AutomationScope = {}): Promise<AutomationRun> {
+  const includePaused = Boolean(scope.includePaused && scope.scheduleId);
+  const scheduleWhere = { ...(scope.scheduleId ? { id: scope.scheduleId } : {}), ...(includePaused ? {} : { isActive: true }) };
   // Automatic runs finalize cutoffs within the catch-up window; an organizer's run for one Match is not limited by it.
   const cutoffFloor = scope.matchId ? undefined : new Date(now.getTime() - CUTOFF_CATCH_UP_MS);
   const run: AutomationRun = { schedules: 0, created: 0, pollsPosted: 0, cutoffs: 0, notified: 0, errors: [] };
   const schedules = (await prisma.matchSchedule.findMany({
-    where: { isActive: true, group: { isActive: true }, community: { isActive: true }, ...(scope.groupId ? { groupId: scope.groupId } : {}) },
+    where: { ...scheduleWhere, group: { isActive: true }, community: { isActive: true }, ...(scope.groupId ? { groupId: scope.groupId } : {}) },
     select: { id: true, groupId: true, communityId: true, venueId: true, createdByUserId: true, timezone: true, weekday: true, startTime: true, pollDaysBefore: true, pollTime: true, cutoffDaysBefore: true, cutoffTime: true },
   })) as ScheduleRow[];
   run.schedules = schedules.length;
@@ -327,7 +344,7 @@ export async function runMatchAutomation(now: Date = new Date(), scope: { groupI
       pollPostedAt: null,
       pollDueAt: { lte: now },
       cutoffDueAt: { gt: now },
-      match: { status: { not: "CANCELED" }, schedule: { isActive: true } },
+      match: { status: { not: "CANCELED" }, schedule: scheduleWhere },
     },
     select: { id: true, matchId: true, groupId: true, match: { select: { schedule: { select: { createdByUserId: true } } } } },
   });
@@ -348,7 +365,7 @@ export async function runMatchAutomation(now: Date = new Date(), scope: { groupI
       ...(scope.matchId ? { matchId: scope.matchId } : {}),
       cutoffDueAt: { lte: now, ...(cutoffFloor ? { gte: cutoffFloor } : {}) },
       OR: [{ cutoffCompletedAt: null }, { notifiedAt: null }],
-      match: { status: { not: "CANCELED" }, schedule: { isActive: true } },
+      match: { status: { not: "CANCELED" }, schedule: scheduleWhere },
     },
     select: { id: true, matchId: true, groupId: true, match: { select: { schedule: { select: { createdByUserId: true } } } } },
   });
@@ -369,4 +386,37 @@ export async function runMatchAutomation(now: Date = new Date(), scope: { groupI
     }
   }
   return run;
+}
+
+export type OrganizerRunResult = {
+  ok: boolean;
+  /** Whether the schedule was paused (Run now does not resume it). */
+  paused: boolean;
+  created: number;
+  pollsPosted: number;
+  cutoffs: number;
+  notified: number;
+  /** Organizer-facing problems recorded during this run (no internals). */
+  issues: string[];
+};
+
+/**
+ * M9.2.1 — an organizer's Run now (OWNER/ADMIN; the caller authorizes and
+ * resolves the schedule inside the tenant): the SAME engine, scoped to one
+ * schedule (optionally one of its Matches), including a paused schedule
+ * without resuming it. Nothing that already happened happens again; teams are
+ * never generated or published.
+ */
+export async function organizerRun(groupId: string, scheduleId: string, matchId?: string): Promise<OrganizerRunResult> {
+  const startedAt = new Date();
+  const schedule = await prisma.matchSchedule.findFirstOrThrow({ where: { id: scheduleId, groupId }, select: { isActive: true } });
+  const run = await runMatchAutomation(startedAt, { groupId, scheduleId, matchId, includePaused: true });
+  if (run.errors.length) console.error(`[automation] organizer run finished with ${run.errors.length} error(s): ${JSON.stringify(run.errors)}`);
+  const recorded = await prisma.matchAutomation.findMany({
+    where: { groupId, match: { scheduleId, ...(matchId ? { id: matchId } : {}) }, lastError: { not: null }, lastErrorAt: { gte: startedAt } },
+    select: { lastError: true },
+  });
+  const issues = [...new Set(recorded.map((r) => r.lastError!))];
+  if (run.errors.length) issues.push("Something went wrong while running automation. Please try again.");
+  return { ok: issues.length === 0, paused: !schedule.isActive, created: run.created, pollsPosted: run.pollsPosted, cutoffs: run.cutoffs, notified: run.notified, issues };
 }

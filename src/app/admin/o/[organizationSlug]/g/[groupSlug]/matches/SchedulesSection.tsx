@@ -1,16 +1,23 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { CalendarClock, Plus } from "lucide-react";
+import { CalendarClock, Pause, Pencil, Play, Plus, RefreshCw } from "lucide-react";
 import { adminTenantApiPath } from "@/lib/adminTenantApi";
 import { WEEKDAYS } from "@/lib/scheduleTime";
 import { Button } from "@/components/ui/button";
 import { SectionCard, StateChip } from "@/components/game-day/parts";
+import Dialog from "@/components/app/Dialog";
+import { runFeedback, type Feedback, type RunResult } from "@/lib/automationFeedback";
 
 /**
  * M9.2 — weekly recurring matches (OWNER/ADMIN). Automation creates each Match
  * and posts its attendance poll at the poll time, closes attendance at the
  * cutoff and emails organizers. Teams are never generated or published by it.
+ *
+ * M9.2.1 — each schedule card shows its automation state with Run now (the
+ * same engine as the scheduler; works while paused without resuming it),
+ * Pause / Resume automation (MatchSchedule.isActive; existing Matches are
+ * untouched) and Edit.
  */
 type Schedule = {
   id: string;
@@ -33,6 +40,14 @@ type Form = Omit<Schedule, "id" | "communityName" | "venueName" | "isActive" | "
 const when = (iso: string, tz: string) =>
   new Intl.DateTimeFormat("en-US", { timeZone: tz, weekday: "short", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }).format(new Date(iso));
 const daysLabel = (n: number) => (n === 0 ? "same day" : n === 1 ? "1 day before" : `${n} days before`);
+const gameDay = (iso: string, tz: string) => new Intl.DateTimeFormat("en-US", { timeZone: tz, month: "short", day: "numeric", year: "numeric" }).format(new Date(iso));
+/** "21:00" → "9:00 PM". */
+const clock = (hhmm: string) => {
+  const [h, m] = hhmm.split(":").map(Number);
+  return `${h % 12 === 0 ? 12 : h % 12}:${String(m).padStart(2, "0")} ${h < 12 ? "AM" : "PM"}`;
+};
+/** Weekday + time of a step that happens `daysBefore` the game weekday. */
+const stepAt = (weekday: number, daysBefore: number, hhmm: string) => `${WEEKDAYS[(weekday - daysBefore + 7) % 7]} ${clock(hhmm)}`;
 
 export default function SchedulesSection({
   organizationSlug,
@@ -54,6 +69,39 @@ export default function SchedulesSection({
   const [values, setValues] = useState<Form>(empty);
   const [msg, setMsg] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [feedback, setFeedback] = useState<Record<string, Feedback>>({});
+  const [confirmPause, setConfirmPause] = useState<Schedule | null>(null);
+
+  async function runNow(id: string) {
+    setBusy(true);
+    setFeedback((f) => ({ ...f, [id]: { tone: "done", text: "Running…" } }));
+    try {
+      const res = await fetch(url(`/schedules/${id}/run`), { method: "POST" });
+      const data = await res.json().catch(() => ({}));
+      setFeedback((f) => ({ ...f, [id]: res.ok ? runFeedback(data as RunResult) : { tone: "warn", text: data?.error ?? "Automation could not run. Please try again." } }));
+      await load();
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function setActive(s: Schedule, isActive: boolean) {
+    setConfirmPause(null);
+    setBusy(true);
+    try {
+      const res = await fetch(url(`/schedules/${s.id}`), { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ isActive }) });
+      const data = await res.json().catch(() => ({}));
+      setFeedback((f) => ({
+        ...f,
+        [s.id]: res.ok
+          ? { tone: "done", text: isActive ? "Automation resumed. The next due poll and cutoff will run automatically." : "Automation paused. Existing matches are unchanged." }
+          : { tone: "warn", text: data?.error ?? "Something went wrong." },
+      }));
+      await load();
+    } finally {
+      setBusy(false);
+    }
+  }
 
   const load = useCallback(async () => {
     const res = await fetch(adminTenantApiPath({ organizationSlug, groupSlug, path: "/schedules" }), { cache: "no-store" });
@@ -191,59 +239,95 @@ export default function SchedulesSection({
       )}
 
       {list && list.length > 0 && (
-        <ul className="mt-4 space-y-2">
-          {list.map((s) => (
-            <li key={s.id} className="rounded-tbp-xl border border-border p-3 text-sm">
-              <div className="flex flex-wrap items-start justify-between gap-2">
-                <div className="min-w-0">
-                  <p className="font-semibold">
-                    Every {WEEKDAYS[s.weekday]} at {s.startTime} · {s.communityName}
-                  </p>
-                  <p className="text-xs text-muted-foreground">
-                    {s.venueName ? `${s.venueName} · ` : ""}
-                    {s.timezone} · poll {daysLabel(s.pollDaysBefore)} at {s.pollTime} · cutoff {daysLabel(s.cutoffDaysBefore)} at {s.cutoffTime}
-                  </p>
+        <ul className="mt-4 space-y-3">
+          {list.map((s) => {
+            const fb = feedback[s.id];
+            return (
+              <li key={s.id} className="rounded-tbp-xl border border-border p-3 text-sm sm:p-4">
+                <div className="flex flex-wrap items-start justify-between gap-2">
+                  <div className="min-w-0">
+                    <h3 className="break-words text-base font-extrabold">{s.communityName}</h3>
+                    <p className="text-muted-foreground">
+                      Every {WEEKDAYS[s.weekday]} · {clock(s.startTime)}
+                      {s.venueName ? ` · ${s.venueName}` : ""}
+                    </p>
+                  </div>
+                  <StateChip tone={s.isActive ? "done" : "neutral"}>Automation: {s.isActive ? "Enabled" : "Paused"}</StateChip>
                 </div>
-                {s.isActive ? <StateChip tone="done">Active</StateChip> : <StateChip tone="neutral">Paused</StateChip>}
-              </div>
-              {s.isActive && (
-                <dl className="mt-2 grid gap-1 text-xs sm:grid-cols-3">
+                <dl className="mt-3 grid grid-cols-1 gap-x-4 gap-y-2 min-[420px]:grid-cols-2 lg:grid-cols-4">
                   <div>
-                    <dt className="text-muted-foreground">Next poll</dt>
-                    <dd className="font-semibold">{when(s.next.pollAt, s.timezone)}</dd>
+                    <dt className="text-xs text-muted-foreground">Poll</dt>
+                    <dd className="font-semibold">{stepAt(s.weekday, s.pollDaysBefore, s.pollTime)}</dd>
                   </div>
                   <div>
-                    <dt className="text-muted-foreground">Cutoff</dt>
-                    <dd className="font-semibold">{when(s.next.cutoffAt, s.timezone)}</dd>
+                    <dt className="text-xs text-muted-foreground">Cutoff</dt>
+                    <dd className="font-semibold">{stepAt(s.weekday, s.cutoffDaysBefore, s.cutoffTime)}</dd>
                   </div>
                   <div>
-                    <dt className="text-muted-foreground">Next game</dt>
-                    <dd className="font-semibold">{when(s.next.gameAt, s.timezone)}</dd>
+                    <dt className="text-xs text-muted-foreground">Next game</dt>
+                    <dd className="font-semibold">{gameDay(s.next.gameAt, s.timezone)}</dd>
+                  </div>
+                  <div>
+                    <dt className="text-xs text-muted-foreground">Next poll</dt>
+                    <dd className="font-semibold">{s.isActive ? when(s.next.pollAt, s.timezone) : "Paused"}</dd>
                   </div>
                 </dl>
-              )}
-              <div className="mt-2 flex flex-wrap gap-2">
-                <Button
-                  type="button"
-                  size="sm"
-                  variant="outline"
-                  disabled={busy}
-                  onClick={() => {
-                    const { communityId, venueId, timezone, weekday, startTime, pollDaysBefore, pollTime, cutoffDaysBefore, cutoffTime } = s;
-                    setValues({ communityId, venueId: venueId ?? "", timezone, weekday, startTime, pollDaysBefore, pollTime, cutoffDaysBefore, cutoffTime });
-                    setForm({ mode: "edit", id: s.id });
-                  }}
-                >
-                  Edit
-                </Button>
-                <Button type="button" size="sm" variant="outline" disabled={busy} onClick={() => send(`/schedules/${s.id}`, "PATCH", { isActive: !s.isActive }, s.isActive ? "Schedule paused." : "Schedule activated.")}>
-                  {s.isActive ? "Pause" : "Activate"}
-                </Button>
-              </div>
-            </li>
-          ))}
+                <p className="mt-2 text-xs text-muted-foreground">Times in {s.timezone}.</p>
+                <div className="mt-3 flex flex-wrap gap-2">
+                  <Button type="button" size="sm" disabled={busy} onClick={() => runNow(s.id)}>
+                    <RefreshCw aria-hidden="true" /> Run Now
+                  </Button>
+                  {s.isActive ? (
+                    <Button type="button" size="sm" variant="outline" disabled={busy} onClick={() => setConfirmPause(s)}>
+                      <Pause aria-hidden="true" /> Pause Automation
+                    </Button>
+                  ) : (
+                    <Button type="button" size="sm" variant="outline" disabled={busy} onClick={() => setActive(s, true)}>
+                      <Play aria-hidden="true" /> Resume Automation
+                    </Button>
+                  )}
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="ghost"
+                    disabled={busy}
+                    onClick={() => {
+                      const { communityId, venueId, timezone, weekday, startTime, pollDaysBefore, pollTime, cutoffDaysBefore, cutoffTime } = s;
+                      setValues({ communityId, venueId: venueId ?? "", timezone, weekday, startTime, pollDaysBefore, pollTime, cutoffDaysBefore, cutoffTime });
+                      setForm({ mode: "edit", id: s.id });
+                    }}
+                  >
+                    <Pencil aria-hidden="true" /> Edit
+                  </Button>
+                </div>
+                {fb && (
+                  <div role="status" className={`mt-3 rounded-tbp border px-3 py-2 ${fb.tone === "warn" ? "border-destructive/30 bg-destructive/5 text-destructive" : "border-border bg-secondary"}`}>
+                    <p>{fb.text}</p>
+                    {fb.details && (
+                      <ul className="mt-1 list-disc pl-5">
+                        {fb.details.map((d) => (
+                          <li key={d}>{d}</li>
+                        ))}
+                      </ul>
+                    )}
+                  </div>
+                )}
+              </li>
+            );
+          })}
         </ul>
       )}
+      <Dialog open={confirmPause !== null} title="Pause automation for this recurring schedule?" onClose={() => setConfirmPause(null)}>
+        <p className="text-sm text-muted-foreground">Upcoming automatic poll and attendance processing will not run until you resume it. Existing matches, attendance, polls and results are not changed, and you can still use Run Now.</p>
+        <div className="mt-4 flex flex-wrap justify-end gap-2">
+          <Button type="button" variant="ghost" onClick={() => setConfirmPause(null)}>
+            Keep running
+          </Button>
+          <Button type="button" onClick={() => confirmPause && setActive(confirmPause, false)}>
+            Pause automation
+          </Button>
+        </div>
+      </Dialog>
     </SectionCard>
   );
 }
