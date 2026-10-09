@@ -3,7 +3,7 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import fs from "node:fs";
 import path from "node:path";
-import { effectivePlan, PLAN_LIMITS, PLAN_LABEL, TRIAL_DAYS, trialDaysLeft, utcMonth } from "@/lib/entitlements";
+import { effectivePlan, limitReachedMessage, PLAN_LIMITS, PLAN_LABEL, TRIAL_DAYS, trialDaysLeft, utcMonth } from "@/lib/entitlements";
 import { aiUsageText } from "@/app/admin/o/[organizationSlug]/g/[groupSlug]/matches/[matchId]/PostGameSection";
 import PlanUsageCard from "@/app/admin/o/[organizationSlug]/PlanUsageCard";
 
@@ -41,6 +41,16 @@ describe("UTC calendar month", () => {
     expect(utcMonth(new Date("2026-10-31T23:59:59Z"))).toEqual({ period: "2026-10", start: new Date("2026-10-01T00:00:00Z"), next: new Date("2026-11-01T00:00:00Z") });
     expect(utcMonth(new Date("2026-12-15T05:00:00Z")).next).toEqual(new Date("2027-01-01T00:00:00Z"));
     expect(utcMonth(new Date("2026-11-01T00:00:00Z")).period).toBe("2026-11");
+  });
+});
+
+describe("limit messages (no upgrade action until Stripe)", () => {
+  it("Free names the limit and says Pro is coming soon; other plans just name the limit; nothing says 'Upgrade'", () => {
+    expect(limitReachedMessage("FREE", "30 active players")).toBe("Your Free plan limit has been reached (30 active players). Pro plans and upgrades are coming soon.");
+    expect(limitReachedMessage("TRIAL", "3 active groups")).toBe("Your Pro trial plan limit has been reached (3 active groups).");
+    expect(limitReachedMessage("COMP", "150 active players")).toBe("Your Pro (complimentary) plan limit has been reached (150 active players).");
+    const src = fs.readFileSync(path.join(process.cwd(), "src/lib/entitlements.ts"), "utf8");
+    expect(src).not.toMatch(/Upgrade to Pro/);
   });
 });
 

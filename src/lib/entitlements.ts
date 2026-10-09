@@ -91,6 +91,14 @@ const NOUN: Record<CapacityMetric, (n: number) => string> = {
   activeSchedules: (n) => `${n} active recurring schedule${n === 1 ? "" : "s"}`,
 };
 
+/** Until Stripe billing exists there is no upgrade action: Free limits say so instead of offering one. */
+export const FREE_LIMIT_COMING_SOON = "Pro plans and upgrades are coming soon.";
+
+/** "Your Free plan limit has been reached (30 active players). Pro plans and upgrades are coming soon." */
+export function limitReachedMessage(plan: EffectivePlan, detail: string): string {
+  return plan === "FREE" ? `Your Free plan limit has been reached (${detail}). ${FREE_LIMIT_COMING_SOON}` : `Your ${PLAN_LABEL[plan]} plan limit has been reached (${detail}).`;
+}
+
 export class EntitlementError extends Error {
   readonly metric: CapacityMetric | "telegram" | "monthlyAiRecaps";
   readonly limit: number | null;
@@ -124,8 +132,7 @@ export async function assertCapacity(tx: Prisma.TransactionClient, organizationI
   if (limit === null) return;
   const used = (await capacityUsage(organizationId, now, tx))[metric];
   if (used + adding > limit) {
-    const upgrade = plan === "FREE" ? " Upgrade to Pro for more." : "";
-    throw new EntitlementError(metric, limit, `Your ${PLAN_LABEL[plan]} plan includes ${NOUN[metric](limit)}.${upgrade}`);
+    throw new EntitlementError(metric, limit, limitReachedMessage(plan, NOUN[metric](limit)));
   }
 }
 
@@ -133,7 +140,7 @@ export async function assertCapacity(tx: Prisma.TransactionClient, organizationI
 export async function assertTelegram(organizationId: string, now: Date = new Date()): Promise<void> {
   const { plan, limits } = await organizationPlan(organizationId, now);
   if (!limits.telegram) {
-    throw new EntitlementError("telegram", null, `Telegram integration is part of Pro. On the ${PLAN_LABEL[plan]} plan, players use the match link.`);
+    throw new EntitlementError("telegram", null, limitReachedMessage(plan, "Telegram integration is part of Pro; players use the match link"));
   }
 }
 
@@ -163,7 +170,11 @@ export async function reserveAiCredit(input: { organizationId: string; groupId: 
     if (limit !== null && (await aiCreditsUsed(input.organizationId, now, tx)) >= limit) {
       const { next } = utcMonth(now);
       const reset = next.toLocaleDateString("en-US", { timeZone: "UTC", month: "short", day: "numeric" });
-      throw new EntitlementError("monthlyAiRecaps", limit, `You've used all ${limit} AI recaps for this month on the ${PLAN_LABEL[plan]} plan. Write or edit the recap yourself — AI recaps reset ${reset}.`);
+      throw new EntitlementError(
+        "monthlyAiRecaps",
+        limit,
+        `${limitReachedMessage(plan, `${limit} AI recaps per month`)} Write or edit the recap yourself — AI recaps reset ${reset}.`
+      );
     }
     const row = await tx.aiUsage.create({
       data: { ...input, period: utcMonth(now).period, status: "RESERVED", expiresAt: new Date(now.getTime() + AI_RESERVATION_TTL_MS) },
