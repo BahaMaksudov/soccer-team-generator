@@ -151,7 +151,7 @@ function Profile({ p, single }: { p: MyGamesProfile; single: boolean }) {
 
       <div className="flex flex-wrap items-center gap-3 rounded-tbp-xl border border-border bg-card p-4 text-sm">
         <MessageCircle className="size-5 shrink-0 text-primary" aria-hidden="true" />
-        <span className="font-semibold">Telegram: {p.telegramConnected ? "connected" : "not connected"}</span>
+        <span className="font-semibold">Telegram (optional): {p.telegramConnected ? "connected" : "not connected"}</span>
         <ConnectTelegram playerId={p.playerId} connected={p.telegramConnected} />
       </div>
     </section>

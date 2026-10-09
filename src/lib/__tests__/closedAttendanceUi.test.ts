@@ -18,10 +18,11 @@ const ws = fs.readFileSync(path.join(process.cwd(), "src/app/admin/o/[organizati
 
 describe("organizer Match workspace (OWNER/ADMIN)", () => {
   it("per-player Playing / Maybe / Not playing / Clear override render only while attendance is OPEN", () => {
-    const gate = ws.indexOf("{!m.attendanceClosed && (\n              <div role=\"group\" aria-label={`Set attendance for");
+    // M9.3 — the three buttons are the AttendanceStatusButtons component ("Set attendance for …" group).
+    const gate = ws.indexOf("{!m.attendanceClosed && (\n              <div className=\"flex flex-wrap items-center gap-1\">");
     expect(gate).toBeGreaterThan(-1);
     const block = ws.slice(gate, ws.indexOf("</li>", gate));
-    for (const marker of ['call("/attendance", { playerId: p.id, status: s }', 'call("/attendance", { playerId: p.id, status: null }', "Clear override"]) expect(block, marker).toContain(marker);
+    for (const marker of ["<AttendanceStatusButtons", 'call("/attendance", { playerId: p.id, status: s }', 'call("/attendance", { playerId: p.id, status: null }', "Clear override"]) expect(block, marker).toContain(marker);
     // no other attendance-mutation call exists outside that gate
     expect(ws.split('call("/attendance", {').length - 1).toBe(2);
   });

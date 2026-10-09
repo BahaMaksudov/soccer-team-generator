@@ -60,3 +60,38 @@ export async function checkLoginRateLimit(
     return { allowed: true };
   }
 }
+
+/**
+ * M9.3 — the same Upstash infrastructure for anonymous Match Link traffic,
+ * one sliding window per bucket (separate prefixes; login limits unchanged).
+ * Same INACTIVE-until-configured behavior: without UPSTASH_REDIS_REST_URL /
+ * _TOKEN every check allows (logged once). Fails open on an Upstash outage.
+ */
+const BUCKETS = {
+  "match-link-read": { limit: 120, window: "10 m" },
+  "match-link-write": { limit: 30, window: "10 m" },
+} as const;
+export type RateLimitBucket = keyof typeof BUCKETS;
+const bucketLimiters = new Map<RateLimitBucket, Ratelimit>();
+
+export async function checkRateLimit(bucket: RateLimitBucket, key: string): Promise<{ allowed: boolean }> {
+  if (!getLimiter()) return { allowed: true }; // not configured (warned once)
+  let rl = bucketLimiters.get(bucket);
+  if (!rl) {
+    const b = BUCKETS[bucket];
+    rl = new Ratelimit({ redis: new Redis({ url: UPSTASH_URL!, token: UPSTASH_TOKEN! }), limiter: Ratelimit.slidingWindow(b.limit, b.window), prefix: `ratelimit:${bucket}`, analytics: false });
+    bucketLimiters.set(bucket, rl);
+  }
+  try {
+    const { success } = await rl.limit(key);
+    return { allowed: success };
+  } catch (e) {
+    console.error(`[rateLimit] Upstash request failed (${bucket}), allowing request:`, e instanceof Error ? e.message : "error");
+    return { allowed: true };
+  }
+}
+
+/** Client address for rate-limit keys only (first X-Forwarded-For hop on Vercel). */
+export function clientKey(req: Request): string {
+  return (req.headers.get("x-forwarded-for") ?? "").split(",")[0].trim() || req.headers.get("x-real-ip") || "unknown";
+}

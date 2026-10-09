@@ -62,7 +62,8 @@ export default function GroupSettings({
       </section>
 
       <section id="telegram" aria-labelledby="telegram-heading" className="scroll-mt-20">
-        <h2 id="telegram-heading" className="text-xl font-extrabold">Telegram</h2>
+        <h2 id="telegram-heading" className="text-xl font-extrabold">Telegram (optional)</h2>
+        <p className="mt-1 text-sm text-muted-foreground">Not required: players can answer and see teams through each match&apos;s match link. Connect a Telegram group to also post polls and teams there.</p>
         <CommunicationChannelsSection organizationSlug={organizationSlug} groupSlug={groupSlug} />
         <TelegramVoterLinks organizationSlug={organizationSlug} groupSlug={groupSlug} />
       </section>

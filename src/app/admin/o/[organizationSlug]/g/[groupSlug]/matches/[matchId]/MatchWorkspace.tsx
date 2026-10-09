@@ -7,6 +7,7 @@ import { formatLongDateOnly } from "@/lib/dateOnly";
 import { formatStartTime } from "@/lib/messaging/content";
 import type { PublishedGeneration, TeamsDeliveryState } from "@/lib/closeAndPostUi";
 import TeamsTelegramPost, { type TeamsPostIntent } from "./TeamsTelegramPost";
+import ShareMatchCard from "./ShareMatchCard";
 import type { SportClientView } from "@/lib/sports";
 import { unpublishedPreviewOnScreen, type TeamsPanelMode } from "@/lib/teamAssignment";
 import { visibleRosterIds } from "@/lib/matchRosterScope";
@@ -15,6 +16,7 @@ import PostGameSection, { type PostGameView } from "./PostGameSection";
 import { MATCH_TELEGRAM_GROUP_SELECTOR_ID } from "@/lib/postGameUi";
 import CanonicalGenerateSection from "../../CanonicalGenerateSection";
 import { PublishedTeams } from "@/components/game-day/PublishedTeams";
+import { AttendanceStatusButtons } from "@/components/game-day/AttendanceStatusButtons";
 import { ArrowDown, CalendarClock, CircleCheck, Send, Shuffle, Users } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { focusRing, LifecycleSteps, MatchMeta, PhasePill, SectionCard, StateChip } from "@/components/game-day/parts";
@@ -40,7 +42,7 @@ import { runFeedback, type RunResult } from "@/lib/automationFeedback";
 
 type Status = "PLAYING" | "NOT_PLAYING" | "MAYBE";
 type RosterPlayer = Player & {
-  attendance: { status: Status | null; source: "WEB" | "TELEGRAM" | "OVERRIDE" | null; overridden: boolean; late: boolean; participantStatus: Status | null; participantSource: "WEB" | "TELEGRAM" | null };
+  attendance: { status: Status | null; source: "WEB" | "TELEGRAM" | "LINK" | "OVERRIDE" | null; overridden: boolean; late: boolean; participantStatus: Status | null; participantSource: "WEB" | "TELEGRAM" | "LINK" | null };
 };
 type MatchView = {
   match: {
@@ -74,6 +76,7 @@ type MatchView = {
     lastErrorAt: string | null;
     emails?: { sent: number; skipped: number; pending: number };
     catchUpExpired?: boolean;
+    channel?: "telegram" | "link";
   } | null;
   defaultSelection: string[];
   generation: { id: string; date: string; updatedAt: string; teams: Array<{ teamNumber: number; players: Array<{ id: string; firstName: string; lastName: string; position: string }> }> } | null;
@@ -93,7 +96,7 @@ type MatchView = {
 };
 
 const STATUS_LABEL: Record<Status, string> = { PLAYING: "Playing", MAYBE: "Maybe", NOT_PLAYING: "Not playing" };
-const SOURCE_LABEL = { WEB: "web", TELEGRAM: "Telegram", OVERRIDE: "organizer override" } as const;
+const SOURCE_LABEL = { WEB: "web", TELEGRAM: "Telegram", LINK: "via match link", OVERRIDE: "organizer override" } as const;
 
 export default function MatchWorkspace({
   organizationSlug,
@@ -464,6 +467,9 @@ export default function MatchWorkspace({
         <LifecycleSteps lifecycle={lifecycle} linkBase="" onDark />
       </section>
 
+      {/* M9.3 — Share Match: the Match Link (organizers; available as soon as the Match exists) */}
+      {view.canManage && <ShareMatchCard organizationSlug={organizationSlug} groupSlug={groupSlug} matchId={m.id} />}
+
       {/* M9.2 — Match Automation status (organizers) */}
       {view.canManage && view.automation && <AutomationCard a={view.automation} teamsPublished={view.generation !== null} busy={busy} onRun={async () => {
             const r = await call("/automation", {}, "");
@@ -571,7 +577,7 @@ export default function MatchWorkspace({
                 </Button>
               </>
             ) : (
-              <span className="text-muted-foreground">Telegram not connected — connect it in <Link className="font-semibold text-primary underline" href={`${adminGroupSettingsPath(organizationSlug, groupSlug)}#telegram`}>Group settings</Link>.</span>
+              <span className="text-muted-foreground">Players answer through the match link (Share Match). Telegram (optional): connect a group in <Link className="font-semibold text-primary underline" href={`${adminGroupSettingsPath(organizationSlug, groupSlug)}#telegram`}>Group settings</Link> to also post polls there.</span>
             ))}
         </div>
         {view.canManage && view.telegram.pollDelivery && <p className="mt-2 text-xs text-muted-foreground">Last poll post: {view.telegram.pollDelivery.status.toLowerCase()}</p>}
@@ -645,22 +651,14 @@ export default function MatchWorkspace({
               <div className="flex flex-wrap items-center gap-1">
               {/* UI-4B — no per-player attendance changes while attendance is closed (also enforced server-side). */}
               {!m.attendanceClosed && (
-              <div role="group" aria-label={`Set attendance for ${p.firstName} ${p.lastName}`} className="flex flex-wrap items-center gap-1">
-                {(["PLAYING", "MAYBE", "NOT_PLAYING"] as Status[]).map((s) => {
-                  const on = p.attendance.overridden && p.attendance.status === s;
-                  return (
-                    <button
-                      key={s}
-                      type="button"
-                      disabled={busy}
-                      aria-pressed={on}
-                      className={cn("min-h-9 rounded-full border px-3 text-xs font-semibold disabled:opacity-50", on ? "border-primary bg-primary text-primary-foreground" : "border-input bg-card hover:bg-muted", focusRing)}
-                      onClick={() => call("/attendance", { playerId: p.id, status: s }, "Attendance saved.")}
-                    >
-                      {STATUS_LABEL[s]}
-                    </button>
-                  );
-                })}
+              <div className="flex flex-wrap items-center gap-1">
+                {/* M9.3 — highlights the server's EFFECTIVE status (override, else the player's own answer from any source). */}
+                <AttendanceStatusButtons
+                  playerName={`${p.firstName} ${p.lastName}`}
+                  effective={p.attendance.status}
+                  busy={busy}
+                  onSet={(s) => call("/attendance", { playerId: p.id, status: s }, "Attendance saved.")}
+                />
                 {p.attendance.overridden && (
                   <button type="button" disabled={busy} className={cn("min-h-9 rounded-full px-3 text-xs font-semibold text-destructive hover:bg-destructive/5", focusRing)} onClick={() => call("/attendance", { playerId: p.id, status: null }, "Override cleared.")}>
                     Clear override
@@ -755,7 +753,7 @@ export default function MatchWorkspace({
             <p className="text-xs text-muted-foreground">
               Player page:{" "}
               {view.playerPage.visibility === "LINK" ? (
-                <>only through the group&apos;s share link (players without an account) or for signed-in members/claimed players: <a className="font-semibold text-primary underline" href={view.playerPage.path} target="_blank" rel="noreferrer">open</a></>
+                <>players open it through the match link (Share Match above); signed-in members and claimed players can also <a className="font-semibold text-primary underline" href={view.playerPage.path} target="_blank" rel="noreferrer">open it here</a></>
               ) : (
                 <>
                   <a className="break-all font-semibold text-primary underline" href={view.playerPage.path} target="_blank" rel="noreferrer">{view.playerPage.path}</a>
@@ -780,7 +778,7 @@ export default function MatchWorkspace({
               (view.telegram.poll?.pollId ? (
                 <TeamsTelegramPost state={teamsDelivery} deliveryId={teamsDeliveryId} busy={busy} onPost={postTeams} onMarkSent={markTeamsSent} />
               ) : (
-                <p className="text-muted-foreground">To post teams to Telegram, post this match&apos;s attendance poll first.</p>
+                <p className="text-muted-foreground">Players see the published teams on the match link (Share Match). Telegram (optional): post this match&apos;s attendance poll there first to also post the teams.</p>
               ))}
           </div>
         )}
@@ -814,8 +812,10 @@ function AutomationCard({ a, teamsPublished, busy, onRun }: { a: NonNullable<Mat
   const steps: Array<{ label: string; state: string; done: boolean }> = [
     { label: "Match", state: "Scheduled", done: true },
     {
-      label: "Attendance poll",
-      state: a.pollPostedAt
+      label: a.channel === "link" ? "Attendance link" : "Attendance poll",
+      state: a.channel === "link" && a.pollPostedAt
+        ? "Open — players answer on the match link"
+        : a.pollPostedAt
         ? `Sent ${at(a.pollPostedAt)}`
         : new Date(a.pollDueAt).getTime() > now
           ? `Scheduled for ${at(a.pollDueAt)}`

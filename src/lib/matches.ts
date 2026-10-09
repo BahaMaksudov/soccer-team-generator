@@ -381,7 +381,7 @@ async function automationView(groupId: string, matchId: string) {
       notifiedAt: true,
       lastError: true,
       lastErrorAt: true,
-      match: { select: { schedule: { select: { isActive: true } } } },
+      match: { select: { telegramChatId: true, schedule: { select: { isActive: true } }, _count: { select: { telegramPolls: true } } } },
       emails: { select: { sentAt: true, skippedReason: true } },
     },
   });
@@ -402,6 +402,8 @@ async function automationView(groupId: string, matchId: string) {
     emails: { sent, skipped, pending: a.emails.length - sent - skipped },
     // The cutoff was not finalized within the automatic catch-up window ("Run now" still finishes it).
     catchUpExpired: !a.cutoffCompletedAt && Date.now() > a.cutoffDueAt.getTime() + CUTOFF_CATCH_UP_MS,
+    // M9.3 — how players answer: a Telegram poll, or the Match Link (web-only Community).
+    channel: (a.match.telegramChatId !== null || a.match._count.telegramPolls > 0 ? "telegram" : "link") as "telegram" | "link",
   };
 }
 

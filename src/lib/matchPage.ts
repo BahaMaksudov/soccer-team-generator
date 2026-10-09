@@ -47,7 +47,7 @@ export type PlayerMatchView = {
 };
 
 /** Allow-list DTO, built field by field. `groupId` is already authorized by the caller. */
-async function buildPlayerMatchView(
+export async function buildPlayerMatchView(
   group: { id: string; name: string; sportKey: string; organizationName: string },
   matchId: string
 ): Promise<PlayerMatchView | null> {

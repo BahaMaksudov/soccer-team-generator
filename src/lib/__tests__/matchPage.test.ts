@@ -47,10 +47,13 @@ describe("M9-C — page wiring", () => {
     expect(read("src/app/api/share/match/route.ts")).toContain(`"X-Robots-Tag": "noindex, nofollow"`);
   });
   it("the share token is read from the URL fragment and sent only in a POST body", () => {
-    const client = read("src/app/share/m/[matchId]/ShareMatchView.tsx");
+    // M9.3 — the /share/m page renders the redesigned MatchLinkPage.
+    expect(read("src/app/share/m/[matchId]/ShareMatchView.tsx")).toContain("MatchLinkPage");
+    const client = read("src/components/match-link/MatchLinkPage.tsx");
     expect(client).toContain(`window.location.hash`);
-    expect(client).toContain(`body: JSON.stringify({ token, matchId })`);
-    expect(client).not.toMatch(/console\.|searchParams|\?token=/);
+    expect(client).toContain(`body: JSON.stringify({ token: t, matchId`);
+    expect(client).toContain(`body: JSON.stringify({ token, matchId, playerRef: ref, status })`);
+    expect(client).not.toMatch(/console\.|searchParams|\?token=|localStorage\.setItem\([^)]*token/);
   });
   it("Telegram identity is never browser authentication: the Match page code reads no Telegram data", () => {
     const lib = read("src/lib/matchPage.ts");
@@ -58,7 +61,7 @@ describe("M9-C — page wiring", () => {
     expect(lib).toContain("resolveGroupForViewer");
   });
   it("client code imports the DTO type only (no server modules in the bundle)", () => {
-    for (const f of ["src/app/share/m/[matchId]/ShareMatchView.tsx", "src/app/components/PlayerMatchCard.tsx"]) {
+    for (const f of ["src/components/match-link/MatchLinkPage.tsx", "src/app/components/PlayerMatchCard.tsx"]) {
       expect(read(f), f).toMatch(/import type \{ PlayerMatchView \} from "@\/lib\/matchPage";/);
     }
   });
