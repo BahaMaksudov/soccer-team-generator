@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import type { OrganizationPlan, Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
+import { billingConfig } from "@/lib/billing/config";
 
 /**
  * M11.1 — plans, the introductory trial and entitlements: the ONE place that
@@ -93,10 +94,13 @@ const NOUN: Record<CapacityMetric, (n: number) => string> = {
 
 /** Until Stripe billing exists there is no upgrade action: Free limits say so instead of offering one. */
 export const FREE_LIMIT_COMING_SOON = "Pro plans and upgrades are coming soon.";
+export const FREE_LIMIT_UPGRADE = "Upgrade to Pro on your organization's Billing page.";
 
 /** "Your Free plan limit has been reached (30 active players). Pro plans and upgrades are coming soon." */
 export function limitReachedMessage(plan: EffectivePlan, detail: string): string {
-  return plan === "FREE" ? `Your Free plan limit has been reached (${detail}). ${FREE_LIMIT_COMING_SOON}` : `Your ${PLAN_LABEL[plan]} plan limit has been reached (${detail}).`;
+  if (plan !== "FREE") return `Your ${PLAN_LABEL[plan]} plan limit has been reached (${detail}).`;
+  // M11.2A — once billing is enabled (test mode), point owners to the Billing page instead of "coming soon".
+  return `Your Free plan limit has been reached (${detail}). ${billingConfig().enabled ? FREE_LIMIT_UPGRADE : FREE_LIMIT_COMING_SOON}`;
 }
 
 export class EntitlementError extends Error {

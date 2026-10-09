@@ -165,14 +165,14 @@ describe("chrome isolation: decided on the server; every other route keeps the o
     expect(chromeModeFromHeader("marketing")).toBe("legacy");
   });
   it("redesigned paths: /, the auth screens and (UI-3) the app shell — nothing else (no tenant, session, cookie or storage input)", () => {
-    for (const p of ["/", "/login", "/signup", "/verify-email", "/verify-email/abc", "/admin", "/admin/o/x/g/y", "/me", "/account/security", "/onboarding", "/share/m/x"])
+    for (const p of ["/", "/login", "/signup", "/verify-email", "/verify-email/abc", "/admin", "/admin/o/x/g/y", "/me", "/account/security", "/onboarding", "/share/m/x", "/pricing"])
       expect(isRedesignedPath(p), p).toBe(true);
     for (const p of ["/g/o/g", "/g/o/g/m/x", "/players", "/login/x", "/signup2", "/verify-emailx", "/adminx", "/onboardingx", "/claim", "/invite/t", "/share", "/share/mx", "/print/x", "", null, undefined])
       expect(isRedesignedPath(p), String(p)).toBe(false);
     const code = read("src/lib/chrome.ts").replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, "");
     expect(code).not.toMatch(/import|cookies|localStorage|session|tenant|fetch\(/i);
   });
-  it.each(["/", "/login?callbackUrl=%2Fadmin", "/signup?invite=x", "/verify-email", "/verify-email/tok?next=%2Fme", "/share/m/abc"])(
+  it.each(["/", "/login?callbackUrl=%2Fadmin", "/signup?invite=x", "/verify-email", "/verify-email/tok?next=%2Fme", "/share/m/abc", "/pricing"])(
     "middleware tags %s with the redesign header WITHOUT auth-gating it",
     async (url) => {
       const res = await middleware(new NextRequest(`http://localhost${url}`));
@@ -182,7 +182,7 @@ describe("chrome isolation: decided on the server; every other route keeps the o
     }
   );
   it("the static middleware matcher covers exactly the redesigned paths", () => {
-    for (const p of ["/", "/login", "/signup", "/verify-email/:path*", "/share/m/:path*"]) expect(middlewareConfig.matcher).toContain(p);
+    for (const p of ["/", "/login", "/signup", "/verify-email/:path*", "/share/m/:path*", "/pricing"]) expect(middlewareConfig.matcher).toContain(p);
   });
   it("the chrome markup is the pre-UI-1 root-layout markup moved verbatim into a SERVER component", () => {
     const src = read("src/components/LegacyChrome.tsx");

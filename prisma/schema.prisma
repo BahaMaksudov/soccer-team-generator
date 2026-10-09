@@ -255,12 +255,15 @@ model Organization {
   // Reserved for the future Stripe integration (no workflow in M11.1).
   stripeCustomerId String?          @unique
 
-  memberships       OrganizationMembership[]
-  groups            Group[]
-  invitations       OrganizationInvitation[]
-  venues            Venue[]
-  aiUsages          AiUsage[]
-  entitlementEvents EntitlementEvent[]
+  memberships             OrganizationMembership[]
+  groups                  Group[]
+  invitations             OrganizationInvitation[]
+  venues                  Venue[]
+  aiUsages                AiUsage[]
+  entitlementEvents       EntitlementEvent[]
+  // M11.2A — Stripe (test mode) billing.
+  billingSubscriptions    BillingSubscription[]
+  billingCheckoutSessions BillingCheckoutSession[]
 }
 
 // M11.1 — one AI recap generation attempt and its credit (UTC calendar-month `period`, "YYYY-MM").
@@ -1152,4 +1155,90 @@ model TelegramChatBindCode {
   createdBy User? @relation(fields: [createdByUserId], references: [id], onDelete: SetNull)
 
   @@index([groupId])
+}
+
+// M11.2A — Stripe billing (TEST MODE). Stripe is the source of truth for
+// payment state; these rows are the last state fetched from Stripe (never
+// card or payment-method data). Organization.plan stays the projection the
+// entitlement engine reads (PRO while a subscription entitles, else FREE —
+// LEGACY / COMP are never overwritten).
+
+// One row per Stripe Subscription, upserted from the subscription re-fetched from Stripe.
+model BillingSubscription {
+  id                   String    @id @default(cuid())
+  organizationId       String
+  stripeSubscriptionId String    @unique
+  stripeCustomerId     String
+  stripePriceId        String?
+  interval             String?
+  status               String
+  currentPeriodEnd     DateTime?
+  cancelAtPeriodEnd    Boolean   @default(false)
+  canceledAt           DateTime?
+  endedAt              DateTime?
+  livemode             Boolean
+  // When the Stripe fetch that wrote this row STARTED — an older fetch never overwrites a newer one.
+  lastSyncedAt         DateTime
+  createdAt            DateTime  @default(now())
+  updatedAt            DateTime  @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId])
+}
+
+enum StripeEventStatus {
+  RECEIVED
+  PROCESSED
+  IGNORED
+  FAILED
+  EXCEPTION
+}
+
+// Webhook deliveries by Stripe event id (dedupe + operator visibility).
+// PROCESSED is written in the SAME transaction as the subscription / plan update.
+// FAILED = transient (Stripe retries); EXCEPTION = needs an operator (never discarded).
+model StripeEvent {
+  id             String            @id
+  type           String
+  livemode       Boolean
+  status         StripeEventStatus @default(RECEIVED)
+  attempts       Int               @default(0)
+  organizationId String?
+  objectId       String?
+  error          String?
+  receivedAt     DateTime          @default(now())
+  processedAt    DateTime?
+  updatedAt      DateTime          @updatedAt
+
+  @@index([status])
+}
+
+enum BillingCheckoutStatus {
+  CREATING
+  OPEN
+  COMPLETED
+  EXPIRED
+  FAILED
+}
+
+// One Checkout attempt = one durable operation id = one Stripe idempotency key.
+// A crash after Stripe created the session is recovered by retrying the SAME
+// operation (Stripe returns the same session). At most one CREATING/OPEN per Organization.
+model BillingCheckoutSession {
+  id              String                @id @default(cuid())
+  organizationId  String
+  interval        String
+  stripePriceId   String
+  createdByUserId String?
+  status          BillingCheckoutStatus @default(CREATING)
+  stripeSessionId String?               @unique
+  url             String?
+  expiresAt       DateTime
+  createdAt       DateTime              @default(now())
+  updatedAt       DateTime              @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId, status])
 }

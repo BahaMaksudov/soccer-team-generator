@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import fs from "node:fs";
@@ -45,12 +45,20 @@ describe("UTC calendar month", () => {
 });
 
 describe("limit messages (no upgrade action until Stripe)", () => {
-  it("Free names the limit and says Pro is coming soon; other plans just name the limit; nothing says 'Upgrade'", () => {
+  it("Free names the limit; 'coming soon' while billing is off, the Billing page once it's on; other plans just name the limit", () => {
+    vi.stubEnv("BILLING_ENABLED", "");
     expect(limitReachedMessage("FREE", "30 active players")).toBe("Your Free plan limit has been reached (30 active players). Pro plans and upgrades are coming soon.");
     expect(limitReachedMessage("TRIAL", "3 active groups")).toBe("Your Pro trial plan limit has been reached (3 active groups).");
     expect(limitReachedMessage("COMP", "150 active players")).toBe("Your Pro (complimentary) plan limit has been reached (150 active players).");
-    const src = fs.readFileSync(path.join(process.cwd(), "src/lib/entitlements.ts"), "utf8");
-    expect(src).not.toMatch(/Upgrade to Pro/);
+    vi.stubEnv("BILLING_ENABLED", "true");
+    vi.stubEnv("STRIPE_SECRET_KEY", "sk_test_x");
+    vi.stubEnv("STRIPE_WEBHOOK_SECRET", "whsec_x");
+    vi.stubEnv("STRIPE_PRICE_PRO_MONTHLY", "price_m");
+    vi.stubEnv("STRIPE_PRICE_PRO_ANNUAL", "price_y");
+    expect(limitReachedMessage("FREE", "30 active players")).toBe("Your Free plan limit has been reached (30 active players). Upgrade to Pro on your organization's Billing page.");
+    vi.stubEnv("STRIPE_SECRET_KEY", "sk_live_x"); // a live key never enables billing → back to "coming soon"
+    expect(limitReachedMessage("FREE", "1 active group")).toMatch(/coming soon/);
+    vi.unstubAllEnvs();
   });
 });
 

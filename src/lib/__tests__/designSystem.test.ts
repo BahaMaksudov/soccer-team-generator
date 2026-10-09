@@ -164,6 +164,10 @@ describe("UI primitives are presentation-only", () => {
         "src/app/admin/o/[organizationSlug]/page.tsx",
         // M11.1 — read-only plan & usage card.
         "src/app/admin/o/[organizationSlug]/PlanUsageCard.tsx",
+        // M11.2A — billing (Organization) and public pricing.
+        "src/app/admin/o/[organizationSlug]/billing/BillingActions.tsx",
+        "src/app/pricing/page.tsx",
+        "src/components/billing/PlanComparison.tsx",
         "src/app/account/security/page.tsx",
         "src/app/me/page.tsx",
       ].sort()

@@ -35,6 +35,10 @@ const M5_ACCOUNT_ROUTE = rel("src/app/api/admin/organizations/route.ts");
 const M5_ORGANIZATION_ROUTES = [
   rel("src/app/api/admin/o/[organizationSlug]/invitations/route.ts"),
   rel("src/app/api/admin/o/[organizationSlug]/groups/route.ts"), // M7: Add Group (OWNER/ADMIN)
+  // M11.2A — Organization billing (OWNER; ADMIN read-only status).
+  rel("src/app/api/admin/o/[organizationSlug]/billing/route.ts"),
+  rel("src/app/api/admin/o/[organizationSlug]/billing/checkout/route.ts"),
+  rel("src/app/api/admin/o/[organizationSlug]/billing/portal/route.ts"),
 ];
 const M5_NON_GROUP_ROUTES = [M5_ACCOUNT_ROUTE, ...M5_ORGANIZATION_ROUTES];
 
