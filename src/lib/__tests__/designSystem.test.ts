@@ -156,6 +156,8 @@ describe("UI primitives are presentation-only", () => {
         // M9.3 — the redesigned player Match page (Match Link).
         "src/components/match-link/MatchLinkPage.tsx",
         "src/components/game-day/MatchList.tsx",
+        // M9.3 — organizer attendance buttons (effective status highlighted).
+        "src/components/game-day/AttendanceStatusButtons.tsx",
         "src/components/game-day/parts.tsx",
         "src/app/admin/o/[organizationSlug]/g/[groupSlug]/players/PlayersRoster.tsx",
         "src/app/admin/o/[organizationSlug]/groups/page.tsx",

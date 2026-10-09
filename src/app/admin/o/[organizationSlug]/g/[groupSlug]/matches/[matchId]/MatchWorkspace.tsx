@@ -16,6 +16,7 @@ import PostGameSection, { type PostGameView } from "./PostGameSection";
 import { MATCH_TELEGRAM_GROUP_SELECTOR_ID } from "@/lib/postGameUi";
 import CanonicalGenerateSection from "../../CanonicalGenerateSection";
 import { PublishedTeams } from "@/components/game-day/PublishedTeams";
+import { AttendanceStatusButtons } from "@/components/game-day/AttendanceStatusButtons";
 import { ArrowDown, CalendarClock, CircleCheck, Send, Shuffle, Users } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { focusRing, LifecycleSteps, MatchMeta, PhasePill, SectionCard, StateChip } from "@/components/game-day/parts";
@@ -650,22 +651,14 @@ export default function MatchWorkspace({
               <div className="flex flex-wrap items-center gap-1">
               {/* UI-4B — no per-player attendance changes while attendance is closed (also enforced server-side). */}
               {!m.attendanceClosed && (
-              <div role="group" aria-label={`Set attendance for ${p.firstName} ${p.lastName}`} className="flex flex-wrap items-center gap-1">
-                {(["PLAYING", "MAYBE", "NOT_PLAYING"] as Status[]).map((s) => {
-                  const on = p.attendance.overridden && p.attendance.status === s;
-                  return (
-                    <button
-                      key={s}
-                      type="button"
-                      disabled={busy}
-                      aria-pressed={on}
-                      className={cn("min-h-9 rounded-full border px-3 text-xs font-semibold disabled:opacity-50", on ? "border-primary bg-primary text-primary-foreground" : "border-input bg-card hover:bg-muted", focusRing)}
-                      onClick={() => call("/attendance", { playerId: p.id, status: s }, "Attendance saved.")}
-                    >
-                      {STATUS_LABEL[s]}
-                    </button>
-                  );
-                })}
+              <div className="flex flex-wrap items-center gap-1">
+                {/* M9.3 — highlights the server's EFFECTIVE status (override, else the player's own answer from any source). */}
+                <AttendanceStatusButtons
+                  playerName={`${p.firstName} ${p.lastName}`}
+                  effective={p.attendance.status}
+                  busy={busy}
+                  onSet={(s) => call("/attendance", { playerId: p.id, status: s }, "Attendance saved.")}
+                />
                 {p.attendance.overridden && (
                   <button type="button" disabled={busy} className={cn("min-h-9 rounded-full px-3 text-xs font-semibold text-destructive hover:bg-destructive/5", focusRing)} onClick={() => call("/attendance", { playerId: p.id, status: null }, "Override cleared.")}>
                     Clear override
