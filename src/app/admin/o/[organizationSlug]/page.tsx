@@ -6,6 +6,8 @@ import { loadOrganizationGroups } from "@/lib/organizationGroups";
 import { listOrganizationMembers } from "@/lib/invitations";
 import { ROLE_LABELS } from "@/lib/appShell";
 import { cn } from "@/lib/cn";
+import { planSummary } from "@/lib/entitlements";
+import PlanUsageCard from "./PlanUsageCard";
 
 /**
  * UI-6 — Organization overview for ANY member (Organization from the URL slug,
@@ -13,7 +15,8 @@ import { cn } from "@/lib/cn";
  * Real data only: name, your role, the active Groups. Members & invitations
  * remain OWNER-only (the existing M5 page; listOrganizationMembers enforces
  * OWNER server-side) — other roles see a note, not the data. There is no
- * rename / archive / billing because the product has none.
+ * rename / archive. M11.1 — OWNER/ADMIN see the read-only plan & usage card
+ * (billing controls arrive with Stripe).
  */
 type Params = Promise<{ organizationSlug: string }>;
 
@@ -32,7 +35,13 @@ export default async function OrganizationPage({ params }: { params: Params }) {
     throw e;
   }
   const isOwner = hasOrgRole(context, ["OWNER"]);
-  const [{ groups }, members] = await Promise.all([loadOrganizationGroups(context), isOwner ? listOrganizationMembers(context) : Promise.resolve(null)]);
+  // M11.1 — plan & usage for OWNER/ADMIN only (MEMBERs never see it).
+  const canSeePlan = hasOrgRole(context, ["OWNER", "ADMIN"]);
+  const [{ groups }, members, plan] = await Promise.all([
+    loadOrganizationGroups(context),
+    isOwner ? listOrganizationMembers(context) : Promise.resolve(null),
+    canSeePlan ? planSummary(context.organization.id) : Promise.resolve(null),
+  ]);
   const base = `/admin/o/${encodeURIComponent(context.organization.slug)}`;
 
   return (
@@ -88,6 +97,8 @@ export default async function OrganizationPage({ params }: { params: Params }) {
           )}
         </section>
       </div>
+
+      {plan && <PlanUsageCard summary={plan} />}
 
       <section aria-labelledby="org-details" className="rounded-tbp-2xl border border-border bg-card p-5 shadow-card">
         <h2 id="org-details" className="flex items-center gap-2 text-lg font-extrabold">

@@ -53,7 +53,7 @@ async function seed() {
   await prisma.user.createMany({
     data: ["owner", "admin", "member", "other-owner"].map((n) => ({ id: `u-${n}`, email: `${n}@example.test`, name: n, passwordHash: null, emailVerifiedAt: VERIFIED })),
   });
-  await prisma.organization.createMany({ data: [{ id: "org-a", name: "A", slug: "org-a" }, { id: "org-b", name: "B", slug: "org-b" }] });
+  await prisma.organization.createMany({ data: [{ id: "org-a", name: "A", slug: "org-a", plan: "LEGACY" }, { id: "org-b", name: "B", slug: "org-b", plan: "LEGACY" }] });
   await prisma.group.createMany({
     data: [
       { id: "ga", organizationId: "org-a", name: "Group A", slug: "group-a", sportKey: "soccer", timezone: "UTC" },

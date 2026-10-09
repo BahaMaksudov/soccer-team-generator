@@ -71,6 +71,22 @@ export default function SchedulesSection({
   const [busy, setBusy] = useState(false);
   const [feedback, setFeedback] = useState<Record<string, Feedback>>({});
   const [confirmPause, setConfirmPause] = useState<Schedule | null>(null);
+  // M11.1 — the Organization has more active schedules than its plan allows: automation is paused until the organizer chooses.
+  const [planLimit, setPlanLimit] = useState<{ over: boolean; active: number; limit: number | null } | null>(null);
+  const [confirmKeep, setConfirmKeep] = useState<Schedule | null>(null);
+
+  async function keep(s: Schedule) {
+    setConfirmKeep(null);
+    setBusy(true);
+    try {
+      const res = await fetch(url(`/schedules/${s.id}/keep`), { method: "POST" });
+      const data = await res.json().catch(() => ({}));
+      setFeedback((f) => ({ ...f, [s.id]: res.ok ? { tone: "done", text: `This schedule stays active; ${data.paused} other schedule${data.paused === 1 ? " was" : "s were"} paused. Automation resumes.` } : { tone: "warn", text: data?.error ?? "Something went wrong." } }));
+      await load();
+    } finally {
+      setBusy(false);
+    }
+  }
 
   async function runNow(id: string) {
     setBusy(true);
@@ -105,7 +121,11 @@ export default function SchedulesSection({
 
   const load = useCallback(async () => {
     const res = await fetch(adminTenantApiPath({ organizationSlug, groupSlug, path: "/schedules" }), { cache: "no-store" });
-    if (res.ok) setList((await res.json()).schedules);
+    if (res.ok) {
+      const data = await res.json();
+      setList(data.schedules);
+      setPlanLimit(data.planLimit ?? null);
+    }
   }, [organizationSlug, groupSlug]);
   useEffect(() => {
     load();
@@ -150,9 +170,14 @@ export default function SchedulesSection({
       }
     >
       <p className="text-sm text-muted-foreground">
-        Automation creates each match, posts the attendance poll to the community&apos;s Telegram group, closes attendance at the cutoff and emails organizers when it&apos;s ready. Teams are always generated and published by you.
+        Automation creates each match, opens attendance (the match link, and the community&apos;s Telegram group on Pro), closes it at the cutoff and emails organizers when it&apos;s ready. Teams are always generated and published by you.
       </p>
       {communities.length === 0 && <p className="mt-2 text-sm text-muted-foreground">Create a community first (Group settings → Communities).</p>}
+      {planLimit?.over && (
+        <p role="alert" className="mt-3 rounded-tbp border border-accent/40 bg-accent/10 px-3 py-2 text-sm">
+          Automation is paused: your plan includes {planLimit.limit} active recurring schedule{planLimit.limit === 1 ? "" : "s"} and your organization has {planLimit.active}. Choose the schedule to keep active — the others are paused, never deleted, and their matches stay as they are.
+        </p>
+      )}
       {msg && (
         <p role="status" className="mt-3 rounded-tbp border border-border bg-secondary px-3 py-2 text-sm">
           {msg}
@@ -242,6 +267,7 @@ export default function SchedulesSection({
         <ul className="mt-4 space-y-3">
           {list.map((s) => {
             const fb = feedback[s.id];
+            const planPaused = Boolean(planLimit?.over);
             return (
               <li key={s.id} className="rounded-tbp-xl border border-border p-3 text-sm sm:p-4">
                 <div className="flex flex-wrap items-start justify-between gap-2">
@@ -252,7 +278,7 @@ export default function SchedulesSection({
                       {s.venueName ? ` · ${s.venueName}` : ""}
                     </p>
                   </div>
-                  <StateChip tone={s.isActive ? "done" : "neutral"}>Automation: {s.isActive ? "Enabled" : "Paused"}</StateChip>
+                  <StateChip tone={s.isActive && !planPaused ? "done" : s.isActive ? "warn" : "neutral"}>Automation: {s.isActive ? (planPaused ? "Paused by plan" : "Enabled") : "Paused"}</StateChip>
                 </div>
                 <dl className="mt-3 grid grid-cols-1 gap-x-4 gap-y-2 min-[420px]:grid-cols-2 lg:grid-cols-4">
                   <div>
@@ -269,7 +295,7 @@ export default function SchedulesSection({
                   </div>
                   <div>
                     <dt className="text-xs text-muted-foreground">Next poll</dt>
-                    <dd className="font-semibold">{s.isActive ? when(s.next.pollAt, s.timezone) : "Paused"}</dd>
+                    <dd className="font-semibold">{s.isActive && !planPaused ? when(s.next.pollAt, s.timezone) : "Paused"}</dd>
                   </div>
                 </dl>
                 <p className="mt-2 text-xs text-muted-foreground">Times in {s.timezone}.</p>
@@ -277,6 +303,11 @@ export default function SchedulesSection({
                   <Button type="button" size="sm" disabled={busy} onClick={() => runNow(s.id)}>
                     <RefreshCw aria-hidden="true" /> Run Now
                   </Button>
+                  {planLimit?.over && s.isActive && (
+                    <Button type="button" size="sm" disabled={busy} onClick={() => setConfirmKeep(s)}>
+                      Keep this schedule active
+                    </Button>
+                  )}
                   {s.isActive ? (
                     <Button type="button" size="sm" variant="outline" disabled={busy} onClick={() => setConfirmPause(s)}>
                       <Pause aria-hidden="true" /> Pause Automation
@@ -317,6 +348,17 @@ export default function SchedulesSection({
           })}
         </ul>
       )}
+      <Dialog open={confirmKeep !== null} title="Keep only this schedule active?" onClose={() => setConfirmKeep(null)}>
+        <p className="text-sm text-muted-foreground">Every other active recurring schedule in your organization will be paused (not deleted). Existing matches, attendance and results are not changed. Nothing is sent.</p>
+        <div className="mt-4 flex flex-wrap justify-end gap-2">
+          <Button type="button" variant="ghost" onClick={() => setConfirmKeep(null)}>
+            Cancel
+          </Button>
+          <Button type="button" onClick={() => confirmKeep && keep(confirmKeep)}>
+            Keep this schedule
+          </Button>
+        </div>
+      </Dialog>
       <Dialog open={confirmPause !== null} title="Pause automation for this recurring schedule?" onClose={() => setConfirmPause(null)}>
         <p className="text-sm text-muted-foreground">Upcoming automatic poll and attendance processing will not run until you resume it. Existing matches, attendance, polls and results are not changed, and you can still use Run Now.</p>
         <div className="mt-4 flex flex-wrap justify-end gap-2">

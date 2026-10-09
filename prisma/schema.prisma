@@ -175,6 +175,8 @@ model User {
   // migration #13 for Users who already owned an Organization before
   // self-service signup existed). NULL = unverified.
   emailVerifiedAt DateTime?
+  // M11.1 — the introductory Pro trial was used (one per User; set atomically with the trial Organization).
+  trialUsedAt     DateTime?
   createdAt       DateTime  @default(now())
   updatedAt       DateTime  @updatedAt
 
@@ -215,6 +217,30 @@ model User {
   automationEmails           MatchAutomationEmail[]
 }
 
+// M11.1 — what an Organization is entitled to (src/lib/entitlements.ts).
+//   FREE    — the free plan (a running introductory trial gives Pro limits
+//             until trialEndsAt; afterwards Free).
+//   PRO     — paid Pro (set by the future Stripe integration only).
+//   COMP    — complimentary Pro, assigned explicitly (audited) to approved
+//             internal/founder Organizations.
+//   LEGACY  — grandfathered: every Organization that existed before M11 keeps
+//             exactly what it had (no limits) until the product owner decides
+//             its treatment. Never assigned to new Organizations.
+enum OrganizationPlan {
+  FREE
+  PRO
+  COMP
+  LEGACY
+}
+
+// M11.1 — AI recap credit: RESERVED while the AI call runs (expires), then
+// SUCCEEDED (one credit used) or RELEASED (failed / abandoned — costs nothing).
+enum AiUsageStatus {
+  RESERVED
+  SUCCEEDED
+  RELEASED
+}
+
 model Organization {
   id        String   @id @default(cuid())
   name      String
@@ -222,10 +248,55 @@ model Organization {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  memberships OrganizationMembership[]
-  groups      Group[]
-  invitations OrganizationInvitation[]
-  venues      Venue[]
+  // M11.1 — plan + introductory trial (UTC). Existing rows → LEGACY (migration).
+  plan             OrganizationPlan @default(FREE)
+  trialStartedAt   DateTime?
+  trialEndsAt      DateTime?
+  // Reserved for the future Stripe integration (no workflow in M11.1).
+  stripeCustomerId String?          @unique
+
+  memberships       OrganizationMembership[]
+  groups            Group[]
+  invitations       OrganizationInvitation[]
+  venues            Venue[]
+  aiUsages          AiUsage[]
+  entitlementEvents EntitlementEvent[]
+}
+
+// M11.1 — one AI recap generation attempt and its credit (UTC calendar-month `period`, "YYYY-MM").
+model AiUsage {
+  id             String        @id @default(cuid())
+  organizationId String
+  groupId        String
+  matchId        String
+  userId         String?
+  period         String
+  status         AiUsageStatus @default(RESERVED)
+  expiresAt      DateTime
+  settledAt      DateTime?
+  createdAt      DateTime      @default(now())
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId, period, status])
+}
+
+// M11.1 — audit trail of every entitlement change (trial start/extension,
+// complimentary grant/revoke, grandfathering decisions). Append-only.
+model EntitlementEvent {
+  id             String            @id @default(cuid())
+  organizationId String
+  action         String
+  fromPlan       OrganizationPlan?
+  toPlan         OrganizationPlan?
+  trialEndsAt    DateTime?
+  reason         String
+  actor          String
+  createdAt      DateTime          @default(now())
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId])
 }
 
 model OrganizationMembership {

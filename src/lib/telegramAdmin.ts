@@ -1,4 +1,5 @@
 import { managersOnlyResponse } from "@/lib/tenantRoute";
+import { telegramDenied } from "@/lib/entitlements";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { NextResponse } from "next/server";
@@ -167,6 +168,9 @@ export async function createTelegramPollForContext(context: TenantContext, req: 
   // M9-A — Telegram (provider identity / external sends) is OWNER/ADMIN only.
   const denied = managersOnlyResponse(context);
   if (denied) return denied;
+  // M11.1 — Telegram is a Pro capability (after the role check: MEMBER still gets the generic 404).
+  const notInPlan = await telegramDenied(context.organization.id);
+  if (notInPlan) return notInPlan;
   const activeGroupId = context.activeGroup.id;
 
   const body = await req.json().catch(() => ({}));

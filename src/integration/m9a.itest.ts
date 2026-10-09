@@ -157,7 +157,7 @@ async function seed() {
     mk("player@example.test"),
   ]);
   await mk("other@example.test");
-  await prisma.organization.createMany({ data: [{ id: "org-a-id", name: "Org A", slug: "org-a" }, { id: "org-b-id", name: "Org B", slug: "org-b" }] });
+  await prisma.organization.createMany({ data: [{ id: "org-a-id", name: "Org A", slug: "org-a", plan: "LEGACY" }, { id: "org-b-id", name: "Org B", slug: "org-b", plan: "LEGACY" }] });
   await prisma.organizationMembership.createMany({
     data: [
       { userId: owner.id, organizationId: "org-a-id", role: "OWNER" },

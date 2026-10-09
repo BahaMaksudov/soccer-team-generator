@@ -87,7 +87,7 @@ async function seed() {
   const verified = new Date("2026-10-01T00:00:00Z");
   for (const [suffix, orgId, groupId, chatId] of [["a", "org-a-id", "ga", 1001n], ["b", "org-b-id", "gb", 2001n]] as const) {
     const user = await prisma.user.create({ data: { email: `owner-${suffix}@example.test`, name: `Owner ${suffix}`, passwordHash: bcrypt.hashSync("x-password-1", 4), emailVerifiedAt: verified } });
-    await prisma.organization.create({ data: { id: orgId, name: `Org ${suffix}`, slug: `org-${suffix}` } });
+    await prisma.organization.create({ data: { id: orgId, name: `Org ${suffix}`, slug: `org-${suffix}`, plan: "LEGACY" } });
     await prisma.organizationMembership.create({ data: { userId: user.id, organizationId: orgId, role: "OWNER" } });
     await prisma.group.create({ data: { id: groupId, organizationId: orgId, name: `group-${suffix}`, slug: `group-${suffix}`, timezone: "America/New_York", visibility: "PUBLIC" } });
     await prisma.telegramChat.create({ data: { chatId, title: `Chat ${suffix}`, groupId } });

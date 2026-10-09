@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { telegramDenied } from "@/lib/entitlements";
 import { randomBytes } from "node:crypto";
 import { prisma } from "@/lib/prisma";
 import type { TenantContext } from "@/lib/tenantContext";
@@ -71,6 +72,9 @@ export async function listTelegramChannels(context: TenantContext): Promise<Next
 export async function issueTelegramBindCode(context: TenantContext, now: Date = new Date()): Promise<NextResponse> {
   const denied = managersOnlyResponse(context);
   if (denied) return denied;
+  // M11.1 — Telegram is a Pro capability (after the role check: MEMBER still gets the generic 404).
+  const notInPlan = await telegramDenied(context.organization.id);
+  if (notInPlan) return notInPlan;
   const code = generateBindCode();
   const expiresAt = new Date(now.getTime() + BIND_CODE_TTL_MS);
   await prisma.$transaction([

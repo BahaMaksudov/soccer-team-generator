@@ -162,6 +162,8 @@ describe("UI primitives are presentation-only", () => {
         "src/app/admin/o/[organizationSlug]/g/[groupSlug]/players/PlayersRoster.tsx",
         "src/app/admin/o/[organizationSlug]/groups/page.tsx",
         "src/app/admin/o/[organizationSlug]/page.tsx",
+        // M11.1 — read-only plan & usage card.
+        "src/app/admin/o/[organizationSlug]/PlanUsageCard.tsx",
         "src/app/account/security/page.tsx",
         "src/app/me/page.tsx",
       ].sort()

@@ -8,12 +8,21 @@ vi.mock("@/lib/tenantContext", async (importOriginal) => {
 
 const mockChatFindFirst = vi.fn();
 const mockPollUpsert = vi.fn();
-vi.mock("@/lib/prisma", () => ({
-  prisma: {
+// M11.1 — plan limits are covered by the entitlement tests; here every action is within plan.
+vi.mock("@/lib/entitlements", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/entitlements")>()),
+  assertCapacity: async () => {},
+  telegramDenied: async () => null,
+}));
+vi.mock("@/lib/prisma", () => {
+  const prisma: Record<string, unknown> = {
     telegramChat: { findFirst: (...args: unknown[]) => mockChatFindFirst(...args) },
     telegramPoll: { upsert: (...args: unknown[]) => mockPollUpsert(...args) },
-  },
-}));
+  };
+  // M11.1 — capacity-checked writes run in a transaction: run the callback against this same mock.
+  prisma.$transaction = async (fn: (tx: unknown) => unknown) => fn(prisma);
+  return { prisma };
+});
 
 import { POST } from "./route";
 import { TenantContextError } from "@/lib/tenantContext";

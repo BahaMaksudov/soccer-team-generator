@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { telegramDenied } from "@/lib/entitlements";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import type { TenantContext } from "@/lib/tenantContext";
@@ -104,6 +105,9 @@ type PollDelivery = { id: string; status: "SENDING" | "SENT" | "FAILED" | "UNCER
 export async function postAttendancePoll(context: TenantContext, matchId: string, req: Request): Promise<NextResponse> {
   const denied = managersOnlyResponse(context);
   if (denied) return denied;
+  // M11.1 — Telegram is a Pro capability (after the role check: MEMBER still gets the generic 404).
+  const notInPlan = await telegramDenied(context.organization.id);
+  if (notInPlan) return notInPlan;
   const parsed = attendancePollSchema.safeParse((await req.json().catch(() => null)) ?? {});
   if (!parsed.success) return NextResponse.json(zodErrorResponse(parsed.error), { status: 400 });
   return postAttendancePollFor(context, matchId, parsed.data);

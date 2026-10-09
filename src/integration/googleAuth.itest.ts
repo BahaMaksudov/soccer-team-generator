@@ -96,7 +96,7 @@ async function seed() {
     data: { id: "u-unverified", email: UNVERIFIED_EMAIL, name: "Squatter", passwordHash: bcrypt.hashSync(UNVERIFIED_PASSWORD, 4) },
   });
   for (const slug of ["org-a", "org-b"]) {
-    await prisma.organization.create({ data: { id: slug, name: slug.toUpperCase(), slug } });
+    await prisma.organization.create({ data: { id: slug, name: slug.toUpperCase(), slug, plan: "LEGACY" } });
     await prisma.group.create({ data: { id: `${slug}-g`, organizationId: slug, name: "G", slug: "g", sportKey: "soccer", timezone: "UTC" } });
   }
   await prisma.organizationMembership.create({ data: { userId: owner.id, organizationId: "org-a", role: "OWNER" } });

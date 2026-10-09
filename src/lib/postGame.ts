@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { aiCreditsUsed, EntitlementError, organizationPlan, reserveAiCredit, settleAiCredit, telegramDenied, utcMonth } from "@/lib/entitlements";
 import type { MessageEventType } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import type { TenantContext } from "@/lib/tenantContext";
@@ -360,6 +361,10 @@ export async function runPostGameAction(context: TenantContext, matchId: string,
 
     // ---------------- MVP
     case "start_mvp": {
+      { // M11.1 — Telegram is a Pro capability.
+        const notInPlan = await telegramDenied(context.organization.id);
+        if (notInPlan) return notInPlan;
+      }
       if (participants.length < 2) return fail("Publish the teams for this match first.");
       if (!m.result?.publishedAt) return fail("Publish the final result before starting the MVP vote.");
       if (m.mvp?.closedAt) return fail("The MVP vote for this match is closed.");
@@ -504,15 +509,30 @@ export async function runPostGameAction(context: TenantContext, matchId: string,
     case "generate_recap": {
       const facts = recapFactsOf(m, context.activeGroup.sportKey);
       if (!facts) return fail("Publish the final result before generating a recap.");
-      const ai = await generateAiRecap(facts);
-      if (!ai.ok) return fail(ai.message, 503, { code: ai.code, fallback: deterministicRecap(facts) });
-      await prisma.matchRecap.upsert({
-        where: { matchId: m.id },
-        update: { generatedContent: ai.text, generatedAt: new Date(), generatedByUserId: context.user.id },
-        create: { matchId: m.id, groupId, generatedContent: ai.text, generatedAt: new Date(), generatedByUserId: context.user.id },
-      });
-      // Returned for review only — not saved as the recap, not published, not sent.
-      return NextResponse.json({ ok: true, text: ai.text });
+      // M11.1 — one AI credit per SUCCESSFUL generation: reserved before the call (race-safe),
+      // kept on success, released on any failure (the deterministic fallback costs nothing).
+      let credit: string;
+      try {
+        credit = await reserveAiCredit({ organizationId: context.organization.id, groupId, matchId: m.id, userId: context.user.id });
+      } catch (e) {
+        if (e instanceof EntitlementError) return NextResponse.json({ error: e.message, code: "PLAN_LIMIT", metric: e.metric, limit: e.limit, fallback: deterministicRecap(facts) }, { status: 402 });
+        throw e;
+      }
+      let succeeded = false;
+      try {
+        const ai = await generateAiRecap(facts);
+        if (!ai.ok) return fail(ai.message, 503, { code: ai.code, fallback: deterministicRecap(facts) });
+        await prisma.matchRecap.upsert({
+          where: { matchId: m.id },
+          update: { generatedContent: ai.text, generatedAt: new Date(), generatedByUserId: context.user.id },
+          create: { matchId: m.id, groupId, generatedContent: ai.text, generatedAt: new Date(), generatedByUserId: context.user.id },
+        });
+        succeeded = true;
+        // Returned for review only — not saved as the recap, not published, not sent.
+        return NextResponse.json({ ok: true, text: ai.text, aiUsage: await aiUsageView(context.organization.id) });
+      } finally {
+        await settleAiCredit(credit, succeeded);
+      }
     }
     case "save_recap": {
       const content = sanitizeRecapText(body.content);
@@ -543,6 +563,10 @@ export async function runPostGameAction(context: TenantContext, matchId: string,
 
     // ---------------- explicit Telegram posts
     case "post_message": {
+      { // M11.1 — Telegram is a Pro capability.
+        const notInPlan = await telegramDenied(context.organization.id);
+        if (notInPlan) return notInPlan;
+      }
       const destination = await matchDestination(groupId, m.telegramChatId);
       if (!destination) return fail("Choose a connected Telegram group for this match first.");
       const view = await resolveViewUrl(context, body.shareUrl, m.id);
@@ -631,6 +655,8 @@ export async function postGameView(context: TenantContext, matchId: string) {
     recap: m.recap ? recapView(m.recap, manager) : null,
     standardRecap: facts ? deterministicRecap(facts) : null,
     aiConfigured: aiConfigured(),
+    // M11.1 — this month's AI recap credits (organizers only; server-computed).
+    aiUsage: manager ? await aiUsageView(context.organization.id) : null,
     messages,
   };
 }
@@ -699,4 +725,10 @@ export async function getMatchSummaryReadiness(
     deliveryState,
     canPost: manager && !view.canceled && resultPublished && destinationConnected && deliveryState !== "posted" && deliveryState !== "sending",
   };
+}
+
+/** M11.1 — AI recap credits for the organizer (server-computed; never from the browser). */
+export async function aiUsageView(organizationId: string, now: Date = new Date()) {
+  const [{ limits }, used] = await Promise.all([organizationPlan(organizationId, now), aiCreditsUsed(organizationId, now)]);
+  return { used, limit: limits.monthlyAiRecaps, resetsAt: utcMonth(now).next.toISOString() };
 }
