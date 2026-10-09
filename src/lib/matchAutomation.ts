@@ -9,6 +9,8 @@ import { countAttendance, type AttendanceRow } from "@/lib/attendance";
 import { postAttendancePollFor } from "@/lib/telegramAttendance";
 import { closeMatchAttendancePolls, POLL_CLOSE_MESSAGE } from "@/lib/matchPollClose";
 import { sendAttendanceReadyEmail } from "@/lib/email";
+import { assertCapacity, EntitlementError, organizationPlan } from "@/lib/entitlements";
+import { schedulesOverLimit } from "@/lib/schedules";
 import { currentMatchLinkPath } from "@/lib/matchLink";
 import { CUTOFF_CATCH_UP_MS, dueForPoll, type WeeklySchedule } from "@/lib/scheduleTime";
 
@@ -68,6 +70,10 @@ export type AutomationRun = {
   pollsPosted: number;
   cutoffs: number;
   notified: number;
+  /** M11.1 — matches not created because the Organization reached its monthly match limit. */
+  limited: number;
+  /** M11.1 — schedule steps skipped because the Organization has more active schedules than its plan allows (organizer must choose). */
+  paused: number;
   errors: Array<{ matchId?: string; scheduleId?: string; error: string }>;
 };
 
@@ -119,22 +125,27 @@ async function ensureMatch(s: ScheduleRow, occ: ReturnType<typeof dueForPoll>[nu
     const chat = await communityTelegramChat(s.groupId, s.communityId);
     const venue = s.venueId ? await prisma.venue.findFirst({ where: { id: s.venueId, organizationId: ctx.organization.id }, select: { id: true, name: true } }) : null;
     try {
-      match = await prisma.match.create({
-        data: {
-          groupId: s.groupId,
-          date,
-          startTime: s.startTime,
-          communityId: s.communityId,
-          venueId: venue?.id ?? null,
-          locationName: venue?.name ?? null,
-          telegramChatId: chat?.id ?? null,
-          scheduleId: s.id,
-          createdByUserId: ctx.user.id,
-        },
-        select: { id: true },
+      // M11.1 — an automatic Match counts toward the monthly match limit like a manual one.
+      match = await prisma.$transaction(async (tx) => {
+        await assertCapacity(tx, ctx.organization.id, "monthlyMatches");
+        return tx.match.create({
+          data: {
+            groupId: s.groupId,
+            date,
+            startTime: s.startTime,
+            communityId: s.communityId,
+            venueId: venue?.id ?? null,
+            locationName: venue?.name ?? null,
+            telegramChatId: chat?.id ?? null,
+            scheduleId: s.id,
+            createdByUserId: ctx.user.id,
+          },
+          select: { id: true },
+        });
       });
       created = true;
     } catch (e) {
+      if (e instanceof EntitlementError) return null; // plan limit: nothing created, nothing sent
       if (!(e instanceof Prisma.PrismaClientKnownRequestError && e.code === "P2002")) throw e;
       match = await prisma.match.findFirstOrThrow({ where: { scheduleId: s.id, date, groupId: s.groupId }, select: { id: true } }); // a concurrent run created it
     }
@@ -154,7 +165,7 @@ async function ensureMatch(s: ScheduleRow, occ: ReturnType<typeof dueForPoll>[nu
 }
 
 /** Step 2 — post the attendance poll (once; never blindly retried after an uncertain delivery). */
-async function stepPoll(ctx: TenantContext, matchId: string, automationId: string): Promise<"posted" | "link" | "skipped" | "error"> {
+async function stepPoll(ctx: TenantContext, matchId: string, automationId: string, telegramAllowed = true): Promise<"posted" | "link" | "skipped" | "error"> {
   const a = await prisma.matchAutomation.findUniqueOrThrow({ where: { id: automationId } });
   if (a.pollPostedAt) return "skipped";
   const m = await prisma.match.findFirst({ where: { id: matchId, groupId: ctx.activeGroup.id }, select: { status: true, communityId: true, telegramChatId: true, community: { select: { name: true } } } });
@@ -165,6 +176,8 @@ async function stepPoll(ctx: TenantContext, matchId: string, automationId: strin
     if (!ok) chatRef = null;
   }
   if (!chatRef && m.communityId) chatRef = (await communityTelegramChat(ctx.activeGroup.id, m.communityId))?.id ?? null;
+  // M11.1 — Telegram is a Pro capability: without it, players answer through the Match Link.
+  if (!telegramAllowed) chatRef = null;
   if (!chatRef) {
     // M9.3 — web-only Community: players answer through the Match Link; nothing to post.
     await prisma.matchAutomation.updateMany({ where: { id: automationId, pollPostedAt: null }, data: { pollPostedAt: new Date(), lastError: null } });
@@ -312,7 +325,7 @@ export async function runMatchAutomation(now: Date = new Date(), scope: Automati
   const scheduleWhere = { ...(scope.scheduleId ? { id: scope.scheduleId } : {}), ...(includePaused ? {} : { isActive: true }) };
   // Automatic runs finalize cutoffs within the catch-up window; an organizer's run for one Match is not limited by it.
   const cutoffFloor = scope.matchId ? undefined : new Date(now.getTime() - CUTOFF_CATCH_UP_MS);
-  const run: AutomationRun = { schedules: 0, created: 0, pollsPosted: 0, cutoffs: 0, notified: 0, errors: [] };
+  const run: AutomationRun = { schedules: 0, created: 0, pollsPosted: 0, cutoffs: 0, notified: 0, limited: 0, paused: 0, errors: [] };
   const schedules = (await prisma.matchSchedule.findMany({
     where: { ...scheduleWhere, group: { isActive: true }, community: { isActive: true }, ...(scope.groupId ? { groupId: scope.groupId } : {}) },
     select: { id: true, groupId: true, communityId: true, venueId: true, createdByUserId: true, timezone: true, weekday: true, startTime: true, pollDaysBefore: true, pollTime: true, cutoffDaysBefore: true, cutoffTime: true },
@@ -324,6 +337,16 @@ export async function runMatchAutomation(now: Date = new Date(), scope: Automati
     if (!contexts.has(key)) contexts.set(key, await automationContext(groupId, preferred));
     return contexts.get(key)!;
   };
+  // M11.1 — per-Organization plan gate: automation pauses while the Organization has more
+  // active schedules than its plan allows (the organizer chooses which one stays); Telegram is Pro.
+  const gates = new Map<string, { paused: boolean; telegram: boolean }>();
+  const gateFor = async (organizationId: string) => {
+    if (!gates.has(organizationId)) {
+      const [{ limits }, over] = await Promise.all([organizationPlan(organizationId, now), schedulesOverLimit(organizationId)]);
+      gates.set(organizationId, { paused: over.over, telegram: limits.telegram });
+    }
+    return gates.get(organizationId)!;
+  };
 
   // 1 + 2 — create due Matches and post their polls.
   for (const s of schedules) {
@@ -332,12 +355,22 @@ export async function runMatchAutomation(now: Date = new Date(), scope: Automati
       run.errors.push({ scheduleId: s.id, error: "No owner or admin can run this schedule." });
       continue;
     }
+    const gate = await gateFor(ctx.organization.id);
+    if (gate.paused) {
+      run.paused++;
+      continue;
+    }
     for (const occ of dueForPoll(s, now)) {
       try {
-        const { matchId, automation, created } = await ensureMatch(s, occ, ctx);
+        const ensured = await ensureMatch(s, occ, ctx);
+        if (!ensured) {
+          run.limited++;
+          continue;
+        }
+        const { matchId, automation, created } = ensured;
         if (created) run.created++;
         if (scope.matchId && scope.matchId !== matchId) continue;
-        if ((await withMatchLock(matchId, () => stepPoll(ctx, matchId, automation.id))) === "posted") run.pollsPosted++;
+        if ((await withMatchLock(matchId, () => stepPoll(ctx, matchId, automation.id, gate.telegram))) === "posted") run.pollsPosted++;
       } catch (e) {
         run.errors.push({ scheduleId: s.id, error: e instanceof Error ? e.message : "error" });
       }
@@ -359,8 +392,13 @@ export async function runMatchAutomation(now: Date = new Date(), scope: Automati
   for (const a of pendingPolls) {
     const ctx = await ctxFor(a.groupId, a.match.schedule?.createdByUserId ?? null);
     if (!ctx) continue;
+    const gate = await gateFor(ctx.organization.id);
+    if (gate.paused) {
+      run.paused++;
+      continue;
+    }
     try {
-      if ((await withMatchLock(a.matchId, () => stepPoll(ctx, a.matchId, a.id))) === "posted") run.pollsPosted++;
+      if ((await withMatchLock(a.matchId, () => stepPoll(ctx, a.matchId, a.id, gate.telegram))) === "posted") run.pollsPosted++;
     } catch (e) {
       run.errors.push({ matchId: a.matchId, error: e instanceof Error ? e.message : "error" });
     }
@@ -380,6 +418,10 @@ export async function runMatchAutomation(now: Date = new Date(), scope: Automati
   for (const a of pending) {
     const ctx = await ctxFor(a.groupId, a.match.schedule?.createdByUserId ?? null);
     if (!ctx) continue;
+    if ((await gateFor(ctx.organization.id)).paused) {
+      run.paused++;
+      continue;
+    }
     try {
       const done = await withMatchLock(a.matchId, async () => {
         const fresh = await prisma.matchAutomation.findUniqueOrThrow({ where: { id: a.id }, select: { cutoffCompletedAt: true, notifiedAt: true } });
@@ -417,7 +459,16 @@ export type OrganizerRunResult = {
  */
 export async function organizerRun(groupId: string, scheduleId: string, matchId?: string): Promise<OrganizerRunResult> {
   const startedAt = new Date();
-  const schedule = await prisma.matchSchedule.findFirstOrThrow({ where: { id: scheduleId, groupId }, select: { isActive: true } });
+  const schedule = await prisma.matchSchedule.findFirstOrThrow({ where: { id: scheduleId, groupId }, select: { isActive: true, group: { select: { organizationId: true } } } });
+  // M11.1 — Run now never bypasses the plan: automation pauses while the Organization has more active
+  // schedules than allowed, and on a plan with a schedule limit only ACTIVE schedules run.
+  const over = await schedulesOverLimit(schedule.group.organizationId);
+  const blocked = over.over
+    ? `Automation is paused: your plan includes ${over.limit} active recurring schedule${over.limit === 1 ? "" : "s"}. Choose the schedule to keep active.`
+    : !schedule.isActive && over.limit !== null
+      ? "On your plan, only active recurring schedules run. Resume this schedule to run it."
+      : null;
+  if (blocked) return { ok: false, paused: !schedule.isActive, created: 0, pollsPosted: 0, cutoffs: 0, notified: 0, issues: [blocked] };
   const run = await runMatchAutomation(startedAt, { groupId, scheduleId, matchId, includePaused: true });
   if (run.errors.length) console.error(`[automation] organizer run finished with ${run.errors.length} error(s): ${JSON.stringify(run.errors)}`);
   const recorded = await prisma.matchAutomation.findMany({

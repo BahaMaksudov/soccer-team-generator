@@ -31,6 +31,15 @@ import { cn } from "@/lib/cn";
  */
 
 type MessageState = "not_posted" | "posted" | "updated_available" | "failed" | "uncertain" | "sending" | null;
+type AiUsage = { used: number; limit: number | null; resetsAt: string };
+/** M11.1 — "AI recaps: 1 of 2 used this month · resets Nov 1" (successful generations only). */
+export function aiUsageText(u: AiUsage): string {
+  const reset = new Date(u.resetsAt).toLocaleDateString("en-US", { timeZone: "UTC", month: "short", day: "numeric" });
+  if (u.limit === null) return `AI recaps: ${u.used} used this month.`;
+  if (u.used >= u.limit) return `AI recaps: all ${u.limit} used this month · resets ${reset}. You can still write or use the standard recap.`;
+  return `AI recaps: ${u.used} of ${u.limit} used this month · resets ${reset}.`;
+}
+
 export type PostGameView = {
   canceled: boolean;
   teamNumbers: number[];
@@ -60,6 +69,8 @@ export type PostGameView = {
   recap: { content: string | null; source: string | null; published: boolean; changesUnpublished?: boolean; hasAiDraft: boolean } | null;
   standardRecap: string | null;
   aiConfigured: boolean;
+  /** M11.1 — AI recap credits this UTC month (limit null = no monthly limit). Organizers only. */
+  aiUsage?: { used: number; limit: number | null; resetsAt: string } | null;
   // M9-D — Match Summary is the only post-game Telegram message (plus the Player Vote poll).
   messages: { destinationConnected: boolean; summary: MessageState; mvpPoll: MessageState } | null;
 };
@@ -112,6 +123,8 @@ export default function PostGameSection({
   const [aiGenerated, setAiGenerated] = useState(false);
   const [lastProgrammatic, setLastProgrammatic] = useState<string | null>(pg.recap?.content ?? null);
   const [pendingReplace, setPendingReplace] = useState<"ai" | "standard" | null>(null);
+  // M11.1 — AI recap credits (server-computed; refreshed from each generate reply).
+  const [aiUsage, setAiUsage] = useState<AiUsage | null>(pg.aiUsage ?? null);
   const savedKey = JSON.stringify(pg.result?.fixtures ?? []);
   useEffect(() => {
     setScores(fieldsFromFixtures(pg.result?.fixtures ?? []));
@@ -150,12 +163,20 @@ export default function PostGameSection({
   const switchable = canManage && mvpMethodSwitchable(pg);
 
   // Recap: replacing the textarea asks first only when it holds the organizer's own unsaved edits.
+  const aiExhausted = Boolean(aiUsage && aiUsage.limit !== null && aiUsage.used >= aiUsage.limit);
   const runGenerate = async () => {
     setGenerating(true);
     try {
       // Review only: no reload, nothing saved as the recap, nothing published or sent.
       const r = await generateRecapDraft({
-        request,
+        // M11.1 — the server returns the updated credit count; a PLAN_LIMIT reply means none are left.
+        request: async (b) => {
+          const res = await request(b);
+          const d = (res.data ?? {}) as { aiUsage?: AiUsage; code?: string; limit?: number | null };
+          if (d.aiUsage) setAiUsage(d.aiUsage);
+          else if (d.code === "PLAN_LIMIT" && aiUsage) setAiUsage({ ...aiUsage, used: aiUsage.limit ?? aiUsage.used });
+          return res;
+        },
         setDraft: (t) => {
           setRecapText(t);
           setLastProgrammatic(t);
@@ -443,7 +464,7 @@ export default function PostGameSection({
               <Button
                 type="button"
                 variant="outline"
-                disabled={busy || generating || !pg.aiConfigured || pendingReplace !== null}
+                disabled={busy || generating || !pg.aiConfigured || pendingReplace !== null || aiExhausted}
                 title={pg.aiConfigured ? undefined : "AI is not configured"}
                 onClick={() => requestReplace("ai")}
               >
@@ -477,6 +498,7 @@ export default function PostGameSection({
               </div>
             )}
             {!pg.aiConfigured && <p className="text-xs text-muted-foreground">AI recaps are not set up; the standard recap is always available.</p>}
+            {pg.aiConfigured && aiUsage && <p className="text-xs text-muted-foreground">{aiUsageText(aiUsage)}</p>}
             {aiMessage && <p role="alert" className="text-xs text-destructive">{aiMessage}</p>}
             <label htmlFor="recap-text" className="sr-only">Recap text</label>
             <textarea id="recap-text" className="w-full rounded-tbp-md border border-input bg-card p-3 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" rows={5} maxLength={1200} value={recapText} onChange={(e) => setRecapText(e.target.value)} placeholder="Recap text" />

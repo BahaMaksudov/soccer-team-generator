@@ -62,8 +62,8 @@ async function seed() {
   const mk = (email: string) =>
     prisma.user.create({ data: { email, name: email.split("@")[0], passwordHash: bcrypt.hashSync("x-password-1", 4), emailVerifiedAt: verified } });
   const [owner, admin, member, ownerB] = await Promise.all([mk("owner@example.test"), mk("admin@example.test"), mk("member@example.test"), mk("owner-b@example.test")]);
-  await prisma.organization.create({ data: { id: "org-a-id", name: "Org A", slug: "org-a" } });
-  await prisma.organization.create({ data: { id: "org-b-id", name: "Org B", slug: "org-b" } });
+  await prisma.organization.create({ data: { id: "org-a-id", name: "Org A", slug: "org-a", plan: "LEGACY" } });
+  await prisma.organization.create({ data: { id: "org-b-id", name: "Org B", slug: "org-b", plan: "LEGACY" } });
   await prisma.organizationMembership.createMany({
     data: [
       { userId: owner.id, organizationId: "org-a-id", role: "OWNER" },

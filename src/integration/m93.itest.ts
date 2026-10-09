@@ -90,7 +90,7 @@ async function seed() {
     `TRUNCATE "MatchAutomationEmail","MatchAutomation","MatchSchedule","Venue","MessageDelivery","MatchRecap","MatchMvpVote","MatchMvp","MatchResult","AttendanceResponse","TeamGeneration","Match","CommunityPlayer","Community","TelegramChatPlayer","TelegramChatBindCode","TelegramConnectCode","PlayerClaim","EmailVerificationToken","OrganizationInvitation","TelegramPollAnswer","TelegramPoll","TelegramUserLink","TelegramChat","GroupShareLink","GroupSetting","Player","Group","OrganizationMembership","Organization","User","AppSetting" RESTART IDENTITY CASCADE`
   );
   await prisma.user.createMany({ data: ["owner", "admin", "member", "other", "claimed"].map((n) => ({ id: `u-${n}`, email: `${n}@example.test`, name: n, passwordHash: null, emailVerifiedAt: VERIFIED })) });
-  await prisma.organization.createMany({ data: [{ id: "org-a", name: "Boston Soccer Club", slug: "org-a" }, { id: "org-b", name: "B", slug: "org-b" }] });
+  await prisma.organization.createMany({ data: [{ id: "org-a", name: "Boston Soccer Club", slug: "org-a", plan: "LEGACY" }, { id: "org-b", name: "B", slug: "org-b", plan: "LEGACY" }] });
   await prisma.group.createMany({
     data: [
       { id: "ga", organizationId: "org-a", name: "Monday Night Soccer", slug: "monday", sportKey: "soccer", timezone: "America/New_York", visibility: "LINK" },

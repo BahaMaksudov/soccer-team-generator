@@ -22,7 +22,7 @@ async function seed() {
       { id: "u-unverified", email: "unverified@example.test", name: null, passwordHash: null },
     ],
   });
-  for (const slug of ["org-a", "org-b", "org-c"]) await prisma.organization.create({ data: { id: slug, name: slug.toUpperCase(), slug } });
+  for (const slug of ["org-a", "org-b", "org-c"]) await prisma.organization.create({ data: { id: slug, name: slug.toUpperCase(), slug, plan: "LEGACY" } });
   await prisma.group.createMany({
     data: [
       { id: "a1", organizationId: "org-a", name: "A One", slug: "one", sportKey: "soccer", timezone: "UTC" },

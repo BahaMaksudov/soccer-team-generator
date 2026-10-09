@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import type { AttendanceStatus, MatchStatus } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { CUTOFF_CATCH_UP_MS } from "@/lib/scheduleTime";
+import { assertCapacity, EntitlementError, planLimitResponse } from "@/lib/entitlements";
 import type { TenantContext } from "@/lib/tenantContext";
 import { toDateOnlyUTC } from "@/lib/dateOnly";
 import { formatYMDFromDate } from "@/lib/telegramFormat";
@@ -149,21 +150,31 @@ export async function createMatch(context: TenantContext, req: Request): Promise
   if (!resolved.ok) return resolved.response;
   const venue = venueId ? await organizationVenue(context.organization.id, venueId, true) : null;
   if (venueId && !venue) return NextResponse.json({ error: "Venue not found" }, { status: 404 });
-  const match = await prisma.match.create({
-    data: {
-      groupId: context.activeGroup.id,
-      date: toDateOnlyUTC(date),
-      startTime: startTime || null,
-      // M9.2 — the Venue's name is the location shown everywhere (unless a free-text one is given).
-      locationName: locationName || venue?.name || null,
-      venueId: venue?.id ?? null,
-      createdByUserId: context.user.id,
-      // M9.2 — the Community's roster; its connected Telegram chat is the Match's default channel.
-      communityId: resolved.community?.id ?? null,
-      telegramChatId: resolved.chatRef,
-    },
-    select: MATCH_SELECT,
-  });
+  // M11.1 — new Matches per UTC month count toward the plan (Organization-locked, same transaction).
+  let match;
+  try {
+    match = await prisma.$transaction(async (tx) => {
+      await assertCapacity(tx, context.organization.id, "monthlyMatches");
+      return tx.match.create({
+        data: {
+          groupId: context.activeGroup.id,
+          date: toDateOnlyUTC(date),
+          startTime: startTime || null,
+          // M9.2 — the Venue's name is the location shown everywhere (unless a free-text one is given).
+          locationName: locationName || venue?.name || null,
+          venueId: venue?.id ?? null,
+          createdByUserId: context.user.id,
+          // M9.2 — the Community's roster; its connected Telegram chat is the Match's default channel.
+          communityId: resolved.community?.id ?? null,
+          telegramChatId: resolved.chatRef,
+        },
+        select: MATCH_SELECT,
+      });
+    });
+  } catch (e) {
+    if (e instanceof EntitlementError) return planLimitResponse(e);
+    throw e;
+  }
   return NextResponse.json({ ok: true, match: toSummary(match) }, { status: 201 });
 }
 

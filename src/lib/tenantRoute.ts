@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { TenantContextError } from "@/lib/tenantContext";
+import { EntitlementError, planLimitResponse } from "@/lib/entitlements";
 
 /**
  * Next.js-specific glue for tenant-scoped routes, kept separate from
@@ -34,6 +35,8 @@ import { TenantContextError } from "@/lib/tenantContext";
  * /admin/* route already reveals.
  */
 export function canonicalTenantErrorResponse(e: unknown): NextResponse {
+  // M11.1 — a plan limit (402 PLAN_LIMIT) from any enforcement point.
+  if (e instanceof EntitlementError) return planLimitResponse(e);
   if (e instanceof TenantContextError) {
     if (e.code === "UNAUTHENTICATED") {
       return NextResponse.json({ error: e.code }, { status: 401 });
@@ -56,6 +59,8 @@ export function canonicalTenantErrorResponse(e: unknown): NextResponse {
  * unexpected errors are a generic 500 that never carries internals.
  */
 export function accountRouteErrorResponse(e: unknown): NextResponse {
+  // M11.1 — a plan limit (402 PLAN_LIMIT) from any enforcement point.
+  if (e instanceof EntitlementError) return planLimitResponse(e);
   if (e instanceof TenantContextError) {
     if (e.code === "UNAUTHENTICATED" || e.code === "USER_NOT_FOUND") {
       return NextResponse.json({ error: "UNAUTHENTICATED" }, { status: 401 });

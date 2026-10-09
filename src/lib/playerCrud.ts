@@ -1,4 +1,5 @@
 import { prisma } from "@/lib/prisma";
+import { assertCapacity, EntitlementError, planLimitResponse } from "@/lib/entitlements";
 import { NextResponse } from "next/server";
 import { playerCreateSchema, playerUpdateSchema, zodErrorResponse } from "@/lib/validation";
 import type { TenantContext } from "@/lib/tenantContext";
@@ -147,21 +148,26 @@ export async function createPlayer(context: TenantContext, req: Request): Promis
   if (invalidRole) return invalidRole;
 
   try {
-    const created = await prisma.player.create({
-      data: {
-        firstName,
-        lastName,
-        position,
-        rating,
-        stamina,
-        isActive: isActive ?? true,
-        groupId: context.activeGroup.id,
-      },
-      select: { ...ADMIN_PLAYER_FIELDS, userId: true },
+    // M11.1 — an active Player counts toward the plan's unique active players (Organization-locked).
+    const created = await prisma.$transaction(async (tx) => {
+      if (isActive ?? true) await assertCapacity(tx, context.organization.id, "activePlayers");
+      return tx.player.create({
+        data: {
+          firstName,
+          lastName,
+          position,
+          rating,
+          stamina,
+          isActive: isActive ?? true,
+          groupId: context.activeGroup.id,
+        },
+        select: { ...ADMIN_PLAYER_FIELDS, userId: true },
+      });
     });
 
     return NextResponse.json(toAdminPlayer(created as AdminPlayerRow, await staminaCoefFor(context)));
   } catch (e: unknown) {
+    if (e instanceof EntitlementError) return planLimitResponse(e);
     // Phase 2D.6E.6C — never return raw database/Prisma messages.
     console.error("createPlayer failed", e);
     return NextResponse.json({ error: "Failed to create player" }, { status: 500 });
@@ -193,7 +199,14 @@ export async function updatePlayer(context: TenantContext, id: string, req: Requ
     // A foreign-Group id and a nonexistent id both affect 0 rows and are
     // indistinguishable (plain 404, never 403).
     if (hasChanges) {
-      const result = await prisma.player.updateMany({ where: { id, groupId }, data });
+      // M11.1 — reactivating an inactive Player counts toward active players (Organization-locked).
+      const result = await prisma.$transaction(async (tx) => {
+        if (isActive === true) {
+          const current = await tx.player.findFirst({ where: { id, groupId }, select: { isActive: true } });
+          if (current && !current.isActive) await assertCapacity(tx, context.organization.id, "activePlayers");
+        }
+        return tx.player.updateMany({ where: { id, groupId }, data });
+      });
       if (result.count !== 1) {
         return NextResponse.json({ error: "Player not found" }, { status: 404 });
       }
@@ -209,6 +222,7 @@ export async function updatePlayer(context: TenantContext, id: string, req: Requ
     }
     return NextResponse.json(toAdminPlayer(updated as AdminPlayerRow, await staminaCoefFor(context)));
   } catch (e: unknown) {
+    if (e instanceof EntitlementError) return planLimitResponse(e);
     console.error("updatePlayer failed", e);
     return NextResponse.json({ error: "Failed to update player" }, { status: 500 });
   }

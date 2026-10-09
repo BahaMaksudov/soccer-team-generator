@@ -85,7 +85,7 @@ async function seed() {
   ]);
   await Promise.all([mk("player@example.test"), mk("other@example.test")]);
   for (const [orgId, slug] of [["org-a-id", "org-a"], ["org-b-id", "org-b"]]) {
-    await prisma.organization.create({ data: { id: orgId, name: slug.toUpperCase(), slug } });
+    await prisma.organization.create({ data: { id: orgId, name: slug.toUpperCase(), slug, plan: "LEGACY" } });
   }
   await prisma.organizationMembership.createMany({
     data: [

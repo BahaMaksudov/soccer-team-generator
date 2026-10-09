@@ -77,7 +77,7 @@ async function seed() {
   const other = await prisma.user.create({
     data: { email: OTHER_EMAIL, name: "Other", passwordHash: bcrypt.hashSync(OTHER_PASSWORD, 4), emailVerifiedAt: new Date("2026-10-01T00:00:00Z") },
   });
-  const org = await prisma.organization.create({ data: { id: "org-1", name: "Org", slug: "org" } });
+  const org = await prisma.organization.create({ data: { id: "org-1", name: "Org", slug: "org", plan: "LEGACY" } });
   await prisma.organizationMembership.create({ data: { userId: owner.id, organizationId: org.id, role: "OWNER" } });
   await prisma.organizationMembership.create({ data: { userId: other.id, organizationId: org.id, role: "MEMBER" } });
   await prisma.group.create({ data: { id: "g-1", organizationId: org.id, name: "G", slug: "g", sportKey: "soccer", timezone: "America/New_York" } });

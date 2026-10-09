@@ -41,8 +41,14 @@ const mockDeleteMany = vi.fn(async ({ where }: { where: Partial<Row> }) => {
 const mockUpdate = vi.fn();
 const mockDelete = vi.fn();
 
-vi.mock("@/lib/prisma", () => ({
-  prisma: {
+// M11.1 — plan limits are covered by the entitlement tests; here every action is within plan.
+vi.mock("@/lib/entitlements", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/entitlements")>()),
+  assertCapacity: async () => {},
+  telegramDenied: async () => null,
+}));
+vi.mock("@/lib/prisma", () => {
+  const prisma: Record<string, unknown> = {
     player: {
       findFirst: (...a: [never]) => mockFindFirst(...a),
       updateMany: (...a: [never]) => mockUpdateMany(...a),
@@ -52,8 +58,11 @@ vi.mock("@/lib/prisma", () => ({
     },
     // M9.2 — the organizer DTO's rating reads the Group's stored balance weights (none here → sport default).
     groupSetting: { findUnique: async () => null },
-  },
-}));
+  };
+  // M11.1 — capacity-checked writes run in a transaction: run the callback against this same mock.
+  prisma.$transaction = async (fn: (tx: unknown) => unknown) => fn(prisma);
+  return { prisma };
+});
 
 import { PATCH, DELETE } from "./route";
 import { TenantContextError } from "@/lib/tenantContext";

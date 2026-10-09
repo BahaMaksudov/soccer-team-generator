@@ -82,7 +82,7 @@ async function seed() {
   const [ownerA, adminA, ownerB] = await Promise.all([mk("owner-a@example.test"), mk("admin-a@example.test"), mk("owner-b@example.test")]);
   await Promise.all([mk("player@example.test"), mk("other@example.test"), mk("unverified@example.test", null)]);
   for (const [orgId, slug] of [["org-a-id", "org-a"], ["org-b-id", "org-b"]]) {
-    await prisma.organization.create({ data: { id: orgId, name: slug.toUpperCase(), slug } });
+    await prisma.organization.create({ data: { id: orgId, name: slug.toUpperCase(), slug, plan: "LEGACY" } });
   }
   await prisma.organizationMembership.createMany({
     data: [

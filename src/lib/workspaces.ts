@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { assertCapacity, TRIAL_DAYS } from "@/lib/entitlements";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { SPORTS, SPORT_KEYS } from "@/lib/sports";
@@ -138,6 +139,16 @@ export async function createOrganizationWorkspace(
         await tx.organizationMembership.create({
           data: { userId: ownerUserId, organizationId: organization.id, role: "OWNER" },
         });
+        // M11.1 — the introductory Pro trial: once per verified User, claimed atomically
+        // (conditional update; concurrent creations are also serialized by the lock above).
+        const claimed = await tx.user.updateMany({ where: { id: ownerUserId, trialUsedAt: null, emailVerifiedAt: { not: null } }, data: { trialUsedAt: now } });
+        if (claimed.count === 1) {
+          const trialEndsAt = new Date(now.getTime() + TRIAL_DAYS * 86_400_000);
+          await tx.organization.update({ where: { id: organization.id }, data: { trialStartedAt: now, trialEndsAt } });
+          await tx.entitlementEvent.create({
+            data: { organizationId: organization.id, action: "TRIAL_STARTED", fromPlan: "FREE", toPlan: "FREE", trialEndsAt, reason: `Introductory ${TRIAL_DAYS}-day Pro trial (first Organization of this User).`, actor: `user:${ownerUserId}` },
+          });
+        }
         const group = await tx.group.create({
           data: {
             organizationId: organization.id,
@@ -228,6 +239,8 @@ export async function createGroupInOrganization(
           return { group: recent, href: workspaceHref(context.organization.slug, recent.slug), replayed: true };
         }
 
+        // M11.1 — plan limit on active Groups (same transaction; Organization-locked).
+        await assertCapacity(tx, organizationId, "activeGroups", now);
         const taken = await tx.group.findMany({
           where: { organizationId, slug: { startsWith: baseSlug } },
           select: { slug: true },

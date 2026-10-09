@@ -67,7 +67,7 @@ async function seed() {
   );
   // Verified, as migration #13 makes every pre-existing OWNER.
   const user = await prisma.user.create({ data: { email: ADMIN_EMAIL, passwordHash: "x", name: "ITest", emailVerifiedAt: new Date() } });
-  const org = await prisma.organization.create({ data: { id: "org-itest", name: "ITest Org", slug: ORG } });
+  const org = await prisma.organization.create({ data: { id: "org-itest", name: "ITest Org", slug: ORG, plan: "LEGACY" } });
   await prisma.organizationMembership.create({ data: { userId: user.id, organizationId: org.id, role: "OWNER" } });
   for (const id of [A, B]) {
     await prisma.group.create({ data: { id, organizationId: org.id, name: id, slug: id, sportKey: "soccer", timezone: "America/New_York" } });
@@ -434,7 +434,7 @@ describe("Phase 2D.7 — PostgreSQL enforces groupId NOT NULL on every tenant-ow
   });
 
   it("a Group with no tenant-owned rows left can still be deleted (RESTRICT only guards dependents)", async () => {
-    await prisma.organization.create({ data: { id: "org-empty", name: "Empty", slug: "empty-org" } });
+    await prisma.organization.create({ data: { id: "org-empty", name: "Empty", slug: "empty-org", plan: "LEGACY" } });
     await prisma.group.create({ data: { id: "grp-empty", organizationId: "org-empty", name: "e", slug: "e", timezone: "America/New_York" } });
     expect(await pgErrorCode(`DELETE FROM "Group" WHERE id = 'grp-empty'`)).toBeNull();
     expect(await prisma.group.count({ where: { id: "grp-empty" } })).toBe(0);

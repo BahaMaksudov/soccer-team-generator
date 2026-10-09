@@ -90,6 +90,7 @@ describe("flat operational Admin APIs are deleted", () => {
         canonical("schedules"), // M9.2
         canonical("schedules/[scheduleId]"), // M9.2
         canonical("schedules/[scheduleId]/run"), // M9.2.1 — organizer Run Now
+        canonical("schedules/[scheduleId]/keep"), // M11.1 — keep one schedule active (plan limit)
         canonical("matches/[matchId]/automation"), // M9.2
         canonical("matches/[matchId]/share"), // M9.3 — Match Link (organizer)
         canonical("matches/[matchId]/share/reset"), // M9.3
@@ -272,8 +273,9 @@ describe("tenant-isolation hardening invariants (Phase 2D.6E.6C)", () => {
   const crud = () => code.get(rel("src/lib/playerCrud.ts"))!;
 
   it("Player PATCH/DELETE mutate only through id+groupId-scoped updateMany/deleteMany — never by id alone", () => {
-    expect(crud()).not.toMatch(/prisma\.player\.(update|delete)\(/);
-    expect(crud()).toMatch(/prisma\.player\.updateMany\(\{ where: \{ id, groupId \}/);
+    // M11.1 — the update runs inside the capacity-check transaction (tx); still id+groupId-scoped.
+    expect(crud()).not.toMatch(/(prisma|tx)\.player\.(update|delete)\(/);
+    expect(crud()).toMatch(/(prisma|tx)\.player\.updateMany\(\{ where: \{ id, groupId \}/);
     expect(crud()).toMatch(/prisma\.player\.deleteMany\(\{ where: \{ id, groupId: context\.activeGroup\.id \} \}\)/);
   });
 

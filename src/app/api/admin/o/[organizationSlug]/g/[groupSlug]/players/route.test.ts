@@ -8,16 +8,25 @@ vi.mock("@/lib/tenantContext", async (importOriginal) => {
 
 const mockFindMany = vi.fn();
 const mockCreate = vi.fn();
-vi.mock("@/lib/prisma", () => ({
-  prisma: {
+// M11.1 — plan limits are covered by the entitlement tests; here every action is within plan.
+vi.mock("@/lib/entitlements", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/entitlements")>()),
+  assertCapacity: async () => {},
+  telegramDenied: async () => null,
+}));
+vi.mock("@/lib/prisma", () => {
+  const prisma: Record<string, unknown> = {
     player: {
       findMany: (...args: unknown[]) => mockFindMany(...args),
       create: (...args: unknown[]) => mockCreate(...args),
     },
     // M9.2 — the organizer DTO's rating reads the Group's stored balance weights (none here → sport default).
     groupSetting: { findUnique: async () => null },
-  },
-}));
+  };
+  // M11.1 — capacity-checked writes run in a transaction: run the callback against this same mock.
+  prisma.$transaction = async (fn: (tx: unknown) => unknown) => fn(prisma);
+  return { prisma };
+});
 
 import { GET, POST } from "./route";
 import { TenantContextError } from "@/lib/tenantContext";

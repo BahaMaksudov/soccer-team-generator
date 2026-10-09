@@ -73,7 +73,7 @@ async function seed() {
     mk("unverified-a@example.test", null),
   ]);
   for (const [orgId, slug] of [["org-a-id", ORG_A], ["org-b-id", ORG_B]]) {
-    await prisma.organization.create({ data: { id: orgId, name: slug.toUpperCase(), slug } });
+    await prisma.organization.create({ data: { id: orgId, name: slug.toUpperCase(), slug, plan: "LEGACY" } });
   }
   for (const [userId, orgId, role] of [
     [ownerA.id, "org-a-id", "OWNER"],
