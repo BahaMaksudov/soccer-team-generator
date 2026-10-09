@@ -410,7 +410,8 @@ describe("Telegram attendance poll", () => {
     const v = await view(id);
     expect(v.telegram.unlinkedVoters).toBe(1);
     expect(v.telegram.poll.pollId).toBeNull(); // provider ids hidden from MEMBER
-    expect(stringify(v)).not.toMatch(/333|111|222|-1001/);
+    // Telegram ids as standalone JSON values only (a bare "222" also occurs in random ids and in millisecond timestamps, e.g. ".222Z").
+    expect(stringify(v)).not.toMatch(/[:[,]"?(?:333|111|222|-1001)"?[,\]}]/);
     expect(v.counts).toMatchObject({ PLAYING: 1, MAYBE: 1 });
     expect(v.defaultSelection).toEqual(["ga-p1"]); // MAYBE not preselected
   });
