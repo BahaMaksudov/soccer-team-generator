@@ -311,7 +311,8 @@ describe("publish metadata and public privacy", () => {
     // Public pages: role key only, no skill/stamina/ids.
     session = null;
     const home = await loadPublicGroupHomeData(G("volleyball"));
-    expect(stringify(home?.items)).not.toMatch(/EXCELLENT|FAIR|rating|stamina|v1|telegram|metrics/i);
+    // The engine version is checked as a JSON value/key (a bare "v1" also occurs inside random cuid ids, e.g. "cmv10…").
+    expect(stringify(home?.items)).not.toMatch(/EXCELLENT|FAIR|rating|stamina|"v1"|engineVersion|telegram|metrics/i);
     const pub = await (await publicPlayersRoute.GET(json("GET"), g(G("volleyball")))).json();
     expect(stringify(pub)).not.toMatch(/rating|stamina|EXCELLENT|telegram|userId/i);
   });
