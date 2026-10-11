@@ -13,6 +13,7 @@ import {
   ownershipLimitMessage,
   ownershipLimitResponse,
   ownershipQualifier,
+  paidSubscriptionQualifies,
   PAID_PRO_STATUSES,
   PLAN_LIMITS,
   PLAN_LABEL,
@@ -147,6 +148,19 @@ describe("Phase 1 — organization ownership allowance (pure rules)", () => {
     expect([...PAID_PRO_STATUSES]).toEqual(ENTITLING_STATUSES.filter((s) => s !== "trialing"));
     expect(PAID_PRO_STATUSES).toContain("past_due");
     expect(PAID_PRO_STATUSES).not.toContain("trialing");
+  });
+  it("a stored subscription qualifies only if paid, in a permitted Stripe mode, and the Organization's own Customer", () => {
+    const org = { stripeCustomerId: "cus_1" };
+    const sub = { status: "active", livemode: false, stripeCustomerId: "cus_1" };
+    expect(paidSubscriptionQualifies(sub, org, { VERCEL_ENV: "preview" })).toBe(true);
+    expect(paidSubscriptionQualifies(sub, org, {})).toBe(true);
+    expect(paidSubscriptionQualifies({ ...sub, status: "past_due" }, org, {})).toBe(true);
+    expect(paidSubscriptionQualifies(sub, org, { VERCEL_ENV: "production" })).toBe(false); // test mode in Production
+    expect(paidSubscriptionQualifies({ ...sub, livemode: true }, org, { BILLING_ALLOW_LIVE_MODE: "true" })).toBe(false); // live not launched
+    expect(paidSubscriptionQualifies({ ...sub, livemode: true }, org, { VERCEL_ENV: "production", BILLING_ALLOW_LIVE_MODE: "true" })).toBe(false);
+    expect(paidSubscriptionQualifies({ ...sub, stripeCustomerId: "cus_other" }, org, {})).toBe(false); // mismatched Customer
+    expect(paidSubscriptionQualifies(sub, { stripeCustomerId: null }, {})).toBe(false);
+    for (const status of ["trialing", "canceled", "unpaid", "incomplete", "paused"]) expect(paidSubscriptionQualifies({ ...sub, status }, org, {}), status).toBe(false);
   });
   it("messages: count label, reason without billing details, available → no message", () => {
     expect(ownershipCountLabel({ owned: 1, allowed: 2, canCreate: true, qualifiedBy: "LEGACY" })).toBe("Organizations owned: 1 of 2");

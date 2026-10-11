@@ -255,6 +255,45 @@ describe("Phase 1 — existing access is never removed", () => {
   });
 });
 
+describe("Production safety guard — only a valid subscription in a permitted Stripe mode unlocks a second Organization", () => {
+  it("in Vercel Production a TEST-mode paid subscription does not qualify; Complimentary and Legacy still do", async () => {
+    vi.stubEnv("VERCEL_ENV", "production");
+    try {
+      expect(await ownershipAllowance("u-paid")).toEqual({ owned: 1, allowed: 1, canCreate: false, qualifiedBy: null });
+      expect(await ownershipAllowance("u-pastdue")).toMatchObject({ allowed: 1, qualifiedBy: null });
+      expect((await post("paid", "Paid Second")).status).toBe(409);
+      expect(await ownedCount("paid")).toBe(1);
+      expect(await ownershipAllowance("u-comp")).toMatchObject({ allowed: 2, qualifiedBy: "COMP" });
+      expect(await ownershipAllowance("u-legacy")).toMatchObject({ allowed: 2, qualifiedBy: "LEGACY" });
+      expect((await post("comp", "Comp Second")).status).toBe(201);
+      expect((await post("legacy", "Legacy Second")).status).toBe(201);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it("Preview / local: the same test-mode subscription qualifies", async () => {
+    vi.stubEnv("VERCEL_ENV", "preview");
+    try {
+      expect(await ownershipAllowance("u-paid")).toMatchObject({ allowed: 2, qualifiedBy: "PAID_PRO" });
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it("a mismatched or invalid subscription never unlocks: another Customer, a LIVE-mode row (not launched), or an Organization without a Stripe Customer", async () => {
+    await prisma.billingSubscription.update({ where: { stripeSubscriptionId: "sub_paid" }, data: { stripeCustomerId: "cus_someone_else" } });
+    expect(await ownershipAllowance("u-paid")).toMatchObject({ allowed: 1, qualifiedBy: null });
+    await prisma.billingSubscription.update({ where: { stripeSubscriptionId: "sub_pastdue" }, data: { livemode: true } });
+    expect(await ownershipAllowance("u-pastdue")).toMatchObject({ allowed: 1, qualifiedBy: null });
+    // A PRO Organization with an active row but no Stripe Customer of its own.
+    await seedOrg("nocustomer", "PRO", "u-stranger");
+    await prisma.billingSubscription.create({ data: { organizationId: "nocustomer", stripeSubscriptionId: "sub_nc", stripeCustomerId: "cus_nc", status: "active", livemode: false, lastSyncedAt: new Date() } });
+    expect(await ownershipAllowance("u-stranger")).toMatchObject({ owned: 1, allowed: 1, qualifiedBy: null });
+    for (const u of ["paid", "pastdue", "stranger"]) expect((await post(u, `${u} Second`)).status, u).toBe(409);
+  });
+});
+
 describe("Phase 1 — tenant isolation", () => {
   it("the allowance counts only the User's OWN owner memberships; other tenants' Organizations never count or leak", async () => {
     // u-stranger owns nothing — every other User's Organizations are irrelevant.

@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import type { OrganizationPlan, Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
-import { billingConfig } from "@/lib/billing/config";
+import { billingConfig, stripeModePermitted } from "@/lib/billing/config";
 
 /**
  * M11.1 — plans, the introductory trial and entitlements: the ONE place that
@@ -149,7 +149,10 @@ export async function assertCapacity(tx: Prisma.TransactionClient, organizationI
  * "Paid Pro" = Organization.plan PRO AND a Stripe subscription of that
  * Organization in a PAID status: the entitling statuses minus "trialing" (a
  * Stripe trial is not a payment), keeping the past_due payment grace. A raw
- * PRO value without such a subscription does not qualify.
+ * PRO value without such a subscription does not qualify, and neither does a
+ * subscription in a Stripe mode this deployment does not permit (test mode in
+ * Vercel Production; live mode until it is launched) or one whose Customer is
+ * not the Organization's own (stripeModePermitted / paidSubscriptionQualifies).
  *
  * Limits only gate CREATION: an owner above the allowance (existing data, or
  * Pro ended later) keeps every Organization they own. Being an ADMIN/MEMBER
@@ -160,6 +163,17 @@ export const OWNERSHIP_MAX_ALLOWANCE = 2;
 export const PAID_PRO_STATUSES = ["active", "past_due"] as const;
 export type OwnershipQualifier = "PAID_PRO" | "COMP" | "LEGACY";
 export type OwnershipAllowance = { owned: number; allowed: number; canCreate: boolean; qualifiedBy: OwnershipQualifier | null };
+
+type Env = Record<string, string | undefined>;
+
+/** A stored subscription unlocks ownership only if paid, in a permitted Stripe mode, and the Organization's own Customer. */
+export function paidSubscriptionQualifies(
+  sub: { status: string; livemode: boolean; stripeCustomerId: string },
+  org: { stripeCustomerId: string | null },
+  env: Env = process.env
+): boolean {
+  return (PAID_PRO_STATUSES as readonly string[]).includes(sub.status) && stripeModePermitted(sub.livemode, env) && org.stripeCustomerId !== null && sub.stripeCustomerId === org.stripeCustomerId;
+}
 
 /** The qualifier of one owned Organization (null: Free / trial / unpaid PRO). */
 export function ownershipQualifier(org: { plan: OrganizationPlan; trialEndsAt: Date | null; hasPaidSubscription: boolean }, now: Date = new Date()): OwnershipQualifier | null {
@@ -172,16 +186,23 @@ export function ownershipQualifier(org: { plan: OrganizationPlan; trialEndsAt: D
 const QUALIFIER_ORDER: readonly OwnershipQualifier[] = ["PAID_PRO", "COMP", "LEGACY"];
 
 /** Read-only. Inside createOrganizationWorkspace it runs under the per-User workspace lock. */
-export async function ownershipAllowance(userId: string, now: Date = new Date(), db: Db = prisma): Promise<OwnershipAllowance> {
+export async function ownershipAllowance(userId: string, now: Date = new Date(), db: Db = prisma, env: Env = process.env): Promise<OwnershipAllowance> {
   const owned = await db.organizationMembership.findMany({
     where: { userId, role: "OWNER" },
     select: {
       organization: {
-        select: { plan: true, trialEndsAt: true, billingSubscriptions: { where: { status: { in: [...PAID_PRO_STATUSES] } }, select: { id: true }, take: 1 } },
+        select: {
+          plan: true,
+          trialEndsAt: true,
+          stripeCustomerId: true,
+          billingSubscriptions: { where: { status: { in: [...PAID_PRO_STATUSES] } }, select: { status: true, livemode: true, stripeCustomerId: true } },
+        },
       },
     },
   });
-  const qualifiers = new Set(owned.map(({ organization: o }) => ownershipQualifier({ ...o, hasPaidSubscription: o.billingSubscriptions.length > 0 }, now)));
+  const qualifiers = new Set(
+    owned.map(({ organization: o }) => ownershipQualifier({ ...o, hasPaidSubscription: o.billingSubscriptions.some((sub) => paidSubscriptionQualifies(sub, o, env)) }, now))
+  );
   const qualifiedBy = QUALIFIER_ORDER.find((q) => qualifiers.has(q)) ?? null;
   const allowed = qualifiedBy ? OWNERSHIP_MAX_ALLOWANCE : OWNERSHIP_BASE_ALLOWANCE;
   return { owned: owned.length, allowed, canCreate: owned.length < allowed, qualifiedBy };

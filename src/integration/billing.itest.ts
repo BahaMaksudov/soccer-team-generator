@@ -20,7 +20,7 @@ import * as reconcileRoute from "@/app/api/cron/billing-reconcile/route";
 import * as playersRoute from "@/app/api/admin/o/[organizationSlug]/g/[groupSlug]/players/route";
 import { setBillingStripeForTests, generateTestSignature } from "@/lib/billing/stripe";
 import { confirmCheckoutReturn } from "@/lib/billing/checkout";
-import { reconcileBilling } from "@/lib/billing/sync";
+import { reconcileBilling, syncSubscription } from "@/lib/billing/sync";
 import { planSummary } from "@/lib/entitlements";
 import { requireOrganizationContextForSlug } from "@/lib/tenantContext";
 import { createOrganizationWorkspace } from "@/lib/workspaces";
@@ -102,6 +102,7 @@ beforeEach(async () => {
   vi.stubEnv("STRIPE_PRICE_PRO_MONTHLY", PRICES.month);
   vi.stubEnv("STRIPE_PRICE_PRO_ANNUAL", PRICES.year);
   vi.stubEnv("BILLING_ALLOW_LIVE_MODE", "");
+  vi.stubEnv("VERCEL_ENV", ""); // local development unless a test says otherwise
   stripe = createFakeStripe();
   setBillingStripeForTests(stripe.api);
   otherNetwork = 0;
@@ -142,6 +143,54 @@ describe("M11.2A — billing stays off unless explicitly enabled in TEST mode", 
     vi.stubEnv("BILLING_ALLOW_LIVE_MODE", "true");
     expect((await checkout("free")).status).toBe(503);
     expect((await view("free")).body.billingEnabled).toBe(false);
+    expect(Object.keys(stripe.calls)).toEqual([]);
+  });
+});
+
+describe("Production safety guard — Stripe TEST mode never runs in Vercel Production", () => {
+  it("Preview with the configured test key: Checkout works", async () => {
+    vi.stubEnv("VERCEL_ENV", "preview");
+    expect((await view("free")).body).toMatchObject({ billingEnabled: true, canPurchase: true });
+    expect((await checkout("free")).status).toBe(200);
+  });
+
+  it("Production with a test key and BILLING_ENABLED=true: Checkout, Portal, return, webhook, sync and reconciliation all refuse; nothing written", async () => {
+    // A paid test-mode subscription exists in Stripe (made in Preview) — Production must never apply it.
+    vi.stubEnv("VERCEL_ENV", "preview");
+    const { sessionId, sub } = await subscribe("free");
+    const callsBefore = JSON.stringify(stripe.calls);
+    vi.stubEnv("VERCEL_ENV", "production");
+
+    expect(await checkout("free")).toMatchObject({ status: 503, body: { code: "BILLING_UNAVAILABLE" } });
+    expect((await portal("free")).status).toBe(503);
+    expect((await view("free")).body).toMatchObject({ billingEnabled: false, canPurchase: false, canManage: false });
+    expect(await confirmCheckoutReturn(await requireOrganizationContextForSlug({ organizationSlug: "free" }), sessionId)).toBe("ignored");
+    expect((await webhook("customer.subscription.updated", { id: sub.id })).status).toBe(503);
+    expect((await webhook("checkout.session.completed", { id: sessionId, subscription: sub.id })).status).toBe(503);
+    await expect(syncSubscription(sub.id, { actor: "itest" })).rejects.toThrow("Billing is not enabled.");
+    expect((await call(reconcileRoute.POST(new Request("http://itest.local/", { method: "POST", headers: { authorization: "Bearer billing-reconcile-test-secret" } })))).status).toBe(503);
+
+    expect(await plan("free")).toBe("FREE");
+    expect(await prisma.billingSubscription.count()).toBe(0);
+    expect(await prisma.stripeEvent.count()).toBe(0);
+    expect(JSON.stringify(stripe.calls)).toBe(callsBefore); // no further Stripe call
+  });
+
+  it("Production with billing disabled: no billing actions at all", async () => {
+    vi.stubEnv("VERCEL_ENV", "production");
+    vi.stubEnv("BILLING_ENABLED", "");
+    expect((await checkout("free")).status).toBe(503);
+    expect((await portal("free")).status).toBe(503);
+    expect((await webhook("customer.subscription.updated", { id: "sub_x" })).status).toBe(503);
+    expect(Object.keys(stripe.calls)).toEqual([]);
+  });
+
+  it("Production with a live key: still rejected (live billing is not launched)", async () => {
+    vi.stubEnv("VERCEL_ENV", "production");
+    vi.stubEnv("STRIPE_SECRET_KEY", "sk_live_should_never_be_used");
+    vi.stubEnv("BILLING_ALLOW_LIVE_MODE", "true");
+    expect((await checkout("free")).status).toBe(503);
+    expect((await webhook("customer.subscription.updated", { id: "sub_x" }, { livemode: true })).status).toBe(503);
     expect(Object.keys(stripe.calls)).toEqual([]);
   });
 });
