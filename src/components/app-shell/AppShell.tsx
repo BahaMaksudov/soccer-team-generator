@@ -2,7 +2,7 @@ import Link from "next/link";
 import { Scale } from "lucide-react";
 import type { ShellData } from "@/lib/appShell";
 import { cn } from "@/lib/cn";
-import { AccountMenu, GroupSwitcher, MobileBottomNav, SidebarNav, SignOutButton } from "./ShellClient";
+import { AccountMenu, GroupSwitcher, MobileBottomNav, SidebarContext, SidebarNav, SignOutButton } from "./ShellClient";
 
 /**
  * UI-3 — authenticated application shell (visual reference: the approved
@@ -48,8 +48,9 @@ export default function AppShell({ data, children }: { data: ShellData; children
         <div className="flex h-16 items-center px-4">
           <Brand />
         </div>
+        {/* Account → Organization → Group: the selected Organization and Group, shown separately. */}
         <div className="px-3">
-          <GroupSwitcher data={data} />
+          <SidebarContext data={data} />
         </div>
         <SidebarNav data={data} />
         <div className="space-y-1 border-t border-pitch-foreground/10 p-3">

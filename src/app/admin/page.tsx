@@ -1,7 +1,7 @@
 import { redirect } from "next/navigation";
 import { findSport } from "@/lib/sports";
 import Link from "next/link";
-import { ChevronRight, Plus } from "lucide-react";
+import { Building2, ChevronRight, Plus } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
@@ -56,7 +56,7 @@ export default async function AdminEntryPage() {
         <div>
           <p className="eyebrow">Workspaces</p>
           <h1 className="mt-1 text-3xl font-extrabold">Your workspaces</h1>
-          <p className="mt-1 text-muted-foreground">Choose a group to manage its players, matches and teams.</p>
+          <p className="mt-1 text-muted-foreground">Open a group to run its matches and players, or manage an organization&apos;s groups, members and billing.</p>
         </div>
         <Button asChild variant="outline">
           <Link href="/onboarding">
@@ -79,6 +79,13 @@ export default async function AdminEntryPage() {
               </div>
             </div>
             <div className="flex flex-wrap gap-2">
+              {/* Organization overview is open to every member; the pages it links to re-check roles server-side. */}
+              <Button asChild variant="outline" size="sm">
+                <Link href={`/admin/o/${encodeURIComponent(org.slug)}`} aria-label={`Manage organization ${org.name}`}>
+                  <Building2 aria-hidden="true" />
+                  Manage organization
+                </Link>
+              </Button>
               {(org.role === "OWNER" || org.role === "ADMIN") && (
                 <Button asChild variant="ghost" size="sm">
                   <Link href={`/admin/o/${encodeURIComponent(org.slug)}/groups/new`}>Add group</Link>
@@ -101,10 +108,16 @@ export default async function AdminEntryPage() {
                     <Link
                       className="flex min-h-12 items-center gap-3 px-4 py-2 hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
                       href={`/admin/o/${encodeURIComponent(org.slug)}/g/${encodeURIComponent(g.slug)}`}
+                      aria-label={`Open group ${g.name}`}
                     >
-                      <span className="min-w-0 flex-1 truncate font-semibold">{g.name}</span>
-                      <span className="shrink-0 text-sm text-muted-foreground">{findSport(g.sportKey)?.label ?? g.sportKey}</span>
-                      <ChevronRight className="size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
+                      <span className="min-w-0 flex-1">
+                        <span className="block truncate font-semibold">{g.name}</span>
+                        <span className="block truncate text-sm text-muted-foreground">{findSport(g.sportKey)?.label ?? g.sportKey}</span>
+                      </span>
+                      <span className="inline-flex shrink-0 items-center gap-1 text-sm font-semibold text-primary" aria-hidden="true">
+                        Open group
+                        <ChevronRight className="size-4" />
+                      </span>
                     </Link>
                   </li>
                 ))}

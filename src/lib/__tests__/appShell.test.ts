@@ -68,26 +68,55 @@ describe("tenant context comes only from the URL AND the authorized list", () =>
 });
 
 describe("role-aware navigation (presentation only)", () => {
-  it("Group context: Overview / Matches / Players point at the canonical Group workspace", () => {
+  const sections = (pathname: string, d = data()) => {
+    const out: Record<string, string[]> = {};
+    for (const i of buildShellNav({ data: d, pathname })) (out[i.section] ??= []).push(i.key);
+    return out;
+  };
+  it("Group context: Group Management (Overview / Matches / Players / Group Settings) then Organization Management", () => {
     const items = buildShellNav({ data: data(), pathname: "/admin/o/eagles/g/indoor" });
-    expect(items.filter((i) => i.section === "main").map((i) => [i.key, i.href])).toEqual([
-      ["overview", "/admin/o/eagles/g/indoor"],
-      ["matches", "/admin/o/eagles/g/indoor/matches"],
-      ["players", "/admin/o/eagles/g/indoor/players"],
-      ["groups", "/admin/o/eagles/groups"],
+    expect(items.filter((i) => i.section === "group").map((i) => [i.key, i.label, i.href])).toEqual([
+      ["overview", "Overview", "/admin/o/eagles/g/indoor"],
+      ["matches", "Matches", "/admin/o/eagles/g/indoor/matches"],
+      ["players", "Players", "/admin/o/eagles/g/indoor/players"],
+      ["group-settings", "Group Settings", "/admin/o/eagles/g/indoor/settings"],
     ]);
+    expect(items.filter((i) => i.section === "organization").map((i) => [i.key, i.label, i.href])).toEqual([
+      ["organization", "Organization Overview", "/admin/o/eagles"],
+      ["groups", "Manage Groups", "/admin/o/eagles/groups"],
+      ["members", "Members & Invitations", "/admin/o/eagles/members"],
+      ["billing", "Billing & Subscription", "/admin/o/eagles/billing"],
+    ]);
+    expect(items.filter((i) => i.section === "account").map((i) => [i.key, i.label])).toEqual([["account", "Account settings"]]);
+    // Sections come in hierarchy order: Group → Organization → Account.
+    expect(Object.keys(sections("/admin/o/eagles/g/indoor"))).toEqual(["group", "organization", "account"]);
   });
-  it("UI-6: Organization (overview page) is shown to any member of the CURRENT organization; never in a neutral context", () => {
-    expect(item("/admin/o/eagles/g/indoor", "organization")?.href).toBe("/admin/o/eagles");
-    expect(item("/admin/o/hawks/g/sun", "organization")?.href).toBe("/admin/o/hawks"); // MEMBER
+  it("roles: ADMIN loses only Members; MEMBER sees read-only links (no Group Settings / Members / Billing)", () => {
+    const asRole = (role: "OWNER" | "ADMIN" | "MEMBER") => data({ organizations: [{ ...ORGS[0], role }] });
+    expect(sections("/admin/o/eagles/g/indoor", asRole("ADMIN"))).toMatchObject({
+      group: ["overview", "matches", "players", "group-settings"],
+      organization: ["organization", "groups", "billing"],
+    });
+    expect(sections("/admin/o/hawks/g/sun")).toMatchObject({ group: ["overview", "matches", "players"], organization: ["organization", "groups"] });
+    expect(item("/admin/o/hawks/g/sun", "groups")?.label).toBe("Groups"); // view-only for a MEMBER
+  });
+  it("Organization pages (no Group selected): Organization Management only — no Group links", () => {
+    expect(sections("/admin/o/eagles")).toEqual({ organization: ["organization", "groups", "members", "billing"], account: ["account"] });
     expect(item("/admin/o/eagles", "organization")?.active).toBe(true);
-    expect(item("/admin/o/eagles/members", "organization")?.active).toBe(true);
-    expect(keys("/admin")).not.toContain("organization");
-    expect(keys("/me")).not.toContain("organization");
+    expect(item("/admin/o/eagles/members", "members")?.active).toBe(true);
+    expect(item("/admin/o/eagles/members", "organization")?.active).toBe(false);
+    expect(item("/admin/o/eagles/billing", "billing")?.active).toBe(true);
+    // On Organization pages its links lead the mobile bar.
+    expect(buildShellNav({ data: data(), pathname: "/admin/o/eagles" }).filter((i) => i.mobilePrimary).map((i) => i.key)).toEqual(["organization", "groups", "billing"]);
   });
-  it("neutral context (no Group in the URL) shows no Group links; Account is always there", () => {
-    expect(keys("/admin")).toEqual(["groups", "account"]);
-    expect(keys("/account/security")).toEqual(["groups", "account"]);
+  it("neutral context (no Organization in the URL): Your workspaces + Account; never Organization links", () => {
+    expect(keys("/admin")).toEqual(["workspaces", "account"]);
+    expect(keys("/account/security")).toEqual(["workspaces", "account"]);
+    expect(item("/admin", "workspaces")?.active).toBe(true);
+    for (const p of ["/admin", "/me"]) for (const k of ["organization", "groups", "members", "billing"]) expect(keys(p)).not.toContain(k);
+    // Outside an Organization, anyone with an Organization keeps a way back (/admin opens the only Group).
+    expect(item("/me", "workspaces", data({ workspaceListAvailable: false }))?.href).toBe("/admin");
+    expect(keys("/me", data({ organizations: [], workspaceListAvailable: false, hasPlayerProfile: true }))).not.toContain("workspaces");
   });
   it("My Games (player identity) appears only with a claimed Player profile (or on /me) — never organizer links", () => {
     expect(keys("/admin")).not.toContain("my-games");
@@ -96,15 +125,12 @@ describe("role-aware navigation (presentation only)", () => {
     const playerOnly = data({ organizations: [], hasPlayerProfile: true, workspaceListAvailable: false });
     expect(keys("/me", playerOnly)).toEqual(["my-games", "account"]);
   });
-  it("UI-5: inside an Organization, Groups is that Organization's Groups page; outside it, /admin only when it lists workspaces", () => {
+  it("Manage Groups is the Organization's Groups page (also active on /groups/new)", () => {
     expect(item("/admin/o/eagles/g/indoor", "groups", data({ workspaceListAvailable: false }))?.href).toBe("/admin/o/eagles/groups");
     expect(item("/admin/o/eagles/groups", "groups")?.active).toBe(true);
     expect(item("/admin/o/eagles/groups/new", "groups")?.active).toBe(true);
-    // UI-6 — outside an Organization, anyone with an Organization keeps a way back (/admin opens the only Group).
-    expect(item("/me", "groups", data({ workspaceListAvailable: false }))?.href).toBe("/admin");
-    expect(keys("/me", data({ organizations: [], workspaceListAvailable: false, hasPlayerProfile: true }))).not.toContain("groups");
   });
-  it("active state: exact page, in-page sections, match pages, account", () => {
+  it("active state: exact page, match pages, settings, account — exactly one active item", () => {
     const g = "/admin/o/eagles/g/indoor";
     expect(item(g, "overview")?.active).toBe(true);
     expect(item(g, "matches")?.active).toBe(false);
@@ -115,9 +141,10 @@ describe("role-aware navigation (presentation only)", () => {
     expect(item(`${g}/players`, "overview")?.active).toBe(false);
     expect(item(`${g}/matches/m1`, "matches")?.active).toBe(true);
     expect(item(`${g}/matches/m1`, "overview")?.active).toBe(false);
-    expect(item("/admin", "groups")?.active).toBe(true);
+    expect(item(`${g}/settings`, "group-settings")?.active).toBe(true);
     expect(item("/account/security", "account")?.active).toBe(true);
-    expect(buildShellNav({ data: data(), pathname: g }).filter((i) => i.active)).toHaveLength(1);
+    for (const p of [g, `${g}/matches/m1`, `${g}/settings`, "/admin/o/eagles", "/admin/o/eagles/groups/new", "/admin"])
+      expect(buildShellNav({ data: data(), pathname: p }).filter((i) => i.active), p).toHaveLength(1);
   });
 });
 
@@ -158,16 +185,24 @@ describe("rendered shell", () => {
     expect(html).toContain('aria-label="Account menu"');
     expect(html).toMatch(/<aside[\s\S]*Sign out[\s\S]*<\/aside>/); // directly visible in the sidebar (also in the account menu / mobile More)
     expect(html).toContain("Owner · Eagles Club"); // real role of the current organization
+    // Organization and Group are shown as separate, labelled concepts; nav sections are labelled.
+    expect(html).toMatch(/>Organization<\/p>[\s\S]*?href="\/admin\/o\/eagles"[\s\S]*?Eagles Club/);
+    expect(html).toMatch(/>Group<\/p>[\s\S]*?Indoor Soccer/);
+    for (const label of ["Group Management", "Organization Management", "Account Settings"]) expect(html).toContain(label);
+    expect(html).toContain('href="/admin/o/eagles/billing"');
     expect(html).not.toMatch(/SoccerTeam\.jpg/);
   });
   it("MEMBER context: no organizer-only links rendered", () => {
     const html = render("/admin/o/hawks/g/sun");
     expect(html).not.toContain("/admin/o/hawks/members"); // the OWNER-only Members page is never linked for a MEMBER
+    expect(html).not.toContain("/admin/o/hawks/billing");
+    expect(html).not.toContain("/admin/o/hawks/g/sun/settings");
     expect(html).toContain("Member · Hawks");
   });
   it("user with no organizations: no group switcher", () => {
     const html = render("/me", data({ organizations: [], workspaceListAvailable: false, hasPlayerProfile: true }));
     expect(html).not.toContain("Switch group");
+    expect(html).not.toContain(">Organization</p>");
     expect(html).toContain('href="/me"');
   });
   it("initials", () => {

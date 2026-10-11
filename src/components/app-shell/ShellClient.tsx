@@ -9,12 +9,15 @@ import {
   CalendarDays,
   Check,
   ChevronsUpDown,
+  CreditCard,
   Layers,
   LayoutGrid,
   Loader2,
   LogOut,
   MoreHorizontal,
+  Settings,
   Ticket,
+  UserPlus,
   UserRound,
   Users,
   X,
@@ -23,12 +26,16 @@ import {
 import {
   buildShellNav,
   initialsOf,
+  NAV_SECTION_LABELS,
+  NAV_SECTION_ORDER,
+  organizationHref,
   ROLE_LABELS,
   shellContextFromPath,
   SIGN_OUT_DESTINATION,
   switcherEntries,
   type NavItem,
   type NavKey,
+  type NavSection,
   type ShellData,
 } from "@/lib/appShell";
 import { cn } from "@/lib/cn";
@@ -45,11 +52,20 @@ const ICONS: Record<NavKey, LucideIcon> = {
   overview: LayoutGrid,
   matches: CalendarDays,
   players: Users,
-  groups: Layers,
-  "my-games": Ticket,
+  "group-settings": Settings,
   organization: Building2,
+  groups: Layers,
+  members: UserPlus,
+  billing: CreditCard,
+  workspaces: Layers,
+  "my-games": Ticket,
   account: UserRound,
 };
+
+/** Nav items grouped by hierarchy level, in order, without empty sections. */
+function sectionsOf(items: NavItem[]): Array<{ section: NavSection; items: NavItem[] }> {
+  return NAV_SECTION_ORDER.map((section) => ({ section, items: items.filter((i) => i.section === section) })).filter((s) => s.items.length > 0);
+}
 
 const focusRing = "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-2 focus-visible:ring-offset-pitch";
 const focusRingLight = "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2";
@@ -164,44 +180,90 @@ export function SignOutButton({ className, onDark = true }: { className?: string
   );
 }
 
-// --- desktop sidebar navigation
+// --- desktop sidebar navigation (labelled sections: Group → Organization → Account)
 export function SidebarNav({ data }: { data: ShellData }) {
   const items = useNav(data);
-  const sections = (["main", "personal", "admin"] as const).map((s) => items.filter((i) => i.section === s)).filter((l) => l.length > 0);
   return (
     <nav aria-label="Application" className="mt-4 flex-1 space-y-4 overflow-y-auto px-3">
-      {sections.map((list, idx) => (
-        <ul key={list[0].section} className={cn("space-y-0.5", idx > 0 && "border-t border-pitch-foreground/10 pt-4")}>
-          {list.map((i) => {
-            const Icon = ICONS[i.key];
-            return (
-              <li key={i.key}>
-                <Link
-                  href={i.href}
-                  onClick={() => announceHash(i.href)}
-                  aria-current={i.active ? "page" : undefined}
-                  className={cn(
-                    "relative flex min-h-11 items-center gap-3 rounded-tbp-sm px-3 text-sm font-medium transition-colors",
-                    i.active ? "bg-pitch-foreground/15 font-bold text-pitch-foreground" : "text-pitch-foreground/75 hover:bg-pitch-foreground/10 hover:text-pitch-foreground",
-                    focusRing
-                  )}
-                >
-                  {/* Selected state is not color-only: a visible bar + bold label (+ aria-current). */}
-                  {i.active && <span className="absolute inset-y-2 left-0 w-1 rounded-full bg-accent" aria-hidden="true" />}
-                  <Icon className="size-[18px] shrink-0" aria-hidden="true" />
-                  {i.label}
-                </Link>
-              </li>
-            );
-          })}
-        </ul>
-      ))}
+      {sectionsOf(items).map(({ section, items: list }, idx) => {
+        const headingId = `nav-section-${section}`;
+        return (
+          <div key={section} className={cn(idx > 0 && "border-t border-pitch-foreground/10 pt-4")}>
+            <p id={headingId} className="px-3 pb-1.5 text-[11px] font-bold uppercase tracking-widest text-pitch-foreground/55">
+              {NAV_SECTION_LABELS[section]}
+            </p>
+            <ul aria-labelledby={headingId} className="space-y-0.5">
+              {list.map((i) => {
+                const Icon = ICONS[i.key];
+                return (
+                  <li key={i.key}>
+                    <Link
+                      href={i.href}
+                      onClick={() => announceHash(i.href)}
+                      aria-current={i.active ? "page" : undefined}
+                      className={cn(
+                        "relative flex min-h-11 items-center gap-3 rounded-tbp-sm px-3 text-sm font-medium transition-colors",
+                        i.active ? "bg-pitch-foreground/15 font-bold text-pitch-foreground" : "text-pitch-foreground/75 hover:bg-pitch-foreground/10 hover:text-pitch-foreground",
+                        focusRing
+                      )}
+                    >
+                      {/* Selected state is not color-only: a visible bar + bold label (+ aria-current). */}
+                      {i.active && <span className="absolute inset-y-2 left-0 w-1 rounded-full bg-accent" aria-hidden="true" />}
+                      <Icon className="size-[18px] shrink-0" aria-hidden="true" />
+                      {i.label}
+                    </Link>
+                  </li>
+                );
+              })}
+            </ul>
+          </div>
+        );
+      })}
     </nav>
   );
 }
 
+/**
+ * Desktop sidebar header: the selected ORGANIZATION (a link to its overview)
+ * and the selected GROUP (the group switcher) as two separate, labelled items.
+ */
+export function SidebarContext({ data }: { data: ShellData }) {
+  const pathname = usePathname() ?? "";
+  const ctx = shellContextFromPath(pathname, data.organizations);
+  if (data.organizations.length === 0) return null;
+  return (
+    <div className="space-y-2">
+      <div>
+        <p className="px-1 pb-1 text-[11px] font-bold uppercase tracking-widest text-pitch-foreground/55">Organization</p>
+        {ctx ? (
+          <Link
+            href={organizationHref(ctx.organization.slug)}
+            className={cn("flex min-h-11 min-w-0 items-center gap-2.5 rounded-tbp px-2.5 text-pitch-foreground hover:bg-pitch-foreground/10", focusRing)}
+          >
+            <span className="grid size-8 shrink-0 place-items-center rounded-tbp-sm bg-accent font-display text-sm font-black text-accent-foreground" aria-hidden="true">
+              {ctx.organization.name.slice(0, 1).toUpperCase()}
+            </span>
+            <span className="min-w-0 flex-1">
+              <span className="block truncate text-sm font-semibold">{ctx.organization.name}</span>
+              <span className="block truncate text-xs opacity-70">{ROLE_LABELS[ctx.organization.role]}</span>
+            </span>
+          </Link>
+        ) : (
+          <Link href="/admin" className={cn("flex min-h-11 items-center rounded-tbp px-2.5 text-sm text-pitch-foreground/80 hover:bg-pitch-foreground/10", focusRing)}>
+            No organization selected — choose a workspace
+          </Link>
+        )}
+      </div>
+      <div>
+        <p className="px-1 pb-1 text-[11px] font-bold uppercase tracking-widest text-pitch-foreground/55">Group</p>
+        <GroupSwitcher data={data} showOrganization={false} />
+      </div>
+    </div>
+  );
+}
+
 // --- group switcher (navigation only)
-export function GroupSwitcher({ data, mobile = false }: { data: ShellData; mobile?: boolean }) {
+export function GroupSwitcher({ data, mobile = false, showOrganization = true }: { data: ShellData; mobile?: boolean; showOrganization?: boolean }) {
   const pathname = usePathname() ?? "";
   const ctx = shellContextFromPath(pathname, data.organizations);
   const entries = switcherEntries(data.organizations, ctx);
@@ -227,14 +289,15 @@ export function GroupSwitcher({ data, mobile = false }: { data: ShellData; mobil
           focusRing
         )}
       >
-        {!mobile && (
+        {!mobile && showOrganization && (
           <span className="grid size-8 shrink-0 place-items-center rounded-tbp-sm bg-accent font-display text-sm font-black text-accent-foreground" aria-hidden="true">
             {(ctx?.organization.name ?? "W").slice(0, 1).toUpperCase()}
           </span>
         )}
         <span className="min-w-0 flex-1">
-          <span className="block truncate text-xs opacity-70">{orgLabel}</span>
+          {showOrganization && <span className="block truncate text-xs opacity-70">{orgLabel}</span>}
           <span className="block truncate text-sm font-semibold">{groupLabel}</span>
+          {!showOrganization && ctx?.group && <span className="block truncate text-xs opacity-70">{ctx.group.sportLabel}</span>}
         </span>
         <ChevronsUpDown className="size-4 shrink-0 opacity-70" aria-hidden="true" />
       </button>
@@ -404,30 +467,39 @@ export function MobileBottomNav({ data }: { data: ShellData }) {
                 <X className="size-5" aria-hidden="true" />
               </button>
             </div>
-            <ul className="space-y-1">
-              {rest.map((i) => {
-                const Icon = ICONS[i.key];
-                return (
-                  <li key={i.key}>
-                    <Link
-                      href={i.href}
-                      onClick={() => {
-                        announceHash(i.href);
-                        close(false);
-                      }}
-                      aria-current={i.active ? "page" : undefined}
-                      className={cn("flex min-h-12 items-center gap-3 rounded-tbp-sm px-3 font-medium hover:bg-muted", i.active && "font-bold", focusRingLight)}
-                    >
-                      <Icon className="size-5 text-primary" aria-hidden="true" />
-                      {i.label}
-                    </Link>
-                  </li>
-                );
-              })}
-              <li className="border-t border-border pt-1">
+            <div className="max-h-[65vh] space-y-3 overflow-y-auto">
+              {sectionsOf(rest).map(({ section, items: list }) => (
+                <div key={section}>
+                  <p id={`${sheetId}-${section}`} className="px-3 pb-1 text-[11px] font-bold uppercase tracking-widest text-muted-foreground">
+                    {NAV_SECTION_LABELS[section]}
+                  </p>
+                  <ul aria-labelledby={`${sheetId}-${section}`} className="space-y-1">
+                    {list.map((i) => {
+                      const Icon = ICONS[i.key];
+                      return (
+                        <li key={i.key}>
+                          <Link
+                            href={i.href}
+                            onClick={() => {
+                              announceHash(i.href);
+                              close(false);
+                            }}
+                            aria-current={i.active ? "page" : undefined}
+                            className={cn("flex min-h-12 items-center gap-3 rounded-tbp-sm px-3 font-medium hover:bg-muted", i.active && "font-bold", focusRingLight)}
+                          >
+                            <Icon className="size-5 text-primary" aria-hidden="true" />
+                            {i.label}
+                          </Link>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                </div>
+              ))}
+              <div className="border-t border-border pt-1">
                 <SignOutButton onDark={false} className="min-h-12 text-base" />
-              </li>
-            </ul>
+              </div>
+            </div>
           </div>
         </>
       )}

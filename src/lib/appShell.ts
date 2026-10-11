@@ -29,13 +29,33 @@ export type ShellData = {
 
 export type ShellContext = { organization: ShellOrganization; group: ShellGroup | null } | null;
 
-export type NavKey = "overview" | "matches" | "players" | "groups" | "my-games" | "organization" | "account";
+export type NavKey =
+  | "overview"
+  | "matches"
+  | "players"
+  | "group-settings"
+  | "organization"
+  | "groups"
+  | "members"
+  | "billing"
+  | "workspaces"
+  | "my-games"
+  | "account";
+/** Account → Organization → Group: each navigation section is one level of that hierarchy. */
+export type NavSection = "group" | "organization" | "workspaces" | "account";
+export const NAV_SECTION_LABELS: Record<NavSection, string> = {
+  group: "Group Management",
+  organization: "Organization Management",
+  workspaces: "Workspaces",
+  account: "Account Settings",
+};
+export const NAV_SECTION_ORDER: readonly NavSection[] = ["group", "organization", "workspaces", "account"];
 export type NavItem = {
   key: NavKey;
   label: string;
   href: string;
   active: boolean;
-  section: "main" | "personal" | "admin";
+  section: NavSection;
   /** Shown in the mobile bottom bar (the rest go under "More"). */
   mobilePrimary: boolean;
 };
@@ -51,6 +71,8 @@ export const groupAdminHref = (organizationSlug: string, groupSlug: string) => `
 export const membersHref = (organizationSlug: string) => `/admin/o/${enc(organizationSlug)}/members`;
 export const organizationHref = (organizationSlug: string) => `/admin/o/${enc(organizationSlug)}`;
 export const groupsHrefOf = (organizationSlug: string) => `/admin/o/${enc(organizationSlug)}/groups`;
+export const billingHrefOf = (organizationSlug: string) => `/admin/o/${enc(organizationSlug)}/billing`;
+export const groupSettingsHref = (organizationSlug: string, groupSlug: string) => `${groupAdminHref(organizationSlug, groupSlug)}/settings`;
 
 function decodeSegment(s: string | undefined): string | null {
   if (!s) return null;
@@ -79,50 +101,51 @@ export function shellContextFromPath(pathname: string | null | undefined, organi
   return group ? { organization, group } : null;
 }
 
+/**
+ * Role-aware navigation by level (presentation only — every page re-checks access):
+ *   Group Management         Overview, Matches, Players (any member); Group Settings (OWNER/ADMIN)
+ *   Organization Management  Organization Overview (any member); Manage Groups (OWNER/ADMIN — a
+ *                            MEMBER sees the same list as "Groups"); Members & Invitations (OWNER);
+ *                            Billing & Subscription (OWNER/ADMIN — ADMIN read-only)
+ *   Workspaces               Your workspaces (/admin) when no Organization is selected
+ *   Account Settings         My Games (claimed Player), Account settings
+ * Group switching stays in the group switcher only (never duplicated here).
+ */
 export function buildShellNav(params: { data: ShellData; pathname: string; hash?: string }): NavItem[] {
   const { data, pathname } = params;
-  const hash = (params.hash ?? "").replace(/^#/, "");
   const ctx = shellContextFromPath(pathname, data.organizations);
   const items: NavItem[] = [];
+  const under = (base: string) => pathname === base || pathname.startsWith(`${base}/`);
+  const manager = ctx ? ctx.organization.role === "OWNER" || ctx.organization.role === "ADMIN" : false;
 
   if (ctx?.group) {
     const base = groupAdminHref(ctx.organization.slug, ctx.group.slug);
-    const onGroupPage = pathname === base || pathname === `${base}/`;
-    const matchesBase = `${base}/matches`;
-    const onMatches = pathname === matchesBase || pathname.startsWith(`${matchesBase}/`);
-    const playersBase = `${base}/players`;
-    // UI-4/UI-5 — Matches and Players are real pages of the Group.
+    const settings = groupSettingsHref(ctx.organization.slug, ctx.group.slug);
     items.push(
-      { key: "overview", label: "Overview", href: base, active: onGroupPage, section: "main", mobilePrimary: true },
-      { key: "matches", label: "Matches", href: matchesBase, active: onMatches, section: "main", mobilePrimary: true },
-      { key: "players", label: "Players", href: playersBase, active: pathname === playersBase || pathname.startsWith(`${playersBase}/`), section: "main", mobilePrimary: true }
+      { key: "overview", label: "Overview", href: base, active: pathname === base || pathname === `${base}/`, section: "group", mobilePrimary: true },
+      { key: "matches", label: "Matches", href: `${base}/matches`, active: under(`${base}/matches`), section: "group", mobilePrimary: true },
+      { key: "players", label: "Players", href: `${base}/players`, active: under(`${base}/players`), section: "group", mobilePrimary: true }
     );
+    if (manager) items.push({ key: "group-settings", label: "Group Settings", href: settings, active: under(settings), section: "group", mobilePrimary: false });
   }
 
-  // UI-5 — inside an Organization, Groups is that Organization's Groups page
-  // (any member may view it); elsewhere the /admin workspace list (when it lists).
   if (ctx) {
-    const groupsHref = groupsHrefOf(ctx.organization.slug);
-    items.push({ key: "groups", label: "Groups", href: groupsHref, active: pathname === groupsHref || pathname.startsWith(`${groupsHref}/`), section: "main", mobilePrimary: !ctx.group });
+    const org = ctx.organization;
+    const overview = organizationHref(org.slug);
+    const onlyOrg = !ctx.group; // on Organization pages, its links lead the mobile bar
+    items.push({ key: "organization", label: "Organization Overview", href: overview, active: pathname === overview || pathname === `${overview}/`, section: "organization", mobilePrimary: onlyOrg });
+    items.push({ key: "groups", label: manager ? "Manage Groups" : "Groups", href: groupsHrefOf(org.slug), active: under(groupsHrefOf(org.slug)), section: "organization", mobilePrimary: onlyOrg });
+    if (org.role === "OWNER") items.push({ key: "members", label: "Members & Invitations", href: membersHref(org.slug), active: under(membersHref(org.slug)), section: "organization", mobilePrimary: false });
+    if (manager) items.push({ key: "billing", label: "Billing & Subscription", href: billingHrefOf(org.slug), active: under(billingHrefOf(org.slug)), section: "organization", mobilePrimary: onlyOrg });
   } else if (data.organizations.length > 0) {
-    // Outside an Organization (e.g. My Games, Account): a way back to the workspace —
-    // /admin lists workspaces, or opens the only Group directly.
-    items.push({ key: "groups", label: "Groups", href: "/admin", active: pathname === "/admin", section: "main", mobilePrimary: true });
+    // No Organization selected (e.g. My Games, Account): a way back — /admin lists workspaces or opens the only Group.
+    items.push({ key: "workspaces", label: "Your workspaces", href: "/admin", active: pathname === "/admin", section: "workspaces", mobilePrimary: true });
   }
 
-  if (data.hasPlayerProfile || pathname === "/me" || pathname.startsWith("/me/")) {
-    items.push({ key: "my-games", label: "My Games", href: "/me", active: pathname === "/me" || pathname.startsWith("/me/"), section: "personal", mobilePrimary: true });
+  if (data.hasPlayerProfile || under("/me")) {
+    items.push({ key: "my-games", label: "My Games", href: "/me", active: under("/me"), section: "account", mobilePrimary: true });
   }
-
-  // UI-6 — Organization overview for any member of the current Organization
-  // (Members & invitations inside it stay OWNER-only server-side).
-  if (ctx) {
-    const href = organizationHref(ctx.organization.slug);
-    const members = membersHref(ctx.organization.slug);
-    items.push({ key: "organization", label: "Organization", href, active: pathname === href || pathname === members, section: "admin", mobilePrimary: false });
-  }
-
-  items.push({ key: "account", label: "Account", href: "/account/security", active: pathname.startsWith("/account/"), section: "admin", mobilePrimary: false });
+  items.push({ key: "account", label: "Account settings", href: "/account/security", active: pathname.startsWith("/account/"), section: "account", mobilePrimary: false });
   return items;
 }
 
