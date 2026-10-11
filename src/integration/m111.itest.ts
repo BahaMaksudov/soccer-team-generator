@@ -77,7 +77,9 @@ const gp = (org: string, id: string) => ({ params: Promise.resolve({ ...slugs(or
 
 const ORGS = ["free", "trial", "comp", "legacy", "other"] as const;
 const PLAN: Record<(typeof ORGS)[number], { plan: "FREE" | "COMP" | "LEGACY"; trialEndsAt: Date | null }> = {
-  free: { plan: "FREE", trialEndsAt: new Date(Date.now() - DAY_MS) },
+  // A FIXED past end (not "yesterday"): several tests run at fixed instants (e.g. 2026-10-09),
+  // and "free" must be off its trial at every one of them, whatever today's date is.
+  free: { plan: "FREE", trialEndsAt: new Date("2026-01-01T00:00:00Z") },
   trial: { plan: "FREE", trialEndsAt: new Date(Date.now() + 30 * DAY_MS) },
   comp: { plan: "COMP", trialEndsAt: null },
   legacy: { plan: "LEGACY", trialEndsAt: null },
