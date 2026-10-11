@@ -14,6 +14,9 @@ const dirname = path.dirname(fileURLToPath(import.meta.url));
  *   NODE_ENV=test TEST_DATABASE_URL=postgresql://…@localhost:5432/<name>_test npm run test:integration
  */
 export default defineConfig({
+  // Test-only (same as vitest.config.mts): compile JSX so server pages can be
+  // rendered in integration tests. tsconfig keeps jsx: "preserve" for Next.js.
+  oxc: { jsx: { runtime: "automatic" } },
   resolve: { alias: { "@": path.resolve(dirname, "./src") } },
   test: {
     environment: "node",

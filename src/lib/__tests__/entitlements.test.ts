@@ -3,7 +3,24 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import fs from "node:fs";
 import path from "node:path";
-import { effectivePlan, limitReachedMessage, PLAN_LIMITS, PLAN_LABEL, TRIAL_DAYS, trialDaysLeft, utcMonth } from "@/lib/entitlements";
+import {
+  effectivePlan,
+  limitReachedMessage,
+  OWNERSHIP_BASE_ALLOWANCE,
+  OWNERSHIP_MAX_ALLOWANCE,
+  OwnershipLimitError,
+  ownershipCountLabel,
+  ownershipLimitMessage,
+  ownershipLimitResponse,
+  ownershipQualifier,
+  PAID_PRO_STATUSES,
+  PLAN_LIMITS,
+  PLAN_LABEL,
+  TRIAL_DAYS,
+  trialDaysLeft,
+  utcMonth,
+} from "@/lib/entitlements";
+import { ENTITLING_STATUSES } from "@/lib/billing/sync";
 import { aiUsageText } from "@/app/admin/o/[organizationSlug]/g/[groupSlug]/matches/[matchId]/PostGameSection";
 import PlanUsageCard from "@/app/admin/o/[organizationSlug]/PlanUsageCard";
 
@@ -104,5 +121,62 @@ describe("enforcement wiring (source checks)", () => {
     expect(read("src/lib/matchAutomation.ts")).toMatch(/assertCapacity\(tx, ctx\.organization\.id, "monthlyMatches"\)/);
     expect(read("src/lib/schedules.ts").match(/assertCapacity\(tx, context\.organization\.id, "activeSchedules"\)/g)).toHaveLength(2);
     expect(read("src/lib/workspaces.ts")).toMatch(/assertCapacity\(tx, organizationId, "activeGroups", now\)/);
+  });
+});
+
+describe("Phase 1 — organization ownership allowance (pure rules)", () => {
+  const now = new Date("2026-10-11T12:00:00Z");
+  const q = (plan: "FREE" | "PRO" | "COMP" | "LEGACY", over: { trialEndsAt?: Date | null; paid?: boolean } = {}) =>
+    ownershipQualifier({ plan, trialEndsAt: over.trialEndsAt ?? null, hasPaidSubscription: over.paid ?? false }, now);
+
+  it("1 by default, 2 at most", () => {
+    expect([OWNERSHIP_BASE_ALLOWANCE, OWNERSHIP_MAX_ALLOWANCE]).toEqual([1, 2]);
+  });
+  it("qualifying: paid Pro (with a paid subscription), complimentary Pro, Legacy / Early Access", () => {
+    expect(q("PRO", { paid: true })).toBe("PAID_PRO");
+    expect(q("COMP")).toBe("COMP");
+    expect(q("LEGACY")).toBe("LEGACY");
+  });
+  it("not qualifying: Free, the introductory trial, and a raw PRO value without a paid subscription", () => {
+    expect(q("FREE")).toBeNull();
+    expect(q("FREE", { trialEndsAt: new Date(now.getTime() + 86_400_000) })).toBeNull(); // running trial
+    expect(q("FREE", { trialEndsAt: new Date(now.getTime() - 86_400_000) })).toBeNull(); // trial over
+    expect(q("PRO")).toBeNull();
+  });
+  it("paid statuses = Stripe's entitling statuses minus trialing (past_due payment grace kept)", () => {
+    expect([...PAID_PRO_STATUSES]).toEqual(ENTITLING_STATUSES.filter((s) => s !== "trialing"));
+    expect(PAID_PRO_STATUSES).toContain("past_due");
+    expect(PAID_PRO_STATUSES).not.toContain("trialing");
+  });
+  it("messages: count label, reason without billing details, available → no message", () => {
+    expect(ownershipCountLabel({ owned: 1, allowed: 2, canCreate: true, qualifiedBy: "LEGACY" })).toBe("Organizations owned: 1 of 2");
+    expect(ownershipLimitMessage({ owned: 0, allowed: 1, canCreate: true, qualifiedBy: null })).toBeNull();
+    const one = ownershipLimitMessage({ owned: 1, allowed: 1, canCreate: false, qualifiedBy: null })!;
+    expect(one).toMatch(/^You already own 1 organization\. A second organization is available when an organization you own is on paid Pro, complimentary Pro or Early Access\./);
+    expect(one).toContain("join other organizations");
+    expect(ownershipLimitMessage({ owned: 2, allowed: 2, canCreate: false, qualifiedBy: "COMP" })).toMatch(/^You already own 2 organizations\. An account can own at most 2 organizations\./);
+    expect(ownershipLimitMessage({ owned: 3, allowed: 1, canCreate: false, qualifiedBy: null })).toMatch(/^You already own 3 organizations\./); // over-limit owner
+  });
+  it("API shape: 409 OWNERSHIP_LIMIT with the User's own counts only", async () => {
+    const res = ownershipLimitResponse(new OwnershipLimitError({ owned: 1, allowed: 1, canCreate: false, qualifiedBy: null }));
+    expect(res.status).toBe(409);
+    const body = await res.json();
+    expect(Object.keys(body).sort()).toEqual(["allowed", "code", "error", "owned"]);
+    expect(body).toMatchObject({ code: "OWNERSHIP_LIMIT", owned: 1, allowed: 1 });
+  });
+  it("wiring: checked under the per-User lock, AFTER the replay check; the trial only for a first owned Organization", () => {
+    const src = fs.readFileSync(path.join(process.cwd(), "src/lib/workspaces.ts"), "utf8");
+    const fn = src.slice(src.indexOf("export async function createOrganizationWorkspace"), src.indexOf("export const createGroupSchema"));
+    const lock = fn.indexOf('hashtext(${"workspace:" + ownerUserId})');
+    const replay = fn.indexOf("if (recent && recent.groups.length === 1)");
+    const check = fn.indexOf("const allowance = await ownershipAllowance(ownerUserId, now, tx);");
+    const create = fn.indexOf("tx.organization.create(");
+    expect(lock).toBeGreaterThan(-1);
+    expect(replay).toBeGreaterThan(lock);
+    expect(check).toBeGreaterThan(replay);
+    expect(create).toBeGreaterThan(check);
+    expect(fn).toContain("if (!allowance.canCreate) throw new OwnershipLimitError(allowance);");
+    expect(fn).toMatch(/allowance\.owned === 0\s*\?\s*await tx\.user\.updateMany\(\{ where: \{ id: ownerUserId, trialUsedAt: null, emailVerifiedAt: \{ not: null \} \}/);
+    expect(fs.readFileSync(path.join(process.cwd(), "src/lib/tenantRoute.ts"), "utf8")).toContain("if (e instanceof OwnershipLimitError) return ownershipLimitResponse(e);");
   });
 });

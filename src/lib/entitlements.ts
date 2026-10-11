@@ -140,6 +140,84 @@ export async function assertCapacity(tx: Prisma.TransactionClient, organizationI
   }
 }
 
+/**
+ * Phase 1 — Organization ownership allowance (per User; plans stay per Organization).
+ *
+ * A User may own 1 Organization; 2 while at least one Organization they own
+ * qualifies; never more. Qualifying: paid Pro, complimentary Pro (COMP) or
+ * Legacy / Early Access. Free and the introductory trial never qualify.
+ * "Paid Pro" = Organization.plan PRO AND a Stripe subscription of that
+ * Organization in a PAID status: the entitling statuses minus "trialing" (a
+ * Stripe trial is not a payment), keeping the past_due payment grace. A raw
+ * PRO value without such a subscription does not qualify.
+ *
+ * Limits only gate CREATION: an owner above the allowance (existing data, or
+ * Pro ended later) keeps every Organization they own. Being an ADMIN/MEMBER
+ * of other Organizations never uses the allowance.
+ */
+export const OWNERSHIP_BASE_ALLOWANCE = 1;
+export const OWNERSHIP_MAX_ALLOWANCE = 2;
+export const PAID_PRO_STATUSES = ["active", "past_due"] as const;
+export type OwnershipQualifier = "PAID_PRO" | "COMP" | "LEGACY";
+export type OwnershipAllowance = { owned: number; allowed: number; canCreate: boolean; qualifiedBy: OwnershipQualifier | null };
+
+/** The qualifier of one owned Organization (null: Free / trial / unpaid PRO). */
+export function ownershipQualifier(org: { plan: OrganizationPlan; trialEndsAt: Date | null; hasPaidSubscription: boolean }, now: Date = new Date()): OwnershipQualifier | null {
+  const plan = effectivePlan(org, now);
+  if (plan === "COMP" || plan === "LEGACY") return plan;
+  if (plan === "PRO" && org.hasPaidSubscription) return "PAID_PRO";
+  return null;
+}
+
+const QUALIFIER_ORDER: readonly OwnershipQualifier[] = ["PAID_PRO", "COMP", "LEGACY"];
+
+/** Read-only. Inside createOrganizationWorkspace it runs under the per-User workspace lock. */
+export async function ownershipAllowance(userId: string, now: Date = new Date(), db: Db = prisma): Promise<OwnershipAllowance> {
+  const owned = await db.organizationMembership.findMany({
+    where: { userId, role: "OWNER" },
+    select: {
+      organization: {
+        select: { plan: true, trialEndsAt: true, billingSubscriptions: { where: { status: { in: [...PAID_PRO_STATUSES] } }, select: { id: true }, take: 1 } },
+      },
+    },
+  });
+  const qualifiers = new Set(owned.map(({ organization: o }) => ownershipQualifier({ ...o, hasPaidSubscription: o.billingSubscriptions.length > 0 }, now)));
+  const qualifiedBy = QUALIFIER_ORDER.find((q) => qualifiers.has(q)) ?? null;
+  const allowed = qualifiedBy ? OWNERSHIP_MAX_ALLOWANCE : OWNERSHIP_BASE_ALLOWANCE;
+  return { owned: owned.length, allowed, canCreate: owned.length < allowed, qualifiedBy };
+}
+
+/** Why creation is unavailable (null when it is available). Only the User's own counts — no billing details. */
+export function ownershipLimitMessage(a: OwnershipAllowance): string | null {
+  if (a.canCreate) return null;
+  const owns = `You already own ${a.owned} organization${a.owned === 1 ? "" : "s"}`;
+  const join = "You can still join other organizations when you're invited.";
+  if (a.allowed >= OWNERSHIP_MAX_ALLOWANCE) return `${owns}. An account can own at most ${OWNERSHIP_MAX_ALLOWANCE} organizations. ${join}`;
+  return `${owns}. A second organization is available when an organization you own is on paid Pro, complimentary Pro or Early Access. ${join}`;
+}
+
+/** "Organizations owned: 1 of 2" (an owner above the allowance reads e.g. "3 of 2"). */
+export const ownershipCountLabel = (a: OwnershipAllowance) => `Organizations owned: ${a.owned} of ${a.allowed}`;
+
+/** Shown before creating a second Organization: plans and billing never carry over. */
+export const SECOND_ORGANIZATION_NOTE = "A new organization starts on the Free plan, with its own separate billing. Pro on another organization doesn't carry over.";
+
+/** The Organization-creation ownership limit (HTTP 409, code OWNERSHIP_LIMIT). */
+export class OwnershipLimitError extends Error {
+  readonly owned: number;
+  readonly allowed: number;
+  constructor(a: OwnershipAllowance) {
+    super(ownershipLimitMessage(a) ?? "Organization limit reached.");
+    this.name = "OwnershipLimitError";
+    this.owned = a.owned;
+    this.allowed = a.allowed;
+  }
+}
+
+export function ownershipLimitResponse(e: OwnershipLimitError): NextResponse {
+  return NextResponse.json({ error: e.message, code: "OWNERSHIP_LIMIT", owned: e.owned, allowed: e.allowed }, { status: 409 });
+}
+
 /** Telegram premium actions (connect a Telegram group, post polls / teams / post-game messages). */
 export async function assertTelegram(organizationId: string, now: Date = new Date()): Promise<void> {
   const { plan, limits } = await organizationPlan(organizationId, now);

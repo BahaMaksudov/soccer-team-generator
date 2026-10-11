@@ -6,7 +6,8 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { ROLE_LABELS } from "@/lib/appShell";
-import { listAccessibleTenants, TenantContextError, type AccessibleOrganization } from "@/lib/tenantContext";
+import { ownershipAllowance, ownershipCountLabel, ownershipLimitMessage, SECOND_ORGANIZATION_NOTE, type OwnershipAllowance } from "@/lib/entitlements";
+import { listAccessibleTenants, requireSessionUser, TenantContextError, type AccessibleOrganization } from "@/lib/tenantContext";
 import { resolveAdminEntry } from "./adminEntry";
 
 /**
@@ -48,6 +49,15 @@ export default async function AdminEntryPage() {
   }
 
   const shown = entry.kind === "select" ? entry.organizations : [entry.organization];
+  // Phase 1 — the session User's own ownership allowance (display only; creation re-checks it).
+  // Computed only when the page renders (not for the auto-redirect cases above).
+  let allowance: OwnershipAllowance;
+  try {
+    allowance = await ownershipAllowance((await requireSessionUser()).id);
+  } catch (e) {
+    if (e instanceof TenantContextError) redirect("/login?callbackUrl=%2Fadmin");
+    throw e;
+  }
 
   // UI-3 — redesigned presentation (app shell); same data, roles and links as before.
   return (
@@ -58,13 +68,23 @@ export default async function AdminEntryPage() {
           <h1 className="mt-1 text-3xl font-extrabold">Your workspaces</h1>
           <p className="mt-1 text-muted-foreground">Open a group to run its matches and players, or manage an organization&apos;s groups, members and billing.</p>
         </div>
-        <Button asChild variant="outline">
-          <Link href="/onboarding">
-            <Plus aria-hidden="true" />
-            Create organization
-          </Link>
-        </Button>
+        {allowance.canCreate && (
+          <Button asChild variant="outline">
+            <Link href="/onboarding">
+              <Plus aria-hidden="true" />
+              Create organization
+            </Link>
+          </Button>
+        )}
       </div>
+
+      {/* Phase 1 — ownership allowance: why another Organization can or can't be created. */}
+      <section aria-labelledby="ownership-heading" className="rounded-tbp-xl border border-border bg-card p-4 text-sm">
+        <h2 id="ownership-heading" className="font-semibold">
+          {ownershipCountLabel(allowance)}
+        </h2>
+        <p className="mt-1 text-muted-foreground">{allowance.canCreate ? (allowance.owned > 0 ? SECOND_ORGANIZATION_NOTE : null) : ownershipLimitMessage(allowance)}</p>
+      </section>
 
       {shown.map((org) => (
         <Card key={org.id}>

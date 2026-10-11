@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { TenantContextError } from "@/lib/tenantContext";
-import { EntitlementError, planLimitResponse } from "@/lib/entitlements";
+import { EntitlementError, OwnershipLimitError, ownershipLimitResponse, planLimitResponse } from "@/lib/entitlements";
 
 /**
  * Next.js-specific glue for tenant-scoped routes, kept separate from
@@ -61,6 +61,8 @@ export function canonicalTenantErrorResponse(e: unknown): NextResponse {
 export function accountRouteErrorResponse(e: unknown): NextResponse {
   // M11.1 — a plan limit (402 PLAN_LIMIT) from any enforcement point.
   if (e instanceof EntitlementError) return planLimitResponse(e);
+  // Phase 1 — Organization ownership allowance (409 OWNERSHIP_LIMIT).
+  if (e instanceof OwnershipLimitError) return ownershipLimitResponse(e);
   if (e instanceof TenantContextError) {
     if (e.code === "UNAUTHENTICATED" || e.code === "USER_NOT_FOUND") {
       return NextResponse.json({ error: "UNAUTHENTICATED" }, { status: 401 });

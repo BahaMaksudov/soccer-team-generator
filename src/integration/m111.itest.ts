@@ -32,7 +32,7 @@ import * as matchRoute from "@/app/api/admin/o/[organizationSlug]/g/[groupSlug]/
 import * as postGameRoute from "@/app/api/admin/o/[organizationSlug]/g/[groupSlug]/matches/[matchId]/post-game/route";
 import { createOrganizationWorkspace } from "@/lib/workspaces";
 import { runMatchAutomation } from "@/lib/matchAutomation";
-import { aiCreditsUsed, changeEntitlement, planSummary, reserveAiCredit, settleAiCredit, TRIAL_DAYS } from "@/lib/entitlements";
+import { aiCreditsUsed, changeEntitlement, OwnershipLimitError, planSummary, reserveAiCredit, settleAiCredit, TRIAL_DAYS } from "@/lib/entitlements";
 
 const VERIFIED = new Date("2026-01-01T00:00:00Z");
 const DAY_MS = 86_400_000;
@@ -152,7 +152,7 @@ afterAll(async () => {
 describe("M11.1 — introductory trial", () => {
   const ws = (user: string, name: string, now = new Date()) => createOrganizationWorkspace(user, { organizationName: name, groupName: "Mondays", sportKey: "soccer", timezone: "UTC" }, now);
 
-  it("a verified User's first Organization gets 90 days of Pro (UTC, server-computed, audited); the next one starts on Free", async () => {
+  it("a verified User's first Organization gets 90 days of Pro (UTC, server-computed, audited); a trial never unlocks a second one (Phase 1)", async () => {
     const now = new Date("2026-10-09T15:00:00Z");
     const first = await ws("u-newbie", "First Club", now);
     const org1 = await prisma.organization.findUniqueOrThrow({ where: { id: first.organization.id } });
@@ -162,32 +162,33 @@ describe("M11.1 — introductory trial", () => {
     expect((await planSummary(org1.id, now)).plan).toBe("TRIAL");
     expect((await planSummary(org1.id, new Date(now.getTime() + 91 * DAY_MS))).plan).toBe("FREE"); // expiry → Free, never charged
 
-    const second = await ws("u-newbie", "Second Club", now);
-    const org2 = await prisma.organization.findUniqueOrThrow({ where: { id: second.organization.id } });
-    expect(org2).toMatchObject({ plan: "FREE", trialStartedAt: null, trialEndsAt: null });
+    await expect(ws("u-newbie", "Second Club", now)).rejects.toBeInstanceOf(OwnershipLimitError);
+    expect(await prisma.organization.count({ where: { memberships: { some: { userId: "u-newbie" } } } })).toBe(1);
   });
 
-  it("an existing verified owner of a LEGACY Organization (trialUsedAt unset) gets exactly one trial on a new Organization; the LEGACY one is untouched", async () => {
-    // u-owner already owns the grandfathered "legacy" Organization (and others) and has never used a trial.
-    expect((await prisma.user.findUniqueOrThrow({ where: { id: "u-owner" } })).trialUsedAt).toBeNull();
-    const first = await ws("u-owner", "Owner New Club");
-    const second = await ws("u-owner", "Owner Another Club");
-    const [a, b] = await Promise.all([first, second].map((w) => prisma.organization.findUniqueOrThrow({ where: { id: w.organization.id } })));
-    expect(a.trialEndsAt).not.toBeNull();
-    expect((await planSummary(a.id)).plan).toBe("TRIAL");
-    expect(b.trialEndsAt).toBeNull();
-    expect((await planSummary(b.id)).plan).toBe("FREE");
-    expect((await prisma.user.findUniqueOrThrow({ where: { id: "u-owner" } })).trialUsedAt).not.toBeNull();
-    expect(await prisma.organization.findUniqueOrThrow({ where: { id: "legacy" } })).toMatchObject({ plan: "LEGACY", trialEndsAt: null });
-    expect((await planSummary("legacy")).plan).toBe("LEGACY");
+  it("Phase 1: the owner of a LEGACY Organization (trialUsedAt unset) may create ONE more — it starts on Free with no trial; the LEGACY one is untouched", async () => {
+    await prisma.organization.create({ data: { id: "legacy-solo", name: "Legacy Solo", slug: "legacy-solo", plan: "LEGACY" } });
+    await prisma.organizationMembership.create({ data: { userId: "u-newbie", organizationId: "legacy-solo", role: "OWNER" } });
+    const second = await ws("u-newbie", "Newbie Second Club");
+    expect(await prisma.organization.findUniqueOrThrow({ where: { id: second.organization.id } })).toMatchObject({ plan: "FREE", trialStartedAt: null, trialEndsAt: null });
+    expect((await planSummary(second.organization.id)).plan).toBe("FREE");
+    expect((await prisma.user.findUniqueOrThrow({ where: { id: "u-newbie" } })).trialUsedAt).toBeNull(); // no trial was used up
+    expect(await prisma.entitlementEvent.count({ where: { organizationId: second.organization.id } })).toBe(0);
+    await expect(ws("u-newbie", "Newbie Third Club")).rejects.toBeInstanceOf(OwnershipLimitError);
+    expect(await prisma.organization.findUniqueOrThrow({ where: { id: "legacy-solo" } })).toMatchObject({ plan: "LEGACY", trialEndsAt: null });
+    // u-owner already owns 4 Organizations (above the allowance): keeps them all, cannot create more.
+    await expect(ws("u-owner", "Owner New Club")).rejects.toBeInstanceOf(OwnershipLimitError);
+    expect(await prisma.organizationMembership.count({ where: { userId: "u-owner", role: "OWNER" } })).toBe(4);
   });
 
-  it("an unverified account gets no trial; concurrent creations by one User yield exactly one trial", async () => {
+  it("an unverified account gets no trial; concurrent creations by one User yield exactly one Organization and one trial", async () => {
     const un = await ws("u-unverified", "Unverified Club");
     expect((await prisma.organization.findUniqueOrThrow({ where: { id: un.organization.id } })).trialEndsAt).toBeNull();
-    const many = await Promise.all(["A", "B", "C", "D"].map((n) => ws("u-newbie", `Club ${n}`)));
-    const orgs = await prisma.organization.findMany({ where: { id: { in: many.map((m) => m.organization.id) } } });
-    expect(orgs).toHaveLength(4);
+    const many = await Promise.allSettled(["A", "B", "C", "D"].map((n) => ws("u-newbie", `Club ${n}`)));
+    expect(many.filter((r) => r.status === "fulfilled")).toHaveLength(1);
+    expect(many.filter((r) => r.status === "rejected" && r.reason instanceof OwnershipLimitError)).toHaveLength(3);
+    const orgs = await prisma.organization.findMany({ where: { memberships: { some: { userId: "u-newbie" } } } });
+    expect(orgs).toHaveLength(1);
     expect(orgs.filter((x) => x.trialEndsAt !== null)).toHaveLength(1);
   });
 
