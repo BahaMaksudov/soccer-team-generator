@@ -45,6 +45,8 @@ describe("eligibility and delivery state", () => {
     expect(gameDayUpdateDecision(facts({ delivery: { status: "SENDING", claimedAt: at(-3 * H - 10 * 60_000), sentAt: null, failedAt: null } }), now)).toMatchObject({ reason: "UNCERTAIN" });
     expect(gameDayUpdateDecision(facts({ delivery: { status: "SENDING", claimedAt: now, sentAt: null, failedAt: null } }), now)).toMatchObject({ reason: "SENDING" });
     expect(gameDayUpdateDecision(facts({ delivery: { status: "FAILED", claimedAt: now, sentAt: null, failedAt: now } }), now)).toEqual({ kind: "send", dueAt: at(-4 * H), retry: true });
+    // Step 7 review — the poll message to reply to is gone: terminal.
+    expect(gameDayUpdateDecision(facts({ delivery: { status: "FAILED", claimedAt: now, sentAt: null, failedAt: now, failureCode: "REPLY_TARGET_MISSING" } }), now)).toMatchObject({ kind: "blocked", reason: "POLL_MESSAGE_MISSING" });
   });
   it("blocks in order: disabled, plan, inactive, closed, no deadline, paused, no poll, disconnected", () => {
     const now = at(-3 * H);

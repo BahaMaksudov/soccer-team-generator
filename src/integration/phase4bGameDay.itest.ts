@@ -24,7 +24,7 @@ const MIN = 60_000;
 const VERIFIED = new Date("2026-01-01T00:00:00Z");
 
 // ---------------------------------------------------------------- fake Telegram
-type Mode = "ok" | "reject" | "network" | "unreadable";
+type Mode = "ok" | "reject" | "network" | "unreadable" | "replyGone";
 let mode: Mode = "ok";
 let calls: Array<{ method: string; body: Record<string, unknown> }> = [];
 let otherNetwork = 0;
@@ -41,6 +41,7 @@ async function fakeFetch(url: unknown, init?: { body?: string }): Promise<Respon
   if (method === "sendMessage") {
     if (mode === "network") throw new TypeError("fetch failed");
     if (mode === "reject") return { ok: false, status: 400, json: async () => ({ ok: false, error_code: 400, description: "Bad Request: chat not found" }) } as unknown as Response;
+    if (mode === "replyGone") return { ok: false, status: 400, json: async () => ({ ok: false, error_code: 400, description: "Bad Request: message to be replied not found" }) } as unknown as Response;
     if (mode === "unreadable") return { ok: true, status: 200, json: async () => ({ ok: true, result: {} }) } as unknown as Response;
   }
   return { ok: true, status: 200, json: async () => ({ ok: true, result: { message_id: ++seq, poll: { id: `tp${seq}` } } }) } as unknown as Response;
@@ -121,7 +122,7 @@ describe("timing: deadline − offset, the 60-minute poll settle, the 30-minute 
     expect(run.gameDayUpdates).toBe(1);
     expect(sends()).toHaveLength(1);
     const body = sends()[0].body;
-    expect(body).toMatchObject({ chat_id: CHAT.toString(), parse_mode: "HTML", disable_web_page_preview: true, reply_parameters: { message_id: 77, allow_sending_without_reply: true } });
+    expect(body).toMatchObject({ chat_id: CHAT.toString(), parse_mode: "HTML", disable_web_page_preview: true, reply_parameters: { message_id: 77, allow_sending_without_reply: false } });
     const minutesLeft = h * 60 - 1;
     expect(String(body.text)).toContain(`closes in ${h - 1 ? `${h - 1} hour${h - 1 === 1 ? "" : "s"} 59 minutes` : "59 minutes"}`);
     expect(minutesLeft).toBeGreaterThan(0);
@@ -195,6 +196,60 @@ describe("one Game Day Update per match: locks, parallel runs, failures and unce
     expect(sends()).toHaveLength(1);
     expect(await deliveries("m")).toEqual([expect.objectContaining({ status: "UNCERTAIN" })]);
     expect(await status("o", "m", at(-H))).toMatchObject({ state: "UNCERTAIN", text: "Delivery uncertain — review the Telegram chat" });
+  });
+});
+
+// ================================================================ Step 7 Part A — delivery-safety review
+describe("delivery safety: strict replies, crashes, abandoned sends, concurrent retries", () => {
+  it("strict reply: the poll message is gone → FAILED (REPLY_TARGET_MISSING), terminal — never retried, never sent without the reply", async () => {
+    await manualMatch("o-g", CHAT, "m");
+    mode = "replyGone";
+    expect((await runMatchAutomation(at(-3 * H))).gameDayProblems).toBe(1);
+    expect(sends()[0].body).toMatchObject({ reply_parameters: { message_id: 77, allow_sending_without_reply: false } });
+    expect(await deliveries("m")).toEqual([expect.objectContaining({ status: "FAILED", failureCode: "REPLY_TARGET_MISSING" })]);
+    mode = "ok";
+    await runMatchAutomation(at(-2 * H));
+    await runMatchAutomation(at(-H));
+    expect(sends()).toHaveLength(1);
+    expect(await status("o", "m", at(-H))).toMatchObject({ state: "POLL_MESSAGE_MISSING", text: "Not sent: the attendance poll message is no longer in the Telegram group" });
+  });
+
+  it("a process crash after reserving (SENDING left behind, Telegram outcome unknown) is never resent: fresh → 'Sending…', abandoned → uncertain", async () => {
+    await manualMatch("o-g", CHAT, "m");
+    const now = at(-3 * H);
+    const row = await prisma.messageDelivery.create({
+      data: { groupId: "o-g", matchId: "m", eventType: "GAME_DAY_UPDATE_POSTED", channel: "TELEGRAM", destination: CHAT.toString(), contentHash: "x", status: "SENDING", claimedAt: new Date(now.getTime() - 30_000) },
+    });
+    await runMatchAutomation(now);
+    expect(await status("o", "m", now)).toMatchObject({ state: "SENDING" });
+    await prisma.messageDelivery.update({ where: { id: row.id }, data: { claimedAt: new Date(now.getTime() - 10 * MIN) } }); // the crash was minutes ago
+    await runMatchAutomation(now);
+    await runMatchAutomation(at(-H));
+    expect(sends()).toHaveLength(0);
+    expect(await status("o", "m", now)).toMatchObject({ state: "UNCERTAIN" });
+    expect(await deliveries("m")).toEqual([expect.objectContaining({ id: row.id, status: "SENDING" })]);
+  });
+
+  it("concurrent retries after a definite failure: exactly one re-send (the same row, attempts 2)", async () => {
+    await manualMatch("o-g", CHAT, "m");
+    mode = "reject";
+    await runMatchAutomation(at(-3 * H));
+    mode = "ok";
+    calls = [];
+    const t = at(-2 * H);
+    await Promise.all([runMatchAutomation(t), runMatchAutomation(t), runMatchAutomation(t, { groupId: "o-g", matchId: "m" }), runMatchAutomation(t, { groupId: "o-g" })]);
+    expect(sends()).toHaveLength(1);
+    expect(await deliveries("m")).toEqual([expect.objectContaining({ status: "SENT", attempts: 2 })]);
+  });
+
+  it("after a successful send, nothing automatic ever sends again (later runs, Run now, settings / deadline changes)", async () => {
+    await manualMatch("o-g", CHAT, "m");
+    await runMatchAutomation(at(-3 * H));
+    await setHours("o-g", 12);
+    await prisma.match.update({ where: { id: "m" }, data: { attendanceDeadlineAt: at(3 * H) } });
+    for (const t of [at(-2 * H), at(-H), at(H), at(2 * H)]) await runMatchAutomation(t, { groupId: "o-g", matchId: "m" });
+    expect(sends()).toHaveLength(1);
+    expect(await deliveries("m")).toHaveLength(1);
   });
 });
 

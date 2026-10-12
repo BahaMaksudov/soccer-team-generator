@@ -9,12 +9,16 @@ import { STALE_SENDING_MS } from "@/lib/messaging/deliveryState";
  *   send while  now ≥ dueAt  and  deadline − now ≥ 30 min   (late cron runs still send while eligible)
  *   never after the deadline; one successful update per match (SENT is final, also
  *   if the deadline changes later); UNCERTAIN (or an abandoned SENDING) is never
- *   retried automatically; a definite FAILED attempt is retried while eligible.
+ *   retried automatically; a definite FAILED attempt is retried while eligible —
+ *   except when Telegram says the poll message to reply to is gone (terminal: the
+ *   update is only ever sent as a reply to the poll).
  */
+/** FAILED codes that must not be retried automatically. */
+export const TERMINAL_FAILURES = ["REPLY_TARGET_MISSING"] as const;
 export const POLL_SETTLE_MS = 60 * 60_000;
 export const MIN_LEFT_MS = 30 * 60_000;
 
-export type GameDayDelivery = { status: "SENDING" | "SENT" | "FAILED" | "UNCERTAIN"; claimedAt: Date; sentAt: Date | null; failedAt: Date | null };
+export type GameDayDelivery = { status: "SENDING" | "SENT" | "FAILED" | "UNCERTAIN"; claimedAt: Date; sentAt: Date | null; failedAt: Date | null; failureCode?: string | null };
 
 export type GameDayFacts = {
   enabled: boolean;
@@ -43,6 +47,7 @@ export type GameDayBlock =
   | "SCHEDULE_PAUSED"
   | "NO_POLL"
   | "CHAT_DISCONNECTED"
+  | "POLL_MESSAGE_MISSING"
   | "TOO_CLOSE";
 
 export type GameDayDecision =
@@ -58,6 +63,7 @@ export function gameDayUpdateDecision(f: GameDayFacts, now: Date): GameDayDecisi
     const stale = now.getTime() - d.claimedAt.getTime() > STALE_SENDING_MS;
     return { kind: "blocked", reason: stale ? "UNCERTAIN" : "SENDING", at: d.claimedAt };
   }
+  if (d?.status === "FAILED" && (TERMINAL_FAILURES as readonly string[]).includes(d.failureCode ?? "")) return { kind: "blocked", reason: "POLL_MESSAGE_MISSING", at: d.failedAt };
   if (!f.enabled) return { kind: "blocked", reason: "DISABLED" };
   if (!f.telegramAllowed) return { kind: "blocked", reason: "NOT_IN_PLAN" };
   if (f.matchStatus !== "SCHEDULED") return { kind: "blocked", reason: "INACTIVE" };
@@ -89,6 +95,7 @@ export const GAME_DAY_STATUS_TEXT: Record<GameDayBlock | "WAIT" | "DUE" | "RETRY
   SCHEDULE_PAUSED: "Paused with the recurring schedule",
   NO_POLL: "No Telegram attendance poll",
   CHAT_DISCONNECTED: "Not sent: the poll's Telegram group is disconnected",
+  POLL_MESSAGE_MISSING: "Not sent: the attendance poll message is no longer in the Telegram group",
   TOO_CLOSE: "Not sent: too close to the deadline",
   WAIT: "Scheduled",
   DUE: "Due — sent on the next automation run",

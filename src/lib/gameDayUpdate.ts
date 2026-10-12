@@ -13,8 +13,9 @@ import { GAME_DAY_STATUS_TEXT, gameDayUpdateDecision, type GameDayDecision, type
  * Phase 4B (step 6) — Telegram Game Day Update delivery, driven by Match
  * Automation (cron + Run now; no second engine, no second bot). Destination =
  * the chat of the match's CURRENT open attendance poll (the most recently
- * posted one), as a REPLY to that poll message — never another chat, never a
- * broadcast, never a new poll. One successful update per match: reserved under
+ * posted one), strictly as a REPLY to that poll message (allow_sending_without_reply
+ * false; a vanished poll message is a terminal failure) — never another chat,
+ * never a broadcast, never a new poll. One successful update per match: reserved under
  * a database advisory lock ("gameday:<matchId>") with the existing
  * MessageDelivery state machine (SENDING → SENT / FAILED / UNCERTAIN); a
  * definite Telegram rejection is retried while eligible, an uncertain outcome
@@ -58,7 +59,7 @@ async function loadFacts(groupId: string, organizationId: string, matchId: strin
     db.messageDelivery.findFirst({
       where: { matchId, groupId, eventType: EVENT, channel: CHANNEL },
       orderBy: { createdAt: "desc" },
-      select: { id: true, status: true, claimedAt: true, sentAt: true, failedAt: true },
+      select: { id: true, status: true, claimedAt: true, sentAt: true, failedAt: true, failureCode: true },
     }),
   ]);
   const chatConnected = poll ? (await db.telegramChat.count({ where: { chatId: poll.chatId, groupId, disconnectedAt: null } })) > 0 : false;
@@ -146,14 +147,17 @@ export async function deliverGameDayUpdate(params: {
       text: reserved.html,
       parse_mode: "HTML",
       disable_web_page_preview: true,
-      reply_parameters: { message_id: reserved.replyTo, allow_sending_without_reply: true },
+      // Strict: ONLY as a reply to the attendance poll (Telegram refuses if that message is gone).
+      reply_parameters: { message_id: reserved.replyTo, allow_sending_without_reply: false },
     });
   } catch (e) {
     const definite = e instanceof TelegramApiRejectionError;
+    // The poll message to reply to is gone: terminal (never retried; never sent without the reply).
+    const replyGone = definite && /repl(y|ied)[^.]*not found/i.test(e.description ?? "");
     await prisma.messageDelivery.update({
       where: { id: reserved.deliveryId },
       data: definite
-        ? { status: "FAILED", failedAt: new Date(), failureCode: "TELEGRAM_REJECTED", failureDetail: e.description?.slice(0, 300) ?? null }
+        ? { status: "FAILED", failedAt: new Date(), failureCode: replyGone ? "REPLY_TARGET_MISSING" : "TELEGRAM_REJECTED", failureDetail: e.description?.slice(0, 300) ?? null }
         : { status: "UNCERTAIN", failedAt: new Date(), failureCode: "AMBIGUOUS" },
     });
     return definite ? "failed" : "uncertain";

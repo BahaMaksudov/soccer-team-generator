@@ -260,7 +260,7 @@ describe("Telegram delivery invariant", () => {
     // Phase 4B — exactly one send: the reply to the match's attendance poll, after the lock-guarded reservation.
     const gameDay = code.get(rel("src/lib/gameDayUpdate.ts"))!;
     expect(gameDay.match(/["']sendMessage["']/g)).toHaveLength(1);
-    expect(gameDay).toContain("reply_parameters: { message_id: reserved.replyTo, allow_sending_without_reply: true }");
+    expect(gameDay).toContain("reply_parameters: { message_id: reserved.replyTo, allow_sending_without_reply: false }"); // strict reply (Step 7 review)
     // M9-D — in postGame.ts the only sendMessage is the explicit "post_message" action.
     const postGame = code.get(rel("src/lib/postGame.ts"))!;
     expect(postGame.match(/["']sendMessage["']/g)).toHaveLength(1);
