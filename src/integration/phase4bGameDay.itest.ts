@@ -74,7 +74,9 @@ async function org(id: string, plan: { plan: "FREE" | "PRO" | "COMP" | "LEGACY";
 }
 /** A manual match with an OPEN attendance poll (message 77) posted `pollBefore` before the deadline. */
 async function manualMatch(groupId: string, chatId: bigint, id: string, opts: { deadline?: Date; pollAt?: Date; messageId?: number; data?: Record<string, unknown> } = {}) {
-  await prisma.match.create({ data: { id, groupId, date: new Date(`${DATE}T00:00:00Z`), startTime: "21:00", attendanceDeadlineAt: opts.deadline ?? D, ...opts.data } });
+  // The poll's chat is the match's selected Telegram group (as the organizer UI posts it) — destination consistency.
+  const selected = await prisma.telegramChat.findFirstOrThrow({ where: { chatId, groupId }, select: { id: true } });
+  await prisma.match.create({ data: { id, groupId, date: new Date(`${DATE}T00:00:00Z`), startTime: "21:00", attendanceDeadlineAt: opts.deadline ?? D, telegramChatId: selected.id, ...opts.data } });
   await prisma.telegramPoll.create({ data: { pollId: `poll-${id}`, chatId, messageId: BigInt(opts.messageId ?? 77), question: "Q", optionsJson: "[]", groupId, matchId: id, kind: "ATTENDANCE", createdAt: opts.pollAt ?? new Date(D.getTime() - 24 * H) } });
 }
 const setHours = (groupId: string, hoursBefore: number, extra: Record<string, unknown> = {}) =>
@@ -314,12 +316,28 @@ describe("eligibility from the current database state", () => {
 
   it("multi-chat: only the chat of the match's CURRENT (latest open) poll, replying to that poll; never another chat", async () => {
     const chat2 = BigInt(-555);
-    await prisma.telegramChat.create({ data: { chatId: chat2, title: "Second", groupId: "o-g" } });
+    const second = await prisma.telegramChat.create({ data: { chatId: chat2, title: "Second", groupId: "o-g" } });
     await manualMatch("o-g", CHAT, "m", { pollAt: at(-30 * H) });
     await prisma.telegramPoll.create({ data: { pollId: "poll-m-2", chatId: chat2, messageId: 900n, question: "Q", optionsJson: "[]", groupId: "o-g", matchId: "m", kind: "ATTENDANCE", createdAt: at(-20 * H) } });
+    // The organizer moved the match to the second group (its selected group) and posted the poll there.
+    await prisma.match.update({ where: { id: "m" }, data: { telegramChatId: second.id } });
     await runMatchAutomation(at(-3 * H));
     expect(sends()).toHaveLength(1);
     expect(sends()[0].body).toMatchObject({ chat_id: chat2.toString(), reply_parameters: { message_id: 900 } });
+  });
+
+  it("destination consistency: the latest poll is NOT in the match's selected group → nothing is sent (never a silent switch)", async () => {
+    const chat2 = BigInt(-556);
+    await prisma.telegramChat.create({ data: { chatId: chat2, title: "Other", groupId: "o-g" } });
+    await manualMatch("o-g", CHAT, "m", { pollAt: at(-30 * H) }); // selected group = CHAT
+    await prisma.telegramPoll.create({ data: { pollId: "poll-m-2", chatId: chat2, messageId: 901n, question: "Q", optionsJson: "[]", groupId: "o-g", matchId: "m", kind: "ATTENDANCE", createdAt: at(-20 * H) } });
+    expect((await runMatchAutomation(at(-3 * H))).gameDayUpdates).toBe(0);
+    expect(sends()).toHaveLength(0);
+    expect(await status("o", "m", at(-3 * H))).toMatchObject({ state: "CHAT_MISMATCH" });
+    // No selected group at all → also nothing.
+    await prisma.match.update({ where: { id: "m" }, data: { telegramChatId: null } });
+    expect((await runMatchAutomation(at(-2 * H))).gameDayUpdates).toBe(0);
+    expect(sends()).toHaveLength(0);
   });
 });
 

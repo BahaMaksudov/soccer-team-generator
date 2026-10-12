@@ -145,6 +145,7 @@ describe("UI primitives are presentation-only", () => {
         "src/app/admin/o/[organizationSlug]/g/[groupSlug]/matches/CreateMatchForm.tsx",
         "src/app/admin/o/[organizationSlug]/g/[groupSlug]/matches/[matchId]/MatchWorkspace.tsx",
         "src/app/admin/o/[organizationSlug]/g/[groupSlug]/matches/[matchId]/PostGameSection.tsx",
+        "src/app/admin/o/[organizationSlug]/g/[groupSlug]/matches/[matchId]/GameDayUpdateDialog.tsx", // manual Game Day Update
         // M9.2 — Group Settings: Communities.
         "src/app/admin/o/[organizationSlug]/g/[groupSlug]/settings/CommunitiesSection.tsx",
         "src/app/admin/o/[organizationSlug]/g/[groupSlug]/settings/VenuesSection.tsx",

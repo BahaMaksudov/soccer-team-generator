@@ -13,6 +13,7 @@ import { unpublishedPreviewOnScreen, type TeamsPanelMode } from "@/lib/teamAssig
 import { visibleRosterIds } from "@/lib/matchRosterScope";
 import { adminGroupSettingsPath } from "@/lib/matchPaths";
 import PostGameSection, { type PostGameView } from "./PostGameSection";
+import GameDayUpdateDialog from "./GameDayUpdateDialog";
 import { MATCH_TELEGRAM_GROUP_SELECTOR_ID } from "@/lib/postGameUi";
 import CanonicalGenerateSection from "../../CanonicalGenerateSection";
 import { PublishedTeams } from "@/components/game-day/PublishedTeams";
@@ -144,6 +145,8 @@ export default function MatchWorkspace({
   const [edit, setEdit] = useState<{ date: string; startTime: string; locationName: string; venueId: string; deadline: string; initialDeadline: string } | null>(null);
   // Phase 4B — reopening after the deadline passed: no deadline, or a new future one.
   const [reopen, setReopen] = useState<{ choice: "none" | "new"; deadline: string; error?: string } | null>(null);
+  // Manual "Send Game Day Update now" (preview → explicit confirmation → send).
+  const [gameDayOpen, setGameDayOpen] = useState(false);
   // M9.2 — the Organization's Venues (loaded when the organizer edits the match).
   const [venues, setVenues] = useState<Array<{ id: string; name: string; address: string | null; isActive: boolean }>>([]);
   useEffect(() => {
@@ -744,7 +747,7 @@ export default function MatchWorkspace({
         {view.canManage && view.gameDayUpdate && (
           <div className="mt-2 flex flex-wrap items-center gap-2 text-xs" aria-live="polite">
             <span>
-              <span className="font-semibold">Game Day Update:</span>{" "}
+              <span className="font-semibold">Automatic Game Day Update:</span>{" "}
               <span className={cn(view.gameDayUpdate.state === "UNCERTAIN" && "font-semibold text-destructive")}>
                 {view.gameDayUpdate.text}
                 {view.gameDayUpdate.at ? ` — ${formatDeadline(view.gameDayUpdate.at, tz)}` : ""}
@@ -767,8 +770,14 @@ export default function MatchWorkspace({
                 Run now
               </Button>
             )}
+            {m.status === "SCHEDULED" && (
+              <Button type="button" variant="outline" size="sm" disabled={busy} onClick={() => setGameDayOpen(true)}>
+                Send Game Day Update now…
+              </Button>
+            )}
           </div>
         )}
+        {view.canManage && <GameDayUpdateDialog open={gameDayOpen} onClose={() => setGameDayOpen(false)} api={api} timezone={tz} onChanged={load} />}
         {/* M9.2 — publishing teams closes the attendance poll; if Telegram didn't confirm, close it again here (safe to repeat).
             Phase 4B — also once attendance is closed (by hand or deadline) while the poll still shows as open in the chat:
             answers there no longer count, and the organizer can close that ONE poll (never in bulk). */}

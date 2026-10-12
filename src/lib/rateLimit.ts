@@ -72,6 +72,8 @@ const BUCKETS = {
   "match-link-write": { limit: 30, window: "10 m" },
   // Phase 4B — provider-backed venue location searches (per organizer).
   "geocode-search": { limit: 20, window: "10 m" },
+  // Manual Game Day Update previews (each may make one weather request; per organizer).
+  "gameday-preview": { limit: 10, window: "10 m" },
 } as const;
 export type RateLimitBucket = keyof typeof BUCKETS;
 const bucketLimiters = new Map<RateLimitBucket, Ratelimit>();
