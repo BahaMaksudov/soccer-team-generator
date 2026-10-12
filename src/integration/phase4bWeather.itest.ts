@@ -101,7 +101,8 @@ async function confirmedVenue(id = "o-v", lat = 42.1195, lon = -71.3251) {
 }
 /** A manual match at the venue with an open attendance poll (message 77), deadline D. */
 async function match(id = "m", data: Record<string, unknown> = {}, groupId = "o-g", chat = -100n) {
-  await prisma.match.create({ data: { id, groupId, date: new Date(`${DATE}T00:00:00Z`), startTime: "21:00", venueId: groupId === "o-g" ? "o-v" : "x-v", attendanceDeadlineAt: D, ...data } });
+  const selected = await prisma.telegramChat.findFirstOrThrow({ where: { chatId: chat, groupId }, select: { id: true } }); // destination consistency
+  await prisma.match.create({ data: { id, groupId, date: new Date(`${DATE}T00:00:00Z`), startTime: "21:00", venueId: groupId === "o-g" ? "o-v" : "x-v", attendanceDeadlineAt: D, telegramChatId: selected.id, ...data } });
   await prisma.telegramPoll.create({ data: { pollId: `poll-${id}`, chatId: chat, messageId: 77n, question: "Q", optionsJson: "[]", groupId, matchId: id, kind: "ATTENDANCE", createdAt: at(-24 * H) } });
 }
 const sentText = () => String(tg.filter((c) => c.method === "sendMessage").at(-1)?.body.text ?? "");

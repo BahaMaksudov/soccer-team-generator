@@ -97,6 +97,9 @@ describe("flat operational Admin APIs are deleted", () => {
         canonical("schedules/[scheduleId]/keep"), // M11.1 — keep one schedule active (plan limit)
         canonical("schedules/[scheduleId]/skips/[skipId]/acknowledge"), // Phase 2 — dismiss a skipped-match warning
         canonical("matches/[matchId]/automation"), // M9.2
+        canonical("matches/[matchId]/game-day-update/preview"), // manual Game Day Update — read-only preview
+        canonical("matches/[matchId]/game-day-update/send"), // manual Game Day Update — confirmed send
+        canonical("matches/[matchId]/game-day-update/mark-sent"), // manual Game Day Update — uncertain → marked sent
         canonical("matches/[matchId]/share"), // M9.3 — Match Link (organizer)
         canonical("matches/[matchId]/share/reset"), // M9.3
         canonical("venues/[venueId]"), // M9.2

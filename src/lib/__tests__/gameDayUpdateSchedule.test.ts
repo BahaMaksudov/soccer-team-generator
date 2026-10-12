@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import fs from "node:fs";
 import path from "node:path";
-import { gameDayUpdateDecision, MIN_LEFT_MS, POLL_SETTLE_MS, type GameDayFacts } from "@/lib/gameDayUpdateSchedule";
+import { gameDayUpdateDecision, manualGameDayDecision, MIN_LEFT_MS, POLL_SETTLE_MS, type GameDayFacts } from "@/lib/gameDayUpdateSchedule";
 import { statusOf } from "@/lib/gameDayUpdate";
 
 /** Phase 4B step 6 — when a Game Day Update may be sent (pure). */
@@ -16,7 +16,7 @@ const facts = (over: Partial<GameDayFacts> = {}): GameDayFacts => ({
   attendanceClosedAt: null,
   attendanceDeadlineAt: D,
   schedule: "none",
-  poll: { postedAt: at(-24 * H), chatConnected: true },
+  poll: { postedAt: at(-24 * H), chatConnected: true, chatMatchesMatch: true },
   delivery: null,
   ...over,
 });
@@ -29,10 +29,10 @@ describe("timing", () => {
       expect(gameDayUpdateDecision(facts({ hoursBefore: h }), at(-h * H - 1))).toEqual({ kind: "wait", dueAt: at(-h * H) });
       expect(gameDayUpdateDecision(facts({ hoursBefore: h }), at(-h * H))).toEqual({ kind: "send", dueAt: at(-h * H), retry: false });
     }
-    expect(gameDayUpdateDecision(facts({ poll: { postedAt: at(-3 * H), chatConnected: true } }), at(-2.5 * H))).toEqual({ kind: "wait", dueAt: at(-2 * H) });
+    expect(gameDayUpdateDecision(facts({ poll: { postedAt: at(-3 * H), chatConnected: true, chatMatchesMatch: true } }), at(-2.5 * H))).toEqual({ kind: "wait", dueAt: at(-2 * H) });
     expect(gameDayUpdateDecision(facts(), at(-31 * 60_000)).kind).toBe("send"); // late but eligible
     expect(gameDayUpdateDecision(facts(), at(-29 * 60_000))).toMatchObject({ kind: "blocked", reason: "TOO_CLOSE" });
-    expect(gameDayUpdateDecision(facts({ poll: { postedAt: at(-80 * 60_000), chatConnected: true } }), at(-2 * H))).toMatchObject({ kind: "blocked", reason: "TOO_CLOSE" });
+    expect(gameDayUpdateDecision(facts({ poll: { postedAt: at(-80 * 60_000), chatConnected: true, chatMatchesMatch: true } }), at(-2 * H))).toMatchObject({ kind: "blocked", reason: "TOO_CLOSE" });
     expect(gameDayUpdateDecision(facts(), at(1))).toMatchObject({ kind: "blocked", reason: "CLOSED" });
   });
 });
@@ -60,7 +60,9 @@ describe("eligibility and delivery state", () => {
     expect(reason({ schedule: "paused" })).toBe("SCHEDULE_PAUSED");
     expect(reason({ schedule: "active" })).toBeUndefined();
     expect(reason({ poll: null })).toBe("NO_POLL");
-    expect(reason({ poll: { postedAt: at(-24 * H), chatConnected: false } })).toBe("CHAT_DISCONNECTED");
+    expect(reason({ poll: { postedAt: at(-24 * H), chatConnected: false, chatMatchesMatch: true } })).toBe("CHAT_DISCONNECTED");
+    // Destination consistency: the poll's chat must be the match's selected Telegram group.
+    expect(reason({ poll: { postedAt: at(-24 * H), chatConnected: true, chatMatchesMatch: false } })).toBe("CHAT_MISMATCH");
   });
   it("organizer status texts (no tokens or provider details)", () => {
     expect(statusOf({ kind: "blocked", reason: "UNCERTAIN" })).toEqual({ state: "UNCERTAIN", text: "Delivery uncertain — review the Telegram chat", at: null });
@@ -73,5 +75,38 @@ describe("eligibility and delivery state", () => {
     expect(W).toContain("{view.canManage && view.gameDayUpdate && (");
     expect(W).toContain("formatDeadline(view.gameDayUpdate.at, tz)");
     expect(W).toMatch(/view\.gameDayUpdate\.state === "DUE" \|\| view\.gameDayUpdate\.state === "RETRY"/);
+  });
+});
+
+describe("manual send (organizer's explicit action)", () => {
+  const manual = (f: Partial<GameDayFacts>, now: Date) => manualGameDayDecision(facts(f), now);
+  it("independent of the automatic setting, the due time, the 60-minute poll settle and a paused schedule", () => {
+    expect(manual({ enabled: false }, at(-10 * H))).toEqual({ kind: "ready", retry: false }); // long before deadline − offset
+    expect(manual({ poll: { postedAt: at(-2 * H), chatConnected: true, chatMatchesMatch: true } }, at(-2 * H + 60_000))).toEqual({ kind: "ready", retry: false }); // 1 min after the poll
+    expect(manual({ schedule: "paused" }, at(-3 * H)).kind).toBe("ready");
+  });
+  it("the 30-minute minimum, deadline and closed attendance", () => {
+    expect(manual({}, at(-MIN_LEFT_MS)).kind).toBe("ready"); // exactly 30 minutes left
+    expect(manual({}, at(-MIN_LEFT_MS + 1))).toMatchObject({ kind: "blocked", reason: "TOO_CLOSE" });
+    expect(manual({}, at(0))).toMatchObject({ reason: "CLOSED" });
+    expect(manual({ attendanceDeadlineAt: null }, at(-3 * H))).toMatchObject({ reason: "NO_DEADLINE" });
+    expect(manual({ attendanceClosedAt: at(-4 * H) }, at(-3 * H))).toMatchObject({ reason: "CLOSED" });
+  });
+  it("plan, match, poll and destination checks", () => {
+    const now = at(-3 * H);
+    expect(manual({ telegramAllowed: false }, now)).toMatchObject({ reason: "NOT_IN_PLAN" });
+    expect(manual({ matchStatus: "CANCELED" }, now)).toMatchObject({ reason: "INACTIVE" });
+    expect(manual({ poll: null }, now)).toMatchObject({ reason: "NO_POLL" });
+    expect(manual({ poll: { postedAt: at(-H * 24), chatConnected: false, chatMatchesMatch: true } }, now)).toMatchObject({ reason: "CHAT_DISCONNECTED" });
+    expect(manual({ poll: { postedAt: at(-H * 24), chatConnected: true, chatMatchesMatch: false } }, now)).toMatchObject({ reason: "CHAT_MISMATCH" });
+  });
+  it("one successful update per match: SENT / UNCERTAIN / SENDING / terminal failure block; FAILED may be retried", () => {
+    const now = at(-3 * H);
+    expect(manual({ delivery: { status: "SENT", claimedAt: now, sentAt: now, failedAt: null } }, now)).toMatchObject({ reason: "SENT" });
+    expect(manual({ delivery: { status: "UNCERTAIN", claimedAt: now, sentAt: null, failedAt: now } }, now)).toMatchObject({ reason: "UNCERTAIN" });
+    expect(manual({ delivery: { status: "SENDING", claimedAt: now, sentAt: null, failedAt: null } }, now)).toMatchObject({ reason: "SENDING" });
+    expect(manual({ delivery: { status: "SENDING", claimedAt: at(-4 * H), sentAt: null, failedAt: null } }, now)).toMatchObject({ reason: "UNCERTAIN" });
+    expect(manual({ delivery: { status: "FAILED", claimedAt: now, sentAt: null, failedAt: now, failureCode: "REPLY_TARGET_MISSING" } }, now)).toMatchObject({ reason: "POLL_MESSAGE_MISSING" });
+    expect(manual({ delivery: { status: "FAILED", claimedAt: now, sentAt: null, failedAt: now, failureCode: "TELEGRAM_REJECTED" } }, now)).toEqual({ kind: "ready", retry: true });
   });
 });
