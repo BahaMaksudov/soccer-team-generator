@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { usePathname } from "next/navigation";
+import { usePathname, useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useId, useRef, useState, useSyncExternalStore } from "react";
 import { signOut } from "next-auth/react";
 import {
@@ -25,6 +25,7 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import {
+  accountSettingsHref,
   buildShellNav,
   groupsHrefOf,
   initialsOf,
@@ -32,7 +33,7 @@ import {
   NAV_SECTION_ORDER,
   organizationHref,
   ROLE_LABELS,
-  shellContextFromPath,
+  shellContextFromLocation,
   SIGN_OUT_DESTINATION,
   switcherEntries,
   type NavItem,
@@ -104,8 +105,16 @@ function announceHash(href: string) {
 
 function useNav(data: ShellData): NavItem[] {
   const pathname = usePathname() ?? "";
+  const search = useSearchParams();
   const hash = useHash();
-  return buildShellNav({ data, pathname, hash });
+  return buildShellNav({ data, pathname, hash, search });
+}
+
+/** Phase 3.1 — the Organization/Group context of the current location (URL only; validated against ShellData). */
+function useShellContext(data: ShellData) {
+  const pathname = usePathname() ?? "";
+  const search = useSearchParams();
+  return shellContextFromLocation(pathname, search, data.organizations);
 }
 
 // --- small disclosure helper: Escape / outside click close, focus returns to the trigger
@@ -237,8 +246,7 @@ export function SidebarNav({ data }: { data: ShellData }) {
  *                        selected Group with the switcher (this Organization's Groups only).
  */
 export function SidebarContext({ data }: { data: ShellData }) {
-  const pathname = usePathname() ?? "";
-  const ctx = shellContextFromPath(pathname, data.organizations);
+  const ctx = useShellContext(data);
   if (!ctx) return null;
   const label = "px-1 pb-1 text-[11px] font-bold uppercase tracking-widest text-pitch-foreground/55";
   const badge = (
@@ -285,8 +293,7 @@ export function SidebarContext({ data }: { data: ShellData }) {
 
 /** Phase 3 — mobile header context: the group switcher (C), the Organization name (B), or the product name (A). */
 export function MobileContext({ data }: { data: ShellData }) {
-  const pathname = usePathname() ?? "";
-  const ctx = shellContextFromPath(pathname, data.organizations);
+  const ctx = useShellContext(data);
   if (ctx?.group) return <GroupSwitcher data={data} mobile />;
   if (ctx) {
     return (
@@ -301,8 +308,7 @@ export function MobileContext({ data }: { data: ShellData }) {
 
 // --- group switcher (navigation only)
 export function GroupSwitcher({ data, mobile = false, showOrganization = true }: { data: ShellData; mobile?: boolean; showOrganization?: boolean }) {
-  const pathname = usePathname() ?? "";
-  const ctx = shellContextFromPath(pathname, data.organizations);
+  const ctx = useShellContext(data);
   // Phase 3 — only the selected Organization's Groups: switching never changes the Organization.
   const entries = ctx ? switcherEntries([ctx.organization], ctx) : [];
   const { open, setOpen, triggerRef, panelRef } = useDisclosure();
@@ -389,8 +395,7 @@ export function GroupSwitcher({ data, mobile = false, showOrganization = true }:
 
 // --- account menu (identity, real role, Account, Sign Out)
 export function AccountMenu({ data, mobile = false }: { data: ShellData; mobile?: boolean }) {
-  const pathname = usePathname() ?? "";
-  const ctx = shellContextFromPath(pathname, data.organizations);
+  const ctx = useShellContext(data);
   const role = ctx ? ROLE_LABELS[ctx.organization.role] : null;
   const display = data.user.name?.trim() || data.user.email;
   const { open, setOpen, triggerRef, panelRef } = useDisclosure();
@@ -433,7 +438,7 @@ export function AccountMenu({ data, mobile = false }: { data: ShellData; mobile?
           </div>
           <ul className="pt-1">
             <li>
-              <Link href="/account/security" className={cn("flex min-h-11 items-center gap-3 rounded-tbp-sm px-3 text-sm font-medium hover:bg-muted", focusRingLight)}>
+              <Link href={accountSettingsHref(ctx)} className={cn("flex min-h-11 items-center gap-3 rounded-tbp-sm px-3 text-sm font-medium hover:bg-muted", focusRingLight)}>
                 <UserRound className="size-[18px]" aria-hidden="true" />
                 Account
               </Link>

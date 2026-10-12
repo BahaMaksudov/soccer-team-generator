@@ -18,6 +18,7 @@ vi.mock("next/cache", () => ({ revalidatePath: vi.fn() }));
 
 import { prisma } from "@/lib/prisma";
 import AdminEntryPage from "@/app/admin/page";
+import AccountSecurityPage from "@/app/account/security/page";
 import GroupsPage from "@/app/admin/o/[organizationSlug]/groups/page";
 import * as groupsRoute from "@/app/api/admin/o/[organizationSlug]/groups/route";
 import * as playersRoute from "@/app/api/admin/o/[organizationSlug]/g/[groupSlug]/players/route";
@@ -233,5 +234,35 @@ describe("Phase 3 — sidebar context from real memberships, direct URLs, and re
     await shellFor("multi");
     expect(await Promise.all([prisma.organization.count(), prisma.group.count(), prisma.organizationMembership.count()])).toEqual(before);
     expect(otherNetwork).toBe(0);
+  });
+});
+
+describe("Phase 3.1 — Account Settings keeps the sidebar context (real memberships)", () => {
+  const at = async (who: string, path: string) => {
+    const url = new URL(path, "http://x");
+    return buildShellNav({ data: await shellFor(who), pathname: url.pathname, search: url.searchParams });
+  };
+
+  it("from a group / an organization / My Organizations; only Account Settings is active", async () => {
+    const c = await at("multi", "/account/security?o=alpha&g=tue");
+    expect(c.map((i) => i.key)).toEqual(["overview", "players", "matches", "group-settings", "all-groups", "account"]);
+    expect(c.find((i) => i.key === "matches")?.href).toBe("/admin/o/alpha/g/tue/matches");
+    expect(c.filter((i) => i.active).map((i) => i.key)).toEqual(["account"]);
+    expect((await at("multi", "/account/security?o=beta")).map((i) => i.key)).toEqual(["groups", "organization", "billing", "organizations", "account"]); // ADMIN of beta
+    expect((await at("multi", "/account/security")).map((i) => i.key)).toEqual(["organizations", "account"]);
+  });
+
+  it("a context the User has no membership for is ignored (no leak of another tenant's groups)", async () => {
+    for (const q of ["?o=other", "?o=other&g=sun", "?o=alpha&g=wed"]) {
+      const items = await at("multi", `/account/security${q}`);
+      expect(items.map((i) => i.key), q).toEqual(["organizations", "account"]);
+    }
+    expect((await at("member", "/account/security?o=alpha&g=mon")).map((i) => i.key)).toEqual(["overview", "players", "matches", "all-groups", "account"]); // MEMBER: no Group Settings
+  });
+
+  it("Account Settings opened directly (no context) still renders normally", async () => {
+    signIn("multi");
+    const html = renderToStaticMarkup(await AccountSecurityPage());
+    expect(html.length).toBeGreaterThan(0);
   });
 });

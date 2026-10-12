@@ -10,8 +10,8 @@ import { renderToStaticMarkup } from "react-dom/server";
  * the URL stays the tenant authority and every page re-checks access.
  */
 
-const nav = vi.hoisted(() => ({ pathname: "/admin" }));
-vi.mock("next/navigation", () => ({ usePathname: () => nav.pathname }));
+const nav = vi.hoisted(() => ({ pathname: "/admin", search: "" }));
+vi.mock("next/navigation", () => ({ usePathname: () => nav.pathname, useSearchParams: () => new URLSearchParams(nav.search) }));
 vi.mock("next/link", () => ({
   default: ({ href, children, ...rest }: { href: string; children: ReactNode }) => createElement("a", { href, ...rest }, children),
 }));
@@ -24,7 +24,9 @@ import { middleware } from "@/middleware";
 import { CHROME_HEADER, REDESIGN_CHROME } from "@/lib/chrome";
 import AppShell from "@/components/app-shell/AppShell";
 import {
+  accountSettingsHref,
   buildShellNav,
+  shellContextFromLocation,
   groupAdminHref,
   initialsOf,
   shellContextFromPath,
@@ -53,6 +55,7 @@ const item = (pathname: string, key: string, d = data(), hash = "") => buildShel
 
 beforeEach(() => {
   nav.pathname = "/admin";
+  nav.search = "";
   jwt.token = null;
 });
 
@@ -93,7 +96,7 @@ describe("Phase 3 — context-sensitive navigation (presentation only)", () => {
       ["Members & Invitations", "/admin/o/eagles/members"],
       ["Billing & Plan", "/admin/o/eagles/billing"],
       ["All Organizations", "/admin"],
-      ["Account Settings", "/account/security"],
+      ["Account Settings", "/account/security?o=eagles"], // Phase 3.1 — keeps the context
     ]);
     for (const p of ["/admin/o/eagles", "/admin/o/eagles/groups", "/admin/o/eagles/groups/new", "/admin/o/eagles/members", "/admin/o/eagles/billing"]) {
       expect(sections(p).group, p).toBeUndefined();
@@ -109,7 +112,7 @@ describe("Phase 3 — context-sensitive navigation (presentation only)", () => {
       ["Matches", "/admin/o/eagles/g/indoor/matches"],
       ["Group Settings", "/admin/o/eagles/g/indoor/settings"],
       ["All Groups", "/admin/o/eagles/groups"],
-      ["Account Settings", "/account/security"],
+      ["Account Settings", "/account/security?o=eagles&g=indoor"], // Phase 3.1 — keeps the context
     ]);
     for (const k of ["organization", "members", "billing", "groups", "organizations"]) expect(keys("/admin/o/eagles/g/indoor/matches/m1"), k).not.toContain(k);
     // Recurring schedules stay inside Matches — no separate Schedules item.
@@ -157,6 +160,82 @@ describe("Phase 3 — context-sensitive navigation (presentation only)", () => {
     expect(primary("/admin")).toEqual(["organizations"]);
     expect(primary("/admin/o/eagles")).toEqual(["groups", "organization", "organizations"]);
     expect(primary("/admin/o/eagles/g/indoor")).toEqual(["overview", "players", "matches"]);
+  });
+});
+
+describe("Phase 3.1 — Account Settings keeps the sidebar context (URL ?o=&g=, validated against memberships)", () => {
+  const ORGS2: ShellOrganization[] = [
+    { slug: "nee", name: "New England Eagles", role: "OWNER", groups: [{ slug: "indoor-soccer", name: "Indoor Soccer", sportLabel: "Soccer" }, { slug: "pickup-basketball", name: "Pickup basketball", sportLabel: "Basketball" }] },
+    { slug: "hawks", name: "Hawks", role: "MEMBER", groups: [{ slug: "sun", name: "Sunday", sportLabel: "Soccer" }] },
+  ];
+  const d2 = data({ organizations: ORGS2 });
+  const navAt = (path: string, d = d2) => {
+    const url = new URL(path, "http://x");
+    return buildShellNav({ data: d, pathname: url.pathname, search: url.searchParams });
+  };
+  const accountHrefFrom = (path: string) => navAt(path).find((i) => i.key === "account")!.href;
+
+  it("the Account Settings link carries the current context (none on My Organizations)", () => {
+    expect(accountHrefFrom("/admin")).toBe("/account/security");
+    expect(accountHrefFrom("/admin/o/nee/groups")).toBe("/account/security?o=nee");
+    expect(accountHrefFrom("/admin/o/nee/g/indoor-soccer/matches")).toBe("/account/security?o=nee&g=indoor-soccer");
+    expect(accountHrefFrom("/admin/o/nee/g/pickup-basketball")).toBe("/account/security?o=nee&g=pickup-basketball");
+    expect(accountSettingsHref({ organization: { slug: "a b", name: "", role: "OWNER", groups: [] }, group: null })).toBe("/account/security?o=a+b");
+  });
+
+  it("Case 1 — from My Organizations: State A kept, Account Settings active", () => {
+    const items = navAt("/account/security");
+    expect(items.map((i) => i.key)).toEqual(["organizations", "account"]);
+    expect(items.filter((i) => i.active).map((i) => i.key)).toEqual(["account"]);
+  });
+
+  it("Case 2 — from My Groups: the organization stays selected with its links (role-aware); only Account Settings active", () => {
+    const items = navAt("/account/security?o=nee");
+    expect(items.map((i) => i.label)).toEqual(["My Groups", "Organization Overview", "Members & Invitations", "Billing & Plan", "All Organizations", "Account Settings"]);
+    expect(items.filter((i) => i.active).map((i) => i.key)).toEqual(["account"]);
+    expect(navAt("/account/security?o=hawks").map((i) => i.key)).toEqual(["groups", "organization", "organizations", "account"]); // MEMBER
+    expect(items.find((i) => i.key === "account")!.href).toBe("/account/security?o=nee"); // refresh/bookmark keep it
+  });
+
+  it("Case 3 — from a group (Indoor Soccer, Pickup basketball): group navigation kept, links go to that group; only Account Settings active", () => {
+    for (const g of ["indoor-soccer", "pickup-basketball"]) {
+      const items = navAt(`/account/security?o=nee&g=${g}`);
+      expect(items.map((i) => [i.key, i.href]), g).toEqual([
+        ["overview", `/admin/o/nee/g/${g}`],
+        ["players", `/admin/o/nee/g/${g}/players`],
+        ["matches", `/admin/o/nee/g/${g}/matches`],
+        ["group-settings", `/admin/o/nee/g/${g}/settings`],
+        ["all-groups", "/admin/o/nee/groups"],
+        ["account", `/account/security?o=nee&g=${g}`],
+      ]);
+      expect(items.filter((i) => i.active).map((i) => i.key)).toEqual(["account"]);
+    }
+  });
+
+  it("invalid or unauthorized context is ignored (State A): foreign org, foreign / unknown group, group without org, malformed, oversized", () => {
+    for (const q of ["?o=foreign", "?o=hawks&g=indoor-soccer", "?o=nee&g=nope", "?g=indoor-soccer", "?o=%E0%A4%A", "?o=" + "x".repeat(201), "?o=nee&g=" + "y".repeat(201)]) {
+      expect(navAt(`/account/security${q}`).map((i) => i.key), q).toEqual(["organizations", "account"]);
+    }
+  });
+
+  it("the ?o=&g= context applies only on Account pages — /admin URLs keep their own context", () => {
+    expect(shellContextFromLocation("/admin", new URLSearchParams("o=nee&g=indoor-soccer"), ORGS2)).toBeNull();
+    expect(shellContextFromLocation("/admin/o/hawks", new URLSearchParams("o=nee"), ORGS2)?.organization.slug).toBe("hawks");
+    expect(shellContextFromLocation("/me", new URLSearchParams("o=nee"), ORGS2)).toBeNull();
+  });
+
+  it("rendered on Account Settings from a group: org context, group switcher, group links, Account Settings marked current (desktop + mobile)", () => {
+    nav.pathname = "/account/security";
+    nav.search = "o=nee&g=pickup-basketball";
+    const html = renderToStaticMarkup(createElement(AppShell, { data: d2 } as { data: ShellData; children: ReactNode }, createElement("p", null, "PAGE")));
+    expect(html).toMatch(/aria-label="Switch group\. Current: New England Eagles, Pickup basketball"/);
+    expect(html).toContain('href="/admin/o/nee/g/pickup-basketball/players"');
+    expect(html).toContain('href="/admin/o/nee/groups"');
+    expect(html).toMatch(/href="\/account\/security\?o=nee&amp;g=pickup-basketball"[^>]*aria-current="page"/);
+    expect(html).not.toContain('href="/admin/o/nee/members"'); // no organization management in the group state
+    expect(html).toContain('aria-label="Application (mobile)"');
+    // The account menu's Account link carries the same context.
+    expect(html).not.toMatch(/href="\/account\/security"[^?]/);
   });
 });
 

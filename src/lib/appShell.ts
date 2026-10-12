@@ -107,6 +107,34 @@ export function shellContextFromPath(pathname: string | null | undefined, organi
 }
 
 /**
+ * Phase 3.1 — Account Settings keeps the sidebar context of the page it was
+ * opened from, carried in its URL (`/account/security?o=<org>&g=<group>`) so
+ * refresh, bookmarks and Back/Forward keep it. Presentation only: the slugs are
+ * resolved exactly like an /admin URL — ONLY against the server-authorized
+ * memberships in ShellData (unknown / foreign / malformed → no context). The
+ * Account page itself never reads them; nothing is authorized by them.
+ */
+export const ACCOUNT_SETTINGS_PATH = "/account/security";
+const CONTEXT_PARAM_MAX = 200;
+type SearchLike = { get(name: string): string | null } | null | undefined;
+
+/** The navigation context of a location: the /admin path itself, or (Account pages only) the ?o=&g= it carries. */
+export function shellContextFromLocation(pathname: string | null | undefined, search: SearchLike, organizations: ShellOrganization[]): ShellContext {
+  if (!pathname?.startsWith("/account/")) return shellContextFromPath(pathname, organizations);
+  const o = search?.get("o") ?? "";
+  const g = search?.get("g") ?? "";
+  if (!o || o.length > CONTEXT_PARAM_MAX || g.length > CONTEXT_PARAM_MAX) return null;
+  return shellContextFromPath(g ? groupAdminHref(o, g) : organizationHref(o), organizations);
+}
+
+/** Account Settings, carrying the current Organization/Group context (none → the plain page). */
+export function accountSettingsHref(ctx: ShellContext): string {
+  if (!ctx) return ACCOUNT_SETTINGS_PATH;
+  const q = new URLSearchParams({ o: ctx.organization.slug, ...(ctx.group ? { g: ctx.group.slug } : {}) });
+  return `${ACCOUNT_SETTINGS_PATH}?${q.toString()}`;
+}
+
+/**
  * Phase 3 — context-sensitive navigation (presentation only — every page re-checks access):
  *   A  no Organization selected   My Organizations
  *   B  Organization selected       My Groups, Organization Overview (any member);
@@ -117,9 +145,9 @@ export function shellContextFromPath(pathname: string | null | undefined, organi
  *   always                         My Games (claimed Player), Account Settings (+ Sign Out in the shell)
  * Switching Groups happens only in the group switcher, within the selected Organization.
  */
-export function buildShellNav(params: { data: ShellData; pathname: string; hash?: string }): NavItem[] {
+export function buildShellNav(params: { data: ShellData; pathname: string; hash?: string; search?: SearchLike }): NavItem[] {
   const { data, pathname } = params;
-  const ctx = shellContextFromPath(pathname, data.organizations);
+  const ctx = shellContextFromLocation(pathname, params.search, data.organizations);
   const items: NavItem[] = [];
   const under = (base: string) => pathname === base || pathname.startsWith(`${base}/`);
 
@@ -157,7 +185,7 @@ export function buildShellNav(params: { data: ShellData; pathname: string; hash?
   if (data.hasPlayerProfile || under("/me")) {
     items.push({ key: "my-games", label: "My Games", href: "/me", active: under("/me"), section: "account", mobilePrimary: true });
   }
-  items.push({ key: "account", label: "Account Settings", href: "/account/security", active: pathname.startsWith("/account/"), section: "account", mobilePrimary: false });
+  items.push({ key: "account", label: "Account Settings", href: accountSettingsHref(ctx), active: pathname.startsWith("/account/"), section: "account", mobilePrimary: false });
   return items;
 }
 
