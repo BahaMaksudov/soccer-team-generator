@@ -1,0 +1,181 @@
+import { escapeHtml } from "@/lib/messaging/telegram";
+import { kickoffAt } from "@/lib/attendanceDeadline";
+import { localYmd } from "@/lib/scheduleTime";
+
+/**
+ * Phase 4B (step 5) — the Telegram Game Day Update message. PURE: no database,
+ * no network, no clock (the caller passes `now`). Telegram HTML (parse_mode
+ * "HTML", as every other bot message); every caller-supplied string is cleaned
+ * (control characters / line breaks → spaces, length-capped by code point) and
+ * then HTML-escaped. Never includes player names or ratings — only counts.
+ *
+ * Time: everything is shown in the Group's timezone (DST-aware via Intl); the
+ * "closes in …" text is the ACTUAL time left at `now` (a late cron run says so
+ * honestly), never the configured offset. A deadline that is not in the future
+ * yields no message.
+ *
+ * Weather is optional INPUT (never generated here): canonical metric values
+ * from the provider adapter, converted to the Group's units; missing fields are
+ * simply omitted; indoor venues say "Outside at kickoff".
+ */
+export const TELEGRAM_TEXT_LIMIT = 4096;
+const CAP = { name: 80, venue: 80, condition: 60, attribution: 100 } as const;
+
+export type GameDayWeather = {
+  /** °C (converted to °F for imperial). */
+  temperatureC?: number | null;
+  condition?: string | null;
+  /** 0–100. */
+  rainChancePercent?: number | null;
+  /** km/h (converted to mph for imperial). */
+  windKph?: number | null;
+  /** Provider attribution when its terms require one, e.g. "Weather by WeatherAPI.com". */
+  attribution?: string | null;
+};
+
+export type GameDayUpdateInput = {
+  groupName: string;
+  /** The Group's public display name ("teamName"), preferred when set. */
+  displayName?: string | null;
+  /** IANA timezone of the Group. */
+  timezone: string;
+  /** Date-only "YYYY-MM-DD" + optional local "HH:MM" — the same for manual and recurring matches. */
+  match: { date: string; startTime: string | null; venueName?: string | null; isIndoor?: boolean };
+  /** The match's attendance deadline (the one shared deadline). */
+  deadline: Date;
+  /** Effective attendance (organizer overrides included) — counts only. */
+  attendance: { playing: number; maybe: number };
+  /** An attendance / match link the CALLER is authorized to share (absolute https URL), or null. Never built here. */
+  link?: string | null;
+  weather?: GameDayWeather | null;
+  units: "imperial" | "metric";
+  now: Date;
+};
+
+export type GameDayUpdateMessage =
+  | { ok: true; html: string; parseMode: "HTML"; disableWebPagePreview: true; truncated: boolean }
+  | { ok: false; reason: "DEADLINE_PASSED" | "INVALID_INPUT" };
+
+// C0/C1 control characters and the Unicode line / paragraph separators (written as escapes).
+const CONTROL = new RegExp("[\\u0000-\\u001f\\u007f-\\u009f\\u2028\\u2029]+", "g");
+
+/** Remove control characters and line breaks; cap by code points (never splits a surrogate pair). */
+function clean(s: string | null | undefined, max: number): { text: string; truncated: boolean } {
+  const flat = String(s ?? "").replace(CONTROL, " ").replace(/\s+/g, " ").trim();
+  const chars = Array.from(flat);
+  return chars.length > max ? { text: `${chars.slice(0, max - 1).join("").trimEnd()}…`, truncated: true } : { text: flat, truncated: false };
+}
+
+const finite = (n: unknown): n is number => typeof n === "number" && Number.isFinite(n);
+const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
+
+function fmt(at: Date, tz: string, options: Intl.DateTimeFormatOptions) {
+  const parts = new Intl.DateTimeFormat("en-US", { timeZone: tz, ...options }).formatToParts(at);
+  return (type: Intl.DateTimeFormatPartTypes) => parts.find((p) => p.type === type)?.value ?? "";
+}
+
+/** "9:00 PM EDT" */
+function clock(at: Date, tz: string): string {
+  const g = fmt(at, tz, { hour: "numeric", minute: "2-digit", timeZoneName: "short" });
+  return `${g("hour")}:${g("minute")} ${g("dayPeriod")} ${g("timeZoneName")}`;
+}
+
+/** "Monday, October 19 · 9:00 PM EDT" (no time when the match has no start time). */
+function kickoffLine(date: string, startTime: string | null, tz: string): string {
+  const day = new Date(`${date}T12:00:00Z`); // the calendar date itself (date-only value)
+  const g = fmt(day, "UTC", { weekday: "long", month: "long", day: "numeric" });
+  const head = `${g("weekday")}, ${g("month")} ${g("day")}`;
+  return startTime ? `${head} · ${clock(kickoffAt(new Date(`${date}T00:00:00Z`), startTime, tz), tz)}` : head;
+}
+
+/** "4 hours", "3 hours 20 minutes", "45 minutes", "1 minute", "2 days 3 hours". */
+export function timeLeftText(ms: number): string {
+  const minutes = Math.max(1, Math.floor(ms / 60_000));
+  if (minutes < 60) return plural(minutes, "minute");
+  const hours = Math.floor(minutes / 60);
+  const rest = minutes % 60;
+  if (hours >= 48) {
+    const d = Math.floor(hours / 24);
+    const h = hours % 24;
+    return h ? `${plural(d, "day")} ${plural(h, "hour")}` : plural(d, "day");
+  }
+  return rest ? `${plural(hours, "hour")} ${plural(rest, "minute")}` : plural(hours, "hour");
+}
+
+/** "(5:00 PM EDT)" today, else "(Sunday, October 18 at 5:00 PM EDT)". */
+function deadlineText(deadline: Date, now: Date, tz: string): string {
+  if (localYmd(deadline, tz) === localYmd(now, tz)) return clock(deadline, tz);
+  const g = fmt(deadline, tz, { weekday: "long", month: "long", day: "numeric" });
+  return `${g("weekday")}, ${g("month")} ${g("day")} at ${clock(deadline, tz)}`;
+}
+
+function weatherLines(w: GameDayWeather | null | undefined, units: "imperial" | "metric", indoor: boolean, track: (t: boolean) => void): string[] {
+  if (!w) return [];
+  const lines: string[] = [];
+  const temp = finite(w.temperatureC) ? (units === "imperial" ? `${Math.round((w.temperatureC * 9) / 5 + 32)}°F` : `${Math.round(w.temperatureC)}°C`) : null;
+  const cond = clean(w.condition, CAP.condition);
+  track(cond.truncated);
+  const main = [temp, cond.text ? cond.text.charAt(0).toLowerCase() + cond.text.slice(1) : null].filter(Boolean).join(", ");
+  if (main) lines.push(`🌤 ${indoor ? "Outside at kickoff" : "Kickoff forecast"}: ${escapeHtml(main)}`);
+  if (finite(w.rainChancePercent)) lines.push(`🌧 Rain chance: ${Math.min(100, Math.max(0, Math.round(w.rainChancePercent)))}%`);
+  if (finite(w.windKph) && w.windKph >= 0) lines.push(`💨 Wind: ${units === "imperial" ? `${Math.round(w.windKph / 1.609344)} mph` : `${Math.round(w.windKph)} km/h`}`);
+  if (lines.length) {
+    const attr = clean(w.attribution, CAP.attribution);
+    track(attr.truncated);
+    if (attr.text) lines.push(`<i>${escapeHtml(attr.text)}</i>`);
+  }
+  return lines;
+}
+
+/** An authorized link from the caller, used only if it is an absolute https URL (never guessed or built here). */
+function safeLink(link: string | null | undefined): string | null {
+  if (!link) return null;
+  try {
+    const u = new URL(link);
+    return u.protocol === "https:" ? u.toString() : null;
+  } catch {
+    return null;
+  }
+}
+
+export function buildGameDayUpdate(input: GameDayUpdateInput): GameDayUpdateMessage {
+  const { timezone: tz, match, deadline, now } = input;
+  if (!(deadline instanceof Date) || Number.isNaN(deadline.getTime()) || !/^\d{4}-\d{2}-\d{2}$/.test(match.date)) return { ok: false, reason: "INVALID_INPUT" };
+  if (match.startTime !== null && !/^([01]\d|2[0-3]):[0-5]\d$/.test(match.startTime)) return { ok: false, reason: "INVALID_INPUT" };
+  try {
+    new Intl.DateTimeFormat("en-US", { timeZone: tz });
+  } catch {
+    return { ok: false, reason: "INVALID_INPUT" };
+  }
+  const left = deadline.getTime() - now.getTime();
+  if (left <= 0) return { ok: false, reason: "DEADLINE_PASSED" };
+
+  let truncated = false;
+  const track = (t: boolean) => void (truncated = truncated || t);
+  const display = clean(input.displayName, CAP.name);
+  const name = display.text ? display : clean(input.groupName, CAP.name);
+  track(name.truncated);
+  const venue = clean(match.venueName, CAP.venue);
+  track(venue.truncated);
+  const playing = Math.max(0, Math.floor(finite(input.attendance.playing) ? input.attendance.playing : 0));
+  const maybe = Math.max(0, Math.floor(finite(input.attendance.maybe) ? input.attendance.maybe : 0));
+  const link = safeLink(input.link);
+
+  const lines = [
+    `<b>⚽ Game Day Update — ${escapeHtml(name.text || "Your group")}</b>`,
+    "",
+    `📅 ${kickoffLine(match.date, match.startTime, tz)}`,
+    ...(venue.text ? [`📍 ${escapeHtml(venue.text)}`] : []),
+    ...weatherLines(input.weather, input.units, Boolean(match.isIndoor), track),
+    `👥 ${plural(playing, "player")} confirmed${maybe > 0 ? ` · ${maybe} maybe` : ""}`,
+    "",
+    `⏰ Attendance closes in ${timeLeftText(left)} (${deadlineText(deadline, now, tz)}).`,
+    "",
+    "Please confirm or update your attendance before the deadline.",
+    ...(link ? [`<a href="${escapeHtml(link).replaceAll('"', "&quot;")}">Confirm or update your attendance</a>`] : []),
+  ];
+  const html = lines.join("\n");
+  // Every field is capped, so this can't happen — but never hand Telegram an over-long message.
+  if (Array.from(html).length > TELEGRAM_TEXT_LIMIT) return { ok: false, reason: "INVALID_INPUT" };
+  return { ok: true, html, parseMode: "HTML", disableWebPagePreview: true, truncated };
+}
