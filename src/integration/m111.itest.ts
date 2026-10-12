@@ -282,33 +282,33 @@ describe("M11.1 — capacity limits are enforced on the server", () => {
     expect(await prisma.player.count({ where: { group: { organizationId: "free" }, isActive: true } })).toBe(30);
   });
 
-  it("matches: Free 8 new per UTC month (older months don't count); limits are per Organization", async () => {
+  it("matches: Free 4 new per UTC month (Phase 2; older months don't count); limits are per Organization", async () => {
     const lastMonth = new Date(Date.UTC(new Date().getUTCFullYear(), new Date().getUTCMonth() - 1, 15));
     await prisma.match.createMany({ data: Array.from({ length: 5 }, (_, i) => ({ id: `old${i}`, groupId: "free-g", date: new Date("2099-03-01"), createdAt: lastMonth })) });
-    await prisma.match.createMany({ data: Array.from({ length: 7 }, (_, i) => ({ id: `now${i}`, groupId: "free-g", date: new Date("2099-03-02") })) });
+    await prisma.match.createMany({ data: Array.from({ length: 3 }, (_, i) => ({ id: `now${i}`, groupId: "free-g", date: new Date("2099-03-02") })) });
     expect((await newMatch("free")).status).toBe(201);
-    expect(await newMatch("free", "2099-01-06")).toMatchObject({ status: 402, body: { metric: "monthlyMatches", limit: 8 } });
+    expect(await newMatch("free", "2099-01-06")).toMatchObject({ status: 402, body: { metric: "monthlyMatches", limit: 4 } });
     await signIn("other");
-    await prisma.match.createMany({ data: Array.from({ length: 8 }, (_, i) => ({ id: `ot${i}`, groupId: "other-g", date: new Date("2099-03-02") })) });
-    expect((await planSummary("free")).usage.monthlyMatches.used).toBe(8);
+    await prisma.match.createMany({ data: Array.from({ length: 4 }, (_, i) => ({ id: `ot${i}`, groupId: "other-g", date: new Date("2099-03-02") })) });
+    expect((await planSummary("free")).usage.monthlyMatches.used).toBe(4);
   });
 
   it("matches: a CANCELED match still counts toward the month; a FAILED creation (validation, plan limit) never does", async () => {
-    await prisma.match.createMany({ data: Array.from({ length: 6 }, (_, i) => ({ id: `c${i}`, groupId: "free-g", date: new Date("2099-03-02") })) });
-    const seventh = await newMatch("free", "2099-01-07");
-    expect(seventh.status).toBe(201);
-    const id = (seventh.body.match as { id: string }).id;
+    await prisma.match.createMany({ data: Array.from({ length: 2 }, (_, i) => ({ id: `c${i}`, groupId: "free-g", date: new Date("2099-03-02") })) });
+    const third = await newMatch("free", "2099-01-07");
+    expect(third.status).toBe(201);
+    const id = (third.body.match as { id: string }).id;
     expect((await call(matchRoute.PATCH(json("PATCH", { status: "CANCELED" }), gm("free", id)))).status).toBe(200);
-    expect((await planSummary("free")).usage.monthlyMatches.used).toBe(7); // canceled still counts
+    expect((await planSummary("free")).usage.monthlyMatches.used).toBe(3); // canceled still counts
     // Failed creations: unknown community (404), invalid body (400) — nothing created, nothing counted.
     expect((await call(matchesRoute.POST(json("POST", { date: "2099-01-08", startTime: "21:00", communityId: "nope" }), g("free")))).status).toBe(404);
     expect((await call(matchesRoute.POST(json("POST", { date: "not-a-date" }), g("free")))).status).toBe(400);
-    expect((await planSummary("free")).usage.monthlyMatches.used).toBe(7);
-    expect((await newMatch("free", "2099-01-09")).status).toBe(201); // the 8th
+    expect((await planSummary("free")).usage.monthlyMatches.used).toBe(3);
+    expect((await newMatch("free", "2099-01-09")).status).toBe(201); // the 4th
     const refused = await newMatch("free", "2099-01-10");
-    expect(refused).toMatchObject({ status: 402, body: { error: "Your Free plan limit has been reached (8 new matches per month). Pro plans and upgrades are coming soon." } });
-    expect((await planSummary("free")).usage.monthlyMatches.used).toBe(8); // the refused one isn't counted
-    expect(await prisma.match.count({ where: { groupId: "free-g" } })).toBe(8);
+    expect(refused).toMatchObject({ status: 402, body: { error: "Your Free plan limit has been reached (4 new matches per month). Pro plans and upgrades are coming soon." } });
+    expect((await planSummary("free")).usage.monthlyMatches.used).toBe(4); // the refused one isn't counted
+    expect(await prisma.match.count({ where: { groupId: "free-g" } })).toBe(4);
   });
 
   it("schedules: Free 1 active; a paused one can be created; resuming a second is refused", async () => {
@@ -352,7 +352,7 @@ describe("M11.1 — automation respects the plan", () => {
   const afterPoll = new Date("2026-10-12T00:05:00Z"); // Sunday 20:05 New York; game Monday Oct 12
 
   it("automatic matches count toward the monthly limit: at the limit nothing is created, nothing is sent, no error", async () => {
-    await prisma.match.createMany({ data: Array.from({ length: 8 }, (_, i) => ({ id: `f${i}`, groupId: "free-g", date: new Date("2099-03-02"), createdAt: afterPoll })) });
+    await prisma.match.createMany({ data: Array.from({ length: 4 }, (_, i) => ({ id: `f${i}`, groupId: "free-g", date: new Date("2099-03-02"), createdAt: afterPoll })) });
     await prisma.matchSchedule.create({ data: { groupId: "free-g", ...SCHED("free") } });
     expect(await runMatchAutomation(afterPoll)).toMatchObject({ created: 0, limited: 1, errors: [] });
     expect(await prisma.match.count({ where: { scheduleId: { not: null } } })).toBe(0);

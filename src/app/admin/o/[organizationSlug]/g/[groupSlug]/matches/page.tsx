@@ -6,6 +6,7 @@ import { isManager } from "@/lib/tenantRoute";
 import CreateMatchForm from "./CreateMatchForm";
 import SchedulesSection from "./SchedulesSection";
 import { prisma } from "@/lib/prisma";
+import { monthlyMatchAllowance } from "@/lib/entitlements";
 
 /**
  * UI-4 — canonical Matches page of one Group (replaces the in-page Matches
@@ -27,6 +28,8 @@ export default async function MatchesPage({ params }: { params: Params }) {
   const communities = isManager(context)
     ? await prisma.community.findMany({ where: { groupId: context.activeGroup.id, isActive: true }, orderBy: { createdAt: "asc" }, select: { id: true, name: true } })
     : [];
+  // Phase 2 — the Organization's monthly new-match allowance (organizers only; the server enforces it).
+  const allowance = isManager(context) ? await monthlyMatchAllowance(context.organization.id) : null;
   const venues = isManager(context)
     ? await prisma.venue.findMany({ where: { organizationId: context.organization.id, isActive: true }, orderBy: { name: "asc" }, select: { id: true, name: true, address: true } })
     : [];
@@ -39,7 +42,7 @@ export default async function MatchesPage({ params }: { params: Params }) {
           <h1 className="mt-1 text-3xl font-extrabold">Matches</h1>
         </div>
       </header>
-      {isManager(context) && <CreateMatchForm organizationSlug={context.organization.slug} groupSlug={context.activeGroup.slug} communities={communities} venues={venues} />}
+      {isManager(context) && <CreateMatchForm organizationSlug={context.organization.slug} groupSlug={context.activeGroup.slug} communities={communities} venues={venues} allowance={allowance} />}
       {isManager(context) && (
         <SchedulesSection organizationSlug={context.organization.slug} groupSlug={context.activeGroup.slug} communities={communities} venues={venues} defaultTimezone={context.activeGroup.timezone} />
       )}

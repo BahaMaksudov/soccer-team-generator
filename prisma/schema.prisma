@@ -215,6 +215,8 @@ model User {
   communityPlayersCreated    CommunityPlayer[]      @relation("CommunityPlayerCreatedBy")
   schedulesCreated           MatchSchedule[]        @relation("ScheduleCreatedBy")
   automationEmails           MatchAutomationEmail[]
+  // Phase 2 — audit only.
+  scheduleSkipsAcknowledged  MatchScheduleSkip[]    @relation("ScheduleSkipAcknowledgedBy")
 }
 
 // M11.1 — what an Organization is entitled to (src/lib/entitlements.ts).
@@ -406,6 +408,8 @@ model Group {
   communityPlayers      CommunityPlayer[]
   matchSchedules        MatchSchedule[]
   matchAutomations      MatchAutomation[]
+  // Phase 2
+  matchScheduleSkips    MatchScheduleSkip[]
 
   @@unique([organizationId, slug])
 }
@@ -929,14 +933,46 @@ model MatchSchedule {
   createdAt        DateTime @default(now())
   updatedAt        DateTime @updatedAt
 
-  group     Group     @relation(fields: [groupId], references: [id], onDelete: Restrict)
-  community Community @relation(fields: [communityId, groupId], references: [id, groupId], onDelete: Restrict)
-  venue     Venue?    @relation(fields: [venueId], references: [id], onDelete: SetNull)
-  createdBy User?     @relation("ScheduleCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
+  group     Group               @relation(fields: [groupId], references: [id], onDelete: Restrict)
+  community Community           @relation(fields: [communityId, groupId], references: [id, groupId], onDelete: Restrict)
+  venue     Venue?              @relation(fields: [venueId], references: [id], onDelete: SetNull)
+  createdBy User?               @relation("ScheduleCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
   matches   Match[]
+  skips     MatchScheduleSkip[]
 
   @@index([groupId])
   @@index([isActive])
+}
+
+// Phase 2 — an occurrence of a recurring schedule whose Match was NOT created
+// because the Organization's monthly new-match allowance was reached. One row
+// per (schedule, game date): repeated / concurrent automation runs only move
+// lastSkippedAt. resolvedAt = the Match was created later (allowance became
+// available before the attendance cutoff); acknowledgedAt = an organizer
+// dismissed the warning. Warnings show while both are NULL. groupId is always
+// the schedule's own Group (set server-side). Never touches the schedule.
+model MatchScheduleSkip {
+  id                   String    @id @default(cuid())
+  groupId              String
+  scheduleId           String
+  // Date-only (UTC midnight) GAME date of the occurrence, like Match.date.
+  occurrenceDate       DateTime
+  // "MONTHLY_MATCH_LIMIT" (the only reason today).
+  reason               String
+  // The monthly new-match allowance when it was skipped.
+  monthlyLimit         Int
+  firstSkippedAt       DateTime  @default(now())
+  lastSkippedAt        DateTime  @default(now())
+  resolvedAt           DateTime?
+  acknowledgedAt       DateTime?
+  acknowledgedByUserId String?
+
+  group          Group         @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  schedule       MatchSchedule @relation(fields: [scheduleId], references: [id], onDelete: Cascade)
+  acknowledgedBy User?         @relation("ScheduleSkipAcknowledgedBy", fields: [acknowledgedByUserId], references: [id], onDelete: SetNull)
+
+  @@unique([scheduleId, occurrenceDate])
+  @@index([groupId])
 }
 
 // M9.2 — what automation did for one scheduled Match (one row per Match).

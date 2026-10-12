@@ -35,7 +35,7 @@ export type Limits = {
 };
 export type CapacityMetric = "activeGroups" | "activePlayers" | "monthlyMatches" | "activeSchedules";
 
-const FREE: Limits = { activeGroups: 1, activePlayers: 30, monthlyMatches: 8, activeSchedules: 1, monthlyAiRecaps: 2, telegram: false };
+const FREE: Limits = { activeGroups: 1, activePlayers: 30, monthlyMatches: 4, activeSchedules: 1, monthlyAiRecaps: 2, telegram: false };
 const PRO: Limits = { activeGroups: 3, activePlayers: 150, monthlyMatches: null, activeSchedules: null, monthlyAiRecaps: 30, telegram: true };
 const UNLIMITED: Limits = { activeGroups: null, activePlayers: null, monthlyMatches: null, activeSchedules: null, monthlyAiRecaps: null, telegram: true };
 
@@ -290,6 +290,27 @@ export async function reserveAiCredit(input: { organizationId: string; groupId: 
 /** Settle a reservation exactly once (a second settle is a no-op). */
 export async function settleAiCredit(id: string, succeeded: boolean, now: Date = new Date()): Promise<void> {
   await prisma.aiUsage.updateMany({ where: { id, status: "RESERVED" }, data: { status: succeeded ? "SUCCEEDED" : "RELEASED", settledAt: now } });
+}
+
+/**
+ * Phase 2 — the monthly new-match allowance for the Matches page (OWNER/ADMIN):
+ * same plan, counting rule (Matches created in the current UTC calendar month,
+ * canceled included) and reset as assertCapacity. limit null = unlimited.
+ */
+export async function monthlyMatchAllowance(organizationId: string, now: Date = new Date()) {
+  const { plan, limits } = await organizationPlan(organizationId, now);
+  const limit = limits.monthlyMatches;
+  const used = (await capacityUsage(organizationId, now)).monthlyMatches;
+  const exhausted = limit !== null && used >= limit;
+  return {
+    plan,
+    label: PLAN_LABEL[plan],
+    used,
+    limit,
+    exhausted,
+    resetsAt: utcMonth(now).next.toISOString(),
+    message: exhausted ? limitReachedMessage(plan, NOUN.monthlyMatches(limit)) : null,
+  };
 }
 
 /** Read-only plan + usage summary (OWNER/ADMIN). */

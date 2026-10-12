@@ -11,12 +11,37 @@ import { Button } from "@/components/ui/button";
  * request): date, optional start time and location — sport and timezone come
  * from the Group. Creating a match sends nothing. Opens automatically when the
  * page is reached with #new (Overview "Create match" / "New match").
+ *
+ * Phase 2 — on a plan with a monthly new-match allowance (Free) it shows
+ * "New matches this month: N of 4" and, once used up, why creation is blocked.
+ * Display only: POST /matches enforces the allowance on the server.
  */
+export type MatchAllowance = { used: number; limit: number | null; exhausted: boolean; message: string | null; resetsAt: string };
+
+const resetLabel = (iso: string) => new Date(iso).toLocaleDateString("en-US", { timeZone: "UTC", month: "long", day: "numeric" });
+
+function AllowanceNote({ allowance, id }: { allowance: MatchAllowance; id: string }) {
+  if (allowance.limit === null) return null;
+  return allowance.exhausted ? (
+    <div id={id} role="alert" className="rounded-tbp border border-accent/40 bg-accent/10 px-3 py-2 text-sm">
+      <p className="font-semibold">
+        New matches this month: {allowance.used} of {allowance.limit}
+      </p>
+      <p className="mt-0.5">{allowance.message}</p>
+      <p className="mt-0.5 text-muted-foreground">You can still open, edit and run every existing match. New matches are available again on {resetLabel(allowance.resetsAt)} (UTC).</p>
+    </div>
+  ) : (
+    <p id={id} className="text-sm text-muted-foreground">
+      New matches this month: {allowance.used} of {allowance.limit} on the Free plan · resets {resetLabel(allowance.resetsAt)} (UTC)
+    </p>
+  );
+}
 export default function CreateMatchForm({
   organizationSlug,
   groupSlug,
   communities = [],
   venues = [],
+  allowance = null,
 }: {
   organizationSlug: string;
   groupSlug: string;
@@ -24,6 +49,8 @@ export default function CreateMatchForm({
   communities?: Array<{ id: string; name: string }>;
   /** M9.2 — the Organization's active Venues. */
   venues?: Array<{ id: string; name: string; address: string | null }>;
+  /** Phase 2 — the Organization's monthly new-match allowance (null: not shown). */
+  allowance?: MatchAllowance | null;
 }) {
   const NEW = "__new__";
   const [venueId, setVenueId] = useState("");
@@ -34,6 +61,7 @@ export default function CreateMatchForm({
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const id = useId();
+  const blocked = Boolean(allowance?.exhausted);
 
   useEffect(() => {
     if (window.location.hash === "#new") setOpen(true);
@@ -87,9 +115,12 @@ export default function CreateMatchForm({
 
   if (!open) {
     return (
-      <Button type="button" onClick={() => setOpen(true)}>
-        <Plus aria-hidden="true" /> New match
-      </Button>
+      <div className="space-y-2">
+        <Button type="button" onClick={() => setOpen(true)} disabled={blocked} aria-describedby={allowance?.limit != null ? `${id}-allowance` : undefined}>
+          <Plus aria-hidden="true" /> New match
+        </Button>
+        {allowance && <AllowanceNote allowance={allowance} id={`${id}-allowance`} />}
+      </div>
     );
   }
 
@@ -162,8 +193,9 @@ export default function CreateMatchForm({
         </div>
       )}
       {err && <p role="alert" className="text-sm text-destructive">{err}</p>}
+      {allowance && <AllowanceNote allowance={allowance} id={`${id}-allowance`} />}
       <div className="flex flex-wrap items-center gap-3">
-        <Button type="submit" disabled={busy} aria-busy={busy}>
+        <Button type="submit" disabled={busy || blocked} aria-busy={busy}>
           {busy ? "Creating…" : "Create match"}
         </Button>
         <span className="text-xs text-muted-foreground">Creating a match sends nothing.</span>

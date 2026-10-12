@@ -28,7 +28,7 @@ import PlanUsageCard from "@/app/admin/o/[organizationSlug]/PlanUsageCard";
 /** M11.1 — the plan catalog and pure entitlement rules. */
 describe("plan catalog (approved launch limits)", () => {
   it("Free / Pro / trial / complimentary / legacy", () => {
-    expect(PLAN_LIMITS.FREE).toEqual({ activeGroups: 1, activePlayers: 30, monthlyMatches: 8, activeSchedules: 1, monthlyAiRecaps: 2, telegram: false });
+    expect(PLAN_LIMITS.FREE).toEqual({ activeGroups: 1, activePlayers: 30, monthlyMatches: 4, activeSchedules: 1, monthlyAiRecaps: 2, telegram: false });
     expect(PLAN_LIMITS.PRO).toEqual({ activeGroups: 3, activePlayers: 150, monthlyMatches: null, activeSchedules: null, monthlyAiRecaps: 30, telegram: true });
     expect(PLAN_LIMITS.TRIAL).toEqual(PLAN_LIMITS.PRO);
     expect(PLAN_LIMITS.COMP).toEqual(PLAN_LIMITS.PRO);
@@ -119,7 +119,7 @@ describe("enforcement wiring (source checks)", () => {
   it("capacity checks run in the same transaction as the write", () => {
     expect(read("src/lib/playerCrud.ts")).toMatch(/assertCapacity\(tx, context\.organization\.id, "activePlayers"\)/);
     expect(read("src/lib/matches.ts")).toMatch(/assertCapacity\(tx, context\.organization\.id, "monthlyMatches"\)/);
-    expect(read("src/lib/matchAutomation.ts")).toMatch(/assertCapacity\(tx, ctx\.organization\.id, "monthlyMatches"\)/);
+    expect(read("src/lib/matchAutomation.ts")).toMatch(/assertCapacity\(tx, ctx\.organization\.id, "monthlyMatches", now\)/);
     expect(read("src/lib/schedules.ts").match(/assertCapacity\(tx, context\.organization\.id, "activeSchedules"\)/g)).toHaveLength(2);
     expect(read("src/lib/workspaces.ts")).toMatch(/assertCapacity\(tx, organizationId, "activeGroups", now\)/);
   });
@@ -192,5 +192,27 @@ describe("Phase 1 — organization ownership allowance (pure rules)", () => {
     expect(fn).toContain("if (!allowance.canCreate) throw new OwnershipLimitError(allowance);");
     expect(fn).toMatch(/allowance\.owned === 0\s*\?\s*await tx\.user\.updateMany\(\{ where: \{ id: ownerUserId, trialUsedAt: null, emailVerifiedAt: \{ not: null \} \}/);
     expect(fs.readFileSync(path.join(process.cwd(), "src/lib/tenantRoute.ts"), "utf8")).toContain("if (e instanceof OwnershipLimitError) return ownershipLimitResponse(e);");
+  });
+});
+
+describe("Phase 2 — Free monthly matches and skipped recurring-match warnings", () => {
+  it("Free allows 4 new matches per month; trial / Pro / complimentary / legacy are unlimited", () => {
+    expect(PLAN_LIMITS.FREE.monthlyMatches).toBe(4);
+    for (const p of ["TRIAL", "PRO", "COMP", "LEGACY"] as const) expect(PLAN_LIMITS[p].monthlyMatches, p).toBeNull();
+  });
+  it("the warning names the occurrence and the reason, says the schedule is still active, and never says canceled", async () => {
+    vi.stubEnv("BILLING_ENABLED", "");
+    const { scheduleSkipMessage } = await import("@/lib/scheduleSkips");
+    const text = scheduleSkipMessage({ occurrenceDate: new Date("2026-10-31T00:00:00Z"), monthlyLimit: 4 });
+    expect(text).toBe(
+      "Your Free plan allows 4 new matches per month. The match scheduled for October 31, 2026 was not created because your monthly limit was reached. Your recurring schedule is still active. Pro plans with unlimited matches are coming soon."
+    );
+    expect(text).not.toMatch(/cancel/i);
+    vi.unstubAllEnvs();
+  });
+  it("wiring: automation records the skip on the plan limit (same UTC-month instant) and resolves it when the match is created", () => {
+    const src = fs.readFileSync(path.join(process.cwd(), "src/lib/matchAutomation.ts"), "utf8");
+    expect(src).toContain('if (e.metric === "monthlyMatches" && e.limit !== null) await recordScheduleSkip(');
+    expect(src).toMatch(/created = true;\s*await resolveScheduleSkip\(s\.id, date, now\);/);
   });
 });

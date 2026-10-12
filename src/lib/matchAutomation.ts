@@ -13,6 +13,7 @@ import { assertCapacity, EntitlementError, organizationPlan } from "@/lib/entitl
 import { schedulesOverLimit } from "@/lib/schedules";
 import { currentMatchLinkPath } from "@/lib/matchLink";
 import { CUTOFF_CATCH_UP_MS, dueForPoll, type WeeklySchedule } from "@/lib/scheduleTime";
+import { recordScheduleSkip, resolveScheduleSkip, scheduleSkipMessage } from "@/lib/scheduleSkips";
 
 /**
  * M9.2 — the Match Automation Agent: deterministic orchestration (no AI).
@@ -117,7 +118,7 @@ async function recordError(automationId: string, error: string) {
 type ScheduleRow = WeeklySchedule & { id: string; groupId: string; communityId: string; venueId: string | null; createdByUserId: string | null };
 
 /** Step 1 — the occurrence's Match + automation row, exactly once. */
-async function ensureMatch(s: ScheduleRow, occ: ReturnType<typeof dueForPoll>[number], ctx: TenantContext) {
+async function ensureMatch(s: ScheduleRow, occ: ReturnType<typeof dueForPoll>[number], ctx: TenantContext, now: Date) {
   const date = toDateOnlyUTC(occ.gameDate);
   let match = await prisma.match.findFirst({ where: { scheduleId: s.id, date, groupId: s.groupId }, select: { id: true } });
   let created = false;
@@ -125,9 +126,10 @@ async function ensureMatch(s: ScheduleRow, occ: ReturnType<typeof dueForPoll>[nu
     const chat = await communityTelegramChat(s.groupId, s.communityId);
     const venue = s.venueId ? await prisma.venue.findFirst({ where: { id: s.venueId, organizationId: ctx.organization.id }, select: { id: true, name: true } }) : null;
     try {
-      // M11.1 — an automatic Match counts toward the monthly match limit like a manual one.
+      // M11.1 — an automatic Match counts toward the monthly match limit like a manual one
+      // (Phase 2: measured at this run's instant, the same UTC-month rule as manual creation).
       match = await prisma.$transaction(async (tx) => {
-        await assertCapacity(tx, ctx.organization.id, "monthlyMatches");
+        await assertCapacity(tx, ctx.organization.id, "monthlyMatches", now);
         return tx.match.create({
           data: {
             groupId: s.groupId,
@@ -144,8 +146,15 @@ async function ensureMatch(s: ScheduleRow, occ: ReturnType<typeof dueForPoll>[nu
         });
       });
       created = true;
+      await resolveScheduleSkip(s.id, date, now);
     } catch (e) {
-      if (e instanceof EntitlementError) return null; // plan limit: nothing created, nothing sent
+      if (e instanceof EntitlementError) {
+        // Plan limit: nothing created, nothing sent; the schedule stays active. Phase 2 — a
+        // persistent, de-duplicated warning for this occurrence (retried by later runs until its
+        // cutoff; resolved if the Match is created then).
+        if (e.metric === "monthlyMatches" && e.limit !== null) await recordScheduleSkip({ groupId: s.groupId, scheduleId: s.id, occurrenceDate: date, monthlyLimit: e.limit, now });
+        return null;
+      }
       if (!(e instanceof Prisma.PrismaClientKnownRequestError && e.code === "P2002")) throw e;
       match = await prisma.match.findFirstOrThrow({ where: { scheduleId: s.id, date, groupId: s.groupId }, select: { id: true } }); // a concurrent run created it
     }
@@ -362,7 +371,7 @@ export async function runMatchAutomation(now: Date = new Date(), scope: Automati
     }
     for (const occ of dueForPoll(s, now)) {
       try {
-        const ensured = await ensureMatch(s, occ, ctx);
+        const ensured = await ensureMatch(s, occ, ctx, now);
         if (!ensured) {
           run.limited++;
           continue;
@@ -476,6 +485,13 @@ export async function organizerRun(groupId: string, scheduleId: string, matchId?
     select: { lastError: true },
   });
   const issues = [...new Set(recorded.map((r) => r.lastError!))];
+  // Phase 2 — occurrences this run could not create because the monthly allowance is used up.
+  const skipped = await prisma.matchScheduleSkip.findMany({
+    where: { groupId, scheduleId, resolvedAt: null, lastSkippedAt: { gte: startedAt } },
+    orderBy: { occurrenceDate: "asc" },
+    select: { occurrenceDate: true, monthlyLimit: true },
+  });
+  for (const k of skipped) issues.push(scheduleSkipMessage(k));
   if (run.errors.length) issues.push("Something went wrong while running automation. Please try again.");
   return { ok: issues.length === 0, paused: !schedule.isActive, created: run.created, pollsPosted: run.pollsPosted, cutoffs: run.cutoffs, notified: run.notified, issues };
 }
