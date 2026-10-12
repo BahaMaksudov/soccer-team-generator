@@ -19,7 +19,7 @@ import { localYmd } from "@/lib/scheduleTime";
  * simply omitted; indoor venues say "Outside at kickoff".
  */
 export const TELEGRAM_TEXT_LIMIT = 4096;
-const CAP = { name: 80, venue: 80, condition: 60, attribution: 100 } as const;
+const CAP = { name: 80, venue: 80, condition: 60, attribution: 100, disclaimer: 600 } as const;
 
 export type GameDayWeather = {
   /** °C (converted to °F for imperial). */
@@ -31,6 +31,10 @@ export type GameDayWeather = {
   windKph?: number | null;
   /** Provider attribution when its terms require one, e.g. "Weather by WeatherAPI.com". */
   attribution?: string | null;
+  /** A linked attribution ("Powered by" + <a href=url>text</a>); https URLs only. Shown with the forecast. */
+  attributionLink?: { before: string; text: string; url: string } | null;
+  /** The provider-required end-user disclaimer, shown conspicuously with the forecast. */
+  disclaimer?: string | null;
 };
 
 export type GameDayUpdateInput = {
@@ -123,6 +127,16 @@ function weatherLines(w: GameDayWeather | null | undefined, units: "imperial" | 
     const attr = clean(w.attribution, CAP.attribution);
     track(attr.truncated);
     if (attr.text) lines.push(`<i>${escapeHtml(attr.text)}</i>`);
+    const link = w.attributionLink;
+    const url = link ? safeLink(link.url) : null;
+    if (link && url) {
+      const before = clean(link.before, CAP.attribution).text;
+      const text = clean(link.text, CAP.attribution).text;
+      if (text) lines.push(`<i>${before ? `${escapeHtml(before)} ` : ""}<a href="${escapeHtml(url).replaceAll('"', "&quot;")}">${escapeHtml(text)}</a></i>`);
+    }
+    const disclaimer = clean(w.disclaimer, CAP.disclaimer);
+    track(disclaimer.truncated);
+    if (disclaimer.text) lines.push(`⚠️ <i>${escapeHtml(disclaimer.text)}</i>`);
   }
   return lines;
 }

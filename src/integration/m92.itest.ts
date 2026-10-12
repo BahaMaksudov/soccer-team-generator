@@ -481,7 +481,7 @@ describe("M9.2-5 — reusable Venues, match location and the Telegram maps link"
     await signIn("admin");
     expect((await call(venueRoute.PATCH(json("PATCH", { address: "11 Pine Street, Norfolk, MA" }), gv(id)))).status).toBe(200);
     const list = await call(venuesRoute.GET(json("GET"), g()));
-    expect(list.body.venues).toEqual([{ id, name: "ForeKicks", address: "11 Pine Street, Norfolk, MA", isActive: true, mapsUrl: "https://www.google.com/maps/search/?api=1&query=11%20Pine%20Street%2C%20Norfolk%2C%20MA" }]);
+    expect(list.body.venues).toEqual([{ id, name: "ForeKicks", address: "11 Pine Street, Norfolk, MA", isActive: true, mapsUrl: "https://www.google.com/maps/search/?api=1&query=11%20Pine%20Street%2C%20Norfolk%2C%20MA", isIndoor: false, weatherLocation: null }]); // Phase 4B fields
     await signIn("member");
     expect((await call(venuesRoute.GET(json("GET"), g()))).status).toBe(404);
     expect((await addVenue({ name: "x" })).status).toBe(404);

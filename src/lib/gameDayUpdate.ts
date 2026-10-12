@@ -8,6 +8,9 @@ import { callTelegram, TelegramApiRejectionError } from "@/lib/telegramApi";
 import { currentMatchLinkPath } from "@/lib/matchLink";
 import { getAppBaseUrl } from "@/lib/email/config";
 import { GAME_DAY_STATUS_TEXT, gameDayUpdateDecision, type GameDayDecision, type GameDayFacts } from "@/lib/gameDayUpdateSchedule";
+import { kickoffAt } from "@/lib/attendanceDeadline";
+import { weatherProvider } from "@/lib/weather";
+import type { GameDayWeather } from "@/lib/messaging/gameDayUpdate";
 
 /**
  * Phase 4B (step 6) — Telegram Game Day Update delivery, driven by Match
@@ -20,8 +23,13 @@ import { GAME_DAY_STATUS_TEXT, gameDayUpdateDecision, type GameDayDecision, type
  * MessageDelivery state machine (SENDING → SENT / FAILED / UNCERTAIN); a
  * definite Telegram rejection is retried while eligible, an uncertain outcome
  * never automatically. Facts (settings, CURRENT plan, match, poll, chat,
- * deliveries) are re-read inside the lock right before reserving. Weather is
- * not part of this step (null).
+ * deliveries) are re-read inside the lock right before reserving.
+ *
+ * Step 7 — kickoff weather: fetched only for an update that is due (lock-free
+ * pre-check), OUTSIDE any transaction (no lock held during the provider call),
+ * only when the Group includes weather and the match's venue has an
+ * organizer-confirmed location and the match has a start time. Eligibility is
+ * then re-checked inside the lock as before; any weather problem → sent without it.
  */
 const EVENT = "GAME_DAY_UPDATE_POSTED" as const;
 const CHANNEL = "TELEGRAM" as const;
@@ -42,7 +50,7 @@ async function loadFacts(groupId: string, organizationId: string, matchId: strin
       attendanceDeadlineAt: true,
       scheduleId: true,
       schedule: { select: { isActive: true } },
-      venue: { select: { name: true, isIndoor: true } },
+      venue: { select: { name: true, isIndoor: true, weatherLatitude: true, weatherLongitude: true, weatherLocationConfirmedAt: true } },
       group: { select: { name: true, timezone: true, visibility: true } },
     },
   });
@@ -106,6 +114,10 @@ export async function deliverGameDayUpdate(params: {
   counts: () => Promise<{ PLAYING: number; MAYBE: number }>;
 }): Promise<GameDayResult> {
   const { groupId, organizationId, matchId, now } = params;
+  // Lock-free pre-check: nothing (no weather request, no counts) unless an update is due right now.
+  const pre = await loadFacts(groupId, organizationId, matchId, now, prisma, params.planPaused);
+  if (!pre || gameDayUpdateDecision(pre.facts, now).kind !== "send") return "not_due";
+  const weather = pre.settings.includeWeather ? await kickoffWeather(pre.m, now) : null;
   const counts = await params.counts();
   const teamName = (await prisma.groupSetting.findUnique({ where: { groupId_key: { groupId, key: "teamName" } }, select: { value: true } }))?.value ?? null;
 
@@ -124,7 +136,7 @@ export async function deliverGameDayUpdate(params: {
       deadline: m.attendanceDeadlineAt!,
       attendance: { playing: counts.PLAYING, maybe: counts.MAYBE },
       link: authorizedMatchLink(m.group.visibility, m.id, m.shareVersion),
-      weather: null, // Step 7
+      weather: loaded.settings.includeWeather ? weather : null, // re-checked: turned off meanwhile → none
       units: loaded.settings.units,
       now,
     });
@@ -168,6 +180,23 @@ export async function deliverGameDayUpdate(params: {
   }
   await prisma.messageDelivery.update({ where: { id: reserved.deliveryId }, data: { status: "SENT", sentAt: new Date(), providerMessageId: String(sent.message_id) } });
   return "sent";
+}
+
+/** The kickoff forecast for a match whose venue has a CONFIRMED location (never throws; null when unavailable). */
+async function kickoffWeather(
+  m: { date: Date; startTime: string | null; group: { timezone: string }; venue: { weatherLatitude: number | null; weatherLongitude: number | null; weatherLocationConfirmedAt: Date | null } | null },
+  now: Date
+): Promise<GameDayWeather | null> {
+  const v = m.venue;
+  if (!v || v.weatherLatitude === null || v.weatherLongitude === null || !v.weatherLocationConfirmedAt) return null;
+  if (!m.startTime) return null; // kickoff time unknown: no forecast (never "some hour" of the day)
+  const provider = weatherProvider();
+  if (!provider) return null;
+  try {
+    return await provider.forecastAt(v.weatherLatitude, v.weatherLongitude, kickoffAt(m.date, m.startTime, m.group.timezone), now);
+  } catch {
+    return null;
+  }
 }
 
 export type GameDayStatusView = { state: string; text: string; at: string | null };
