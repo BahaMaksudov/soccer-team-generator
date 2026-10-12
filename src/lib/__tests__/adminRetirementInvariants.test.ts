@@ -253,10 +253,14 @@ describe("Telegram delivery invariant", () => {
     expect(filesMatching(/teamsPostStatus/)).toEqual([rel("src/lib/telegramCloseAndPost.ts")]);
   });
 
-  it("sendMessage is used only by Close/Post (teams), the explicit post-game posts (M9-D) and the webhook (bot command replies)", () => {
+  it("sendMessage is used only by Close/Post (teams), the explicit post-game posts (M9-D), the webhook (bot command replies) and the Game Day Update (Phase 4B)", () => {
     expect(filesMatching(/["']sendMessage["']/)).toEqual(
-      [rel("src/app/api/telegram/webhook/route.ts"), rel("src/lib/postGame.ts"), rel("src/lib/telegramCloseAndPost.ts")].sort()
+      [rel("src/app/api/telegram/webhook/route.ts"), rel("src/lib/gameDayUpdate.ts"), rel("src/lib/postGame.ts"), rel("src/lib/telegramCloseAndPost.ts")].sort()
     );
+    // Phase 4B — exactly one send: the reply to the match's attendance poll, after the lock-guarded reservation.
+    const gameDay = code.get(rel("src/lib/gameDayUpdate.ts"))!;
+    expect(gameDay.match(/["']sendMessage["']/g)).toHaveLength(1);
+    expect(gameDay).toContain("reply_parameters: { message_id: reserved.replyTo, allow_sending_without_reply: true }");
     // M9-D — in postGame.ts the only sendMessage is the explicit "post_message" action.
     const postGame = code.get(rel("src/lib/postGame.ts"))!;
     expect(postGame.match(/["']sendMessage["']/g)).toHaveLength(1);

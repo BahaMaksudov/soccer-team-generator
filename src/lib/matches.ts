@@ -20,6 +20,8 @@ import { mapsUrl, organizationVenue } from "@/lib/venues";
 import { canonicalMatchPath } from "@/lib/matchPaths";
 import { postGameView } from "@/lib/postGame";
 import { countAttendance, defaultSelection, effectiveAttendance, recordParticipantResponse, type AttendanceRow } from "@/lib/attendance";
+import { gameDayUpdateStatus } from "@/lib/gameDayUpdate";
+import { schedulesOverLimit } from "@/lib/schedules";
 import {
   attendanceIsClosed,
   deadlineError,
@@ -410,6 +412,10 @@ export async function getMatchView(context: TenantContext, matchId: string): Pro
     community: community ? { id: community.id, name: community.name, isActive: community.isActive } : null,
     // M9.2 — what Match Automation did (organizers only; null for a Match not created by a schedule).
     automation: manager ? await automationView(groupId, matchId) : null,
+    // Phase 4B — the Telegram Game Day Update status (organizers only; no tokens or provider details).
+    gameDayUpdate: manager
+      ? await gameDayUpdateStatus(groupId, context.organization.id, matchId, match.scheduleId ? (await schedulesOverLimit(context.organization.id)).over : false)
+      : null,
     communities: communities,
     roster: listed.map(({ rating, stamina, ...safe }) => {
       const p = { ...safe, inCommunity: inCommunity(safe.id) };

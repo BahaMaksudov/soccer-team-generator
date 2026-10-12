@@ -15,6 +15,9 @@ import { currentMatchLinkPath } from "@/lib/matchLink";
 import { CUTOFF_CATCH_UP_MS, dueForPoll, type WeeklySchedule } from "@/lib/scheduleTime";
 import { recordScheduleSkip, resolveScheduleSkip, scheduleSkipMessage } from "@/lib/scheduleSkips";
 import { attendanceIsClosed, effectiveClosedAt } from "@/lib/attendanceDeadline";
+import { deliverGameDayUpdate } from "@/lib/gameDayUpdate";
+import { readGameDayUpdateSettings } from "@/lib/gameDayUpdateSettings";
+import { MIN_LEFT_MS } from "@/lib/gameDayUpdateSchedule";
 
 /**
  * M9.2 — the Match Automation Agent: deterministic orchestration (no AI).
@@ -78,6 +81,9 @@ export type AutomationRun = {
   paused: number;
   /** Phase 4B — attendance finalized at a passed deadline outside the recurring cutoff step (manual Matches; recurring ones reopened with a new deadline). */
   deadlinesClosed: number;
+  /** Phase 4B — Game Day Updates sent; and ones Telegram rejected / did not confirm (shown on the match page). */
+  gameDayUpdates: number;
+  gameDayProblems: number;
   errors: Array<{ matchId?: string; scheduleId?: string; error: string }>;
 };
 
@@ -356,8 +362,10 @@ export async function runMatchAutomation(now: Date = new Date(), scope: Automati
   const scheduleWhere = { ...(scope.scheduleId ? { id: scope.scheduleId } : {}), ...(includePaused ? {} : { isActive: true }) };
   // Automatic runs finalize cutoffs within the catch-up window; an organizer's run for one Match is not limited by it.
   const cutoffFloor = scope.matchId ? undefined : new Date(now.getTime() - CUTOFF_CATCH_UP_MS);
-  const run: AutomationRun = { schedules: 0, created: 0, pollsPosted: 0, cutoffs: 0, notified: 0, limited: 0, paused: 0, deadlinesClosed: 0, errors: [] };
-  const schedules = (await prisma.matchSchedule.findMany({
+  const run: AutomationRun = { schedules: 0, created: 0, pollsPosted: 0, cutoffs: 0, notified: 0, limited: 0, paused: 0, deadlinesClosed: 0, gameDayUpdates: 0, gameDayProblems: 0, errors: [] };
+  // Phase 4B — a Run now for ONE manual Match (matchId without scheduleId) never touches schedules.
+  const matchOnly = Boolean(scope.matchId && !scope.scheduleId);
+  const schedules = matchOnly ? [] : (await prisma.matchSchedule.findMany({
     where: { ...scheduleWhere, group: { isActive: true }, community: { isActive: true }, ...(scope.groupId ? { groupId: scope.groupId } : {}) },
     select: { id: true, groupId: true, communityId: true, venueId: true, createdByUserId: true, timezone: true, weekday: true, startTime: true, pollDaysBefore: true, pollTime: true, cutoffDaysBefore: true, cutoffTime: true },
   })) as ScheduleRow[];
@@ -435,6 +443,46 @@ export async function runMatchAutomation(now: Date = new Date(), scope: Automati
     }
   }
 
+  // 2c — Phase 4B: Telegram Game Day Updates (manual + recurring). Candidates are only a pre-filter; every
+  // condition is re-checked from the database inside deliverGameDayUpdate's lock right before sending.
+  const gameDay = await prisma.match.findMany({
+    where: {
+      ...(scope.groupId ? { groupId: scope.groupId } : {}),
+      ...(scope.matchId ? { id: scope.matchId } : {}),
+      ...(scope.scheduleId ? { scheduleId: scope.scheduleId } : {}),
+      status: "SCHEDULED",
+      attendanceClosedAt: null,
+      attendanceDeadlineAt: { gt: new Date(now.getTime() + MIN_LEFT_MS), lte: new Date(now.getTime() + 12 * 3600_000) },
+      telegramPolls: { some: { kind: "ATTENDANCE", isClosed: false } },
+      NOT: { deliveries: { some: { eventType: "GAME_DAY_UPDATE_POSTED", status: { in: ["SENT", "UNCERTAIN"] } } } },
+      OR: [{ scheduleId: null }, { schedule: scheduleWhere }],
+    },
+    select: { id: true, groupId: true, scheduleId: true, createdByUserId: true, schedule: { select: { createdByUserId: true } } },
+  });
+  const enabledByGroup = new Map<string, boolean>();
+  for (const m of gameDay) {
+    if (!enabledByGroup.has(m.groupId)) enabledByGroup.set(m.groupId, (await readGameDayUpdateSettings(m.groupId)).enabled);
+    if (!enabledByGroup.get(m.groupId)) continue;
+    const ctx = await ctxFor(m.groupId, m.schedule?.createdByUserId ?? m.createdByUserId ?? null);
+    if (!ctx) continue;
+    const gate = await gateFor(ctx.organization.id);
+    try {
+      const r = await deliverGameDayUpdate({
+        groupId: m.groupId,
+        organizationId: ctx.organization.id,
+        matchId: m.id,
+        userId: ctx.user.id,
+        now,
+        planPaused: Boolean(m.scheduleId) && gate.paused,
+        counts: async () => (await attendanceSummary(m.groupId, m.id)).counts,
+      });
+      if (r === "sent") run.gameDayUpdates++;
+      else if (r === "failed" || r === "uncertain") run.gameDayProblems++;
+    } catch (e) {
+      run.errors.push({ matchId: m.id, error: e instanceof Error ? e.message : "error" });
+    }
+  }
+
   // 3 + 4 — attendance deadlines and recurring notifications (Phase 4B: driven by Match.attendanceDeadlineAt,
   // the one shared deadline; MatchAutomation.cutoffDueAt never closes anything on its own).
   //   A  recurring first cutoff: deadline passed, cutoff step not done yet (even if closed by hand) → stepCutoff
@@ -503,6 +551,8 @@ export type OrganizerRunResult = {
   pollsPosted: number;
   cutoffs: number;
   notified: number;
+  /** Phase 4B — Game Day Updates sent in this run. */
+  gameDayUpdates?: number;
   /** Organizer-facing problems recorded during this run (no internals). */
   issues: string[];
 };
@@ -540,6 +590,21 @@ export async function organizerRun(groupId: string, scheduleId: string, matchId?
     select: { occurrenceDate: true, monthlyLimit: true },
   });
   for (const k of skipped) issues.push(scheduleSkipMessage(k));
+  if (run.gameDayProblems) issues.push(GAME_DAY_PROBLEM);
   if (run.errors.length) issues.push("Something went wrong while running automation. Please try again.");
-  return { ok: issues.length === 0, paused: !schedule.isActive, created: run.created, pollsPosted: run.pollsPosted, cutoffs: run.cutoffs, notified: run.notified, issues };
+  return { ok: issues.length === 0, paused: !schedule.isActive, created: run.created, pollsPosted: run.pollsPosted, cutoffs: run.cutoffs, notified: run.notified, gameDayUpdates: run.gameDayUpdates, issues };
+}
+
+const GAME_DAY_PROBLEM = "The Game Day Update was not confirmed by Telegram. Check the match page.";
+
+/**
+ * Phase 4B — "Run now" for ONE manual Match (no schedule): the same engine scoped to
+ * that Match — its Game Day Update and its deadline finalization — never schedules.
+ * Lets organizers run what is due without the scheduler (e.g. on Preview).
+ */
+export async function organizerRunMatch(groupId: string, matchId: string): Promise<OrganizerRunResult> {
+  const run = await runMatchAutomation(new Date(), { groupId, matchId });
+  if (run.errors.length) console.error(`[automation] match run finished with ${run.errors.length} error(s): ${JSON.stringify(run.errors)}`);
+  const issues = [...(run.gameDayProblems ? [GAME_DAY_PROBLEM] : []), ...(run.errors.length ? ["Something went wrong while running automation. Please try again."] : [])];
+  return { ok: issues.length === 0, paused: false, created: 0, pollsPosted: 0, cutoffs: run.cutoffs + run.deadlinesClosed, notified: run.notified, gameDayUpdates: run.gameDayUpdates, issues };
 }

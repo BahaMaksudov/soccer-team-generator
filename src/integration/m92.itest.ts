@@ -956,7 +956,7 @@ describe("M9.2-6/7 — weekly schedules and the Match Automation Agent", () => {
     const id = await setup();
     await pause(id, false);
     // Nothing due yet → reported honestly.
-    expect((await runNow(id, T.beforePoll)).body).toEqual({ ok: true, paused: true, created: 0, pollsPosted: 0, cutoffs: 0, notified: 0, issues: [] });
+    expect((await runNow(id, T.beforePoll)).body).toEqual({ ok: true, paused: true, created: 0, pollsPosted: 0, cutoffs: 0, notified: 0, gameDayUpdates: 0, issues: [] });
     expect((await runNow(id, T.afterPoll)).body).toMatchObject({ ok: true, paused: true, created: 1, pollsPosted: 1 });
     expect((await runNow(id, plus(T.afterPoll, 5))).body).toMatchObject({ ok: true, created: 0, pollsPosted: 0, cutoffs: 0, notified: 0 });
     expect(await isActive(id)).toBe(false);

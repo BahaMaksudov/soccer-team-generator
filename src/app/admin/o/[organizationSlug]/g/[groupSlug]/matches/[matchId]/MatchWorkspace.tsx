@@ -64,6 +64,8 @@ type MatchView = {
   };
   /** Phase 4B — the Group's timezone (deadlines are shown / entered in it). */
   timezone: string;
+  /** Phase 4B — Telegram Game Day Update status (organizers only). */
+  gameDayUpdate?: { state: string; text: string; at: string | null } | null;
   canManage: boolean;
   roster: RosterPlayer[];
   counts: { PLAYING: number; MAYBE: number; NOT_PLAYING: number; NO_RESPONSE: number };
@@ -738,6 +740,35 @@ export default function MatchWorkspace({
             ))}
         </div>
         {view.canManage && view.telegram.pollDelivery && <p className="mt-2 text-xs text-muted-foreground">Last poll post: {view.telegram.pollDelivery.status.toLowerCase()}</p>}
+        {/* Phase 4B — Telegram Game Day Update status (organizers; times in the Group's timezone). */}
+        {view.canManage && view.gameDayUpdate && (
+          <div className="mt-2 flex flex-wrap items-center gap-2 text-xs" aria-live="polite">
+            <span>
+              <span className="font-semibold">Game Day Update:</span>{" "}
+              <span className={cn(view.gameDayUpdate.state === "UNCERTAIN" && "font-semibold text-destructive")}>
+                {view.gameDayUpdate.text}
+                {view.gameDayUpdate.at ? ` — ${formatDeadline(view.gameDayUpdate.at, tz)}` : ""}
+              </span>
+            </span>
+            {(view.gameDayUpdate.state === "DUE" || view.gameDayUpdate.state === "RETRY") && (
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                disabled={busy}
+                onClick={async () => {
+                  const r = await call("/automation", {}, "");
+                  if (r.ok) {
+                    const fb = runFeedback(r.data as RunResult);
+                    setMessage([fb.text, ...(fb.details ?? [])].join(" "));
+                  }
+                }}
+              >
+                Run now
+              </Button>
+            )}
+          </div>
+        )}
         {/* M9.2 — publishing teams closes the attendance poll; if Telegram didn't confirm, close it again here (safe to repeat).
             Phase 4B — also once attendance is closed (by hand or deadline) while the poll still shows as open in the chat:
             answers there no longer count, and the organizer can close that ONE poll (never in bulk). */}
