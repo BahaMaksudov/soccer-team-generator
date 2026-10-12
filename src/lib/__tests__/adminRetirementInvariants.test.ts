@@ -200,22 +200,19 @@ describe("single-tenant resolver is gone (Phase 2D.6D.6)", () => {
   });
 });
 
-describe("/admin entry never assumes a single Group", () => {
-  const entry = code.get(rel("src/app/admin/adminEntry.ts"))!;
+describe("/admin (My Organizations) never assumes an Organization or a Group", () => {
+  const page = code.get(rel("src/app/admin/page.tsx"))!;
 
-  it("redirects only for exactly one Organization with exactly one active Group; otherwise selects", () => {
-    expect(entry).toMatch(/organizations\.length === 0[\s\S]*no-access/);
-    expect(entry).toMatch(/organizations\.length > 1[\s\S]*kind: "select"/);
-    expect(entry).toMatch(/organization\.groups\.length > 1[\s\S]*kind: "select"/);
+  it("Phase 3: never auto-redirects into an Organization or Group; lists every accessible Organization", () => {
+    expect(page).not.toMatch(/redirect\(\s*[`"']\/admin\/o\//);
+    expect(page).not.toMatch(/organizations\[0\]|\.groups\[0\]/);
+    expect(page).toContain("organizations.map((org) =>");
+    expect(fs.existsSync(path.join(process.cwd(), "src/app/admin/adminEntry.ts"))).toBe(false);
   });
 
-  it("links and redirects are built only from resolved slugs — no cookies, storage, or env defaults", () => {
-    const page = code.get(rel("src/app/admin/page.tsx"))!;
-    for (const src of [entry, page]) {
-      expect(src).not.toMatch(/cookies\(|localStorage|sessionStorage|DEFAULT_PUBLIC|getDefaultPublicGroupSlugs|process\.env/);
-    }
-    expect(page).toContain("`/admin/o/${encodeURIComponent(org.slug)}/g/${encodeURIComponent(g.slug)}`");
-    expect(entry).toContain("`/admin/o/${encodeURIComponent(organization.slug)}/g/${encodeURIComponent(group.slug)}`");
+  it("links are built only from resolved slugs — no cookies, storage, or env defaults", () => {
+    expect(page).not.toMatch(/cookies\(|localStorage|sessionStorage|DEFAULT_PUBLIC|getDefaultPublicGroupSlugs|process\.env/);
+    expect(page).toContain("`/admin/o/${encodeURIComponent(org.slug)}/groups`");
   });
 });
 

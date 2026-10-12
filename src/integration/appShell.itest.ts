@@ -67,19 +67,17 @@ describe("UI-3 shell data", () => {
       ["org-b", "MEMBER", ["one"]],
     ]);
     expect(JSON.stringify(d)).not.toMatch(/org-c|secret|old|Archived/);
-    expect(d?.workspaceListAvailable).toBe(true);
     expect(d?.hasPlayerProfile).toBe(false);
   });
 
-  it("a MEMBER of one single-group organization: just that group; /admin would redirect so no Groups link", async () => {
+  it("a MEMBER of one single-group organization: just that organization and group", async () => {
     const d = await loadShellDataFor({ email: "member@example.test", id: "u-member" }, db);
     expect(d?.organizations).toEqual([{ slug: "org-b", name: "ORG-B", role: "MEMBER", groups: [{ slug: "one", name: "B One", sportLabel: "Soccer" }] }]);
-    expect(d?.workspaceListAvailable).toBe(false);
   });
 
   it("a claimed Player profile adds My Games only — it grants no organization or group", async () => {
     const d = await loadShellDataFor({ email: "player@example.test", id: "u-player" }, db);
-    expect(d).toMatchObject({ organizations: [], hasPlayerProfile: true, workspaceListAvailable: false });
+    expect(d).toMatchObject({ organizations: [], hasPlayerProfile: true });
   });
 
   it("an unverified account gets no tenant data (central verified-email rule)", async () => {

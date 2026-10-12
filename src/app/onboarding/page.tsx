@@ -54,7 +54,7 @@ export default async function OnboardingPage() {
       <div className="flex flex-wrap gap-4 text-sm">
         {organizationCount > 0 && (
           <Link className={link} href="/admin">
-            Back to your workspaces
+            Back to My Organizations
           </Link>
         )}
         <Link className={link} href="/account/security">
