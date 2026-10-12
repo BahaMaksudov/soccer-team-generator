@@ -2,7 +2,7 @@ import { notFound, redirect } from "next/navigation";
 import { resolveLegacyPrintRedirect } from "./data";
 
 /**
- * Phase 2D.5F — legacy Print compatibility redirect.
+ * Phase 2D.5F — legacy Print compatibility redirect. File new Test.
  *
  * This page no longer renders TeamGeneration content directly — it
  * previously ran a fully unscoped `findUnique(id)` with no ownership
