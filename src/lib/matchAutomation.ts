@@ -14,6 +14,7 @@ import { schedulesOverLimit } from "@/lib/schedules";
 import { currentMatchLinkPath } from "@/lib/matchLink";
 import { CUTOFF_CATCH_UP_MS, dueForPoll, type WeeklySchedule } from "@/lib/scheduleTime";
 import { recordScheduleSkip, resolveScheduleSkip, scheduleSkipMessage } from "@/lib/scheduleSkips";
+import { effectiveClosedAt } from "@/lib/attendanceDeadline";
 
 /**
  * M9.2 — the Match Automation Agent: deterministic orchestration (no AI).
@@ -75,6 +76,8 @@ export type AutomationRun = {
   limited: number;
   /** M11.1 — schedule steps skipped because the Organization has more active schedules than its plan allows (organizer must choose). */
   paused: number;
+  /** Phase 4B — attendance finalized at a passed deadline outside the recurring cutoff step (manual Matches; recurring ones reopened with a new deadline). */
+  deadlinesClosed: number;
   errors: Array<{ matchId?: string; scheduleId?: string; error: string }>;
 };
 
@@ -141,6 +144,8 @@ async function ensureMatch(s: ScheduleRow, occ: ReturnType<typeof dueForPoll>[nu
             telegramChatId: chat?.id ?? null,
             scheduleId: s.id,
             createdByUserId: ctx.user.id,
+            // Phase 4B — the occurrence cutoff IS the Match's attendance deadline (equal to MatchAutomation.cutoffDueAt).
+            attendanceDeadlineAt: occ.cutoffAt,
           },
           select: { id: true },
         });
@@ -213,14 +218,26 @@ async function stepCutoff(ctx: TenantContext, matchId: string, automationId: str
   return count === 1;
 }
 
+/**
+ * Phase 4B — finalize a passed attendance deadline that is not a first recurring cutoff
+ * (a manual Match, or a recurring one reopened with a new deadline): final sync + close
+ * the Telegram poll, then mark attendance closed. Never emails anyone (recurring-only).
+ */
+async function finalizeDeadline(ctx: TenantContext, matchId: string, now: Date): Promise<boolean> {
+  const groupId = ctx.activeGroup.id;
+  await closeMatchAttendancePolls(groupId, matchId);
+  const { count } = await prisma.match.updateMany({ where: { id: matchId, groupId, attendanceClosedAt: null }, data: { attendanceClosedAt: now } });
+  return count === 1;
+}
+
 /** Attendance summary over the Match's eligible roster (Community members, or the whole Group for a Community-less Match). */
 export async function attendanceSummary(groupId: string, matchId: string) {
   const m = await prisma.match.findFirstOrThrow({
     where: { id: matchId, groupId },
-    select: { date: true, communityId: true, attendanceClosedAt: true, community: { select: { name: true } }, attendance: { select: { playerId: true, participantStatus: true, participantSource: true, participantRespondedAt: true, overrideStatus: true, overrideAt: true } } },
+    select: { date: true, communityId: true, attendanceClosedAt: true, attendanceDeadlineAt: true, community: { select: { name: true } }, attendance: { select: { playerId: true, participantStatus: true, participantSource: true, participantRespondedAt: true, overrideStatus: true, overrideAt: true } } },
   });
   const ids = m.communityId ? await communityRosterIds(groupId, m.communityId) : (await prisma.player.findMany({ where: { groupId, isActive: true }, select: { id: true } })).map((p) => p.id);
-  return { counts: countAttendance(ids, m.attendance as AttendanceRow[], m.attendanceClosedAt), rosterSize: ids.length, communityName: m.community?.name ?? null, date: m.date };
+  return { counts: countAttendance(ids, m.attendance as AttendanceRow[], effectiveClosedAt(m)), rosterSize: ids.length, communityName: m.community?.name ?? null, date: m.date };
 }
 
 type Recipient = { userId: string; email: string; emailVerifiedAt: Date | null };
@@ -334,7 +351,7 @@ export async function runMatchAutomation(now: Date = new Date(), scope: Automati
   const scheduleWhere = { ...(scope.scheduleId ? { id: scope.scheduleId } : {}), ...(includePaused ? {} : { isActive: true }) };
   // Automatic runs finalize cutoffs within the catch-up window; an organizer's run for one Match is not limited by it.
   const cutoffFloor = scope.matchId ? undefined : new Date(now.getTime() - CUTOFF_CATCH_UP_MS);
-  const run: AutomationRun = { schedules: 0, created: 0, pollsPosted: 0, cutoffs: 0, notified: 0, limited: 0, paused: 0, errors: [] };
+  const run: AutomationRun = { schedules: 0, created: 0, pollsPosted: 0, cutoffs: 0, notified: 0, limited: 0, paused: 0, deadlinesClosed: 0, errors: [] };
   const schedules = (await prisma.matchSchedule.findMany({
     where: { ...scheduleWhere, group: { isActive: true }, community: { isActive: true }, ...(scope.groupId ? { groupId: scope.groupId } : {}) },
     select: { id: true, groupId: true, communityId: true, venueId: true, createdByUserId: true, timezone: true, weekday: true, startTime: true, pollDaysBefore: true, pollTime: true, cutoffDaysBefore: true, cutoffTime: true },
@@ -413,35 +430,61 @@ export async function runMatchAutomation(now: Date = new Date(), scope: Automati
     }
   }
 
-  // 3 + 4 — cutoffs and notifications of scheduled Matches (active schedules only), within the catch-up window.
-  const pending = await prisma.matchAutomation.findMany({
+  // 3 + 4 — attendance deadlines and recurring notifications (Phase 4B: driven by Match.attendanceDeadlineAt,
+  // the one shared deadline; MatchAutomation.cutoffDueAt never closes anything on its own).
+  //   A  recurring first cutoff: deadline passed, cutoff step not done yet (even if closed by hand) → stepCutoff
+  //   B  any Match: deadline passed while attendance is still open (manual; recurring reopened with a new deadline)
+  //   C  recurring: cutoff done, organizers not yet notified → stepNotify (recurring only, as before)
+  // Recurring Matches follow their schedule (paused → skipped, plan pause → skipped). Manual Matches are
+  // never COMPLETED-rewritten and never emailed. Automatic runs stay within the catch-up window.
+  const windowed = { lte: now, ...(cutoffFloor ? { gte: cutoffFloor } : {}) };
+  const due = await prisma.match.findMany({
     where: {
       ...(scope.groupId ? { groupId: scope.groupId } : {}),
-      ...(scope.matchId ? { matchId: scope.matchId } : {}),
-      cutoffDueAt: { lte: now, ...(cutoffFloor ? { gte: cutoffFloor } : {}) },
-      OR: [{ cutoffCompletedAt: null }, { notifiedAt: null }],
-      match: { status: { not: "CANCELED" }, schedule: scheduleWhere },
+      ...(scope.matchId ? { id: scope.matchId } : {}),
+      ...(scope.scheduleId ? { scheduleId: scope.scheduleId } : {}),
+      status: { not: "CANCELED" },
+      AND: [
+        { OR: [{ automation: { is: null }, status: { not: "COMPLETED" }, scheduleId: null }, { automation: { isNot: null }, schedule: scheduleWhere }] },
+        {
+          OR: [
+            { attendanceDeadlineAt: windowed, automation: { is: { cutoffCompletedAt: null } } },
+            { attendanceDeadlineAt: windowed, attendanceClosedAt: null },
+            { automation: { is: { cutoffCompletedAt: { not: null }, notifiedAt: null, cutoffDueAt: windowed } } },
+          ],
+        },
+      ],
     },
-    select: { id: true, matchId: true, groupId: true, match: { select: { schedule: { select: { createdByUserId: true } } } } },
+    select: { id: true, groupId: true, createdByUserId: true, schedule: { select: { createdByUserId: true } }, automation: { select: { id: true } } },
   });
-  for (const a of pending) {
-    const ctx = await ctxFor(a.groupId, a.match.schedule?.createdByUserId ?? null);
+  for (const m of due) {
+    const ctx = await ctxFor(m.groupId, m.schedule?.createdByUserId ?? m.createdByUserId ?? null);
     if (!ctx) continue;
-    if ((await gateFor(ctx.organization.id)).paused) {
+    if (m.automation && (await gateFor(ctx.organization.id)).paused) {
       run.paused++;
       continue;
     }
     try {
-      const done = await withMatchLock(a.matchId, async () => {
-        const fresh = await prisma.matchAutomation.findUniqueOrThrow({ where: { id: a.id }, select: { cutoffCompletedAt: true, notifiedAt: true } });
-        const cut = !fresh.cutoffCompletedAt && (await stepCutoff(ctx, a.matchId, a.id, now));
-        const sent = !fresh.notifiedAt && (await stepNotify(ctx, a.matchId, a.id, now));
-        return { cut, sent };
+      const done = await withMatchLock(m.id, async () => {
+        // Re-read under the lock: a concurrent deadline change or reopen wins cleanly.
+        const fresh = await prisma.match.findFirstOrThrow({
+          where: { id: m.id, groupId: m.groupId },
+          select: { attendanceClosedAt: true, attendanceDeadlineAt: true, automation: { select: { id: true, cutoffCompletedAt: true, notifiedAt: true } } },
+        });
+        const passed = fresh.attendanceDeadlineAt !== null && fresh.attendanceDeadlineAt.getTime() <= now.getTime();
+        let cut = false;
+        let closed = false;
+        if (fresh.automation && !fresh.automation.cutoffCompletedAt && passed) cut = await stepCutoff(ctx, m.id, fresh.automation.id, now);
+        else if (passed && fresh.attendanceClosedAt === null) closed = await finalizeDeadline(ctx, m.id, now);
+        const auto = fresh.automation ? await prisma.matchAutomation.findUniqueOrThrow({ where: { id: fresh.automation.id }, select: { cutoffCompletedAt: true, notifiedAt: true } }) : null;
+        const sent = Boolean(auto && auto.cutoffCompletedAt && !auto.notifiedAt && (await stepNotify(ctx, m.id, fresh.automation!.id, now)));
+        return { cut, closed, sent };
       });
       if (done?.cut) run.cutoffs++;
+      if (done?.closed) run.deadlinesClosed++;
       if (done?.sent) run.notified++;
     } catch (e) {
-      run.errors.push({ matchId: a.matchId, error: e instanceof Error ? e.message : "error" });
+      run.errors.push({ matchId: m.id, error: e instanceof Error ? e.message : "error" });
     }
   }
   return run;

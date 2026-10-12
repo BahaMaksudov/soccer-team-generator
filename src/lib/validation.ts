@@ -87,6 +87,8 @@ export const applySwapSchema = z.object({
 const ymd = z.string().trim().regex(/^\d{4}-\d{2}-\d{2}$/, "Choose a date.");
 const hhmm = z.string().trim().regex(/^([01]\d|2[0-3]):[0-5]\d$/, "Use a time like 20:00.");
 const attendanceStatus = z.enum(["PLAYING", "NOT_PLAYING", "MAYBE"]);
+// Phase 4B — an attendance deadline as LOCAL date-time in the Group's timezone (converted server-side).
+const localDeadline = z.string().trim().regex(/^\d{4}-\d{2}-\d{2}T([01]\d|2[0-3]):[0-5]\d$/, "Use a date and time like 2026-10-19T20:00.");
 
 export const matchCreateSchema = z.object({
   date: ymd,
@@ -96,6 +98,8 @@ export const matchCreateSchema = z.object({
   communityId: z.string().trim().min(1).max(64).optional(),
   // M9.2 — a reusable Venue of the Organization (validated server-side).
   venueId: z.string().trim().min(1).max(64).optional(),
+  // Phase 4B — optional attendance deadline (omitted / null = none).
+  attendanceDeadline: localDeadline.optional().nullable(),
 });
 
 export const matchUpdateSchema = z.object({
@@ -107,12 +111,15 @@ export const matchUpdateSchema = z.object({
   communityId: z.string().trim().min(1).max(64).optional(),
   // M9.2 — set, change or clear (null) the Match's Venue.
   venueId: z.string().trim().min(1).max(64).optional().nullable(),
+  // Phase 4B — set or clear (null) the attendance deadline while attendance is open.
+  attendanceDeadline: localDeadline.optional().nullable(),
 });
 
 /** Organizer override: a status sets it, null clears it. */
 export const attendanceOverrideSchema = z.object({ playerId: z.string().min(1), status: attendanceStatus.nullable() });
 export const attendanceSelfSchema = z.object({ status: attendanceStatus });
-export const attendanceClosedSchema = z.object({ closed: z.boolean() });
+// Phase 4B — reopening may set a new future deadline or clear it (null); required once the deadline has passed.
+export const attendanceClosedSchema = z.object({ closed: z.boolean(), attendanceDeadline: localDeadline.optional().nullable() });
 /**
  * M9-D — post-game actions of a Match (one endpoint, discriminated by
  * `action`). Scores: generic non-negative integers per published team

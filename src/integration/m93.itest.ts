@@ -314,16 +314,21 @@ describe("M9.3 — anonymous attendance through the Match Link", () => {
     expect(await prisma.attendanceResponse.count()).toBe(0);
   });
 
-  it("closed attendance, a passed scheduled cutoff and a canceled match refuse answers (the view says so)", async () => {
+  it("closed attendance, a passed attendance deadline and a canceled match refuse answers (the view says so)", async () => {
     const t = await tokenOf("m1");
     const ref = await refOf("m1", "jane");
     await prisma.match.update({ where: { id: "m1" }, data: { attendanceClosedAt: new Date() } });
     expect(await answer({ token: t, matchId: "m1", playerRef: ref, status: "PLAYING" })).toMatchObject({ status: 409, body: { code: "CLOSED" } });
     expect(((await view(t, "m1")).body.link as { state: string; roster: unknown[] })).toEqual({ communityName: "Monday Night Players", state: "closed", roster: [] });
     await prisma.match.update({ where: { id: "m1" }, data: { attendanceClosedAt: null } });
+    // Phase 4B — a recurring Match carries its cutoff as Match.attendanceDeadlineAt (the one shared rule);
+    // a stale MatchAutomation.cutoffDueAt alone no longer closes anything.
     await prisma.matchAutomation.create({ data: { matchId: "m1", groupId: "ga", pollDueAt: new Date(Date.now() - 7200_000), cutoffDueAt: new Date(Date.now() - 60_000) } });
+    expect((await view(t, "m1")).body.link).toMatchObject({ state: "open" }); // deadline NULL (e.g. reopened) → open
+    await prisma.match.update({ where: { id: "m1" }, data: { attendanceDeadlineAt: new Date(Date.now() - 60_000) } });
     expect(await answer({ token: t, matchId: "m1", playerRef: ref, status: "PLAYING" })).toMatchObject({ status: 409, body: { code: "CLOSED" } });
     await prisma.matchAutomation.deleteMany({});
+    await prisma.match.update({ where: { id: "m1" }, data: { attendanceDeadlineAt: null } });
     await prisma.match.update({ where: { id: "m1" }, data: { status: "CANCELED" } });
     expect(await answer({ token: t, matchId: "m1", playerRef: ref, status: "PLAYING" })).toMatchObject({ status: 409, body: { code: "CANCELED" } });
     expect((await view(t, "m1")).body).toMatchObject({ match: { status: "CANCELED" }, link: { state: "canceled" } });
