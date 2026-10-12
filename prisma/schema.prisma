@@ -70,6 +70,8 @@ enum MessageEventType {
   MATCH_RECAP_POSTED
   // M9-D — the combined "Post Match Summary" (published result + optional MVP + recap).
   MATCH_SUMMARY_POSTED
+  // Phase 4B — the automatic Game Day Update (at most one per Match).
+  GAME_DAY_UPDATE_POSTED
 }
 
 // M9-D — where an MVP vote came from (provider-neutral; WHATSAPP in M10).
@@ -838,33 +840,39 @@ model CommunityPlayer {
 // timezone; startTime is optional local "HH:MM". locationName is a plain
 // label (no address/coordinates).
 model Match {
-  id                 String      @id @default(cuid())
-  groupId            String
-  date               DateTime
-  startTime          String?
-  locationName       String?
-  status             MatchStatus @default(SCHEDULED)
-  attendanceClosedAt DateTime?
+  id                   String      @id @default(cuid())
+  groupId              String
+  date                 DateTime
+  startTime            String?
+  locationName         String?
+  status               MatchStatus @default(SCHEDULED)
+  attendanceClosedAt   DateTime?
+  // Phase 4B — the ONE attendance deadline (UTC instant) shown and enforced for
+  // every Match. Manual Matches: optional, organizer-set. Recurring Matches: the
+  // occurrence cutoff (kept equal to MatchAutomation.cutoffDueAt). NULL = no
+  // deadline (open until closed by hand). Existing recurring Matches were
+  // backfilled from cutoffDueAt, except ones an organizer reopened after it.
+  attendanceDeadlineAt DateTime?
   // M9-B — the organizer's selected Telegram chat (communication context and
   // default player scope). NOT evidence that anything was sent: TelegramPoll /
   // MessageDelivery record actual sends. Server-validated to be this Group's.
-  telegramChatId     Int?
+  telegramChatId       Int?
   // M9.2 — the Community (roster) this Match belongs to. NULL only for legacy
   // Matches that could not be mapped safely (organizer remediation).
-  communityId        String?
+  communityId          String?
   // M9.2 — the reusable Venue (Organization-level; same Organization enforced
   // server-side). locationName stays the display name snapshot.
-  venueId            String?
+  venueId              String?
   // M9.2 — the weekly schedule that created this Match (one Match per schedule
   // and game date — the idempotency key of automatic creation).
-  scheduleId         String?
+  scheduleId           String?
   // M9.3 — version of the Match Link (HMAC of matchId + shareVersion under
   // MATCH_SHARE_SECRET; nothing secret is stored). Reset Link increments it,
   // invalidating the previous link immediately.
-  shareVersion       Int         @default(1)
-  createdByUserId    String?
-  createdAt          DateTime    @default(now())
-  updatedAt          DateTime    @updatedAt
+  shareVersion         Int         @default(1)
+  createdByUserId      String?
+  createdAt            DateTime    @default(now())
+  updatedAt            DateTime    @updatedAt
 
   group         Group                @relation(fields: [groupId], references: [id], onDelete: Restrict)
   createdBy     User?                @relation("MatchCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
@@ -889,6 +897,7 @@ model Match {
   @@index([telegramChatId])
   @@index([communityId])
   @@index([venueId])
+  @@index([attendanceDeadlineAt])
 }
 
 // M9.2 — a reusable Venue / ground of an Organization (any of its Groups may
@@ -902,6 +911,18 @@ model Venue {
   isActive       Boolean  @default(true)
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
+
+  // Phase 4B — weather. Coordinates are stored ONLY after an organizer explicitly
+  // picked a location from the provider's search results (never guessed from a
+  // name); changing the address clears them. isIndoor labels the forecast as
+  // outside weather.
+  isIndoor                         Boolean   @default(false)
+  weatherLatitude                  Float?
+  weatherLongitude                 Float?
+  weatherLocationLabel             String?
+  weatherLocationConfirmedAt       DateTime?
+  // Audit only (scalar, no relation): the User who confirmed the location.
+  weatherLocationConfirmedByUserId String?
 
   organization Organization    @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   matches      Match[]
