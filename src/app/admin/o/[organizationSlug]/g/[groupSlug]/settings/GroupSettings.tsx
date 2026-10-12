@@ -8,6 +8,8 @@ import CommunicationChannelsSection from "../CommunicationChannelsSection";
 import TelegramVoterLinks from "./TelegramVoterLinks";
 import CommunitiesSection from "./CommunitiesSection";
 import VenuesSection from "./VenuesSection";
+import GameDayUpdateSection from "./GameDayUpdateSection";
+import type { GameDayUpdateView } from "@/lib/gameDayUpdateSettings";
 import { adminGroupPath } from "@/lib/matchPaths";
 
 /**
@@ -20,11 +22,14 @@ export default function GroupSettings({
   groupSlug,
   groupName,
   sport,
+  gameDayUpdate,
 }: {
   organizationSlug: string;
   groupSlug: string;
   groupName: string;
   sport: SportClientView;
+  /** Phase 4B — the Group's Game Day Update settings (loaded server-side). */
+  gameDayUpdate: GameDayUpdateView;
 }) {
   const [message, setMessage] = useState<string | null>(null);
   return (
@@ -65,6 +70,7 @@ export default function GroupSettings({
         <h2 id="telegram-heading" className="text-xl font-extrabold">Telegram (optional)</h2>
         <p className="mt-1 text-sm text-muted-foreground">Not required: players can answer and see teams through each match&apos;s match link. Connect a Telegram group to also post polls and teams there.</p>
         <CommunicationChannelsSection organizationSlug={organizationSlug} groupSlug={groupSlug} />
+        <GameDayUpdateSection organizationSlug={organizationSlug} groupSlug={groupSlug} initial={gameDayUpdate} />
         <TelegramVoterLinks organizationSlug={organizationSlug} groupSlug={groupSlug} />
       </section>
     </div>

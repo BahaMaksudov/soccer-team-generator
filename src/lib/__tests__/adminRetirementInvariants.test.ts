@@ -111,6 +111,7 @@ describe("flat operational Admin APIs are deleted", () => {
         canonical("settings/balance-weights"),
         canonical("settings/team-name"),
         canonical("settings/visibility"), // M6-A
+        canonical("settings/game-day-update"), // Phase 4B — Game Day Update settings
         canonical("share-link"), // M6-A
         canonical("telegram/chats"),
         canonical("telegram/close-and-post"),
