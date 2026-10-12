@@ -65,6 +65,8 @@ const MATCH_SELECT = {
   attendanceClosedAt: true,
   // Phase 4B — the one attendance deadline (shown and enforced).
   attendanceDeadlineAt: true,
+  // Phase 4B — created by a recurring schedule (its date is locked).
+  scheduleId: true,
   communityId: true,
   venue: { select: { id: true, name: true, address: true } },
   createdAt: true,
@@ -80,6 +82,8 @@ export type MatchSummary = {
   attendanceClosed: boolean;
   /** Phase 4B — the attendance deadline (ISO instant), null = none. */
   attendanceDeadlineAt: string | null;
+  /** Phase 4B — created by a recurring schedule: its date can't be changed. */
+  recurring: boolean;
   /** M9.2 — the Match's Community (null: legacy Match not mapped yet). */
   communityId: string | null;
   /** M9.2 — the reusable Venue (address + keyless maps link), if any. */
@@ -94,6 +98,7 @@ function toSummary(m: {
   status: MatchStatus;
   attendanceClosedAt: Date | null;
   attendanceDeadlineAt: Date | null;
+  scheduleId: string | null;
   communityId: string | null;
   venue?: { id: string; name: string; address: string | null } | null;
 }): MatchSummary {
@@ -105,6 +110,7 @@ function toSummary(m: {
     status: m.status,
     attendanceClosed: attendanceIsClosed(m),
     attendanceDeadlineAt: m.attendanceDeadlineAt?.toISOString() ?? null,
+    recurring: m.scheduleId !== null,
     communityId: m.communityId,
     venue: m.venue ? { id: m.venue.id, name: m.venue.name, address: m.venue.address, mapsUrl: mapsUrl(m.venue.address) } : null,
   };
@@ -398,6 +404,8 @@ export async function getMatchView(context: TenantContext, matchId: string): Pro
 
   return NextResponse.json({
     match: toSummary(match),
+    // Phase 4B — deadlines are shown and entered in the Group's timezone.
+    timezone: context.activeGroup.timezone,
     canManage: manager,
     community: community ? { id: community.id, name: community.name, isActive: community.isActive } : null,
     // M9.2 — what Match Automation did (organizers only; null for a Match not created by a schedule).

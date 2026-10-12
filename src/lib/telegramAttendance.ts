@@ -133,6 +133,8 @@ export async function postAttendancePollFor(
   const match = await findGroupMatch(context, matchId);
   if (!match) return NextResponse.json({ error: "Match not found" }, { status: 404 });
   if (match.status === "CANCELED") return NextResponse.json({ error: "This match is canceled." }, { status: 400 });
+  // Phase 4B — never post a new attendance poll once attendance is closed (it would invite answers that don't count).
+  if (attendanceIsClosed(match)) return NextResponse.json({ error: "Attendance is closed. Reopen it before posting a new poll.", code: "ATTENDANCE_CLOSED" }, { status: 409 });
   const chat = await prisma.telegramChat.findFirst({ where: { id: chatRef, groupId, disconnectedAt: null }, select: { chatId: true } });
   if (!chat) return NextResponse.json({ error: "Telegram group not connected" }, { status: 404 });
   if (!process.env.TELEGRAM_BOT_TOKEN) return NextResponse.json({ error: "Missing TELEGRAM_BOT_TOKEN" }, { status: 500 });

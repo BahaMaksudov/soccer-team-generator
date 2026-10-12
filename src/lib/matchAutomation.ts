@@ -14,7 +14,7 @@ import { schedulesOverLimit } from "@/lib/schedules";
 import { currentMatchLinkPath } from "@/lib/matchLink";
 import { CUTOFF_CATCH_UP_MS, dueForPoll, type WeeklySchedule } from "@/lib/scheduleTime";
 import { recordScheduleSkip, resolveScheduleSkip, scheduleSkipMessage } from "@/lib/scheduleSkips";
-import { effectiveClosedAt } from "@/lib/attendanceDeadline";
+import { attendanceIsClosed, effectiveClosedAt } from "@/lib/attendanceDeadline";
 
 /**
  * M9.2 — the Match Automation Agent: deterministic orchestration (no AI).
@@ -182,8 +182,13 @@ async function ensureMatch(s: ScheduleRow, occ: ReturnType<typeof dueForPoll>[nu
 async function stepPoll(ctx: TenantContext, matchId: string, automationId: string, telegramAllowed = true): Promise<"posted" | "link" | "skipped" | "error"> {
   const a = await prisma.matchAutomation.findUniqueOrThrow({ where: { id: automationId } });
   if (a.pollPostedAt) return "skipped";
-  const m = await prisma.match.findFirst({ where: { id: matchId, groupId: ctx.activeGroup.id }, select: { status: true, communityId: true, telegramChatId: true, community: { select: { name: true } } } });
+  const m = await prisma.match.findFirst({
+    where: { id: matchId, groupId: ctx.activeGroup.id },
+    select: { status: true, communityId: true, telegramChatId: true, attendanceClosedAt: true, attendanceDeadlineAt: true, community: { select: { name: true } } },
+  });
   if (!m || m.status === "CANCELED") return "skipped";
+  // Phase 4B — attendance already closed (by hand, or its deadline passed): no poll inviting answers that don't count.
+  if (attendanceIsClosed(m)) return "skipped";
   let chatRef = m.telegramChatId;
   if (chatRef) {
     const ok = await prisma.telegramChat.findFirst({ where: { id: chatRef, groupId: ctx.activeGroup.id, disconnectedAt: null }, select: { id: true } });

@@ -17,6 +17,8 @@ import * as matchRoute from "@/app/api/admin/o/[organizationSlug]/g/[groupSlug]/
 import * as overrideRoute from "@/app/api/admin/o/[organizationSlug]/g/[groupSlug]/matches/[matchId]/attendance/route";
 import * as closeRoute from "@/app/api/admin/o/[organizationSlug]/g/[groupSlug]/matches/[matchId]/attendance/close/route";
 import * as scheduleRoute from "@/app/api/admin/o/[organizationSlug]/g/[groupSlug]/schedules/[scheduleId]/route";
+import * as pollRoute from "@/app/api/admin/o/[organizationSlug]/g/[groupSlug]/matches/[matchId]/poll/route";
+import * as pollCloseRoute from "@/app/api/admin/o/[organizationSlug]/g/[groupSlug]/matches/[matchId]/poll/close/route";
 import { runMatchAutomation } from "@/lib/matchAutomation";
 import { setOwnAttendance } from "@/lib/matches";
 import { answerThroughMatchLink } from "@/lib/matchLink";
@@ -358,6 +360,45 @@ describe("Phase 4B — concurrency, permissions, tenant isolation", () => {
     expect((await patch("mt", { attendanceDeadline: null }, "o2", "g2")).status).toBe(404); // via their own group
     expect((await patch("mt", { attendanceDeadline: null })).status).toBe(404); // via ours
     expect((await m("mt")).attendanceDeadlineAt).toEqual(new Date("2099-06-03T22:00:00Z"));
+  });
+});
+
+describe("Phase 4B step 3 — what the match page receives, and Telegram poll consistency", () => {
+  it("the view carries the deadline, the Group timezone and the recurring flag (date lock)", async () => {
+    await manual("mv", { attendanceDeadlineAt: new Date("2099-06-03T22:00:00Z") });
+    const v = (await call(matchRoute.GET(json("GET"), gm("mv")))).body as { timezone: string; match: { attendanceDeadlineAt: string; attendanceClosed: boolean; recurring: boolean } };
+    expect(v.timezone).toBe(TZ);
+    expect(v.match).toMatchObject({ attendanceDeadlineAt: "2099-06-03T22:00:00.000Z", attendanceClosed: false, recurring: false });
+    await prisma.matchSchedule.create({ data: SCHED });
+    await runMatchAutomation(AFTER_POLL);
+    const rec = await prisma.match.findFirstOrThrow({ where: { scheduleId: { not: null } } });
+    expect(((await call(matchRoute.GET(json("GET"), gm(rec.id)))).body.match as { recurring: boolean }).recurring).toBe(true);
+    signIn("member");
+    expect(((await call(matchRoute.GET(json("GET"), gm("mv")))).body as { canManage: boolean }).canManage).toBe(false); // no edit controls for MEMBERs
+  });
+
+  it("no new attendance poll once attendance is closed (by hand or by a passed deadline); allowed while open", async () => {
+    await prisma.telegramChat.create({ data: { id: 9, chatId: -900n, title: "Chat", groupId: "g" } });
+    await manual("mp", { attendanceDeadlineAt: new Date(Date.now() + H), telegramChatId: 9 });
+    expect((await call(pollRoute.POST(json("POST", { chatRef: 9, intent: "post" }), gm("mp")))).status).toBe(201);
+    await prisma.match.update({ where: { id: "mp" }, data: { attendanceDeadlineAt: new Date(Date.now() - 60_000) } });
+    const sends = tgCalls.filter((c) => c === "sendPoll").length;
+    expect(await call(pollRoute.POST(json("POST", { chatRef: 9, intent: "post_updated" }), gm("mp")))).toMatchObject({ status: 409, body: { code: "ATTENDANCE_CLOSED" } });
+    expect(tgCalls.filter((c) => c === "sendPoll").length).toBe(sends);
+    // The organizer can still close that ONE poll in Telegram (never in bulk).
+    expect((await call(pollCloseRoute.POST(json("POST"), gm("mp")))).status).toBe(200);
+    expect(tgCalls).toContain("stopPoll");
+    expect((await prisma.telegramPoll.findFirstOrThrow({ where: { matchId: "mp" } })).isClosed).toBe(true);
+  });
+
+  it("automation skips posting the poll for a recurring match already closed by hand (no error recorded)", async () => {
+    await prisma.telegramChat.create({ data: { id: 8, chatId: -800n, title: "Chat", groupId: "g", communityId: "c" } });
+    const s = await prisma.matchSchedule.create({ data: SCHED });
+    const match = await prisma.match.create({ data: { groupId: "g", communityId: "c", date: new Date(`${GAME}T00:00:00Z`), startTime: "21:00", scheduleId: s.id, telegramChatId: 8, attendanceDeadlineAt: CUTOFF, attendanceClosedAt: new Date() } });
+    await prisma.matchAutomation.create({ data: { matchId: match.id, groupId: "g", pollDueAt: POLL_AT, cutoffDueAt: CUTOFF } });
+    expect(await runMatchAutomation(AFTER_POLL)).toMatchObject({ created: 0, pollsPosted: 0, errors: [] });
+    expect(tgCalls).not.toContain("sendPoll");
+    expect(await prisma.matchAutomation.findFirstOrThrow({ where: { matchId: match.id } })).toMatchObject({ pollPostedAt: null, lastError: null });
   });
 });
 

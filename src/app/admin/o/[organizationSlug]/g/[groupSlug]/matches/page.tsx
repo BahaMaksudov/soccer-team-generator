@@ -42,7 +42,7 @@ export default async function MatchesPage({ params }: { params: Params }) {
           <h1 className="mt-1 text-3xl font-extrabold">Matches</h1>
         </div>
       </header>
-      {isManager(context) && <CreateMatchForm organizationSlug={context.organization.slug} groupSlug={context.activeGroup.slug} communities={communities} venues={venues} allowance={allowance} />}
+      {isManager(context) && <CreateMatchForm organizationSlug={context.organization.slug} groupSlug={context.activeGroup.slug} communities={communities} venues={venues} allowance={allowance} timezone={context.activeGroup.timezone} />}
       {isManager(context) && (
         <SchedulesSection organizationSlug={context.organization.slug} groupSlug={context.activeGroup.slug} communities={communities} venues={venues} defaultTimezone={context.activeGroup.timezone} />
       )}

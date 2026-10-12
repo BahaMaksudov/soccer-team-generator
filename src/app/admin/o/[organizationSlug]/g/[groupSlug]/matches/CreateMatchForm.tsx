@@ -3,6 +3,7 @@
 import { useEffect, useId, useState } from "react";
 import { Plus, X } from "lucide-react";
 import { adminTenantApiPath } from "@/lib/adminTenantApi";
+import { localKickoff, timeZoneAbbreviation } from "@/lib/deadlineFormat";
 import { canonicalAdminMatchPath } from "@/lib/matchPaths";
 import { Button } from "@/components/ui/button";
 
@@ -42,6 +43,7 @@ export default function CreateMatchForm({
   communities = [],
   venues = [],
   allowance = null,
+  timezone = "UTC",
 }: {
   organizationSlug: string;
   groupSlug: string;
@@ -51,13 +53,15 @@ export default function CreateMatchForm({
   venues?: Array<{ id: string; name: string; address: string | null }>;
   /** Phase 2 — the Organization's monthly new-match allowance (null: not shown). */
   allowance?: MatchAllowance | null;
+  /** Phase 4B — the Group's timezone (the attendance deadline is entered in it). */
+  timezone?: string;
 }) {
   const NEW = "__new__";
   const [venueId, setVenueId] = useState("");
   const [newVenue, setNewVenue] = useState({ name: "", address: "" });
   const url = adminTenantApiPath({ organizationSlug, groupSlug, path: "/matches" });
   const [open, setOpen] = useState(false);
-  const [form, setForm] = useState({ date: "", startTime: "", locationName: "", communityId: communities.length === 1 ? communities[0].id : "" });
+  const [form, setForm] = useState({ date: "", startTime: "", locationName: "", communityId: communities.length === 1 ? communities[0].id : "", attendanceDeadline: "" });
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const id = useId();
@@ -73,6 +77,11 @@ export default function CreateMatchForm({
   async function create(e: React.FormEvent) {
     e.preventDefault();
     if (busy) return;
+    // Phase 4B — same-zone check before the server's full validation (future + before kickoff).
+    if (form.attendanceDeadline && form.date && form.attendanceDeadline >= localKickoff(form.date, form.startTime)) {
+      setErr("The attendance deadline must be before kickoff.");
+      return;
+    }
     setBusy(true);
     setErr(null);
     try {
@@ -100,6 +109,7 @@ export default function CreateMatchForm({
           ...(form.locationName ? { locationName: form.locationName } : {}),
           ...(form.communityId ? { communityId: form.communityId } : {}),
           ...(chosenVenue ? { venueId: chosenVenue } : {}),
+          ...(form.attendanceDeadline ? { attendanceDeadline: form.attendanceDeadline } : {}),
         }),
       });
       const data = await res.json().catch(() => ({}));
@@ -192,6 +202,22 @@ export default function CreateMatchForm({
           <input id={`${id}-loc`} className={input} maxLength={80} placeholder="Field 2" value={form.locationName} onChange={(e) => setForm({ ...form, locationName: e.target.value })} />
         </div>
       )}
+      <div>
+        <label htmlFor={`${id}-deadline`} className="mb-1 block text-sm font-semibold">
+          Attendance closes <span className="font-normal text-muted-foreground">(optional)</span>
+        </label>
+        <input
+          id={`${id}-deadline`}
+          type="datetime-local"
+          className={`${input} sm:max-w-xs`}
+          value={form.attendanceDeadline}
+          aria-describedby={`${id}-deadline-hint`}
+          onChange={(e) => setForm({ ...form, attendanceDeadline: e.target.value })}
+        />
+        <p id={`${id}-deadline-hint`} className="mt-1 text-xs text-muted-foreground">
+          Times in {timezone} ({timeZoneAbbreviation(timezone)}). Leave empty to close attendance yourself. It must be before kickoff.
+        </p>
+      </div>
       {err && <p role="alert" className="text-sm text-destructive">{err}</p>}
       {allowance && <AllowanceNote allowance={allowance} id={`${id}-allowance`} />}
       <div className="flex flex-wrap items-center gap-3">

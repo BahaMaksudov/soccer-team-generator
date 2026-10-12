@@ -25,6 +25,8 @@ import { cn } from "@/lib/cn";
 import type { Player } from "../../CanonicalAdminWorkspace";
 import { computeSelection, NO_ADJUSTMENTS, reconcileAdjustments, toggleSelection, type EffectiveStatuses, type SelectionAdjustments } from "@/lib/matchSelection";
 import { runFeedback, type RunResult } from "@/lib/automationFeedback";
+import Dialog from "@/components/app/Dialog";
+import { formatDeadline, localKickoff, timeZoneAbbreviation, toLocalInput } from "@/lib/deadlineFormat";
 
 /**
  * M9-A — the organizer's Match workspace. Sections, not a wizard:
@@ -51,10 +53,17 @@ type MatchView = {
     startTime: string | null;
     locationName: string | null;
     status: "SCHEDULED" | "COMPLETED" | "CANCELED";
+    /** By the shared rule: closed by hand / finalized, or the deadline has passed. */
     attendanceClosed: boolean;
+    /** Phase 4B — the attendance deadline (ISO), null = closed manually by an organizer. */
+    attendanceDeadlineAt: string | null;
+    /** Phase 4B — created by a recurring schedule (date locked). */
+    recurring: boolean;
     /** M9.2 — reusable Venue (address + keyless maps link). */
     venue?: { id: string; name: string; address: string | null; mapsUrl: string | null } | null;
   };
+  /** Phase 4B — the Group's timezone (deadlines are shown / entered in it). */
+  timezone: string;
   canManage: boolean;
   roster: RosterPlayer[];
   counts: { PLAYING: number; MAYBE: number; NOT_PLAYING: number; NO_RESPONSE: number };
@@ -130,7 +139,9 @@ export default function MatchWorkspace({
   // M9-C — LINK Groups: the organizer pastes the Group's CURRENT share link; the
   // server validates it and links the post to this Match (/share/m/<id>#token).
   const [shareUrl, setShareUrl] = useState("");
-  const [edit, setEdit] = useState<{ date: string; startTime: string; locationName: string; venueId: string } | null>(null);
+  const [edit, setEdit] = useState<{ date: string; startTime: string; locationName: string; venueId: string; deadline: string; initialDeadline: string } | null>(null);
+  // Phase 4B — reopening after the deadline passed: no deadline, or a new future one.
+  const [reopen, setReopen] = useState<{ choice: "none" | "new"; deadline: string; error?: string } | null>(null);
   // M9.2 — the Organization's Venues (loaded when the organizer edits the match).
   const [venues, setVenues] = useState<Array<{ id: string; name: string; address: string | null; isActive: boolean }>>([]);
   useEffect(() => {
@@ -361,6 +372,19 @@ export default function MatchWorkspace({
   });
   const next = lifecycle.next;
   const smallBtn = "inline-flex min-h-9 items-center rounded-tbp-sm px-3 text-sm font-semibold disabled:opacity-50";
+  const tz = view.timezone;
+  const deadlinePassed = m.attendanceDeadlineAt !== null && new Date(m.attendanceDeadlineAt).getTime() <= Date.now();
+  // Phase 4B — one edit form for match details and the deadline (saved together, validated together).
+  const openEdit = (focusDeadline = false) => {
+    const current = toLocalInput(m.attendanceDeadlineAt, tz);
+    setEdit({ date: m.date, startTime: m.startTime ?? "", locationName: m.locationName ?? "", venueId: m.venue?.id ?? "", deadline: current, initialDeadline: current });
+    if (focusDeadline) setTimeout(() => document.getElementById("match-deadline")?.focus(), 0);
+  };
+  const reopenAttendance = () => {
+    // A passed deadline would close it again at once: the organizer chooses (atomic on the server).
+    if (deadlinePassed) setReopen({ choice: "none", deadline: "" });
+    else call("/attendance/close", { closed: false }, "Attendance reopened.");
+  };
   const input = "h-11 rounded-tbp-md border border-input bg-card px-3 text-base focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring md:text-sm";
 
   return (
@@ -375,6 +399,16 @@ export default function MatchWorkspace({
             </div>
             <h1 className="mt-2 text-2xl font-extrabold sm:text-3xl">{formatLongDateOnly(m.date)}</h1>
             <MatchMeta date={m.date} startTime={m.startTime} locationName={m.locationName} className="mt-1 [&>li:first-child]:hidden" />
+            {/* Phase 4B — the deadline that is actually enforced, in the Group's timezone. */}
+            <p className="mt-1 text-sm">
+              <span className="text-muted-foreground">Attendance closes:</span>{" "}
+              <span className="font-semibold">{m.attendanceDeadlineAt ? formatDeadline(m.attendanceDeadlineAt, tz) : "Manually by organizer"}</span>
+              {view.canManage && !m.attendanceClosed && m.status !== "CANCELED" && (
+                <button type="button" className={cn("ml-2 font-semibold text-primary underline", focusRing)} onClick={() => openEdit(true)}>
+                  Edit deadline
+                </button>
+              )}
+            </p>
             {m.venue?.address && m.venue.mapsUrl && (
               <a className={cn("mt-1 inline-block break-words text-sm font-semibold text-primary underline", focusRing)} href={m.venue.mapsUrl} target="_blank" rel="noopener noreferrer">
                 📍 {m.venue.address}
@@ -384,7 +418,7 @@ export default function MatchWorkspace({
           {/* UI-4A — match management is OWNER/ADMIN only (enforced server-side). */}
           {view.canManage && (
           <div className="flex flex-wrap gap-1.5">
-            <button type="button" className={cn(smallBtn, "border border-input hover:bg-muted", focusRing)} onClick={() => setEdit({ date: m.date, startTime: m.startTime ?? "", locationName: m.locationName ?? "", venueId: m.venue?.id ?? "" })}>Edit</button>
+            <button type="button" className={cn(smallBtn, "border border-input hover:bg-muted", focusRing)} onClick={() => openEdit()}>Edit</button>
             {m.status === "SCHEDULED" ? (
               <>
                 <button type="button" className={cn(smallBtn, "border border-input hover:bg-muted", focusRing)} disabled={busy} onClick={() => saveMatch({ status: "COMPLETED" }, "Marked as completed.")}>Mark completed</button>
@@ -401,11 +435,34 @@ export default function MatchWorkspace({
             className="mt-4 grid gap-3 border-t border-border pt-4 sm:grid-cols-2 lg:grid-cols-[repeat(4,minmax(0,1fr))_auto]"
             onSubmit={(e) => {
               e.preventDefault();
-              const { venueId, ...rest } = edit;
-              saveMatch({ ...rest, venueId: venueId || null }, "Match saved. Nothing was sent.");
+              const { venueId, deadline, initialDeadline, date, ...rest } = edit;
+              if (deadline && deadline >= localKickoff(date, rest.startTime)) {
+                setMessage("The attendance deadline must be before kickoff.");
+                return;
+              }
+              saveMatch(
+                {
+                  ...rest,
+                  // Phase 4B — a recurring match's date is locked (never sent); the deadline only when changed (empty = remove it).
+                  ...(m.recurring ? {} : { date }),
+                  venueId: venueId || null,
+                  ...(deadline !== initialDeadline ? { attendanceDeadline: deadline || null } : {}),
+                },
+                "Match saved. Nothing was sent."
+              );
             }}
           >
-            <label className="text-sm font-semibold">Date<input type="date" className={cn(input, "mt-1 block w-full font-normal")} value={edit.date} onChange={(e) => setEdit({ ...edit, date: e.target.value })} /></label>
+            <label className="text-sm font-semibold">
+              Date
+              <input
+                type="date"
+                className={cn(input, "mt-1 block w-full font-normal disabled:opacity-60")}
+                value={edit.date}
+                disabled={m.recurring}
+                aria-describedby={m.recurring ? "match-date-locked" : undefined}
+                onChange={(e) => setEdit({ ...edit, date: e.target.value })}
+              />
+            </label>
             <label className="text-sm font-semibold">Start time<input type="time" className={cn(input, "mt-1 block w-full font-normal")} value={edit.startTime} onChange={(e) => setEdit({ ...edit, startTime: e.target.value })} /></label>
             <label className="text-sm font-semibold">
               Venue
@@ -426,6 +483,37 @@ export default function MatchWorkspace({
               </select>
             </label>
             <label className="text-sm font-semibold">Location name<input className={cn(input, "mt-1 block w-full font-normal")} maxLength={80} placeholder="Location" value={edit.locationName} onChange={(e) => setEdit({ ...edit, locationName: e.target.value })} /></label>
+            <div className="sm:col-span-2 lg:col-span-4">
+              <label htmlFor="match-deadline" className="text-sm font-semibold">
+                Attendance closes <span className="font-normal text-muted-foreground">(optional)</span>
+              </label>
+              <div className="mt-1 flex flex-wrap items-center gap-2">
+                <input
+                  id="match-deadline"
+                  type="datetime-local"
+                  className={cn(input, "w-full font-normal sm:w-64 disabled:opacity-60")}
+                  value={edit.deadline}
+                  disabled={m.attendanceClosed}
+                  aria-describedby="match-deadline-hint"
+                  onChange={(e) => setEdit({ ...edit, deadline: e.target.value })}
+                />
+                {edit.deadline && !m.attendanceClosed && (
+                  <Button type="button" variant="ghost" size="sm" onClick={() => setEdit({ ...edit, deadline: "" })}>
+                    Remove deadline
+                  </Button>
+                )}
+              </div>
+              <p id="match-deadline-hint" className="mt-1 text-xs font-normal text-muted-foreground">
+                {m.attendanceClosed
+                  ? "Attendance is closed. Reopen it to change its deadline."
+                  : `Times in ${tz} (${timeZoneAbbreviation(tz)}). Empty = you close attendance yourself. It must be in the future and before kickoff.`}
+              </p>
+              {m.recurring && (
+                <p id="match-date-locked" className="mt-2 text-xs font-normal text-muted-foreground">
+                  This match was created by a recurring schedule, so its date can&apos;t be changed here. Change its time, or cancel it and create a one-off match.
+                </p>
+              )}
+            </div>
             <div className="flex items-end gap-2">
               <Button type="submit" disabled={busy}>Save</Button>
               <Button type="button" variant="ghost" onClick={() => setEdit(null)}>Cancel</Button>
@@ -433,6 +521,69 @@ export default function MatchWorkspace({
           </form>
         )}
       </header>
+
+      <Dialog open={reopen !== null} title="Reopen attendance?" onClose={() => setReopen(null)}>
+        {reopen && (
+          <form
+            className="space-y-3 text-sm"
+            onSubmit={async (e) => {
+              e.preventDefault();
+              if (reopen.choice === "new" && !reopen.deadline) return;
+              const r = await call(
+                "/attendance/close",
+                { closed: false, attendanceDeadline: reopen.choice === "none" ? null : reopen.deadline },
+                reopen.choice === "none" ? "Attendance reopened without a deadline." : "Attendance reopened with a new deadline."
+              );
+              if (r.ok) setReopen(null);
+              else setReopen({ ...reopen, error: (r.data as { error?: string })?.error ?? "Could not reopen attendance." });
+            }}
+          >
+            <p className="text-muted-foreground">
+              The attendance deadline ({m.attendanceDeadlineAt ? formatDeadline(m.attendanceDeadlineAt, tz) : "—"}) has passed. Choose how attendance stays open:
+            </p>
+            <fieldset className="space-y-2">
+              <legend className="sr-only">Reopen options</legend>
+              <label className="flex items-start gap-2 rounded-tbp border border-border p-3">
+                <input type="radio" name="reopen" className="mt-1" checked={reopen.choice === "none"} onChange={() => setReopen({ ...reopen, choice: "none" })} />
+                <span>
+                  <span className="block font-semibold">Reopen without a deadline</span>
+                  <span className="block text-muted-foreground">Attendance stays open until you close it yourself.</span>
+                </span>
+              </label>
+              <label className="flex items-start gap-2 rounded-tbp border border-border p-3">
+                <input type="radio" name="reopen" className="mt-1" checked={reopen.choice === "new"} onChange={() => setReopen({ ...reopen, choice: "new" })} />
+                <span className="min-w-0 flex-1">
+                  <span className="block font-semibold">Reopen with a new deadline</span>
+                  <span className="block text-muted-foreground">Attendance closes automatically at the new time (in {tz}, {timeZoneAbbreviation(tz)}).</span>
+                  {reopen.choice === "new" && (
+                    <input
+                      type="datetime-local"
+                      aria-label="New attendance deadline"
+                      required
+                      className="mt-2 h-11 w-full rounded-tbp-md border border-input bg-card px-3 text-base focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring sm:w-64 md:text-sm"
+                      value={reopen.deadline}
+                      onChange={(e) => setReopen({ ...reopen, deadline: e.target.value })}
+                    />
+                  )}
+                </span>
+              </label>
+            </fieldset>
+            {reopen.error && (
+              <p role="alert" className="text-destructive">
+                {reopen.error}
+              </p>
+            )}
+            <div className="flex flex-wrap justify-end gap-2">
+              <Button type="button" variant="ghost" onClick={() => setReopen(null)}>
+                Cancel
+              </Button>
+              <Button type="submit" disabled={busy || (reopen.choice === "new" && !reopen.deadline)}>
+                Reopen attendance
+              </Button>
+            </div>
+          </form>
+        )}
+      </Dialog>
 
       {message && (
         <p role="status" aria-live="polite" className="rounded-tbp border border-border bg-secondary px-4 py-3 text-sm font-medium text-secondary-foreground">
@@ -484,7 +635,7 @@ export default function MatchWorkspace({
         id="attendance"
         title="Attendance"
         icon={<Users className="size-5" />}
-        meta={m.attendanceClosed ? "Attendance closed" : "Attendance open"}
+        meta={m.attendanceClosed ? (deadlinePassed && m.attendanceDeadlineAt ? "Attendance closed — deadline passed" : "Attendance closed") : "Attendance open"}
       >
         {view.community ? (
           <p className="mb-3 text-sm">
@@ -545,7 +696,7 @@ export default function MatchWorkspace({
 
         <div className="mt-4 flex flex-wrap items-center gap-2 text-sm" id={MATCH_TELEGRAM_GROUP_SELECTOR_ID}>
           {view.canManage && (
-          <Button type="button" variant="outline" size="sm" disabled={busy} onClick={() => call("/attendance/close", { closed: !m.attendanceClosed }, m.attendanceClosed ? "Attendance reopened." : "Attendance closed.")}>
+          <Button type="button" variant="outline" size="sm" disabled={busy} onClick={() => (m.attendanceClosed ? reopenAttendance() : call("/attendance/close", { closed: true }, "Attendance closed."))}>
             {m.attendanceClosed ? "Reopen attendance" : "Close attendance"}
           </Button>
           )}
@@ -572,7 +723,13 @@ export default function MatchWorkspace({
                     ))}
                   </select>
                 </label>
-                <Button type="button" size="sm" disabled={busy || chatRef === null || m.status === "CANCELED"} onClick={() => call("/poll", { chatRef, intent: "post" }, "Attendance poll posted to Telegram.")}>
+                <Button
+                  type="button"
+                  size="sm"
+                  disabled={busy || chatRef === null || m.status === "CANCELED" || m.attendanceClosed}
+                  title={m.attendanceClosed ? "Attendance is closed. Reopen it before posting a new poll." : undefined}
+                  onClick={() => call("/poll", { chatRef, intent: "post" }, "Attendance poll posted to Telegram.")}
+                >
                   <Send aria-hidden="true" /> Post poll to Telegram
                 </Button>
               </>
@@ -581,10 +738,16 @@ export default function MatchWorkspace({
             ))}
         </div>
         {view.canManage && view.telegram.pollDelivery && <p className="mt-2 text-xs text-muted-foreground">Last poll post: {view.telegram.pollDelivery.status.toLowerCase()}</p>}
-        {/* M9.2 — publishing teams closes the attendance poll; if Telegram didn't confirm, close it again here (safe to repeat). */}
-        {view.canManage && view.telegram.poll && !view.telegram.poll.closed && view.generation && (
+        {/* M9.2 — publishing teams closes the attendance poll; if Telegram didn't confirm, close it again here (safe to repeat).
+            Phase 4B — also once attendance is closed (by hand or deadline) while the poll still shows as open in the chat:
+            answers there no longer count, and the organizer can close that ONE poll (never in bulk). */}
+        {view.canManage && view.telegram.poll && !view.telegram.poll.closed && (view.generation || m.attendanceClosed) && (
           <div className="mt-2 flex flex-wrap items-center gap-2 text-xs">
-            <span className="text-muted-foreground">The Telegram attendance poll is still open.</span>
+            <span className="text-muted-foreground">
+              {m.attendanceClosed
+                ? "Attendance is closed, but the Telegram poll still shows as open in the chat. Answers given there now are not counted."
+                : "The Telegram attendance poll is still open."}
+            </span>
             <Button type="button" variant="outline" size="sm" disabled={busy} onClick={() => call("/poll/close", {}, "Attendance poll closed in Telegram.")}>
               Close Telegram poll
             </Button>

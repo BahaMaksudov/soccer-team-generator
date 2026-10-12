@@ -274,6 +274,12 @@ export default function SchedulesSection({
             </Button>
           </div>
           <p className="text-xs text-muted-foreground">Changes apply to matches created from now on.</p>
+          {/* Phase 4B — a new game day is a NEW occurrence: matches already created keep their date. */}
+          {form.mode === "edit" && list?.find((x) => x.id === form.id)?.weekday !== values.weekday && (
+            <p role="alert" className="rounded-tbp border border-accent/40 bg-accent/10 px-3 py-2 text-xs">
+              Changing the game day creates matches on the new day ({WEEKDAYS[values.weekday]}) from now on. Matches already created keep their date — cancel any you no longer need.
+            </p>
+          )}
         </form>
       )}
 
