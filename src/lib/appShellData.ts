@@ -2,7 +2,6 @@ import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/authOptions";
 import { prisma } from "@/lib/prisma";
 import { findSport } from "@/lib/sports";
-import { resolveAdminEntry } from "@/app/admin/adminEntry";
 import { listAccessibleTenantsForEmail, resolveSessionAccount, TenantContextError, type TenantDataSource } from "@/lib/tenantContext";
 import type { ShellData } from "@/lib/appShell";
 
@@ -48,7 +47,6 @@ export async function loadShellDataFor(
     user: { name: account.name, email: account.email },
     organizations,
     hasPlayerProfile,
-    workspaceListAvailable: tenants.length > 0 && resolveAdminEntry(tenants).kind !== "redirect",
   };
 }
 

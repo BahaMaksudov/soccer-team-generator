@@ -70,6 +70,8 @@ enum MessageEventType {
   MATCH_RECAP_POSTED
   // M9-D — the combined "Post Match Summary" (published result + optional MVP + recap).
   MATCH_SUMMARY_POSTED
+  // Phase 4B — the automatic Game Day Update (at most one per Match).
+  GAME_DAY_UPDATE_POSTED
 }
 
 // M9-D — where an MVP vote came from (provider-neutral; WHATSAPP in M10).
@@ -215,6 +217,8 @@ model User {
   communityPlayersCreated    CommunityPlayer[]      @relation("CommunityPlayerCreatedBy")
   schedulesCreated           MatchSchedule[]        @relation("ScheduleCreatedBy")
   automationEmails           MatchAutomationEmail[]
+  // Phase 2 — audit only.
+  scheduleSkipsAcknowledged  MatchScheduleSkip[]    @relation("ScheduleSkipAcknowledgedBy")
 }
 
 // M11.1 — what an Organization is entitled to (src/lib/entitlements.ts).
@@ -255,12 +259,15 @@ model Organization {
   // Reserved for the future Stripe integration (no workflow in M11.1).
   stripeCustomerId String?          @unique
 
-  memberships       OrganizationMembership[]
-  groups            Group[]
-  invitations       OrganizationInvitation[]
-  venues            Venue[]
-  aiUsages          AiUsage[]
-  entitlementEvents EntitlementEvent[]
+  memberships             OrganizationMembership[]
+  groups                  Group[]
+  invitations             OrganizationInvitation[]
+  venues                  Venue[]
+  aiUsages                AiUsage[]
+  entitlementEvents       EntitlementEvent[]
+  // M11.2A — Stripe (test mode) billing.
+  billingSubscriptions    BillingSubscription[]
+  billingCheckoutSessions BillingCheckoutSession[]
 }
 
 // M11.1 — one AI recap generation attempt and its credit (UTC calendar-month `period`, "YYYY-MM").
@@ -403,6 +410,8 @@ model Group {
   communityPlayers      CommunityPlayer[]
   matchSchedules        MatchSchedule[]
   matchAutomations      MatchAutomation[]
+  // Phase 2
+  matchScheduleSkips    MatchScheduleSkip[]
 
   @@unique([organizationId, slug])
 }
@@ -831,33 +840,39 @@ model CommunityPlayer {
 // timezone; startTime is optional local "HH:MM". locationName is a plain
 // label (no address/coordinates).
 model Match {
-  id                 String      @id @default(cuid())
-  groupId            String
-  date               DateTime
-  startTime          String?
-  locationName       String?
-  status             MatchStatus @default(SCHEDULED)
-  attendanceClosedAt DateTime?
+  id                   String      @id @default(cuid())
+  groupId              String
+  date                 DateTime
+  startTime            String?
+  locationName         String?
+  status               MatchStatus @default(SCHEDULED)
+  attendanceClosedAt   DateTime?
+  // Phase 4B — the ONE attendance deadline (UTC instant) shown and enforced for
+  // every Match. Manual Matches: optional, organizer-set. Recurring Matches: the
+  // occurrence cutoff (kept equal to MatchAutomation.cutoffDueAt). NULL = no
+  // deadline (open until closed by hand). Existing recurring Matches were
+  // backfilled from cutoffDueAt, except ones an organizer reopened after it.
+  attendanceDeadlineAt DateTime?
   // M9-B — the organizer's selected Telegram chat (communication context and
   // default player scope). NOT evidence that anything was sent: TelegramPoll /
   // MessageDelivery record actual sends. Server-validated to be this Group's.
-  telegramChatId     Int?
+  telegramChatId       Int?
   // M9.2 — the Community (roster) this Match belongs to. NULL only for legacy
   // Matches that could not be mapped safely (organizer remediation).
-  communityId        String?
+  communityId          String?
   // M9.2 — the reusable Venue (Organization-level; same Organization enforced
   // server-side). locationName stays the display name snapshot.
-  venueId            String?
+  venueId              String?
   // M9.2 — the weekly schedule that created this Match (one Match per schedule
   // and game date — the idempotency key of automatic creation).
-  scheduleId         String?
+  scheduleId           String?
   // M9.3 — version of the Match Link (HMAC of matchId + shareVersion under
   // MATCH_SHARE_SECRET; nothing secret is stored). Reset Link increments it,
   // invalidating the previous link immediately.
-  shareVersion       Int         @default(1)
-  createdByUserId    String?
-  createdAt          DateTime    @default(now())
-  updatedAt          DateTime    @updatedAt
+  shareVersion         Int         @default(1)
+  createdByUserId      String?
+  createdAt            DateTime    @default(now())
+  updatedAt            DateTime    @updatedAt
 
   group         Group                @relation(fields: [groupId], references: [id], onDelete: Restrict)
   createdBy     User?                @relation("MatchCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
@@ -882,6 +897,7 @@ model Match {
   @@index([telegramChatId])
   @@index([communityId])
   @@index([venueId])
+  @@index([attendanceDeadlineAt])
 }
 
 // M9.2 — a reusable Venue / ground of an Organization (any of its Groups may
@@ -895,6 +911,18 @@ model Venue {
   isActive       Boolean  @default(true)
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
+
+  // Phase 4B — weather. Coordinates are stored ONLY after an organizer explicitly
+  // picked a location from the provider's search results (never guessed from a
+  // name); changing the address clears them. isIndoor labels the forecast as
+  // outside weather.
+  isIndoor                         Boolean   @default(false)
+  weatherLatitude                  Float?
+  weatherLongitude                 Float?
+  weatherLocationLabel             String?
+  weatherLocationConfirmedAt       DateTime?
+  // Audit only (scalar, no relation): the User who confirmed the location.
+  weatherLocationConfirmedByUserId String?
 
   organization Organization    @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   matches      Match[]
@@ -926,14 +954,46 @@ model MatchSchedule {
   createdAt        DateTime @default(now())
   updatedAt        DateTime @updatedAt
 
-  group     Group     @relation(fields: [groupId], references: [id], onDelete: Restrict)
-  community Community @relation(fields: [communityId, groupId], references: [id, groupId], onDelete: Restrict)
-  venue     Venue?    @relation(fields: [venueId], references: [id], onDelete: SetNull)
-  createdBy User?     @relation("ScheduleCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
+  group     Group               @relation(fields: [groupId], references: [id], onDelete: Restrict)
+  community Community           @relation(fields: [communityId, groupId], references: [id, groupId], onDelete: Restrict)
+  venue     Venue?              @relation(fields: [venueId], references: [id], onDelete: SetNull)
+  createdBy User?               @relation("ScheduleCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
   matches   Match[]
+  skips     MatchScheduleSkip[]
 
   @@index([groupId])
   @@index([isActive])
+}
+
+// Phase 2 — an occurrence of a recurring schedule whose Match was NOT created
+// because the Organization's monthly new-match allowance was reached. One row
+// per (schedule, game date): repeated / concurrent automation runs only move
+// lastSkippedAt. resolvedAt = the Match was created later (allowance became
+// available before the attendance cutoff); acknowledgedAt = an organizer
+// dismissed the warning. Warnings show while both are NULL. groupId is always
+// the schedule's own Group (set server-side). Never touches the schedule.
+model MatchScheduleSkip {
+  id                   String    @id @default(cuid())
+  groupId              String
+  scheduleId           String
+  // Date-only (UTC midnight) GAME date of the occurrence, like Match.date.
+  occurrenceDate       DateTime
+  // "MONTHLY_MATCH_LIMIT" (the only reason today).
+  reason               String
+  // The monthly new-match allowance when it was skipped.
+  monthlyLimit         Int
+  firstSkippedAt       DateTime  @default(now())
+  lastSkippedAt        DateTime  @default(now())
+  resolvedAt           DateTime?
+  acknowledgedAt       DateTime?
+  acknowledgedByUserId String?
+
+  group          Group         @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  schedule       MatchSchedule @relation(fields: [scheduleId], references: [id], onDelete: Cascade)
+  acknowledgedBy User?         @relation("ScheduleSkipAcknowledgedBy", fields: [acknowledgedByUserId], references: [id], onDelete: SetNull)
+
+  @@unique([scheduleId, occurrenceDate])
+  @@index([groupId])
 }
 
 // M9.2 — what automation did for one scheduled Match (one row per Match).
@@ -1152,4 +1212,90 @@ model TelegramChatBindCode {
   createdBy User? @relation(fields: [createdByUserId], references: [id], onDelete: SetNull)
 
   @@index([groupId])
+}
+
+// M11.2A — Stripe billing (TEST MODE). Stripe is the source of truth for
+// payment state; these rows are the last state fetched from Stripe (never
+// card or payment-method data). Organization.plan stays the projection the
+// entitlement engine reads (PRO while a subscription entitles, else FREE —
+// LEGACY / COMP are never overwritten).
+
+// One row per Stripe Subscription, upserted from the subscription re-fetched from Stripe.
+model BillingSubscription {
+  id                   String    @id @default(cuid())
+  organizationId       String
+  stripeSubscriptionId String    @unique
+  stripeCustomerId     String
+  stripePriceId        String?
+  interval             String?
+  status               String
+  currentPeriodEnd     DateTime?
+  cancelAtPeriodEnd    Boolean   @default(false)
+  canceledAt           DateTime?
+  endedAt              DateTime?
+  livemode             Boolean
+  // When the Stripe fetch that wrote this row STARTED — an older fetch never overwrites a newer one.
+  lastSyncedAt         DateTime
+  createdAt            DateTime  @default(now())
+  updatedAt            DateTime  @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId])
+}
+
+enum StripeEventStatus {
+  RECEIVED
+  PROCESSED
+  IGNORED
+  FAILED
+  EXCEPTION
+}
+
+// Webhook deliveries by Stripe event id (dedupe + operator visibility).
+// PROCESSED is written in the SAME transaction as the subscription / plan update.
+// FAILED = transient (Stripe retries); EXCEPTION = needs an operator (never discarded).
+model StripeEvent {
+  id             String            @id
+  type           String
+  livemode       Boolean
+  status         StripeEventStatus @default(RECEIVED)
+  attempts       Int               @default(0)
+  organizationId String?
+  objectId       String?
+  error          String?
+  receivedAt     DateTime          @default(now())
+  processedAt    DateTime?
+  updatedAt      DateTime          @updatedAt
+
+  @@index([status])
+}
+
+enum BillingCheckoutStatus {
+  CREATING
+  OPEN
+  COMPLETED
+  EXPIRED
+  FAILED
+}
+
+// One Checkout attempt = one durable operation id = one Stripe idempotency key.
+// A crash after Stripe created the session is recovered by retrying the SAME
+// operation (Stripe returns the same session). At most one CREATING/OPEN per Organization.
+model BillingCheckoutSession {
+  id              String                @id @default(cuid())
+  organizationId  String
+  interval        String
+  stripePriceId   String
+  createdByUserId String?
+  status          BillingCheckoutStatus @default(CREATING)
+  stripeSessionId String?               @unique
+  url             String?
+  expiresAt       DateTime
+  createdAt       DateTime              @default(now())
+  updatedAt       DateTime              @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId, status])
 }

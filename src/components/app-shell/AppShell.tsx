@@ -2,7 +2,7 @@ import Link from "next/link";
 import { Scale } from "lucide-react";
 import type { ShellData } from "@/lib/appShell";
 import { cn } from "@/lib/cn";
-import { AccountMenu, GroupSwitcher, MobileBottomNav, SidebarNav, SignOutButton } from "./ShellClient";
+import { AccountMenu, MobileBottomNav, MobileContext, SidebarContext, SidebarNav, SignOutButton } from "./ShellClient";
 
 /**
  * UI-3 — authenticated application shell (visual reference: the approved
@@ -16,7 +16,7 @@ function Brand({ className }: { className?: string }) {
     <Link
       href="/admin"
       className={cn("flex items-center gap-2 rounded-tbp-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent", className)}
-      aria-label="Team Balance Pro workspaces"
+      aria-label="Team Balance Pro — My Organizations"
     >
       <span className="grid size-8 shrink-0 place-items-center rounded-tbp-sm bg-primary text-primary-foreground" aria-hidden="true">
         <Scale className="size-4" />
@@ -48,8 +48,9 @@ export default function AppShell({ data, children }: { data: ShellData; children
         <div className="flex h-16 items-center px-4">
           <Brand />
         </div>
+        {/* Phase 3 — Organization / Group context of the current page (none while choosing an Organization). */}
         <div className="px-3">
-          <GroupSwitcher data={data} />
+          <SidebarContext data={data} />
         </div>
         <SidebarNav data={data} />
         <div className="space-y-1 border-t border-pitch-foreground/10 p-3">
@@ -62,22 +63,16 @@ export default function AppShell({ data, children }: { data: ShellData; children
       <div className="flex min-w-0 flex-1 flex-col">
         {/* Mobile header */}
         <header className="sticky top-0 z-30 flex h-14 items-center gap-2 bg-pitch px-3 text-pitch-foreground lg:hidden">
-          {data.organizations.length > 0 ? (
-            <>
-              <Link
-                href="/admin"
-                aria-label="Team Balance Pro workspaces"
-                className="grid size-8 shrink-0 place-items-center rounded-tbp-sm bg-primary text-primary-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
-              >
-                <Scale className="size-4" aria-hidden="true" />
-              </Link>
-              <div className="min-w-0 flex-1">
-                <GroupSwitcher data={data} mobile />
-              </div>
-            </>
-          ) : (
-            <Brand className="min-w-0 flex-1" />
-          )}
+          <Link
+            href="/admin"
+            aria-label="My Organizations"
+            className="grid size-8 shrink-0 place-items-center rounded-tbp-sm bg-primary text-primary-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+          >
+            <Scale className="size-4" aria-hidden="true" />
+          </Link>
+          <div className="min-w-0 flex-1">
+            <MobileContext data={data} />
+          </div>
           <AccountMenu data={data} mobile />
         </header>
 

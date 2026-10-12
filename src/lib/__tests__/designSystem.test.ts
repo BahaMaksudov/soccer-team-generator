@@ -148,6 +148,7 @@ describe("UI primitives are presentation-only", () => {
         // M9.2 — Group Settings: Communities.
         "src/app/admin/o/[organizationSlug]/g/[groupSlug]/settings/CommunitiesSection.tsx",
         "src/app/admin/o/[organizationSlug]/g/[groupSlug]/settings/VenuesSection.tsx",
+        "src/app/admin/o/[organizationSlug]/g/[groupSlug]/settings/GameDayUpdateSection.tsx", // Phase 4B
         "src/app/admin/o/[organizationSlug]/g/[groupSlug]/matches/SchedulesSection.tsx",
         // M9.1 — Telegram team-post recovery in the Match Workspace.
         "src/app/admin/o/[organizationSlug]/g/[groupSlug]/matches/[matchId]/TeamsTelegramPost.tsx",
@@ -164,6 +165,10 @@ describe("UI primitives are presentation-only", () => {
         "src/app/admin/o/[organizationSlug]/page.tsx",
         // M11.1 — read-only plan & usage card.
         "src/app/admin/o/[organizationSlug]/PlanUsageCard.tsx",
+        // M11.2A — billing (Organization) and public pricing.
+        "src/app/admin/o/[organizationSlug]/billing/BillingActions.tsx",
+        "src/app/pricing/page.tsx",
+        "src/components/billing/PlanComparison.tsx",
         "src/app/account/security/page.tsx",
         "src/app/me/page.tsx",
       ].sort()

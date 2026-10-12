@@ -1,31 +1,31 @@
 import { redirect } from "next/navigation";
-import { findSport } from "@/lib/sports";
 import Link from "next/link";
 import { ChevronRight, Plus } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { ROLE_LABELS } from "@/lib/appShell";
-import { listAccessibleTenants, TenantContextError, type AccessibleOrganization } from "@/lib/tenantContext";
-import { resolveAdminEntry } from "./adminEntry";
+import { ownershipAllowance, ownershipCountLabel, ownershipLimitMessage, SECOND_ORGANIZATION_NOTE, type OwnershipAllowance } from "@/lib/entitlements";
+import { listAccessibleTenants, requireSessionUser, TenantContextError, type AccessibleOrganization } from "@/lib/tenantContext";
 
 /**
- * Phase 2D.6C — bare `/admin` is now the authenticated tenant-entry
- * point, not the operational application. The generator UI (formerly
- * here) now lives only in the canonical tenant-bound workspace
- * (/admin/o/[organizationSlug]/g/[groupSlug]); the legacy copy was
- * retired in Phase 2D.6D.5E.4 and deleted in 2D.6D.5E.5.
+ * Phase 3 — "My Organizations": where every sign-in lands (DEFAULT_AFTER_LOGIN)
+ * and step one of Login → Organization → Group → Group dashboard.
  *
- * Uses listAccessibleTenants() (Phase 2D.6B) — never the public
- * DEFAULT_PUBLIC_ORGANIZATION_SLUG/DEFAULT_PUBLIC_GROUP_SLUG
- * compatibility config, never a "first Organization"/"first Group"
- * query. The only case that auto-redirects is the objectively
- * unambiguous one; see ./adminEntry.ts for the exact decision rule.
+ * Lists exactly the session User's own memberships (listAccessibleTenants:
+ * owned AND invited ADMIN/MEMBER organizations, each with the real role).
+ * Selecting one opens its "My Groups" page. Never auto-selects (no
+ * "first Organization"/"first Group" guess; a deep link to an authorized
+ * page still opens that page directly). A User without an Organization gets
+ * a welcome and "Create your first organization" (Phase 1 ownership rules
+ * decide whether creation is available — invited memberships never count).
  */
 export default async function AdminEntryPage() {
   let organizations: AccessibleOrganization[];
+  let allowance: OwnershipAllowance;
   try {
     organizations = await listAccessibleTenants();
+    // Phase 1 — display only; POST /api/admin/organizations enforces the allowance.
+    allowance = await ownershipAllowance((await requireSessionUser()).id);
   } catch (e) {
     // Middleware already requires a session to reach this page; a
     // session that no longer maps to a User (e.g. deleted, or bound to
@@ -36,83 +36,77 @@ export default async function AdminEntryPage() {
     throw e;
   }
 
-  const entry = resolveAdminEntry(organizations);
-
-  if (entry.kind === "redirect") {
-    redirect(entry.href);
+  if (organizations.length === 0) {
+    return (
+      <div className="mx-auto max-w-lg space-y-4 py-6 text-center">
+        <p className="eyebrow">Welcome</p>
+        <h1 className="text-3xl font-extrabold">My Organizations</h1>
+        <p className="text-muted-foreground">
+          Welcome to Team Balance Pro! An organization holds your groups — each group has its own players, matches and sport. If someone invited you, accept the invitation from your email to join their organization.
+        </p>
+        {allowance.canCreate ? (
+          <Button asChild size="lg">
+            <Link href="/onboarding">
+              <Plus aria-hidden="true" />
+              Create your first organization
+            </Link>
+          </Button>
+        ) : (
+          <p className="text-sm text-muted-foreground">{ownershipLimitMessage(allowance)}</p>
+        )}
+      </div>
+    );
   }
 
-  // M5: a signed-in User with no Organization yet starts onboarding.
-  if (entry.kind === "no-access") {
-    redirect("/onboarding");
-  }
-
-  const shown = entry.kind === "select" ? entry.organizations : [entry.organization];
-
-  // UI-3 — redesigned presentation (app shell); same data, roles and links as before.
+  const orgGroupsHref = (org: AccessibleOrganization) => `/admin/o/${encodeURIComponent(org.slug)}/groups`;
   return (
     <div className="space-y-6">
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
-          <p className="eyebrow">Workspaces</p>
-          <h1 className="mt-1 text-3xl font-extrabold">Your workspaces</h1>
-          <p className="mt-1 text-muted-foreground">Choose a group to manage its players, matches and teams.</p>
+          <p className="eyebrow">Organizations</p>
+          <h1 className="mt-1 text-3xl font-extrabold">My Organizations</h1>
+          <p className="mt-1 text-muted-foreground">Choose an organization to see its groups.</p>
         </div>
-        <Button asChild variant="outline">
-          <Link href="/onboarding">
-            <Plus aria-hidden="true" />
-            Create organization
-          </Link>
-        </Button>
+        {allowance.canCreate && (
+          <Button asChild variant="outline">
+            <Link href="/onboarding">
+              <Plus aria-hidden="true" />
+              Create organization
+            </Link>
+          </Button>
+        )}
       </div>
 
-      {shown.map((org) => (
-        <Card key={org.id}>
-          <CardHeader className="flex flex-row flex-wrap items-center justify-between gap-3 space-y-0">
-            <div className="flex min-w-0 items-center gap-3">
-              <span className="grid size-10 shrink-0 place-items-center rounded-tbp-sm bg-accent font-display font-black text-accent-foreground" aria-hidden="true">
+      <ul className="grid gap-4 md:grid-cols-2" aria-label="Your organizations">
+        {organizations.map((org) => (
+          <li key={org.id}>
+            <Link
+              href={orgGroupsHref(org)}
+              className="flex min-h-20 items-center gap-3 rounded-tbp-2xl border border-border bg-card p-4 shadow-card transition-colors hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+            >
+              <span className="grid size-11 shrink-0 place-items-center rounded-tbp-sm bg-accent font-display font-black text-accent-foreground" aria-hidden="true">
                 {org.name.slice(0, 1).toUpperCase()}
               </span>
-              <div className="min-w-0">
-                <h2 className="truncate text-lg font-extrabold">{org.name}</h2>
-                <Badge variant="secondary">{ROLE_LABELS[org.role]}</Badge>
-              </div>
-            </div>
-            <div className="flex flex-wrap gap-2">
-              {(org.role === "OWNER" || org.role === "ADMIN") && (
-                <Button asChild variant="ghost" size="sm">
-                  <Link href={`/admin/o/${encodeURIComponent(org.slug)}/groups/new`}>Add group</Link>
-                </Button>
-              )}
-              {org.role === "OWNER" && (
-                <Button asChild variant="ghost" size="sm">
-                  <Link href={`/admin/o/${encodeURIComponent(org.slug)}/members`}>Members</Link>
-                </Button>
-              )}
-            </div>
-          </CardHeader>
-          <CardContent>
-            {org.groups.length === 0 ? (
-              <p className="text-sm text-muted-foreground">No active groups.</p>
-            ) : (
-              <ul className="divide-y divide-border rounded-tbp border border-border">
-                {org.groups.map((g) => (
-                  <li key={g.id}>
-                    <Link
-                      className="flex min-h-12 items-center gap-3 px-4 py-2 hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
-                      href={`/admin/o/${encodeURIComponent(org.slug)}/g/${encodeURIComponent(g.slug)}`}
-                    >
-                      <span className="min-w-0 flex-1 truncate font-semibold">{g.name}</span>
-                      <span className="shrink-0 text-sm text-muted-foreground">{findSport(g.sportKey)?.label ?? g.sportKey}</span>
-                      <ChevronRight className="size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
-                    </Link>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </CardContent>
-        </Card>
-      ))}
+              <span className="min-w-0 flex-1">
+                <span className="block truncate text-lg font-extrabold">{org.name}</span>
+                <span className="mt-0.5 flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
+                  <Badge variant="secondary">{ROLE_LABELS[org.role]}</Badge>
+                  {org.groups.length} {org.groups.length === 1 ? "group" : "groups"}
+                </span>
+              </span>
+              <ChevronRight className="size-5 shrink-0 text-muted-foreground" aria-hidden="true" />
+            </Link>
+          </li>
+        ))}
+      </ul>
+
+      {/* Phase 1 — ownership allowance: why another Organization can or can't be created. */}
+      <section aria-labelledby="ownership-heading" className="rounded-tbp-xl border border-border bg-card p-4 text-sm">
+        <h2 id="ownership-heading" className="font-semibold">
+          {ownershipCountLabel(allowance)}
+        </h2>
+        <p className="mt-1 text-muted-foreground">{allowance.canCreate ? (allowance.owned > 0 ? SECOND_ORGANIZATION_NOTE : null) : ownershipLimitMessage(allowance)}</p>
+      </section>
     </div>
   );
 }

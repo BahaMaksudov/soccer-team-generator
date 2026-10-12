@@ -4,6 +4,7 @@ import { findSport, sportClientView } from "@/lib/sports";
 import { other } from "@/lib/sports/other";
 import { isManager } from "@/lib/tenantRoute";
 import GroupSettings from "./GroupSettings";
+import { gameDayUpdateView } from "@/lib/gameDayUpdateSettings";
 
 /**
  * UI-8 — the ONE organizer location for group-level settings: team name,
@@ -30,6 +31,7 @@ export default async function GroupSettingsPage({ params }: { params: Params }) 
       groupSlug={context.activeGroup.slug}
       groupName={context.activeGroup.name}
       sport={sportClientView(sport ?? other)}
+      gameDayUpdate={await gameDayUpdateView(context)}
     />
   );
 }

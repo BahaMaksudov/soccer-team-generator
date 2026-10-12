@@ -3,6 +3,7 @@ import { prisma } from "@/lib/prisma";
 import { buildPlayerMatchView, type PlayerMatchView } from "@/lib/matchPage";
 import { effectiveAttendance, recordParticipantResponse, type AttendanceRow } from "@/lib/attendance";
 import { communityRosterIds } from "@/lib/communities";
+import { attendanceIsClosed, effectiveClosedAt } from "@/lib/attendanceDeadline";
 import { MATCH_LINK_NOT_CONFIGURED, matchLinkPath, matchPlayerRef, matchShareToken, resolvePlayerRef, verifyMatchShareToken } from "@/lib/matchShare";
 import { formatStartTime } from "@/lib/messaging/content";
 
@@ -43,7 +44,8 @@ type LinkedMatch = {
   status: "SCHEDULED" | "COMPLETED" | "CANCELED";
   communityId: string | null;
   attendanceClosedAt: Date | null;
-  cutoffDueAt: Date | null;
+  /** Phase 4B — the one attendance deadline (replaces the automation cutoff here). */
+  attendanceDeadlineAt: Date | null;
   communityName: string | null;
   group: { id: string; name: string; sportKey: string; organizationName: string };
 };
@@ -60,7 +62,7 @@ export async function resolveLinkedMatch(token: unknown, matchId: unknown): Prom
       status: true,
       communityId: true,
       attendanceClosedAt: true,
-      automation: { select: { cutoffDueAt: true } },
+      attendanceDeadlineAt: true,
       community: { select: { name: true } },
       group: { select: { id: true, name: true, sportKey: true, isActive: true, visibility: true, organization: { select: { name: true } } } },
     },
@@ -74,16 +76,16 @@ export async function resolveLinkedMatch(token: unknown, matchId: unknown): Prom
     status: m.status,
     communityId: m.communityId,
     attendanceClosedAt: m.attendanceClosedAt,
-    cutoffDueAt: m.automation?.cutoffDueAt ?? null,
+    attendanceDeadlineAt: m.attendanceDeadlineAt,
     communityName: m.community?.name ?? null,
     group: { id: m.group.id, name: m.group.name, sportKey: m.group.sportKey, organizationName: m.group.organization.name },
   };
 }
 
-/** Whether the Match accepts answers now (canceled / attendance closed / scheduled cutoff passed → no). */
-export function linkState(m: Pick<LinkedMatch, "status" | "attendanceClosedAt" | "cutoffDueAt">, now = new Date()): LinkParticipation["state"] {
+/** Whether the Match accepts answers now (canceled / completed / the shared attendance-deadline rule says closed → no). */
+export function linkState(m: Pick<LinkedMatch, "status" | "attendanceClosedAt" | "attendanceDeadlineAt">, now = new Date()): LinkParticipation["state"] {
   if (m.status === "CANCELED") return "canceled";
-  if (m.status === "COMPLETED" || m.attendanceClosedAt || (m.cutoffDueAt && m.cutoffDueAt <= now)) return "closed";
+  if (m.status === "COMPLETED" || attendanceIsClosed(m, now)) return "closed";
   return "open";
 }
 
@@ -145,7 +147,7 @@ export async function matchLinkResponse(token: unknown, matchId: unknown, ref: u
     where: { matchId_playerId: { matchId: m.id, playerId } },
     select: { playerId: true, participantStatus: true, participantSource: true, participantRespondedAt: true, overrideStatus: true, overrideAt: true },
   })) as AttendanceRow | null;
-  const eff = effectiveAttendance(row, m.attendanceClosedAt);
+  const eff = effectiveAttendance(row, effectiveClosedAt(m));
   return { name: displayNames(players).get(playerId)!, status: eff.status, setByOrganizer: eff.overridden };
 }
 

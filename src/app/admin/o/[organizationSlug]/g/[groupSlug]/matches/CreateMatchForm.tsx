@@ -3,6 +3,7 @@
 import { useEffect, useId, useState } from "react";
 import { Plus, X } from "lucide-react";
 import { adminTenantApiPath } from "@/lib/adminTenantApi";
+import { localKickoff, timeZoneAbbreviation } from "@/lib/deadlineFormat";
 import { canonicalAdminMatchPath } from "@/lib/matchPaths";
 import { Button } from "@/components/ui/button";
 
@@ -11,12 +12,38 @@ import { Button } from "@/components/ui/button";
  * request): date, optional start time and location — sport and timezone come
  * from the Group. Creating a match sends nothing. Opens automatically when the
  * page is reached with #new (Overview "Create match" / "New match").
+ *
+ * Phase 2 — on a plan with a monthly new-match allowance (Free) it shows
+ * "New matches this month: N of 4" and, once used up, why creation is blocked.
+ * Display only: POST /matches enforces the allowance on the server.
  */
+export type MatchAllowance = { used: number; limit: number | null; exhausted: boolean; message: string | null; resetsAt: string };
+
+const resetLabel = (iso: string) => new Date(iso).toLocaleDateString("en-US", { timeZone: "UTC", month: "long", day: "numeric" });
+
+function AllowanceNote({ allowance, id }: { allowance: MatchAllowance; id: string }) {
+  if (allowance.limit === null) return null;
+  return allowance.exhausted ? (
+    <div id={id} role="alert" className="rounded-tbp border border-accent/40 bg-accent/10 px-3 py-2 text-sm">
+      <p className="font-semibold">
+        New matches this month: {allowance.used} of {allowance.limit}
+      </p>
+      <p className="mt-0.5">{allowance.message}</p>
+      <p className="mt-0.5 text-muted-foreground">You can still open, edit and run every existing match. New matches are available again on {resetLabel(allowance.resetsAt)} (UTC).</p>
+    </div>
+  ) : (
+    <p id={id} className="text-sm text-muted-foreground">
+      New matches this month: {allowance.used} of {allowance.limit} on the Free plan · resets {resetLabel(allowance.resetsAt)} (UTC)
+    </p>
+  );
+}
 export default function CreateMatchForm({
   organizationSlug,
   groupSlug,
   communities = [],
   venues = [],
+  allowance = null,
+  timezone = "UTC",
 }: {
   organizationSlug: string;
   groupSlug: string;
@@ -24,16 +51,21 @@ export default function CreateMatchForm({
   communities?: Array<{ id: string; name: string }>;
   /** M9.2 — the Organization's active Venues. */
   venues?: Array<{ id: string; name: string; address: string | null }>;
+  /** Phase 2 — the Organization's monthly new-match allowance (null: not shown). */
+  allowance?: MatchAllowance | null;
+  /** Phase 4B — the Group's timezone (the attendance deadline is entered in it). */
+  timezone?: string;
 }) {
   const NEW = "__new__";
   const [venueId, setVenueId] = useState("");
   const [newVenue, setNewVenue] = useState({ name: "", address: "" });
   const url = adminTenantApiPath({ organizationSlug, groupSlug, path: "/matches" });
   const [open, setOpen] = useState(false);
-  const [form, setForm] = useState({ date: "", startTime: "", locationName: "", communityId: communities.length === 1 ? communities[0].id : "" });
+  const [form, setForm] = useState({ date: "", startTime: "", locationName: "", communityId: communities.length === 1 ? communities[0].id : "", attendanceDeadline: "" });
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const id = useId();
+  const blocked = Boolean(allowance?.exhausted);
 
   useEffect(() => {
     if (window.location.hash === "#new") setOpen(true);
@@ -45,6 +77,11 @@ export default function CreateMatchForm({
   async function create(e: React.FormEvent) {
     e.preventDefault();
     if (busy) return;
+    // Phase 4B — same-zone check before the server's full validation (future + before kickoff).
+    if (form.attendanceDeadline && form.date && form.attendanceDeadline >= localKickoff(form.date, form.startTime)) {
+      setErr("The attendance deadline must be before kickoff.");
+      return;
+    }
     setBusy(true);
     setErr(null);
     try {
@@ -72,6 +109,7 @@ export default function CreateMatchForm({
           ...(form.locationName ? { locationName: form.locationName } : {}),
           ...(form.communityId ? { communityId: form.communityId } : {}),
           ...(chosenVenue ? { venueId: chosenVenue } : {}),
+          ...(form.attendanceDeadline ? { attendanceDeadline: form.attendanceDeadline } : {}),
         }),
       });
       const data = await res.json().catch(() => ({}));
@@ -87,9 +125,12 @@ export default function CreateMatchForm({
 
   if (!open) {
     return (
-      <Button type="button" onClick={() => setOpen(true)}>
-        <Plus aria-hidden="true" /> New match
-      </Button>
+      <div className="space-y-2">
+        <Button type="button" onClick={() => setOpen(true)} disabled={blocked} aria-describedby={allowance?.limit != null ? `${id}-allowance` : undefined}>
+          <Plus aria-hidden="true" /> New match
+        </Button>
+        {allowance && <AllowanceNote allowance={allowance} id={`${id}-allowance`} />}
+      </div>
     );
   }
 
@@ -161,9 +202,26 @@ export default function CreateMatchForm({
           <input id={`${id}-loc`} className={input} maxLength={80} placeholder="Field 2" value={form.locationName} onChange={(e) => setForm({ ...form, locationName: e.target.value })} />
         </div>
       )}
+      <div>
+        <label htmlFor={`${id}-deadline`} className="mb-1 block text-sm font-semibold">
+          Attendance closes <span className="font-normal text-muted-foreground">(optional)</span>
+        </label>
+        <input
+          id={`${id}-deadline`}
+          type="datetime-local"
+          className={`${input} sm:max-w-xs`}
+          value={form.attendanceDeadline}
+          aria-describedby={`${id}-deadline-hint`}
+          onChange={(e) => setForm({ ...form, attendanceDeadline: e.target.value })}
+        />
+        <p id={`${id}-deadline-hint`} className="mt-1 text-xs text-muted-foreground">
+          Times in {timezone} ({timeZoneAbbreviation(timezone)}). Leave empty to close attendance yourself. It must be before kickoff.
+        </p>
+      </div>
       {err && <p role="alert" className="text-sm text-destructive">{err}</p>}
+      {allowance && <AllowanceNote allowance={allowance} id={`${id}-allowance`} />}
       <div className="flex flex-wrap items-center gap-3">
-        <Button type="submit" disabled={busy} aria-busy={busy}>
+        <Button type="submit" disabled={busy || blocked} aria-busy={busy}>
           {busy ? "Creating…" : "Create match"}
         </Button>
         <span className="text-xs text-muted-foreground">Creating a match sends nothing.</span>

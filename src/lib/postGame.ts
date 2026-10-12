@@ -20,6 +20,7 @@ import { aiConfigured } from "@/lib/ai/openai";
 import { participantsOf, type Participant } from "@/lib/matchParticipants";
 import { effectiveAttendance, type AttendanceRow } from "@/lib/attendance";
 import { communityMemberIds } from "@/lib/communities";
+import { effectiveClosedAt } from "@/lib/attendanceDeadline";
 import { applyTelegramMvpAnswer } from "@/lib/telegramMvp";
 import { buildRecapFacts, deterministicRecap, generateAiRecap, RECAP_MAX_LENGTH, sanitizeRecapText, type RecapFacts } from "@/lib/recap";
 import { fixturePairs, fixtureWinner, isCompleteFor, parseResult, serializeFixtures, validateFixtures, type FixtureInput, type MatchResultData } from "@/lib/matchResults";
@@ -61,6 +62,7 @@ async function loadMatch(context: TenantContext, matchId: string) {
       telegramChatId: true,
       communityId: true,
       attendanceClosedAt: true,
+      attendanceDeadlineAt: true,
       attendance: { select: { playerId: true, participantStatus: true, participantSource: true, participantRespondedAt: true, overrideStatus: true, overrideAt: true } },
       generation: { select: { teamsJson: true, groupId: true } },
       result: true,
@@ -82,7 +84,7 @@ type LoadedMatch = NonNullable<Awaited<ReturnType<typeof loadMatch>>>;
 async function potmEligible(groupId: string, m: LoadedMatch, participants: Participant[]): Promise<Participant[]> {
   const members = m.communityId ? new Set(await communityMemberIds(groupId, m.communityId)) : null;
   const byPlayer = new Map(m.attendance.map((r) => [r.playerId, r as AttendanceRow]));
-  return participants.filter((p) => (!members || members.has(p.playerId)) && effectiveAttendance(byPlayer.get(p.playerId), m.attendanceClosedAt).status !== "NOT_PLAYING");
+  return participants.filter((p) => (!members || members.has(p.playerId)) && effectiveAttendance(byPlayer.get(p.playerId), effectiveClosedAt(m)).status !== "NOT_PLAYING");
 }
 
 // ------------------------------------------------------------------ MVP tally

@@ -34,8 +34,10 @@ type Schedule = {
   cutoffTime: string;
   isActive: boolean;
   next: { gameDate: string; gameAt: string; pollAt: string; cutoffAt: string };
+  /** Phase 2 — open "match not created (monthly limit)" warnings. */
+  skips?: Array<{ id: string; occurrenceDate: string; message: string }>;
 };
-type Form = Omit<Schedule, "id" | "communityName" | "venueName" | "isActive" | "next"> & { venueId: string };
+type Form = Omit<Schedule, "id" | "communityName" | "venueName" | "isActive" | "next" | "skips"> & { venueId: string };
 
 const when = (iso: string, tz: string) =>
   new Intl.DateTimeFormat("en-US", { timeZone: tz, weekday: "short", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }).format(new Date(iso));
@@ -82,6 +84,18 @@ export default function SchedulesSection({
       const res = await fetch(url(`/schedules/${s.id}/keep`), { method: "POST" });
       const data = await res.json().catch(() => ({}));
       setFeedback((f) => ({ ...f, [s.id]: res.ok ? { tone: "done", text: `This schedule stays active; ${data.paused} other schedule${data.paused === 1 ? " was" : "s were"} paused. Automation resumes.` } : { tone: "warn", text: data?.error ?? "Something went wrong." } }));
+      await load();
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  // Phase 2 — dismiss a skipped-occurrence warning (persistent; the schedule is unchanged).
+  async function dismissSkip(scheduleId: string, skipId: string) {
+    setBusy(true);
+    try {
+      const res = await fetch(url(`/schedules/${scheduleId}/skips/${skipId}/acknowledge`), { method: "POST" });
+      if (!res.ok) setFeedback((f) => ({ ...f, [scheduleId]: { tone: "warn", text: "Could not dismiss the warning. Please try again." } }));
       await load();
     } finally {
       setBusy(false);
@@ -260,6 +274,12 @@ export default function SchedulesSection({
             </Button>
           </div>
           <p className="text-xs text-muted-foreground">Changes apply to matches created from now on.</p>
+          {/* Phase 4B — a new game day is a NEW occurrence: matches already created keep their date. */}
+          {form.mode === "edit" && list?.find((x) => x.id === form.id)?.weekday !== values.weekday && (
+            <p role="alert" className="rounded-tbp border border-accent/40 bg-accent/10 px-3 py-2 text-xs">
+              Changing the game day creates matches on the new day ({WEEKDAYS[values.weekday]}) from now on. Matches already created keep their date — cancel any you no longer need.
+            </p>
+          )}
         </form>
       )}
 
@@ -299,6 +319,19 @@ export default function SchedulesSection({
                   </div>
                 </dl>
                 <p className="mt-2 text-xs text-muted-foreground">Times in {s.timezone}.</p>
+                {(s.skips ?? []).length > 0 && (
+                  <ul className="mt-3 space-y-2" aria-label="Matches not created">
+                    {s.skips!.map((k) => (
+                      <li key={k.id} role="alert" className="rounded-tbp border border-accent/40 bg-accent/10 px-3 py-2">
+                        <p className="font-semibold">Match not created — monthly limit reached</p>
+                        <p className="mt-0.5">{k.message}</p>
+                        <Button type="button" size="sm" variant="ghost" className="mt-1" disabled={busy} onClick={() => dismissSkip(s.id, k.id)}>
+                          Dismiss
+                        </Button>
+                      </li>
+                    ))}
+                  </ul>
+                )}
                 <div className="mt-3 flex flex-wrap gap-2">
                   <Button type="button" size="sm" disabled={busy} onClick={() => runNow(s.id)}>
                     <RefreshCw aria-hidden="true" /> Run Now

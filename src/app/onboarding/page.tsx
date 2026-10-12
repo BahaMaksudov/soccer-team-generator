@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
-import { listAccessibleTenants, TenantContextError } from "@/lib/tenantContext";
+import { listAccessibleTenants, requireSessionUser, TenantContextError } from "@/lib/tenantContext";
+import { ownershipAllowance, ownershipCountLabel, ownershipLimitMessage, SECOND_ORGANIZATION_NOTE, type OwnershipAllowance } from "@/lib/entitlements";
 import { DEFAULT_TIMEZONE, SUPPORTED_SPORTS } from "@/lib/workspaces";
 import OnboardingClient from "./OnboardingClient";
 
@@ -12,8 +13,11 @@ import OnboardingClient from "./OnboardingClient";
  */
 export default async function OnboardingPage() {
   let organizationCount: number;
+  let allowance: OwnershipAllowance;
   try {
     organizationCount = (await listAccessibleTenants()).length;
+    // Phase 1 — display only; POST /api/admin/organizations enforces the allowance.
+    allowance = await ownershipAllowance((await requireSessionUser()).id);
   } catch (e) {
     if (e instanceof TenantContextError) {
       // Organization creation requires a verified email (central rule in tenantContext).
@@ -31,13 +35,26 @@ export default async function OnboardingPage() {
         <h1 className="mt-1 text-3xl font-extrabold">{organizationCount === 0 ? "Create your organization" : "Create another organization"}</h1>
         <p className="mt-1 text-sm text-muted-foreground">An organization holds your groups. Each group has its own players, teams and settings.</p>
       </header>
-      <div className="rounded-tbp-2xl border border-border bg-card p-5 shadow-card">
-        <OnboardingClient sports={SUPPORTED_SPORTS.map((s) => ({ key: s.key, label: s.label }))} defaultTimezone={DEFAULT_TIMEZONE} />
-      </div>
+      {allowance.owned > 0 && (
+        <p className="text-sm">
+          <span className="font-semibold">{ownershipCountLabel(allowance)}.</span>{" "}
+          <span className="text-muted-foreground">{allowance.canCreate ? SECOND_ORGANIZATION_NOTE : null}</span>
+        </p>
+      )}
+      {allowance.canCreate ? (
+        <div className="rounded-tbp-2xl border border-border bg-card p-5 shadow-card">
+          <OnboardingClient sports={SUPPORTED_SPORTS.map((s) => ({ key: s.key, label: s.label }))} defaultTimezone={DEFAULT_TIMEZONE} />
+        </div>
+      ) : (
+        <div role="status" className="rounded-tbp-2xl border border-border bg-card p-5 text-sm shadow-card">
+          <p className="font-semibold">You can&apos;t create another organization right now.</p>
+          <p className="mt-1 text-muted-foreground">{ownershipLimitMessage(allowance)}</p>
+        </div>
+      )}
       <div className="flex flex-wrap gap-4 text-sm">
         {organizationCount > 0 && (
           <Link className={link} href="/admin">
-            Back to your workspaces
+            Back to My Organizations
           </Link>
         )}
         <Link className={link} href="/account/security">

@@ -98,7 +98,15 @@ export default async function OrganizationPage({ params }: { params: Params }) {
         </section>
       </div>
 
-      {plan && <PlanUsageCard summary={plan} />}
+      {plan && (
+        <div className="space-y-2">
+          <PlanUsageCard summary={plan} />
+          {/* M11.2A — Billing (OWNER manages; ADMIN read-only). */}
+          <Link href={`${base}/billing`} className={cn("inline-flex min-h-11 items-center gap-1 text-sm font-semibold text-primary hover:underline", focusRing)}>
+            Billing <ArrowRight className="size-4" aria-hidden="true" />
+          </Link>
+        </div>
+      )}
 
       <section aria-labelledby="org-details" className="rounded-tbp-2xl border border-border bg-card p-5 shadow-card">
         <h2 id="org-details" className="flex items-center gap-2 text-lg font-extrabold">

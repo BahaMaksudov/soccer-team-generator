@@ -20,6 +20,18 @@ import { mapsUrl, organizationVenue } from "@/lib/venues";
 import { canonicalMatchPath } from "@/lib/matchPaths";
 import { postGameView } from "@/lib/postGame";
 import { countAttendance, defaultSelection, effectiveAttendance, recordParticipantResponse, type AttendanceRow } from "@/lib/attendance";
+import { gameDayUpdateStatus } from "@/lib/gameDayUpdate";
+import { schedulesOverLimit } from "@/lib/schedules";
+import {
+  attendanceIsClosed,
+  deadlineError,
+  DEADLINE_AFTER_KICKOFF,
+  effectiveClosedAt,
+  kickoffAt,
+  localDeadlineToUtc,
+  lockMatchAttendance,
+  writeAttendanceDeadline,
+} from "@/lib/attendanceDeadline";
 
 /**
  * M9-A — Match domain services (canonical, URL-bound callers pass an
@@ -53,6 +65,10 @@ const MATCH_SELECT = {
   locationName: true,
   status: true,
   attendanceClosedAt: true,
+  // Phase 4B — the one attendance deadline (shown and enforced).
+  attendanceDeadlineAt: true,
+  // Phase 4B — created by a recurring schedule (its date is locked).
+  scheduleId: true,
   communityId: true,
   venue: { select: { id: true, name: true, address: true } },
   createdAt: true,
@@ -64,7 +80,12 @@ export type MatchSummary = {
   startTime: string | null;
   locationName: string | null;
   status: MatchStatus;
+  /** Phase 4B — by the shared rule: closed by hand / finalized, or the deadline has passed. */
   attendanceClosed: boolean;
+  /** Phase 4B — the attendance deadline (ISO instant), null = none. */
+  attendanceDeadlineAt: string | null;
+  /** Phase 4B — created by a recurring schedule: its date can't be changed. */
+  recurring: boolean;
   /** M9.2 — the Match's Community (null: legacy Match not mapped yet). */
   communityId: string | null;
   /** M9.2 — the reusable Venue (address + keyless maps link), if any. */
@@ -78,6 +99,8 @@ function toSummary(m: {
   locationName: string | null;
   status: MatchStatus;
   attendanceClosedAt: Date | null;
+  attendanceDeadlineAt: Date | null;
+  scheduleId: string | null;
   communityId: string | null;
   venue?: { id: string; name: string; address: string | null } | null;
 }): MatchSummary {
@@ -87,7 +110,9 @@ function toSummary(m: {
     startTime: m.startTime,
     locationName: m.locationName,
     status: m.status,
-    attendanceClosed: m.attendanceClosedAt !== null,
+    attendanceClosed: attendanceIsClosed(m),
+    attendanceDeadlineAt: m.attendanceDeadlineAt?.toISOString() ?? null,
+    recurring: m.scheduleId !== null,
     communityId: m.communityId,
     venue: m.venue ? { id: m.venue.id, name: m.venue.name, address: m.venue.address, mapsUrl: mapsUrl(m.venue.address) } : null,
   };
@@ -145,7 +170,17 @@ export async function createMatch(context: TenantContext, req: Request): Promise
   if (denied) return denied;
   const parsed = matchCreateSchema.safeParse((await req.json().catch(() => null)) ?? {});
   if (!parsed.success) return NextResponse.json(zodErrorResponse(parsed.error), { status: 400 });
-  const { date, startTime, locationName, communityId, venueId } = parsed.data;
+  const { date, startTime, locationName, communityId, venueId, attendanceDeadline } = parsed.data;
+  // Phase 4B — optional deadline: local time in the Group's timezone, before kickoff, in the future.
+  let deadline: Date | null = null;
+  if (attendanceDeadline) {
+    const tz = context.activeGroup.timezone;
+    const at = localDeadlineToUtc(attendanceDeadline, tz);
+    if (!at.ok) return NextResponse.json({ error: at.error }, { status: 400 });
+    const problem = deadlineError(at.at, kickoffAt(toDateOnlyUTC(date), startTime || null, tz), new Date());
+    if (problem) return NextResponse.json({ error: problem }, { status: 400 });
+    deadline = at.at;
+  }
   const resolved = await resolveMatchCommunity(context.activeGroup.id, communityId, true);
   if (!resolved.ok) return resolved.response;
   const venue = venueId ? await organizationVenue(context.organization.id, venueId, true) : null;
@@ -167,6 +202,7 @@ export async function createMatch(context: TenantContext, req: Request): Promise
           // M9.2 — the Community's roster; its connected Telegram chat is the Match's default channel.
           communityId: resolved.community?.id ?? null,
           telegramChatId: resolved.chatRef,
+          attendanceDeadlineAt: deadline,
         },
         select: MATCH_SELECT,
       });
@@ -184,7 +220,19 @@ export async function updateMatch(context: TenantContext, matchId: string, req: 
   if (denied) return denied;
   const parsed = matchUpdateSchema.safeParse((await req.json().catch(() => null)) ?? {});
   if (!parsed.success) return NextResponse.json(zodErrorResponse(parsed.error), { status: 400 });
-  const { date, startTime, locationName, status, communityId, venueId } = parsed.data;
+  const { date, startTime, locationName, status, communityId, venueId, attendanceDeadline } = parsed.data;
+  const groupId = context.activeGroup.id;
+  const tz = context.activeGroup.timezone;
+  // Phase 4B — a requested deadline, converted from the Group's local time up front (validated below, under the lock).
+  let requested: Date | null | undefined = undefined;
+  if (attendanceDeadline !== undefined) {
+    if (attendanceDeadline === null) requested = null;
+    else {
+      const at = localDeadlineToUtc(attendanceDeadline, tz);
+      if (!at.ok) return NextResponse.json({ error: at.error }, { status: 400 });
+      requested = at.at;
+    }
+  }
   let venueData: { venueId: string | null; locationName?: string } | null = null;
   if (venueId !== undefined) {
     if (venueId === null) venueData = { venueId: null };
@@ -203,18 +251,53 @@ export async function updateMatch(context: TenantContext, matchId: string, req: 
     // Switching Community also switches the default Telegram chat to the new Community's chat.
     communityData = current.communityId === resolved.community!.id ? { communityId: resolved.community!.id } : { communityId: resolved.community!.id, telegramChatId: resolved.chatRef };
   }
-  const { count } = await prisma.match.updateMany({
-    where: { id: matchId, groupId: context.activeGroup.id },
-    data: {
-      ...(communityData ?? {}),
-      ...(venueData ?? {}),
-      ...(date !== undefined ? { date: toDateOnlyUTC(date) } : {}),
-      ...(startTime !== undefined ? { startTime: startTime || null } : {}),
-      ...(locationName !== undefined ? { locationName: locationName || null } : {}),
-      ...(status !== undefined ? { status } : {}),
-    },
+  // Phase 4B — validate and write under the Match's automation lock, so a deadline
+  // change and an automatic finalization of the same Match never interleave.
+  const outcome = await prisma.$transaction(async (tx) => {
+    await lockMatchAttendance(tx, matchId);
+    const current = await tx.match.findFirst({
+      where: { id: matchId, groupId },
+      select: { date: true, startTime: true, scheduleId: true, attendanceClosedAt: true, attendanceDeadlineAt: true, automation: { select: { pollDueAt: true, pollPostedAt: true } } },
+    });
+    if (!current) return { kind: "not_found" as const };
+    const newDate = date !== undefined ? toDateOnlyUTC(date) : current.date;
+    // Recurring Matches: the date is the occurrence's identity (automation finds the occurrence by
+    // schedule + date) — moving it would make automation create the occurrence again. Time/venue may change.
+    if (current.scheduleId && newDate.getTime() !== current.date.getTime()) {
+      return { kind: "error" as const, status: 409, body: { error: "The date of a match created by a recurring schedule can't be changed. Change its time, or cancel it and create a one-off match.", code: "RECURRING_DATE_LOCKED" } };
+    }
+    const newStart = startTime !== undefined ? startTime || null : current.startTime;
+    const kickoff = kickoffAt(newDate, newStart, tz);
+    const now = new Date();
+    let deadlineWrite: Date | null | undefined = undefined;
+    if (requested !== undefined) {
+      if (attendanceIsClosed(current, now)) return { kind: "error" as const, status: 409, body: { error: "Attendance is closed. Reopen it to change its deadline.", code: "ATTENDANCE_CLOSED" } };
+      if (requested !== null) {
+        const pollPending = current.automation && !current.automation.pollPostedAt ? current.automation.pollDueAt : null;
+        const problem = deadlineError(requested, kickoff, now, pollPending);
+        if (problem) return { kind: "error" as const, status: 400, body: { error: problem } };
+      }
+      deadlineWrite = requested;
+    } else if (!attendanceIsClosed(current, now) && current.attendanceDeadlineAt && current.attendanceDeadlineAt.getTime() >= kickoff.getTime()) {
+      // A kickoff moved to (or before) the open deadline: the organizer must move the deadline too.
+      return { kind: "error" as const, status: 400, body: { error: `${DEADLINE_AFTER_KICKOFF} Move the attendance deadline too, or remove it.`, code: "DEADLINE_AFTER_KICKOFF" } };
+    }
+    await tx.match.updateMany({
+      where: { id: matchId, groupId },
+      data: {
+        ...(communityData ?? {}),
+        ...(venueData ?? {}),
+        ...(date !== undefined ? { date: newDate } : {}),
+        ...(startTime !== undefined ? { startTime: newStart } : {}),
+        ...(locationName !== undefined ? { locationName: locationName || null } : {}),
+        ...(status !== undefined ? { status } : {}),
+      },
+    });
+    if (deadlineWrite !== undefined) await writeAttendanceDeadline(tx, matchId, groupId, deadlineWrite);
+    return { kind: "ok" as const };
   });
-  if (count !== 1) return NOT_FOUND();
+  if (outcome.kind === "not_found") return NOT_FOUND();
+  if (outcome.kind === "error") return NextResponse.json(outcome.body, { status: outcome.status });
   const match = await prisma.match.findFirstOrThrow({ where: { id: matchId, groupId: context.activeGroup.id }, select: MATCH_SELECT });
   return NextResponse.json({ ok: true, match: toSummary(match) });
 }
@@ -250,6 +333,8 @@ export async function getMatchView(context: TenantContext, matchId: string): Pro
   const match = await findGroupMatch(context, matchId);
   if (!match) return NOT_FOUND();
   const manager = isManager(context);
+  // Phase 4B — "late" answers are measured against the shared rule's closing instant.
+  const closedAt = effectiveClosedAt(match);
 
   const [players, attendance, generation, poll, chatCount] = await Promise.all([
     prisma.player.findMany({
@@ -321,15 +406,21 @@ export async function getMatchView(context: TenantContext, matchId: string): Pro
 
   return NextResponse.json({
     match: toSummary(match),
+    // Phase 4B — deadlines are shown and entered in the Group's timezone.
+    timezone: context.activeGroup.timezone,
     canManage: manager,
     community: community ? { id: community.id, name: community.name, isActive: community.isActive } : null,
     // M9.2 — what Match Automation did (organizers only; null for a Match not created by a schedule).
     automation: manager ? await automationView(groupId, matchId) : null,
+    // Phase 4B — the Telegram Game Day Update status (organizers only; no tokens or provider details).
+    gameDayUpdate: manager
+      ? await gameDayUpdateStatus(groupId, context.organization.id, matchId, match.scheduleId ? (await schedulesOverLimit(context.organization.id)).over : false)
+      : null,
     communities: communities,
     roster: listed.map(({ rating, stamina, ...safe }) => {
       const p = { ...safe, inCommunity: inCommunity(safe.id) };
       const r = byPlayer.get(p.id);
-      const eff = effectiveAttendance(r, match.attendanceClosedAt);
+      const eff = effectiveAttendance(r, closedAt);
       return {
         // UI-7 — balancing data (skill / stamina) for OWNER/ADMIN only; MEMBER's
         // serialized roster has no rating/stamina keys at all.
@@ -347,10 +438,10 @@ export async function getMatchView(context: TenantContext, matchId: string): Pro
     counts: countAttendance(
       eligible.map((p) => p.id),
       rows,
-      match.attendanceClosedAt
+      closedAt
     ),
     rosterSize: eligible.length,
-    defaultSelection: defaultSelection(eligible, rows, match.attendanceClosedAt),
+    defaultSelection: defaultSelection(eligible, rows, closedAt),
     // The PUBLISHED teams for this Match (organizer view: ids/names/roles only),
     // so the workspace can tell them apart from a working preview after a reload.
     generation: generation
@@ -428,7 +519,7 @@ export async function setAttendanceOverride(context: TenantContext, matchId: str
   const groupId = context.activeGroup.id;
   const match = await findGroupMatch(context, matchId);
   if (!match) return NOT_FOUND();
-  if (match.attendanceClosedAt) return attendanceClosedResponse();
+  if (attendanceIsClosed(match)) return attendanceClosedResponse(); // Phase 4B — shared deadline rule
   const player = await prisma.player.findFirst({ where: { id: parsed.data.playerId, groupId }, select: { id: true } });
   if (!player) return NextResponse.json({ error: "Player not found" }, { status: 404 });
 
@@ -455,12 +546,43 @@ export async function setAttendanceClosed(context: TenantContext, matchId: strin
   if (denied) return denied;
   const parsed = attendanceClosedSchema.safeParse((await req.json().catch(() => null)) ?? {});
   if (!parsed.success) return NextResponse.json(zodErrorResponse(parsed.error), { status: 400 });
-  const { count } = await prisma.match.updateMany({
-    where: { id: matchId, groupId: context.activeGroup.id },
-    data: { attendanceClosedAt: parsed.data.closed ? new Date() : null },
+  const groupId = context.activeGroup.id;
+  const tz = context.activeGroup.timezone;
+  const { closed, attendanceDeadline } = parsed.data;
+  let requested: Date | null | undefined = undefined;
+  if (!closed && attendanceDeadline !== undefined) {
+    if (attendanceDeadline === null) requested = null;
+    else {
+      const at = localDeadlineToUtc(attendanceDeadline, tz);
+      if (!at.ok) return NextResponse.json({ error: at.error }, { status: 400 });
+      requested = at.at;
+    }
+  }
+  const outcome = await prisma.$transaction(async (tx) => {
+    await lockMatchAttendance(tx, matchId);
+    const m = await tx.match.findFirst({ where: { id: matchId, groupId }, select: { date: true, startTime: true, attendanceDeadlineAt: true } });
+    if (!m) return { kind: "not_found" as const };
+    if (closed) {
+      await tx.match.updateMany({ where: { id: matchId, groupId }, data: { attendanceClosedAt: new Date() } });
+      return { kind: "ok" as const };
+    }
+    // Phase 4B — reopening never leaves a passed deadline in force (it would close again at once):
+    // the organizer sets a new future deadline or removes it; a future deadline may simply stay.
+    const now = new Date();
+    if (requested === undefined && m.attendanceDeadlineAt && m.attendanceDeadlineAt.getTime() <= now.getTime()) {
+      return { kind: "error" as const, status: 409, body: { error: "The attendance deadline has passed. Choose a new deadline or remove it to reopen attendance.", code: "DEADLINE_PASSED" } };
+    }
+    if (requested) {
+      const problem = deadlineError(requested, kickoffAt(m.date, m.startTime, tz), now);
+      if (problem) return { kind: "error" as const, status: 400, body: { error: problem } };
+    }
+    await tx.match.updateMany({ where: { id: matchId, groupId }, data: { attendanceClosedAt: null } });
+    if (requested !== undefined) await writeAttendanceDeadline(tx, matchId, groupId, requested);
+    return { kind: "ok" as const };
   });
-  if (count !== 1) return NOT_FOUND();
-  return NextResponse.json({ ok: true, attendanceClosed: parsed.data.closed });
+  if (outcome.kind === "not_found") return NOT_FOUND();
+  if (outcome.kind === "error") return NextResponse.json(outcome.body, { status: outcome.status });
+  return NextResponse.json({ ok: true, attendanceClosed: closed });
 }
 
 /**
@@ -470,13 +592,13 @@ export async function setAttendanceClosed(context: TenantContext, matchId: strin
  * ("closed" is reported only to a claimed participant of that Match's Group).
  */
 export async function setOwnAttendance(userId: string, matchId: string, status: AttendanceStatus): Promise<"ok" | "not_found" | "closed"> {
-  const match = await prisma.match.findFirst({ where: { id: matchId, status: { not: "CANCELED" } }, select: { id: true, groupId: true, attendanceClosedAt: true, communityId: true } });
+  const match = await prisma.match.findFirst({ where: { id: matchId, status: { not: "CANCELED" } }, select: { id: true, groupId: true, attendanceClosedAt: true, attendanceDeadlineAt: true, communityId: true } });
   if (!match) return "not_found";
   const player = await prisma.player.findFirst({ where: { groupId: match.groupId, userId }, select: { id: true } });
   if (!player) return "not_found";
   // M9.2 — a Community Match accepts answers only from that Community's players (indistinguishable from unknown).
   if (match.communityId && !(await prisma.communityPlayer.findFirst({ where: { groupId: match.groupId, communityId: match.communityId, playerId: player.id }, select: { id: true } }))) return "not_found";
-  if (match.attendanceClosedAt) return "closed";
+  if (attendanceIsClosed(match)) return "closed"; // Phase 4B — shared deadline rule
   await prisma.$transaction((tx) =>
     recordParticipantResponse(tx, { matchId: match.id, groupId: match.groupId, playerId: player.id, status, source: "WEB", at: new Date() })
   );

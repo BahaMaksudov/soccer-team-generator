@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { assertCapacity, TRIAL_DAYS } from "@/lib/entitlements";
+import { assertCapacity, OwnershipLimitError, ownershipAllowance, TRIAL_DAYS } from "@/lib/entitlements";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { SPORTS, SPORT_KEYS } from "@/lib/sports";
@@ -126,6 +126,12 @@ export async function createOrganizationWorkspace(
           };
         }
 
+        // Phase 1 — ownership allowance, AFTER the replay check (a double-submit
+        // returns its workspace) and under the per-User lock above, so concurrent
+        // creations by one User are serialized and cannot exceed it.
+        const allowance = await ownershipAllowance(ownerUserId, now, tx);
+        if (!allowance.canCreate) throw new OwnershipLimitError(allowance);
+
         const taken = await tx.organization.findMany({
           where: { slug: { startsWith: baseSlug } },
           select: { slug: true },
@@ -141,7 +147,11 @@ export async function createOrganizationWorkspace(
         });
         // M11.1 — the introductory Pro trial: once per verified User, claimed atomically
         // (conditional update; concurrent creations are also serialized by the lock above).
-        const claimed = await tx.user.updateMany({ where: { id: ownerUserId, trialUsedAt: null, emailVerifiedAt: { not: null } }, data: { trialUsedAt: now } });
+        // Phase 1 — and only for the User's FIRST owned Organization: a second one starts on Free.
+        const claimed =
+          allowance.owned === 0
+            ? await tx.user.updateMany({ where: { id: ownerUserId, trialUsedAt: null, emailVerifiedAt: { not: null } }, data: { trialUsedAt: now } })
+            : { count: 0 };
         if (claimed.count === 1) {
           const trialEndsAt = new Date(now.getTime() + TRIAL_DAYS * 86_400_000);
           await tx.organization.update({ where: { id: organization.id }, data: { trialStartedAt: now, trialEndsAt } });

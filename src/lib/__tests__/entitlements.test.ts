@@ -1,16 +1,34 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import fs from "node:fs";
 import path from "node:path";
-import { effectivePlan, limitReachedMessage, PLAN_LIMITS, PLAN_LABEL, TRIAL_DAYS, trialDaysLeft, utcMonth } from "@/lib/entitlements";
+import {
+  effectivePlan,
+  limitReachedMessage,
+  OWNERSHIP_BASE_ALLOWANCE,
+  OWNERSHIP_MAX_ALLOWANCE,
+  OwnershipLimitError,
+  ownershipCountLabel,
+  ownershipLimitMessage,
+  ownershipLimitResponse,
+  ownershipQualifier,
+  paidSubscriptionQualifies,
+  PAID_PRO_STATUSES,
+  PLAN_LIMITS,
+  PLAN_LABEL,
+  TRIAL_DAYS,
+  trialDaysLeft,
+  utcMonth,
+} from "@/lib/entitlements";
+import { ENTITLING_STATUSES } from "@/lib/billing/sync";
 import { aiUsageText } from "@/app/admin/o/[organizationSlug]/g/[groupSlug]/matches/[matchId]/PostGameSection";
 import PlanUsageCard from "@/app/admin/o/[organizationSlug]/PlanUsageCard";
 
 /** M11.1 — the plan catalog and pure entitlement rules. */
 describe("plan catalog (approved launch limits)", () => {
   it("Free / Pro / trial / complimentary / legacy", () => {
-    expect(PLAN_LIMITS.FREE).toEqual({ activeGroups: 1, activePlayers: 30, monthlyMatches: 8, activeSchedules: 1, monthlyAiRecaps: 2, telegram: false });
+    expect(PLAN_LIMITS.FREE).toEqual({ activeGroups: 1, activePlayers: 30, monthlyMatches: 4, activeSchedules: 1, monthlyAiRecaps: 2, telegram: false });
     expect(PLAN_LIMITS.PRO).toEqual({ activeGroups: 3, activePlayers: 150, monthlyMatches: null, activeSchedules: null, monthlyAiRecaps: 30, telegram: true });
     expect(PLAN_LIMITS.TRIAL).toEqual(PLAN_LIMITS.PRO);
     expect(PLAN_LIMITS.COMP).toEqual(PLAN_LIMITS.PRO);
@@ -45,12 +63,20 @@ describe("UTC calendar month", () => {
 });
 
 describe("limit messages (no upgrade action until Stripe)", () => {
-  it("Free names the limit and says Pro is coming soon; other plans just name the limit; nothing says 'Upgrade'", () => {
+  it("Free names the limit; 'coming soon' while billing is off, the Billing page once it's on; other plans just name the limit", () => {
+    vi.stubEnv("BILLING_ENABLED", "");
     expect(limitReachedMessage("FREE", "30 active players")).toBe("Your Free plan limit has been reached (30 active players). Pro plans and upgrades are coming soon.");
     expect(limitReachedMessage("TRIAL", "3 active groups")).toBe("Your Pro trial plan limit has been reached (3 active groups).");
     expect(limitReachedMessage("COMP", "150 active players")).toBe("Your Pro (complimentary) plan limit has been reached (150 active players).");
-    const src = fs.readFileSync(path.join(process.cwd(), "src/lib/entitlements.ts"), "utf8");
-    expect(src).not.toMatch(/Upgrade to Pro/);
+    vi.stubEnv("BILLING_ENABLED", "true");
+    vi.stubEnv("STRIPE_SECRET_KEY", "sk_test_x");
+    vi.stubEnv("STRIPE_WEBHOOK_SECRET", "whsec_x");
+    vi.stubEnv("STRIPE_PRICE_PRO_MONTHLY", "price_m");
+    vi.stubEnv("STRIPE_PRICE_PRO_ANNUAL", "price_y");
+    expect(limitReachedMessage("FREE", "30 active players")).toBe("Your Free plan limit has been reached (30 active players). Upgrade to Pro on your organization's Billing page.");
+    vi.stubEnv("STRIPE_SECRET_KEY", "sk_live_x"); // a live key never enables billing → back to "coming soon"
+    expect(limitReachedMessage("FREE", "1 active group")).toMatch(/coming soon/);
+    vi.unstubAllEnvs();
   });
 });
 
@@ -93,8 +119,100 @@ describe("enforcement wiring (source checks)", () => {
   it("capacity checks run in the same transaction as the write", () => {
     expect(read("src/lib/playerCrud.ts")).toMatch(/assertCapacity\(tx, context\.organization\.id, "activePlayers"\)/);
     expect(read("src/lib/matches.ts")).toMatch(/assertCapacity\(tx, context\.organization\.id, "monthlyMatches"\)/);
-    expect(read("src/lib/matchAutomation.ts")).toMatch(/assertCapacity\(tx, ctx\.organization\.id, "monthlyMatches"\)/);
+    expect(read("src/lib/matchAutomation.ts")).toMatch(/assertCapacity\(tx, ctx\.organization\.id, "monthlyMatches", now\)/);
     expect(read("src/lib/schedules.ts").match(/assertCapacity\(tx, context\.organization\.id, "activeSchedules"\)/g)).toHaveLength(2);
     expect(read("src/lib/workspaces.ts")).toMatch(/assertCapacity\(tx, organizationId, "activeGroups", now\)/);
+  });
+});
+
+describe("Phase 1 — organization ownership allowance (pure rules)", () => {
+  const now = new Date("2026-10-11T12:00:00Z");
+  const q = (plan: "FREE" | "PRO" | "COMP" | "LEGACY", over: { trialEndsAt?: Date | null; paid?: boolean } = {}) =>
+    ownershipQualifier({ plan, trialEndsAt: over.trialEndsAt ?? null, hasPaidSubscription: over.paid ?? false }, now);
+
+  it("1 by default, 2 at most", () => {
+    expect([OWNERSHIP_BASE_ALLOWANCE, OWNERSHIP_MAX_ALLOWANCE]).toEqual([1, 2]);
+  });
+  it("qualifying: paid Pro (with a paid subscription), complimentary Pro, Legacy / Early Access", () => {
+    expect(q("PRO", { paid: true })).toBe("PAID_PRO");
+    expect(q("COMP")).toBe("COMP");
+    expect(q("LEGACY")).toBe("LEGACY");
+  });
+  it("not qualifying: Free, the introductory trial, and a raw PRO value without a paid subscription", () => {
+    expect(q("FREE")).toBeNull();
+    expect(q("FREE", { trialEndsAt: new Date(now.getTime() + 86_400_000) })).toBeNull(); // running trial
+    expect(q("FREE", { trialEndsAt: new Date(now.getTime() - 86_400_000) })).toBeNull(); // trial over
+    expect(q("PRO")).toBeNull();
+  });
+  it("paid statuses = Stripe's entitling statuses minus trialing (past_due payment grace kept)", () => {
+    expect([...PAID_PRO_STATUSES]).toEqual(ENTITLING_STATUSES.filter((s) => s !== "trialing"));
+    expect(PAID_PRO_STATUSES).toContain("past_due");
+    expect(PAID_PRO_STATUSES).not.toContain("trialing");
+  });
+  it("a stored subscription qualifies only if paid, in a permitted Stripe mode, and the Organization's own Customer", () => {
+    const org = { stripeCustomerId: "cus_1" };
+    const sub = { status: "active", livemode: false, stripeCustomerId: "cus_1" };
+    expect(paidSubscriptionQualifies(sub, org, { VERCEL_ENV: "preview" })).toBe(true);
+    expect(paidSubscriptionQualifies(sub, org, {})).toBe(true);
+    expect(paidSubscriptionQualifies({ ...sub, status: "past_due" }, org, {})).toBe(true);
+    expect(paidSubscriptionQualifies(sub, org, { VERCEL_ENV: "production" })).toBe(false); // test mode in Production
+    expect(paidSubscriptionQualifies({ ...sub, livemode: true }, org, { BILLING_ALLOW_LIVE_MODE: "true" })).toBe(false); // live not launched
+    expect(paidSubscriptionQualifies({ ...sub, livemode: true }, org, { VERCEL_ENV: "production", BILLING_ALLOW_LIVE_MODE: "true" })).toBe(false);
+    expect(paidSubscriptionQualifies({ ...sub, stripeCustomerId: "cus_other" }, org, {})).toBe(false); // mismatched Customer
+    expect(paidSubscriptionQualifies(sub, { stripeCustomerId: null }, {})).toBe(false);
+    for (const status of ["trialing", "canceled", "unpaid", "incomplete", "paused"]) expect(paidSubscriptionQualifies({ ...sub, status }, org, {}), status).toBe(false);
+  });
+  it("messages: count label, reason without billing details, available → no message", () => {
+    expect(ownershipCountLabel({ owned: 1, allowed: 2, canCreate: true, qualifiedBy: "LEGACY" })).toBe("Organizations owned: 1 of 2");
+    expect(ownershipLimitMessage({ owned: 0, allowed: 1, canCreate: true, qualifiedBy: null })).toBeNull();
+    const one = ownershipLimitMessage({ owned: 1, allowed: 1, canCreate: false, qualifiedBy: null })!;
+    expect(one).toMatch(/^You already own 1 organization\. A second organization is available when an organization you own is on paid Pro, complimentary Pro or Early Access\./);
+    expect(one).toContain("join other organizations");
+    expect(ownershipLimitMessage({ owned: 2, allowed: 2, canCreate: false, qualifiedBy: "COMP" })).toMatch(/^You already own 2 organizations\. An account can own at most 2 organizations\./);
+    expect(ownershipLimitMessage({ owned: 3, allowed: 1, canCreate: false, qualifiedBy: null })).toMatch(/^You already own 3 organizations\./); // over-limit owner
+  });
+  it("API shape: 409 OWNERSHIP_LIMIT with the User's own counts only", async () => {
+    const res = ownershipLimitResponse(new OwnershipLimitError({ owned: 1, allowed: 1, canCreate: false, qualifiedBy: null }));
+    expect(res.status).toBe(409);
+    const body = await res.json();
+    expect(Object.keys(body).sort()).toEqual(["allowed", "code", "error", "owned"]);
+    expect(body).toMatchObject({ code: "OWNERSHIP_LIMIT", owned: 1, allowed: 1 });
+  });
+  it("wiring: checked under the per-User lock, AFTER the replay check; the trial only for a first owned Organization", () => {
+    const src = fs.readFileSync(path.join(process.cwd(), "src/lib/workspaces.ts"), "utf8");
+    const fn = src.slice(src.indexOf("export async function createOrganizationWorkspace"), src.indexOf("export const createGroupSchema"));
+    const lock = fn.indexOf('hashtext(${"workspace:" + ownerUserId})');
+    const replay = fn.indexOf("if (recent && recent.groups.length === 1)");
+    const check = fn.indexOf("const allowance = await ownershipAllowance(ownerUserId, now, tx);");
+    const create = fn.indexOf("tx.organization.create(");
+    expect(lock).toBeGreaterThan(-1);
+    expect(replay).toBeGreaterThan(lock);
+    expect(check).toBeGreaterThan(replay);
+    expect(create).toBeGreaterThan(check);
+    expect(fn).toContain("if (!allowance.canCreate) throw new OwnershipLimitError(allowance);");
+    expect(fn).toMatch(/allowance\.owned === 0\s*\?\s*await tx\.user\.updateMany\(\{ where: \{ id: ownerUserId, trialUsedAt: null, emailVerifiedAt: \{ not: null \} \}/);
+    expect(fs.readFileSync(path.join(process.cwd(), "src/lib/tenantRoute.ts"), "utf8")).toContain("if (e instanceof OwnershipLimitError) return ownershipLimitResponse(e);");
+  });
+});
+
+describe("Phase 2 — Free monthly matches and skipped recurring-match warnings", () => {
+  it("Free allows 4 new matches per month; trial / Pro / complimentary / legacy are unlimited", () => {
+    expect(PLAN_LIMITS.FREE.monthlyMatches).toBe(4);
+    for (const p of ["TRIAL", "PRO", "COMP", "LEGACY"] as const) expect(PLAN_LIMITS[p].monthlyMatches, p).toBeNull();
+  });
+  it("the warning names the occurrence and the reason, says the schedule is still active, and never says canceled", async () => {
+    vi.stubEnv("BILLING_ENABLED", "");
+    const { scheduleSkipMessage } = await import("@/lib/scheduleSkips");
+    const text = scheduleSkipMessage({ occurrenceDate: new Date("2026-10-31T00:00:00Z"), monthlyLimit: 4 });
+    expect(text).toBe(
+      "Your Free plan allows 4 new matches per month. The match scheduled for October 31, 2026 was not created because your monthly limit was reached. Your recurring schedule is still active. Pro plans with unlimited matches are coming soon."
+    );
+    expect(text).not.toMatch(/cancel/i);
+    vi.unstubAllEnvs();
+  });
+  it("wiring: automation records the skip on the plan limit (same UTC-month instant) and resolves it when the match is created", () => {
+    const src = fs.readFileSync(path.join(process.cwd(), "src/lib/matchAutomation.ts"), "utf8");
+    expect(src).toContain('if (e.metric === "monthlyMatches" && e.limit !== null) await recordScheduleSkip(');
+    expect(src).toMatch(/created = true;\s*await resolveScheduleSkip\(s\.id, date, now\);/);
   });
 });

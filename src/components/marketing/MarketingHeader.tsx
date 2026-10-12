@@ -12,7 +12,9 @@ import { cn } from "@/lib/cn";
  * (the existing /login and /signup). No auth state is read here on purpose.
  * The only client state is whether the mobile menu is open.
  */
-export default function MarketingHeader() {
+/** `anchorBase`: "/" on pages other than the homepage, so section links ("#how") go to the homepage's sections. */
+export default function MarketingHeader({ anchorBase = "" }: { anchorBase?: string } = {}) {
+  const hrefOf = (href: string) => (href.startsWith("#") ? `${anchorBase}${href}` : href);
   const [open, setOpen] = useState(false);
   return (
     <header className="sticky top-0 z-50 border-b border-border/70 bg-background/90 backdrop-blur">
@@ -20,7 +22,7 @@ export default function MarketingHeader() {
         <Logo />
         <nav aria-label="Main" className="hidden items-center gap-8 md:flex">
           {MARKETING_NAV.map((n) => (
-            <a key={n.href} href={n.href} className={cn("text-sm font-medium text-muted-foreground hover:text-foreground", linkFocus)}>
+            <a key={n.href} href={hrefOf(n.href)} className={cn("text-sm font-medium text-muted-foreground hover:text-foreground", linkFocus)}>
               {n.label}
             </a>
           ))}
@@ -47,7 +49,7 @@ export default function MarketingHeader() {
       {open && (
         <nav id="mobile-nav" aria-label="Mobile" className="border-t border-border bg-background px-4 pb-5 pt-2 md:hidden">
           {MARKETING_NAV.map((n) => (
-            <a key={n.href} href={n.href} onClick={() => setOpen(false)} className={cn("block px-2 py-3 font-medium text-foreground", linkFocus)}>
+            <a key={n.href} href={hrefOf(n.href)} onClick={() => setOpen(false)} className={cn("block px-2 py-3 font-medium text-foreground", linkFocus)}>
               {n.label}
             </a>
           ))}

@@ -32,7 +32,7 @@ import * as matchRoute from "@/app/api/admin/o/[organizationSlug]/g/[groupSlug]/
 import * as postGameRoute from "@/app/api/admin/o/[organizationSlug]/g/[groupSlug]/matches/[matchId]/post-game/route";
 import { createOrganizationWorkspace } from "@/lib/workspaces";
 import { runMatchAutomation } from "@/lib/matchAutomation";
-import { aiCreditsUsed, changeEntitlement, planSummary, reserveAiCredit, settleAiCredit, TRIAL_DAYS } from "@/lib/entitlements";
+import { aiCreditsUsed, changeEntitlement, OwnershipLimitError, planSummary, reserveAiCredit, settleAiCredit, TRIAL_DAYS } from "@/lib/entitlements";
 
 const VERIFIED = new Date("2026-01-01T00:00:00Z");
 const DAY_MS = 86_400_000;
@@ -77,7 +77,9 @@ const gp = (org: string, id: string) => ({ params: Promise.resolve({ ...slugs(or
 
 const ORGS = ["free", "trial", "comp", "legacy", "other"] as const;
 const PLAN: Record<(typeof ORGS)[number], { plan: "FREE" | "COMP" | "LEGACY"; trialEndsAt: Date | null }> = {
-  free: { plan: "FREE", trialEndsAt: new Date(Date.now() - DAY_MS) },
+  // A FIXED past end (not "yesterday"): several tests run at fixed instants (e.g. 2026-10-09),
+  // and "free" must be off its trial at every one of them, whatever today's date is.
+  free: { plan: "FREE", trialEndsAt: new Date("2026-01-01T00:00:00Z") },
   trial: { plan: "FREE", trialEndsAt: new Date(Date.now() + 30 * DAY_MS) },
   comp: { plan: "COMP", trialEndsAt: null },
   legacy: { plan: "LEGACY", trialEndsAt: null },
@@ -152,7 +154,7 @@ afterAll(async () => {
 describe("M11.1 — introductory trial", () => {
   const ws = (user: string, name: string, now = new Date()) => createOrganizationWorkspace(user, { organizationName: name, groupName: "Mondays", sportKey: "soccer", timezone: "UTC" }, now);
 
-  it("a verified User's first Organization gets 90 days of Pro (UTC, server-computed, audited); the next one starts on Free", async () => {
+  it("a verified User's first Organization gets 90 days of Pro (UTC, server-computed, audited); a trial never unlocks a second one (Phase 1)", async () => {
     const now = new Date("2026-10-09T15:00:00Z");
     const first = await ws("u-newbie", "First Club", now);
     const org1 = await prisma.organization.findUniqueOrThrow({ where: { id: first.organization.id } });
@@ -162,32 +164,33 @@ describe("M11.1 — introductory trial", () => {
     expect((await planSummary(org1.id, now)).plan).toBe("TRIAL");
     expect((await planSummary(org1.id, new Date(now.getTime() + 91 * DAY_MS))).plan).toBe("FREE"); // expiry → Free, never charged
 
-    const second = await ws("u-newbie", "Second Club", now);
-    const org2 = await prisma.organization.findUniqueOrThrow({ where: { id: second.organization.id } });
-    expect(org2).toMatchObject({ plan: "FREE", trialStartedAt: null, trialEndsAt: null });
+    await expect(ws("u-newbie", "Second Club", now)).rejects.toBeInstanceOf(OwnershipLimitError);
+    expect(await prisma.organization.count({ where: { memberships: { some: { userId: "u-newbie" } } } })).toBe(1);
   });
 
-  it("an existing verified owner of a LEGACY Organization (trialUsedAt unset) gets exactly one trial on a new Organization; the LEGACY one is untouched", async () => {
-    // u-owner already owns the grandfathered "legacy" Organization (and others) and has never used a trial.
-    expect((await prisma.user.findUniqueOrThrow({ where: { id: "u-owner" } })).trialUsedAt).toBeNull();
-    const first = await ws("u-owner", "Owner New Club");
-    const second = await ws("u-owner", "Owner Another Club");
-    const [a, b] = await Promise.all([first, second].map((w) => prisma.organization.findUniqueOrThrow({ where: { id: w.organization.id } })));
-    expect(a.trialEndsAt).not.toBeNull();
-    expect((await planSummary(a.id)).plan).toBe("TRIAL");
-    expect(b.trialEndsAt).toBeNull();
-    expect((await planSummary(b.id)).plan).toBe("FREE");
-    expect((await prisma.user.findUniqueOrThrow({ where: { id: "u-owner" } })).trialUsedAt).not.toBeNull();
-    expect(await prisma.organization.findUniqueOrThrow({ where: { id: "legacy" } })).toMatchObject({ plan: "LEGACY", trialEndsAt: null });
-    expect((await planSummary("legacy")).plan).toBe("LEGACY");
+  it("Phase 1: the owner of a LEGACY Organization (trialUsedAt unset) may create ONE more — it starts on Free with no trial; the LEGACY one is untouched", async () => {
+    await prisma.organization.create({ data: { id: "legacy-solo", name: "Legacy Solo", slug: "legacy-solo", plan: "LEGACY" } });
+    await prisma.organizationMembership.create({ data: { userId: "u-newbie", organizationId: "legacy-solo", role: "OWNER" } });
+    const second = await ws("u-newbie", "Newbie Second Club");
+    expect(await prisma.organization.findUniqueOrThrow({ where: { id: second.organization.id } })).toMatchObject({ plan: "FREE", trialStartedAt: null, trialEndsAt: null });
+    expect((await planSummary(second.organization.id)).plan).toBe("FREE");
+    expect((await prisma.user.findUniqueOrThrow({ where: { id: "u-newbie" } })).trialUsedAt).toBeNull(); // no trial was used up
+    expect(await prisma.entitlementEvent.count({ where: { organizationId: second.organization.id } })).toBe(0);
+    await expect(ws("u-newbie", "Newbie Third Club")).rejects.toBeInstanceOf(OwnershipLimitError);
+    expect(await prisma.organization.findUniqueOrThrow({ where: { id: "legacy-solo" } })).toMatchObject({ plan: "LEGACY", trialEndsAt: null });
+    // u-owner already owns 4 Organizations (above the allowance): keeps them all, cannot create more.
+    await expect(ws("u-owner", "Owner New Club")).rejects.toBeInstanceOf(OwnershipLimitError);
+    expect(await prisma.organizationMembership.count({ where: { userId: "u-owner", role: "OWNER" } })).toBe(4);
   });
 
-  it("an unverified account gets no trial; concurrent creations by one User yield exactly one trial", async () => {
+  it("an unverified account gets no trial; concurrent creations by one User yield exactly one Organization and one trial", async () => {
     const un = await ws("u-unverified", "Unverified Club");
     expect((await prisma.organization.findUniqueOrThrow({ where: { id: un.organization.id } })).trialEndsAt).toBeNull();
-    const many = await Promise.all(["A", "B", "C", "D"].map((n) => ws("u-newbie", `Club ${n}`)));
-    const orgs = await prisma.organization.findMany({ where: { id: { in: many.map((m) => m.organization.id) } } });
-    expect(orgs).toHaveLength(4);
+    const many = await Promise.allSettled(["A", "B", "C", "D"].map((n) => ws("u-newbie", `Club ${n}`)));
+    expect(many.filter((r) => r.status === "fulfilled")).toHaveLength(1);
+    expect(many.filter((r) => r.status === "rejected" && r.reason instanceof OwnershipLimitError)).toHaveLength(3);
+    const orgs = await prisma.organization.findMany({ where: { memberships: { some: { userId: "u-newbie" } } } });
+    expect(orgs).toHaveLength(1);
     expect(orgs.filter((x) => x.trialEndsAt !== null)).toHaveLength(1);
   });
 
@@ -279,33 +282,33 @@ describe("M11.1 — capacity limits are enforced on the server", () => {
     expect(await prisma.player.count({ where: { group: { organizationId: "free" }, isActive: true } })).toBe(30);
   });
 
-  it("matches: Free 8 new per UTC month (older months don't count); limits are per Organization", async () => {
+  it("matches: Free 4 new per UTC month (Phase 2; older months don't count); limits are per Organization", async () => {
     const lastMonth = new Date(Date.UTC(new Date().getUTCFullYear(), new Date().getUTCMonth() - 1, 15));
     await prisma.match.createMany({ data: Array.from({ length: 5 }, (_, i) => ({ id: `old${i}`, groupId: "free-g", date: new Date("2099-03-01"), createdAt: lastMonth })) });
-    await prisma.match.createMany({ data: Array.from({ length: 7 }, (_, i) => ({ id: `now${i}`, groupId: "free-g", date: new Date("2099-03-02") })) });
+    await prisma.match.createMany({ data: Array.from({ length: 3 }, (_, i) => ({ id: `now${i}`, groupId: "free-g", date: new Date("2099-03-02") })) });
     expect((await newMatch("free")).status).toBe(201);
-    expect(await newMatch("free", "2099-01-06")).toMatchObject({ status: 402, body: { metric: "monthlyMatches", limit: 8 } });
+    expect(await newMatch("free", "2099-01-06")).toMatchObject({ status: 402, body: { metric: "monthlyMatches", limit: 4 } });
     await signIn("other");
-    await prisma.match.createMany({ data: Array.from({ length: 8 }, (_, i) => ({ id: `ot${i}`, groupId: "other-g", date: new Date("2099-03-02") })) });
-    expect((await planSummary("free")).usage.monthlyMatches.used).toBe(8);
+    await prisma.match.createMany({ data: Array.from({ length: 4 }, (_, i) => ({ id: `ot${i}`, groupId: "other-g", date: new Date("2099-03-02") })) });
+    expect((await planSummary("free")).usage.monthlyMatches.used).toBe(4);
   });
 
   it("matches: a CANCELED match still counts toward the month; a FAILED creation (validation, plan limit) never does", async () => {
-    await prisma.match.createMany({ data: Array.from({ length: 6 }, (_, i) => ({ id: `c${i}`, groupId: "free-g", date: new Date("2099-03-02") })) });
-    const seventh = await newMatch("free", "2099-01-07");
-    expect(seventh.status).toBe(201);
-    const id = (seventh.body.match as { id: string }).id;
+    await prisma.match.createMany({ data: Array.from({ length: 2 }, (_, i) => ({ id: `c${i}`, groupId: "free-g", date: new Date("2099-03-02") })) });
+    const third = await newMatch("free", "2099-01-07");
+    expect(third.status).toBe(201);
+    const id = (third.body.match as { id: string }).id;
     expect((await call(matchRoute.PATCH(json("PATCH", { status: "CANCELED" }), gm("free", id)))).status).toBe(200);
-    expect((await planSummary("free")).usage.monthlyMatches.used).toBe(7); // canceled still counts
+    expect((await planSummary("free")).usage.monthlyMatches.used).toBe(3); // canceled still counts
     // Failed creations: unknown community (404), invalid body (400) — nothing created, nothing counted.
     expect((await call(matchesRoute.POST(json("POST", { date: "2099-01-08", startTime: "21:00", communityId: "nope" }), g("free")))).status).toBe(404);
     expect((await call(matchesRoute.POST(json("POST", { date: "not-a-date" }), g("free")))).status).toBe(400);
-    expect((await planSummary("free")).usage.monthlyMatches.used).toBe(7);
-    expect((await newMatch("free", "2099-01-09")).status).toBe(201); // the 8th
+    expect((await planSummary("free")).usage.monthlyMatches.used).toBe(3);
+    expect((await newMatch("free", "2099-01-09")).status).toBe(201); // the 4th
     const refused = await newMatch("free", "2099-01-10");
-    expect(refused).toMatchObject({ status: 402, body: { error: "Your Free plan limit has been reached (8 new matches per month). Pro plans and upgrades are coming soon." } });
-    expect((await planSummary("free")).usage.monthlyMatches.used).toBe(8); // the refused one isn't counted
-    expect(await prisma.match.count({ where: { groupId: "free-g" } })).toBe(8);
+    expect(refused).toMatchObject({ status: 402, body: { error: "Your Free plan limit has been reached (4 new matches per month). Pro plans and upgrades are coming soon." } });
+    expect((await planSummary("free")).usage.monthlyMatches.used).toBe(4); // the refused one isn't counted
+    expect(await prisma.match.count({ where: { groupId: "free-g" } })).toBe(4);
   });
 
   it("schedules: Free 1 active; a paused one can be created; resuming a second is refused", async () => {
@@ -349,7 +352,7 @@ describe("M11.1 — automation respects the plan", () => {
   const afterPoll = new Date("2026-10-12T00:05:00Z"); // Sunday 20:05 New York; game Monday Oct 12
 
   it("automatic matches count toward the monthly limit: at the limit nothing is created, nothing is sent, no error", async () => {
-    await prisma.match.createMany({ data: Array.from({ length: 8 }, (_, i) => ({ id: `f${i}`, groupId: "free-g", date: new Date("2099-03-02"), createdAt: afterPoll })) });
+    await prisma.match.createMany({ data: Array.from({ length: 4 }, (_, i) => ({ id: `f${i}`, groupId: "free-g", date: new Date("2099-03-02"), createdAt: afterPoll })) });
     await prisma.matchSchedule.create({ data: { groupId: "free-g", ...SCHED("free") } });
     expect(await runMatchAutomation(afterPoll)).toMatchObject({ created: 0, limited: 1, errors: [] });
     expect(await prisma.match.count({ where: { scheduleId: { not: null } } })).toBe(0);

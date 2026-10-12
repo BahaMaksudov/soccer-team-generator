@@ -1,4 +1,5 @@
 import { prisma } from "@/lib/prisma";
+import { attendanceIsClosed, effectiveClosedAt } from "@/lib/attendanceDeadline";
 import { effectiveAttendance, type AttendanceRow } from "@/lib/attendance";
 import { participantsOf } from "@/lib/matchParticipants";
 import { publishedPostGame, type ResultView } from "@/lib/postGame";
@@ -125,6 +126,7 @@ export async function loadMyGames(userId: string, now: Date = new Date()): Promi
             startTime: true,
             locationName: true,
             attendanceClosedAt: true,
+            attendanceDeadlineAt: true,
             attendance: { where: { playerId: p.id }, select: ATTENDANCE_SELECT },
             generation: { select: { teamsJson: true } },
           },
@@ -148,7 +150,7 @@ export async function loadMyGames(userId: string, now: Date = new Date()): Promi
       ]);
 
       const upcoming: MyUpcomingGame[] = upcomingRows.map((m) => {
-        const eff = effectiveAttendance(m.attendance[0] as AttendanceRow | undefined, m.attendanceClosedAt);
+        const eff = effectiveAttendance(m.attendance[0] as AttendanceRow | undefined, effectiveClosedAt(m));
         return {
           matchId: m.id,
           date: formatYMDFromDate(m.date),
@@ -157,7 +159,7 @@ export async function loadMyGames(userId: string, now: Date = new Date()): Promi
           matchHref: href(m.id),
           myStatus: eff.status,
           myStatusByOrganizer: eff.overridden,
-          attendanceClosed: m.attendanceClosedAt !== null,
+          attendanceClosed: attendanceIsClosed(m), // Phase 4B — shared deadline rule
           teamsPublished: m.generation !== null,
           myTeam: myTeamIn(m.generation?.teamsJson, p.id),
         };

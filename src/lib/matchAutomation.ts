@@ -13,6 +13,11 @@ import { assertCapacity, EntitlementError, organizationPlan } from "@/lib/entitl
 import { schedulesOverLimit } from "@/lib/schedules";
 import { currentMatchLinkPath } from "@/lib/matchLink";
 import { CUTOFF_CATCH_UP_MS, dueForPoll, type WeeklySchedule } from "@/lib/scheduleTime";
+import { recordScheduleSkip, resolveScheduleSkip, scheduleSkipMessage } from "@/lib/scheduleSkips";
+import { attendanceIsClosed, effectiveClosedAt } from "@/lib/attendanceDeadline";
+import { deliverGameDayUpdate } from "@/lib/gameDayUpdate";
+import { readGameDayUpdateSettings } from "@/lib/gameDayUpdateSettings";
+import { MIN_LEFT_MS } from "@/lib/gameDayUpdateSchedule";
 
 /**
  * M9.2 — the Match Automation Agent: deterministic orchestration (no AI).
@@ -74,6 +79,11 @@ export type AutomationRun = {
   limited: number;
   /** M11.1 — schedule steps skipped because the Organization has more active schedules than its plan allows (organizer must choose). */
   paused: number;
+  /** Phase 4B — attendance finalized at a passed deadline outside the recurring cutoff step (manual Matches; recurring ones reopened with a new deadline). */
+  deadlinesClosed: number;
+  /** Phase 4B — Game Day Updates sent; and ones Telegram rejected / did not confirm (shown on the match page). */
+  gameDayUpdates: number;
+  gameDayProblems: number;
   errors: Array<{ matchId?: string; scheduleId?: string; error: string }>;
 };
 
@@ -117,7 +127,7 @@ async function recordError(automationId: string, error: string) {
 type ScheduleRow = WeeklySchedule & { id: string; groupId: string; communityId: string; venueId: string | null; createdByUserId: string | null };
 
 /** Step 1 — the occurrence's Match + automation row, exactly once. */
-async function ensureMatch(s: ScheduleRow, occ: ReturnType<typeof dueForPoll>[number], ctx: TenantContext) {
+async function ensureMatch(s: ScheduleRow, occ: ReturnType<typeof dueForPoll>[number], ctx: TenantContext, now: Date) {
   const date = toDateOnlyUTC(occ.gameDate);
   let match = await prisma.match.findFirst({ where: { scheduleId: s.id, date, groupId: s.groupId }, select: { id: true } });
   let created = false;
@@ -125,9 +135,10 @@ async function ensureMatch(s: ScheduleRow, occ: ReturnType<typeof dueForPoll>[nu
     const chat = await communityTelegramChat(s.groupId, s.communityId);
     const venue = s.venueId ? await prisma.venue.findFirst({ where: { id: s.venueId, organizationId: ctx.organization.id }, select: { id: true, name: true } }) : null;
     try {
-      // M11.1 — an automatic Match counts toward the monthly match limit like a manual one.
+      // M11.1 — an automatic Match counts toward the monthly match limit like a manual one
+      // (Phase 2: measured at this run's instant, the same UTC-month rule as manual creation).
       match = await prisma.$transaction(async (tx) => {
-        await assertCapacity(tx, ctx.organization.id, "monthlyMatches");
+        await assertCapacity(tx, ctx.organization.id, "monthlyMatches", now);
         return tx.match.create({
           data: {
             groupId: s.groupId,
@@ -139,13 +150,22 @@ async function ensureMatch(s: ScheduleRow, occ: ReturnType<typeof dueForPoll>[nu
             telegramChatId: chat?.id ?? null,
             scheduleId: s.id,
             createdByUserId: ctx.user.id,
+            // Phase 4B — the occurrence cutoff IS the Match's attendance deadline (equal to MatchAutomation.cutoffDueAt).
+            attendanceDeadlineAt: occ.cutoffAt,
           },
           select: { id: true },
         });
       });
       created = true;
+      await resolveScheduleSkip(s.id, date, now);
     } catch (e) {
-      if (e instanceof EntitlementError) return null; // plan limit: nothing created, nothing sent
+      if (e instanceof EntitlementError) {
+        // Plan limit: nothing created, nothing sent; the schedule stays active. Phase 2 — a
+        // persistent, de-duplicated warning for this occurrence (retried by later runs until its
+        // cutoff; resolved if the Match is created then).
+        if (e.metric === "monthlyMatches" && e.limit !== null) await recordScheduleSkip({ groupId: s.groupId, scheduleId: s.id, occurrenceDate: date, monthlyLimit: e.limit, now });
+        return null;
+      }
       if (!(e instanceof Prisma.PrismaClientKnownRequestError && e.code === "P2002")) throw e;
       match = await prisma.match.findFirstOrThrow({ where: { scheduleId: s.id, date, groupId: s.groupId }, select: { id: true } }); // a concurrent run created it
     }
@@ -168,8 +188,13 @@ async function ensureMatch(s: ScheduleRow, occ: ReturnType<typeof dueForPoll>[nu
 async function stepPoll(ctx: TenantContext, matchId: string, automationId: string, telegramAllowed = true): Promise<"posted" | "link" | "skipped" | "error"> {
   const a = await prisma.matchAutomation.findUniqueOrThrow({ where: { id: automationId } });
   if (a.pollPostedAt) return "skipped";
-  const m = await prisma.match.findFirst({ where: { id: matchId, groupId: ctx.activeGroup.id }, select: { status: true, communityId: true, telegramChatId: true, community: { select: { name: true } } } });
+  const m = await prisma.match.findFirst({
+    where: { id: matchId, groupId: ctx.activeGroup.id },
+    select: { status: true, communityId: true, telegramChatId: true, attendanceClosedAt: true, attendanceDeadlineAt: true, community: { select: { name: true } } },
+  });
   if (!m || m.status === "CANCELED") return "skipped";
+  // Phase 4B — attendance already closed (by hand, or its deadline passed): no poll inviting answers that don't count.
+  if (attendanceIsClosed(m)) return "skipped";
   let chatRef = m.telegramChatId;
   if (chatRef) {
     const ok = await prisma.telegramChat.findFirst({ where: { id: chatRef, groupId: ctx.activeGroup.id, disconnectedAt: null }, select: { id: true } });
@@ -204,14 +229,26 @@ async function stepCutoff(ctx: TenantContext, matchId: string, automationId: str
   return count === 1;
 }
 
+/**
+ * Phase 4B — finalize a passed attendance deadline that is not a first recurring cutoff
+ * (a manual Match, or a recurring one reopened with a new deadline): final sync + close
+ * the Telegram poll, then mark attendance closed. Never emails anyone (recurring-only).
+ */
+async function finalizeDeadline(ctx: TenantContext, matchId: string, now: Date): Promise<boolean> {
+  const groupId = ctx.activeGroup.id;
+  await closeMatchAttendancePolls(groupId, matchId);
+  const { count } = await prisma.match.updateMany({ where: { id: matchId, groupId, attendanceClosedAt: null }, data: { attendanceClosedAt: now } });
+  return count === 1;
+}
+
 /** Attendance summary over the Match's eligible roster (Community members, or the whole Group for a Community-less Match). */
 export async function attendanceSummary(groupId: string, matchId: string) {
   const m = await prisma.match.findFirstOrThrow({
     where: { id: matchId, groupId },
-    select: { date: true, communityId: true, attendanceClosedAt: true, community: { select: { name: true } }, attendance: { select: { playerId: true, participantStatus: true, participantSource: true, participantRespondedAt: true, overrideStatus: true, overrideAt: true } } },
+    select: { date: true, communityId: true, attendanceClosedAt: true, attendanceDeadlineAt: true, community: { select: { name: true } }, attendance: { select: { playerId: true, participantStatus: true, participantSource: true, participantRespondedAt: true, overrideStatus: true, overrideAt: true } } },
   });
   const ids = m.communityId ? await communityRosterIds(groupId, m.communityId) : (await prisma.player.findMany({ where: { groupId, isActive: true }, select: { id: true } })).map((p) => p.id);
-  return { counts: countAttendance(ids, m.attendance as AttendanceRow[], m.attendanceClosedAt), rosterSize: ids.length, communityName: m.community?.name ?? null, date: m.date };
+  return { counts: countAttendance(ids, m.attendance as AttendanceRow[], effectiveClosedAt(m)), rosterSize: ids.length, communityName: m.community?.name ?? null, date: m.date };
 }
 
 type Recipient = { userId: string; email: string; emailVerifiedAt: Date | null };
@@ -325,8 +362,10 @@ export async function runMatchAutomation(now: Date = new Date(), scope: Automati
   const scheduleWhere = { ...(scope.scheduleId ? { id: scope.scheduleId } : {}), ...(includePaused ? {} : { isActive: true }) };
   // Automatic runs finalize cutoffs within the catch-up window; an organizer's run for one Match is not limited by it.
   const cutoffFloor = scope.matchId ? undefined : new Date(now.getTime() - CUTOFF_CATCH_UP_MS);
-  const run: AutomationRun = { schedules: 0, created: 0, pollsPosted: 0, cutoffs: 0, notified: 0, limited: 0, paused: 0, errors: [] };
-  const schedules = (await prisma.matchSchedule.findMany({
+  const run: AutomationRun = { schedules: 0, created: 0, pollsPosted: 0, cutoffs: 0, notified: 0, limited: 0, paused: 0, deadlinesClosed: 0, gameDayUpdates: 0, gameDayProblems: 0, errors: [] };
+  // Phase 4B — a Run now for ONE manual Match (matchId without scheduleId) never touches schedules.
+  const matchOnly = Boolean(scope.matchId && !scope.scheduleId);
+  const schedules = matchOnly ? [] : (await prisma.matchSchedule.findMany({
     where: { ...scheduleWhere, group: { isActive: true }, community: { isActive: true }, ...(scope.groupId ? { groupId: scope.groupId } : {}) },
     select: { id: true, groupId: true, communityId: true, venueId: true, createdByUserId: true, timezone: true, weekday: true, startTime: true, pollDaysBefore: true, pollTime: true, cutoffDaysBefore: true, cutoffTime: true },
   })) as ScheduleRow[];
@@ -362,7 +401,7 @@ export async function runMatchAutomation(now: Date = new Date(), scope: Automati
     }
     for (const occ of dueForPoll(s, now)) {
       try {
-        const ensured = await ensureMatch(s, occ, ctx);
+        const ensured = await ensureMatch(s, occ, ctx, now);
         if (!ensured) {
           run.limited++;
           continue;
@@ -404,35 +443,101 @@ export async function runMatchAutomation(now: Date = new Date(), scope: Automati
     }
   }
 
-  // 3 + 4 — cutoffs and notifications of scheduled Matches (active schedules only), within the catch-up window.
-  const pending = await prisma.matchAutomation.findMany({
+  // 2c — Phase 4B: Telegram Game Day Updates (manual + recurring). Candidates are only a pre-filter; every
+  // condition is re-checked from the database inside deliverGameDayUpdate's lock right before sending.
+  const gameDay = await prisma.match.findMany({
     where: {
       ...(scope.groupId ? { groupId: scope.groupId } : {}),
-      ...(scope.matchId ? { matchId: scope.matchId } : {}),
-      cutoffDueAt: { lte: now, ...(cutoffFloor ? { gte: cutoffFloor } : {}) },
-      OR: [{ cutoffCompletedAt: null }, { notifiedAt: null }],
-      match: { status: { not: "CANCELED" }, schedule: scheduleWhere },
+      ...(scope.matchId ? { id: scope.matchId } : {}),
+      ...(scope.scheduleId ? { scheduleId: scope.scheduleId } : {}),
+      status: "SCHEDULED",
+      attendanceClosedAt: null,
+      attendanceDeadlineAt: { gt: new Date(now.getTime() + MIN_LEFT_MS), lte: new Date(now.getTime() + 12 * 3600_000) },
+      telegramPolls: { some: { kind: "ATTENDANCE", isClosed: false } },
+      NOT: { deliveries: { some: { eventType: "GAME_DAY_UPDATE_POSTED", status: { in: ["SENT", "UNCERTAIN"] } } } },
+      OR: [{ scheduleId: null }, { schedule: scheduleWhere }],
     },
-    select: { id: true, matchId: true, groupId: true, match: { select: { schedule: { select: { createdByUserId: true } } } } },
+    select: { id: true, groupId: true, scheduleId: true, createdByUserId: true, schedule: { select: { createdByUserId: true } } },
   });
-  for (const a of pending) {
-    const ctx = await ctxFor(a.groupId, a.match.schedule?.createdByUserId ?? null);
+  const enabledByGroup = new Map<string, boolean>();
+  for (const m of gameDay) {
+    if (!enabledByGroup.has(m.groupId)) enabledByGroup.set(m.groupId, (await readGameDayUpdateSettings(m.groupId)).enabled);
+    if (!enabledByGroup.get(m.groupId)) continue;
+    const ctx = await ctxFor(m.groupId, m.schedule?.createdByUserId ?? m.createdByUserId ?? null);
     if (!ctx) continue;
-    if ((await gateFor(ctx.organization.id)).paused) {
+    const gate = await gateFor(ctx.organization.id);
+    try {
+      const r = await deliverGameDayUpdate({
+        groupId: m.groupId,
+        organizationId: ctx.organization.id,
+        matchId: m.id,
+        userId: ctx.user.id,
+        now,
+        planPaused: Boolean(m.scheduleId) && gate.paused,
+        counts: async () => (await attendanceSummary(m.groupId, m.id)).counts,
+      });
+      if (r === "sent") run.gameDayUpdates++;
+      else if (r === "failed" || r === "uncertain") run.gameDayProblems++;
+    } catch (e) {
+      run.errors.push({ matchId: m.id, error: e instanceof Error ? e.message : "error" });
+    }
+  }
+
+  // 3 + 4 — attendance deadlines and recurring notifications (Phase 4B: driven by Match.attendanceDeadlineAt,
+  // the one shared deadline; MatchAutomation.cutoffDueAt never closes anything on its own).
+  //   A  recurring first cutoff: deadline passed, cutoff step not done yet (even if closed by hand) → stepCutoff
+  //   B  any Match: deadline passed while attendance is still open (manual; recurring reopened with a new deadline)
+  //   C  recurring: cutoff done, organizers not yet notified → stepNotify (recurring only, as before)
+  // Recurring Matches follow their schedule (paused → skipped, plan pause → skipped). Manual Matches are
+  // never COMPLETED-rewritten and never emailed. Automatic runs stay within the catch-up window.
+  const windowed = { lte: now, ...(cutoffFloor ? { gte: cutoffFloor } : {}) };
+  const due = await prisma.match.findMany({
+    where: {
+      ...(scope.groupId ? { groupId: scope.groupId } : {}),
+      ...(scope.matchId ? { id: scope.matchId } : {}),
+      ...(scope.scheduleId ? { scheduleId: scope.scheduleId } : {}),
+      status: { not: "CANCELED" },
+      AND: [
+        { OR: [{ automation: { is: null }, status: { not: "COMPLETED" }, scheduleId: null }, { automation: { isNot: null }, schedule: scheduleWhere }] },
+        {
+          OR: [
+            { attendanceDeadlineAt: windowed, automation: { is: { cutoffCompletedAt: null } } },
+            { attendanceDeadlineAt: windowed, attendanceClosedAt: null },
+            { automation: { is: { cutoffCompletedAt: { not: null }, notifiedAt: null, cutoffDueAt: windowed } } },
+          ],
+        },
+      ],
+    },
+    select: { id: true, groupId: true, createdByUserId: true, schedule: { select: { createdByUserId: true } }, automation: { select: { id: true } } },
+  });
+  for (const m of due) {
+    const ctx = await ctxFor(m.groupId, m.schedule?.createdByUserId ?? m.createdByUserId ?? null);
+    if (!ctx) continue;
+    if (m.automation && (await gateFor(ctx.organization.id)).paused) {
       run.paused++;
       continue;
     }
     try {
-      const done = await withMatchLock(a.matchId, async () => {
-        const fresh = await prisma.matchAutomation.findUniqueOrThrow({ where: { id: a.id }, select: { cutoffCompletedAt: true, notifiedAt: true } });
-        const cut = !fresh.cutoffCompletedAt && (await stepCutoff(ctx, a.matchId, a.id, now));
-        const sent = !fresh.notifiedAt && (await stepNotify(ctx, a.matchId, a.id, now));
-        return { cut, sent };
+      const done = await withMatchLock(m.id, async () => {
+        // Re-read under the lock: a concurrent deadline change or reopen wins cleanly.
+        const fresh = await prisma.match.findFirstOrThrow({
+          where: { id: m.id, groupId: m.groupId },
+          select: { attendanceClosedAt: true, attendanceDeadlineAt: true, automation: { select: { id: true, cutoffCompletedAt: true, notifiedAt: true } } },
+        });
+        const passed = fresh.attendanceDeadlineAt !== null && fresh.attendanceDeadlineAt.getTime() <= now.getTime();
+        let cut = false;
+        let closed = false;
+        if (fresh.automation && !fresh.automation.cutoffCompletedAt && passed) cut = await stepCutoff(ctx, m.id, fresh.automation.id, now);
+        else if (passed && fresh.attendanceClosedAt === null) closed = await finalizeDeadline(ctx, m.id, now);
+        const auto = fresh.automation ? await prisma.matchAutomation.findUniqueOrThrow({ where: { id: fresh.automation.id }, select: { cutoffCompletedAt: true, notifiedAt: true } }) : null;
+        const sent = Boolean(auto && auto.cutoffCompletedAt && !auto.notifiedAt && (await stepNotify(ctx, m.id, fresh.automation!.id, now)));
+        return { cut, closed, sent };
       });
       if (done?.cut) run.cutoffs++;
+      if (done?.closed) run.deadlinesClosed++;
       if (done?.sent) run.notified++;
     } catch (e) {
-      run.errors.push({ matchId: a.matchId, error: e instanceof Error ? e.message : "error" });
+      run.errors.push({ matchId: m.id, error: e instanceof Error ? e.message : "error" });
     }
   }
   return run;
@@ -446,6 +551,8 @@ export type OrganizerRunResult = {
   pollsPosted: number;
   cutoffs: number;
   notified: number;
+  /** Phase 4B — Game Day Updates sent in this run. */
+  gameDayUpdates?: number;
   /** Organizer-facing problems recorded during this run (no internals). */
   issues: string[];
 };
@@ -476,6 +583,28 @@ export async function organizerRun(groupId: string, scheduleId: string, matchId?
     select: { lastError: true },
   });
   const issues = [...new Set(recorded.map((r) => r.lastError!))];
+  // Phase 2 — occurrences this run could not create because the monthly allowance is used up.
+  const skipped = await prisma.matchScheduleSkip.findMany({
+    where: { groupId, scheduleId, resolvedAt: null, lastSkippedAt: { gte: startedAt } },
+    orderBy: { occurrenceDate: "asc" },
+    select: { occurrenceDate: true, monthlyLimit: true },
+  });
+  for (const k of skipped) issues.push(scheduleSkipMessage(k));
+  if (run.gameDayProblems) issues.push(GAME_DAY_PROBLEM);
   if (run.errors.length) issues.push("Something went wrong while running automation. Please try again.");
-  return { ok: issues.length === 0, paused: !schedule.isActive, created: run.created, pollsPosted: run.pollsPosted, cutoffs: run.cutoffs, notified: run.notified, issues };
+  return { ok: issues.length === 0, paused: !schedule.isActive, created: run.created, pollsPosted: run.pollsPosted, cutoffs: run.cutoffs, notified: run.notified, gameDayUpdates: run.gameDayUpdates, issues };
+}
+
+const GAME_DAY_PROBLEM = "The Game Day Update was not confirmed by Telegram. Check the match page.";
+
+/**
+ * Phase 4B — "Run now" for ONE manual Match (no schedule): the same engine scoped to
+ * that Match — its Game Day Update and its deadline finalization — never schedules.
+ * Lets organizers run what is due without the scheduler (e.g. on Preview).
+ */
+export async function organizerRunMatch(groupId: string, matchId: string): Promise<OrganizerRunResult> {
+  const run = await runMatchAutomation(new Date(), { groupId, matchId });
+  if (run.errors.length) console.error(`[automation] match run finished with ${run.errors.length} error(s): ${JSON.stringify(run.errors)}`);
+  const issues = [...(run.gameDayProblems ? [GAME_DAY_PROBLEM] : []), ...(run.errors.length ? ["Something went wrong while running automation. Please try again."] : [])];
+  return { ok: issues.length === 0, paused: false, created: 0, pollsPosted: 0, cutoffs: run.cutoffs + run.deadlinesClosed, notified: run.notified, gameDayUpdates: run.gameDayUpdates, issues };
 }

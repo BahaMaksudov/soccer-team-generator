@@ -10,6 +10,9 @@ import { ROLE_LABELS } from "@/lib/appShell";
 import { cn } from "@/lib/cn";
 
 /**
+ * Phase 3 — "My Groups": step two of Login → Organization → Group (selecting
+ * a card opens the Group dashboard).
+ *
  * UI-5 — the Organization's Groups (visual reference: the approved Lovable
  * Groups screen). Organization from the URL slug, verified against the
  * session User's membership (generic 404 otherwise). Real data only
@@ -43,7 +46,7 @@ export default async function GroupsPage({ params }: { params: Params }) {
       <header className="flex flex-wrap items-end justify-between gap-3">
         <div className="min-w-0">
           <p className="eyebrow truncate">{context.organization.name}</p>
-          <h1 className="mt-1 text-3xl font-extrabold">Groups</h1>
+          <h1 className="mt-1 text-3xl font-extrabold">My Groups</h1>
           <p className="mt-1 text-sm text-muted-foreground">
             {groups.length} {groups.length === 1 ? "group" : "groups"} · Your role: {ROLE_LABELS[context.membership.role]}
           </p>
@@ -57,13 +60,13 @@ export default async function GroupsPage({ params }: { params: Params }) {
 
       {groups.length === 0 ? (
         <section className="rounded-tbp-2xl border border-dashed border-border bg-card p-8 text-center">
-          <h2 className="text-xl font-extrabold">No groups yet</h2>
+          <h2 className="text-xl font-extrabold">{canCreate ? "Create your first group" : "No groups yet"}</h2>
           <p className="mx-auto mt-2 max-w-md text-sm text-muted-foreground">
             {canCreate ? "A group is one recurring game with its own players and sport, e.g. “Tuesday Basketball”." : "The organization's owners and admins create groups."}
           </p>
           {canCreate && (
             <Link href={newHref} className={cn("mt-5 inline-flex min-h-11 items-center gap-2 rounded-full bg-primary px-5 text-sm font-semibold text-primary-foreground", focusRing)}>
-              <Plus className="size-4" aria-hidden="true" /> Create Group
+              <Plus className="size-4" aria-hidden="true" /> Create your first group
             </Link>
           )}
         </section>

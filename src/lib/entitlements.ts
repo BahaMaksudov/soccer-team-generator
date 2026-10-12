@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import type { OrganizationPlan, Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
+import { billingConfig, stripeModePermitted } from "@/lib/billing/config";
 
 /**
  * M11.1 — plans, the introductory trial and entitlements: the ONE place that
@@ -34,7 +35,7 @@ export type Limits = {
 };
 export type CapacityMetric = "activeGroups" | "activePlayers" | "monthlyMatches" | "activeSchedules";
 
-const FREE: Limits = { activeGroups: 1, activePlayers: 30, monthlyMatches: 8, activeSchedules: 1, monthlyAiRecaps: 2, telegram: false };
+const FREE: Limits = { activeGroups: 1, activePlayers: 30, monthlyMatches: 4, activeSchedules: 1, monthlyAiRecaps: 2, telegram: false };
 const PRO: Limits = { activeGroups: 3, activePlayers: 150, monthlyMatches: null, activeSchedules: null, monthlyAiRecaps: 30, telegram: true };
 const UNLIMITED: Limits = { activeGroups: null, activePlayers: null, monthlyMatches: null, activeSchedules: null, monthlyAiRecaps: null, telegram: true };
 
@@ -93,10 +94,13 @@ const NOUN: Record<CapacityMetric, (n: number) => string> = {
 
 /** Until Stripe billing exists there is no upgrade action: Free limits say so instead of offering one. */
 export const FREE_LIMIT_COMING_SOON = "Pro plans and upgrades are coming soon.";
+export const FREE_LIMIT_UPGRADE = "Upgrade to Pro on your organization's Billing page.";
 
 /** "Your Free plan limit has been reached (30 active players). Pro plans and upgrades are coming soon." */
 export function limitReachedMessage(plan: EffectivePlan, detail: string): string {
-  return plan === "FREE" ? `Your Free plan limit has been reached (${detail}). ${FREE_LIMIT_COMING_SOON}` : `Your ${PLAN_LABEL[plan]} plan limit has been reached (${detail}).`;
+  if (plan !== "FREE") return `Your ${PLAN_LABEL[plan]} plan limit has been reached (${detail}).`;
+  // M11.2A — once billing is enabled (test mode), point owners to the Billing page instead of "coming soon".
+  return `Your Free plan limit has been reached (${detail}). ${billingConfig().enabled ? FREE_LIMIT_UPGRADE : FREE_LIMIT_COMING_SOON}`;
 }
 
 export class EntitlementError extends Error {
@@ -134,6 +138,105 @@ export async function assertCapacity(tx: Prisma.TransactionClient, organizationI
   if (used + adding > limit) {
     throw new EntitlementError(metric, limit, limitReachedMessage(plan, NOUN[metric](limit)));
   }
+}
+
+/**
+ * Phase 1 — Organization ownership allowance (per User; plans stay per Organization).
+ *
+ * A User may own 1 Organization; 2 while at least one Organization they own
+ * qualifies; never more. Qualifying: paid Pro, complimentary Pro (COMP) or
+ * Legacy / Early Access. Free and the introductory trial never qualify.
+ * "Paid Pro" = Organization.plan PRO AND a Stripe subscription of that
+ * Organization in a PAID status: the entitling statuses minus "trialing" (a
+ * Stripe trial is not a payment), keeping the past_due payment grace. A raw
+ * PRO value without such a subscription does not qualify, and neither does a
+ * subscription in a Stripe mode this deployment does not permit (test mode in
+ * Vercel Production; live mode until it is launched) or one whose Customer is
+ * not the Organization's own (stripeModePermitted / paidSubscriptionQualifies).
+ *
+ * Limits only gate CREATION: an owner above the allowance (existing data, or
+ * Pro ended later) keeps every Organization they own. Being an ADMIN/MEMBER
+ * of other Organizations never uses the allowance.
+ */
+export const OWNERSHIP_BASE_ALLOWANCE = 1;
+export const OWNERSHIP_MAX_ALLOWANCE = 2;
+export const PAID_PRO_STATUSES = ["active", "past_due"] as const;
+export type OwnershipQualifier = "PAID_PRO" | "COMP" | "LEGACY";
+export type OwnershipAllowance = { owned: number; allowed: number; canCreate: boolean; qualifiedBy: OwnershipQualifier | null };
+
+type Env = Record<string, string | undefined>;
+
+/** A stored subscription unlocks ownership only if paid, in a permitted Stripe mode, and the Organization's own Customer. */
+export function paidSubscriptionQualifies(
+  sub: { status: string; livemode: boolean; stripeCustomerId: string },
+  org: { stripeCustomerId: string | null },
+  env: Env = process.env
+): boolean {
+  return (PAID_PRO_STATUSES as readonly string[]).includes(sub.status) && stripeModePermitted(sub.livemode, env) && org.stripeCustomerId !== null && sub.stripeCustomerId === org.stripeCustomerId;
+}
+
+/** The qualifier of one owned Organization (null: Free / trial / unpaid PRO). */
+export function ownershipQualifier(org: { plan: OrganizationPlan; trialEndsAt: Date | null; hasPaidSubscription: boolean }, now: Date = new Date()): OwnershipQualifier | null {
+  const plan = effectivePlan(org, now);
+  if (plan === "COMP" || plan === "LEGACY") return plan;
+  if (plan === "PRO" && org.hasPaidSubscription) return "PAID_PRO";
+  return null;
+}
+
+const QUALIFIER_ORDER: readonly OwnershipQualifier[] = ["PAID_PRO", "COMP", "LEGACY"];
+
+/** Read-only. Inside createOrganizationWorkspace it runs under the per-User workspace lock. */
+export async function ownershipAllowance(userId: string, now: Date = new Date(), db: Db = prisma, env: Env = process.env): Promise<OwnershipAllowance> {
+  const owned = await db.organizationMembership.findMany({
+    where: { userId, role: "OWNER" },
+    select: {
+      organization: {
+        select: {
+          plan: true,
+          trialEndsAt: true,
+          stripeCustomerId: true,
+          billingSubscriptions: { where: { status: { in: [...PAID_PRO_STATUSES] } }, select: { status: true, livemode: true, stripeCustomerId: true } },
+        },
+      },
+    },
+  });
+  const qualifiers = new Set(
+    owned.map(({ organization: o }) => ownershipQualifier({ ...o, hasPaidSubscription: o.billingSubscriptions.some((sub) => paidSubscriptionQualifies(sub, o, env)) }, now))
+  );
+  const qualifiedBy = QUALIFIER_ORDER.find((q) => qualifiers.has(q)) ?? null;
+  const allowed = qualifiedBy ? OWNERSHIP_MAX_ALLOWANCE : OWNERSHIP_BASE_ALLOWANCE;
+  return { owned: owned.length, allowed, canCreate: owned.length < allowed, qualifiedBy };
+}
+
+/** Why creation is unavailable (null when it is available). Only the User's own counts — no billing details. */
+export function ownershipLimitMessage(a: OwnershipAllowance): string | null {
+  if (a.canCreate) return null;
+  const owns = `You already own ${a.owned} organization${a.owned === 1 ? "" : "s"}`;
+  const join = "You can still join other organizations when you're invited.";
+  if (a.allowed >= OWNERSHIP_MAX_ALLOWANCE) return `${owns}. An account can own at most ${OWNERSHIP_MAX_ALLOWANCE} organizations. ${join}`;
+  return `${owns}. A second organization is available when an organization you own is on paid Pro, complimentary Pro or Early Access. ${join}`;
+}
+
+/** "Organizations owned: 1 of 2" (an owner above the allowance reads e.g. "3 of 2"). */
+export const ownershipCountLabel = (a: OwnershipAllowance) => `Organizations owned: ${a.owned} of ${a.allowed}`;
+
+/** Shown before creating a second Organization: plans and billing never carry over. */
+export const SECOND_ORGANIZATION_NOTE = "A new organization starts on the Free plan, with its own separate billing. Pro on another organization doesn't carry over.";
+
+/** The Organization-creation ownership limit (HTTP 409, code OWNERSHIP_LIMIT). */
+export class OwnershipLimitError extends Error {
+  readonly owned: number;
+  readonly allowed: number;
+  constructor(a: OwnershipAllowance) {
+    super(ownershipLimitMessage(a) ?? "Organization limit reached.");
+    this.name = "OwnershipLimitError";
+    this.owned = a.owned;
+    this.allowed = a.allowed;
+  }
+}
+
+export function ownershipLimitResponse(e: OwnershipLimitError): NextResponse {
+  return NextResponse.json({ error: e.message, code: "OWNERSHIP_LIMIT", owned: e.owned, allowed: e.allowed }, { status: 409 });
 }
 
 /** Telegram premium actions (connect a Telegram group, post polls / teams / post-game messages). */
@@ -187,6 +290,27 @@ export async function reserveAiCredit(input: { organizationId: string; groupId: 
 /** Settle a reservation exactly once (a second settle is a no-op). */
 export async function settleAiCredit(id: string, succeeded: boolean, now: Date = new Date()): Promise<void> {
   await prisma.aiUsage.updateMany({ where: { id, status: "RESERVED" }, data: { status: succeeded ? "SUCCEEDED" : "RELEASED", settledAt: now } });
+}
+
+/**
+ * Phase 2 — the monthly new-match allowance for the Matches page (OWNER/ADMIN):
+ * same plan, counting rule (Matches created in the current UTC calendar month,
+ * canceled included) and reset as assertCapacity. limit null = unlimited.
+ */
+export async function monthlyMatchAllowance(organizationId: string, now: Date = new Date()) {
+  const { plan, limits } = await organizationPlan(organizationId, now);
+  const limit = limits.monthlyMatches;
+  const used = (await capacityUsage(organizationId, now)).monthlyMatches;
+  const exhausted = limit !== null && used >= limit;
+  return {
+    plan,
+    label: PLAN_LABEL[plan],
+    used,
+    limit,
+    exhausted,
+    resetsAt: utcMonth(now).next.toISOString(),
+    message: exhausted ? limitReachedMessage(plan, NOUN.monthlyMatches(limit)) : null,
+  };
 }
 
 /** Read-only plan + usage summary (OWNER/ADMIN). */

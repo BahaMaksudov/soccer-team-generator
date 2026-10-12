@@ -80,6 +80,12 @@ export function zonedToUtc(ymd: string, hhmm: string, tz: string): Date {
   return new Date(exact.length ? Math.min(...exact) : local - offsetMs(local - H12, tz));
 }
 
+/** HH:MM (24 h) of an instant in `tz`. */
+export function localHhmm(at: Date, tz: string): string {
+  const w = wall(at.getTime(), tz);
+  return `${String(w.h).padStart(2, "0")}:${String(w.mi).padStart(2, "0")}`;
+}
+
 /** YYYY-MM-DD of an instant in `tz`. */
 export function localYmd(at: Date, tz: string): string {
   const w = wall(at.getTime(), tz);

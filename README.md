@@ -24,6 +24,11 @@
 5) Run:
    npm run dev
 
+Deployment (Vercel): migrations run ONCE per build, in the Vercel project's
+build command `npx prisma migrate deploy && npm run build`, against that
+environment's DATABASE_URL. `npm run build` itself is only `next build` (it never
+migrates), so keep `prisma migrate deploy` in the Vercel build command.
+
 Home: http://localhost:3000
 Admin: http://localhost:3000/admin
 Login: http://localhost:3000/login

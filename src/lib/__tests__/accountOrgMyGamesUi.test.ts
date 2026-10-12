@@ -51,6 +51,8 @@ describe("Organization", () => {
   it("membership-verified by URL; members & invitations data only for OWNER; no invented settings", () => {
     expect(org).toContain("requireOrganizationContextForSlug({ organizationSlug })");
     expect(org).toContain('isOwner ? listOrganizationMembers(context) : Promise.resolve(null)');
-    expect(strip(org)).not.toMatch(/WhatsApp|billing|Billing|rename|archive|Delete organization/i);
+    // M11.2A — Billing is real now (a link to the Billing page for OWNER/ADMIN, behind the plan card); nothing else invented.
+    expect(strip(org)).not.toMatch(/WhatsApp|rename|archive|Delete organization/i);
+    expect(strip(org)).toMatch(/\{plan && \([\s\S]*?\/billing/);
   });
 });

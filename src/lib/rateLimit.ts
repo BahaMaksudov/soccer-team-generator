@@ -70,6 +70,8 @@ export async function checkLoginRateLimit(
 const BUCKETS = {
   "match-link-read": { limit: 120, window: "10 m" },
   "match-link-write": { limit: 30, window: "10 m" },
+  // Phase 4B — provider-backed venue location searches (per organizer).
+  "geocode-search": { limit: 20, window: "10 m" },
 } as const;
 export type RateLimitBucket = keyof typeof BUCKETS;
 const bucketLimiters = new Map<RateLimitBucket, Ratelimit>();

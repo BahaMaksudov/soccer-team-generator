@@ -3,6 +3,7 @@ import { z } from "zod";
 import { prisma } from "@/lib/prisma";
 import type { TenantContext } from "@/lib/tenantContext";
 import { managersOnlyResponse } from "@/lib/tenantRoute";
+import { openScheduleSkips } from "@/lib/scheduleSkips";
 import { zodErrorResponse } from "@/lib/validation";
 import { groupCommunity } from "@/lib/communities";
 import { organizationVenue } from "@/lib/venues";
@@ -99,7 +100,12 @@ export async function listSchedules(context: TenantContext): Promise<NextRespons
   if (denied) return denied;
   const rows = await prisma.matchSchedule.findMany({ where: { groupId: context.activeGroup.id }, orderBy: [{ createdAt: "asc" }, { id: "asc" }], select: SELECT /* stable: pausing never moves a card */ });
   // M11.1 — whether the Organization's automation is paused because it has more active schedules than its plan allows.
-  return NextResponse.json({ schedules: (rows as Row[]).map((r) => scheduleView(r)), planLimit: await schedulesOverLimit(context.organization.id) });
+  // Phase 2 — open "match not created (monthly limit)" warnings of each schedule.
+  const skips = await openScheduleSkips(context.activeGroup.id);
+  return NextResponse.json({
+    schedules: (rows as Row[]).map((r) => ({ ...scheduleView(r), skips: skips.get(r.id) ?? [] })),
+    planLimit: await schedulesOverLimit(context.organization.id),
+  });
 }
 
 export async function createSchedule(context: TenantContext, req: Request): Promise<NextResponse> {

@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { telegramDenied } from "@/lib/entitlements";
+import { attendanceIsClosed } from "@/lib/attendanceDeadline";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import type { TenantContext } from "@/lib/tenantContext";
@@ -37,8 +38,10 @@ export async function applyTelegramAttendanceAnswer(
   // UI-4B — closed attendance is read-only: the raw provider answer
   // (TelegramPollAnswer) is still stored by the webhook, but core attendance
   // is not changed. After reopening, the explicit sync can apply it.
-  const match = await tx.match.findFirst({ where: { id: input.matchId, groupId: input.groupId }, select: { attendanceClosedAt: true } });
-  if (!match || match.attendanceClosedAt) return "closed";
+  // Phase 4B — the shared deadline rule, at the moment the answer was given (a replayed answer
+  // from before the deadline still counts; one after it does not).
+  const match = await tx.match.findFirst({ where: { id: input.matchId, groupId: input.groupId }, select: { attendanceClosedAt: true, attendanceDeadlineAt: true } });
+  if (!match || attendanceIsClosed(match, input.at)) return "closed";
   const link = await tx.telegramUserLink.findUnique({
     where: { groupId_userId: { groupId: input.groupId, userId: input.telegramUserId } },
     select: { playerId: true },
@@ -65,7 +68,7 @@ export async function syncTelegramAttendance(context: TenantContext, matchId: st
   const groupId = context.activeGroup.id;
   const match = await findGroupMatch(context, matchId);
   if (!match) return NextResponse.json({ error: "Match not found" }, { status: 404 });
-  if (match.attendanceClosedAt) return attendanceClosedResponse(); // UI-4B — reopen first
+  if (attendanceIsClosed(match)) return attendanceClosedResponse(); // UI-4B — reopen first (Phase 4B: shared deadline rule)
   // Counts only — never Telegram identities.
   return NextResponse.json({ ok: true, ...(await syncMatchAttendanceAnswers(groupId, matchId)) });
 }
@@ -130,6 +133,8 @@ export async function postAttendancePollFor(
   const match = await findGroupMatch(context, matchId);
   if (!match) return NextResponse.json({ error: "Match not found" }, { status: 404 });
   if (match.status === "CANCELED") return NextResponse.json({ error: "This match is canceled." }, { status: 400 });
+  // Phase 4B — never post a new attendance poll once attendance is closed (it would invite answers that don't count).
+  if (attendanceIsClosed(match)) return NextResponse.json({ error: "Attendance is closed. Reopen it before posting a new poll.", code: "ATTENDANCE_CLOSED" }, { status: 409 });
   const chat = await prisma.telegramChat.findFirst({ where: { id: chatRef, groupId, disconnectedAt: null }, select: { chatId: true } });
   if (!chat) return NextResponse.json({ error: "Telegram group not connected" }, { status: 404 });
   if (!process.env.TELEGRAM_BOT_TOKEN) return NextResponse.json({ error: "Missing TELEGRAM_BOT_TOKEN" }, { status: 500 });

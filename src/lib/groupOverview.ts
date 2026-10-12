@@ -1,4 +1,5 @@
 import type { MatchStatus } from "@prisma/client";
+import { attendanceIsClosed, effectiveClosedAt } from "@/lib/attendanceDeadline";
 import { prisma } from "@/lib/prisma";
 import type { TenantContext } from "@/lib/tenantContext";
 import { isManager } from "@/lib/tenantRoute";
@@ -65,6 +66,7 @@ export async function loadGroupOverview(context: TenantContext, now: Date = new 
         locationName: true,
         status: true,
         attendanceClosedAt: true,
+        attendanceDeadlineAt: true,
         generation: { select: { id: true } },
         result: { select: { scoresJson: true, publishedAt: true } },
         mvp: { select: { publishedAt: true } },
@@ -90,7 +92,7 @@ export async function loadGroupOverview(context: TenantContext, now: Date = new 
       locationName: m.locationName,
       status: m.status,
       upcoming: isUpcomingYmd(m.status, date, today),
-      attendanceClosed: m.attendanceClosedAt !== null,
+      attendanceClosed: attendanceIsClosed(m), // Phase 4B — shared deadline rule
       teamsPublished: m.generation !== null,
       publishedResult: resultPublished ? resultView(parseResult(m.result!.scoresJson)) : null,
       resultSaved: m.result !== null,
@@ -98,7 +100,7 @@ export async function loadGroupOverview(context: TenantContext, now: Date = new 
         status: m.status,
         date,
         today,
-        attendanceClosed: m.attendanceClosedAt !== null,
+        attendanceClosed: attendanceIsClosed(m),
         playing,
         teamsPublished: m.generation !== null,
         result: { saved: m.result !== null, published: resultPublished },
@@ -124,7 +126,7 @@ export async function loadGroupOverview(context: TenantContext, now: Date = new 
       where: { matchId: focusRow.id, groupId },
       select: { playerId: true, participantStatus: true, participantSource: true, participantRespondedAt: true, overrideStatus: true, overrideAt: true },
     })) as AttendanceRow[];
-    focusCounts = countAttendance(activeIds, att, focusRow.attendanceClosedAt);
+    focusCounts = countAttendance(activeIds, att, effectiveClosedAt(focusRow));
   }
 
   const upcoming = upcomingRows.map((m) => toMatch(m, m.id === focusRow?.id ? focusCounts.PLAYING : 0));
