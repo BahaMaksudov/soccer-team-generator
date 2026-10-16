@@ -24,6 +24,9 @@ export const REDESIGN_CHROME = "redesign";
 export const REDESIGNED_PATHS: readonly string[] = ["/", "/login", "/signup", "/verify-email", "/pricing"];
 // M9.3 — /share/m/** is the redesigned player Match page (Match Link / share link; never auth-gated).
 export const REDESIGNED_PREFIXES: readonly string[] = ["/verify-email/", "/share/m/"];
+// Telegram publishing — the public Match page ("View teams online", /g/<org>/<group>/m/<id>) uses the
+// redesigned player view. Exactly that route: the rest of the public Group site keeps its current chrome.
+export const REDESIGNED_PATTERNS: readonly RegExp[] = [/^\/g\/[^/]+\/[^/]+\/m\/[^/]+\/?$/];
 
 /** UI-3 — authenticated app-shell pages (exact paths / subtrees). */
 export const APP_SHELL_PATHS: readonly string[] = ["/admin", "/me", "/account", "/onboarding"];
@@ -36,7 +39,7 @@ const matches = (pathname: string, paths: readonly string[], prefixes: readonly 
 
 /** Public redesigned page (never auth-gated). */
 export function isPublicRedesignedPath(pathname: string | null | undefined): boolean {
-  return typeof pathname === "string" && matches(pathname, REDESIGNED_PATHS, REDESIGNED_PREFIXES);
+  return typeof pathname === "string" && (matches(pathname, REDESIGNED_PATHS, REDESIGNED_PREFIXES) || REDESIGNED_PATTERNS.some((r) => r.test(pathname)));
 }
 
 /** UI-3 app-shell page (auth-gated by middleware). */

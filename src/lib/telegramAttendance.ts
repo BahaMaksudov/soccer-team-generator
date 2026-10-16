@@ -4,12 +4,12 @@ import { attendanceIsClosed } from "@/lib/attendanceDeadline";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import type { TenantContext } from "@/lib/tenantContext";
-import { formatYMDFromDate } from "@/lib/telegramFormat";
 import { managersOnlyResponse } from "@/lib/tenantRoute";
 import { attendancePollSchema, zodErrorResponse } from "@/lib/validation";
 import { attendanceFromTelegramOptions, recordParticipantResponse } from "@/lib/attendance";
-import { attendancePollContent, renderTelegramPoll } from "@/lib/messaging";
-import { contentHashOf, STALE_SENDING_MS } from "@/lib/messaging/deliveryState";
+import { renderTelegramPoll } from "@/lib/messaging";
+import { attendancePollFor, otherChatPollTitles } from "@/lib/attendancePollState";
+import { STALE_SENDING_MS } from "@/lib/messaging/deliveryState";
 import { callTelegram, TelegramApiRejectionError } from "@/lib/telegramApi";
 import { attendanceClosedResponse, findGroupMatch } from "@/lib/matches";
 
@@ -124,7 +124,7 @@ export async function postAttendancePoll(context: TenantContext, matchId: string
 export async function postAttendancePollFor(
   context: TenantContext,
   matchId: string,
-  { chatRef, intent }: { chatRef: number; intent: "post" | "post_updated" | "retry_uncertain" }
+  { chatRef, intent, confirmSecondChat }: { chatRef: number; intent: "post" | "post_updated" | "retry_uncertain"; confirmSecondChat?: boolean }
 ): Promise<NextResponse> {
   const denied = managersOnlyResponse(context);
   if (denied) return denied;
@@ -135,13 +135,32 @@ export async function postAttendancePollFor(
   if (match.status === "CANCELED") return NextResponse.json({ error: "This match is canceled." }, { status: 400 });
   // Phase 4B — never post a new attendance poll once attendance is closed (it would invite answers that don't count).
   if (attendanceIsClosed(match)) return NextResponse.json({ error: "Attendance is closed. Reopen it before posting a new poll.", code: "ATTENDANCE_CLOSED" }, { status: 409 });
-  const chat = await prisma.telegramChat.findFirst({ where: { id: chatRef, groupId, disconnectedAt: null }, select: { chatId: true } });
+  const chat = await prisma.telegramChat.findFirst({ where: { id: chatRef, groupId, disconnectedAt: null }, select: { chatId: true, title: true } });
   if (!chat) return NextResponse.json({ error: "Telegram group not connected" }, { status: 404 });
   if (!process.env.TELEGRAM_BOT_TOKEN) return NextResponse.json({ error: "Missing TELEGRAM_BOT_TOKEN" }, { status: 500 });
 
-  const content = attendancePollContent({ date: formatYMDFromDate(match.date), startTime: match.startTime, locationName: match.locationName });
   const destination = chat.chatId.toString();
-  const contentHash = contentHashOf(JSON.stringify({ destination, question: content.question, options: content.options }));
+  // The same content + hash the Match Workspace state reads (src/lib/attendancePollState.ts).
+  const { content, contentHash } = attendancePollFor(match, destination);
+
+  // A FIRST poll in this chat while another chat already has this match's poll creates a SEPARATE
+  // poll: only with explicit confirmation (enforced here, so another tab or an old page can't skip it).
+  if (!confirmSecondChat) {
+    const others = await otherChatPollTitles(groupId, matchId, chat.chatId);
+    const postedHere = others.length ? await prisma.messageDelivery.count({ where: { matchId, groupId, eventType: EVENT, channel: CHANNEL, destination } }) : 0;
+    if (others.length && postedHere === 0) {
+      const target = chat.title?.trim() || "this Telegram group";
+      return NextResponse.json(
+        {
+          error: `This match already has an attendance poll in ${others.join(", ")}. Posting to ${target} creates a separate poll — confirm to continue.`,
+          code: "SECOND_CHAT_CONFIRMATION_REQUIRED",
+          existingChats: others,
+          targetChat: target,
+        },
+        { status: 409 }
+      );
+    }
+  }
 
   type Decision = { kind: "send"; deliveryId: string } | { kind: "respond"; response: NextResponse };
   const decision = await prisma.$transaction(async (tx): Promise<Decision> => {

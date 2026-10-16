@@ -34,6 +34,8 @@ export type MessagingEvent =
       teams: TeamsForMessage;
       /** Player-facing page for these teams, or null (see links.ts). */
       viewUrl?: string | null;
+      /** The TeamBalance Pro website (APP_BASE_URL) — the footer's second link; never part of the content hash. */
+      websiteUrl?: string | null;
       /** M9.2 — the Match's venue (never part of the delivery content hash). */
       location?: { name: string; address: string | null; mapsUrl: string | null } | null;
     };

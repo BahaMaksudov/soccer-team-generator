@@ -72,6 +72,9 @@ enum MessageEventType {
   MATCH_SUMMARY_POSTED
   // Phase 4B — the automatic Game Day Update (at most one per Match).
   GAME_DAY_UPDATE_POSTED
+  // The separate "✅ Poll is closed for M/D/YY" message — at most one per attendance poll, sent by
+  // "Post teams to Telegram" (or its "Close Telegram poll" recovery) right after a VERIFIED close.
+  POLL_CLOSED_NOTICE
 }
 
 // M9-D — where an MVP vote came from (provider-neutral; WHATSAPP in M10).

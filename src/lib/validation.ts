@@ -181,6 +181,8 @@ export const telegramChatPlayerSchema = z.object({ playerId: z.string().trim().m
 export const attendancePollSchema = z.object({
   chatRef: z.number().int().positive(),
   intent: z.enum(["post", "post_updated", "retry_uncertain"]).optional().default("post"),
+  /** Explicit confirmation to post a SEPARATE poll in a second Telegram group of the same match. */
+  confirmSecondChat: z.boolean().optional(),
 });
 
 export const publishTeamsSchema = z.object({

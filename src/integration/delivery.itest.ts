@@ -51,7 +51,10 @@ const timeoutError = () => {
   throw e;
 };
 const originalFetch = global.fetch;
-const sends = () => tgCalls.filter((c) => c.method === "sendMessage");
+const isNotice = (c: TgCall) => c.method === "sendMessage" && String(c.body.text ?? "").startsWith("✅ Poll is closed");
+/** TEAMS messages only (the one-time closure notice is counted separately). */
+const sends = () => tgCalls.filter((c) => c.method === "sendMessage" && !isNotice(c));
+const notices = () => tgCalls.filter(isNotice);
 const stops = () => tgCalls.filter((c) => c.method === "stopPoll");
 
 async function fakeFetch(url: unknown, init?: RequestInit): Promise<Response> {
@@ -61,8 +64,10 @@ async function fakeFetch(url: unknown, init?: RequestInit): Promise<Response> {
     throw new Error("network access is forbidden in integration tests");
   }
   const method = u.split("/").pop()!;
-  tgCalls.push({ method, body: JSON.parse(String(init?.body ?? "{}")) });
-  const planned = tgPlan[method]?.shift();
+  const call = { method, body: JSON.parse(String(init?.body ?? "{}")) };
+  tgCalls.push(call);
+  // Planned outcomes for "sendMessage" target the TEAMS message; the closure notice has its own key ("notice").
+  const planned = tgPlan[isNotice(call) ? "notice" : method]?.shift();
   if (planned) return planned() as Response;
   if (method === "sendMessage") return tg({ ok: true, result: { message_id: ++tgMessageId } });
   if (method === "sendPoll") return tg({ ok: true, result: { message_id: 77, poll: { id: "tg-poll-new" } } });
@@ -106,7 +111,10 @@ const status = async (g = A, pollId = "poll-a", gen = "gen-a") => {
   const res = await deliveryRoute.GET(new Request(`http://itest.local/?pollId=${pollId}&teamGenerationId=${gen}`), p(g));
   return { res, data: await res.json() };
 };
-const deliveries = () => prisma.messageDelivery.findMany({ where: { telegramPollId: "poll-a" }, orderBy: { createdAt: "asc" } });
+/** TEAMS_PUBLISHED records of poll-a (the closure notice has its own POLL_CLOSED_NOTICE record). */
+const deliveries = () => prisma.messageDelivery.findMany({ where: { telegramPollId: "poll-a", eventType: "TEAMS_PUBLISHED" }, orderBy: { createdAt: "asc" } });
+const noticeRows = () => prisma.messageDelivery.findMany({ where: { telegramPollId: "poll-a", eventType: "POLL_CLOSED_NOTICE" } });
+const teamsDeliveryCount = () => prisma.messageDelivery.count({ where: { eventType: "TEAMS_PUBLISHED" } });
 
 beforeAll(async () => {
   const guarded = process.env.ITEST_GUARDED_DATABASE_URL;
@@ -208,8 +216,11 @@ describe("close-and-post — first post", () => {
   it("closes the poll, sends once, ends SENT with the provider id and keeps the legacy columns in step", async () => {
     const res = await post({});
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ ok: true, status: "posted", closeStatus: "closed_now", teamGenerationId: "gen-a" });
-    expect(tgCalls.map((c) => c.method)).toEqual(["stopPoll", "sendMessage"]);
+    expect(await res.json()).toEqual({ ok: true, status: "posted", closeStatus: "closed_now", noticeStatus: "sent", teamGenerationId: "gen-a" });
+    // stopPoll → the one-time "Poll is closed" notice → the teams message (the original order).
+    expect(tgCalls.map((c) => c.method)).toEqual(["stopPoll", "sendMessage", "sendMessage"]);
+    expect(tgCalls[1].body).toEqual({ chat_id: "1001", text: "✅ Poll is closed for 10/5/26" });
+    expect(await noticeRows()).toEqual([expect.objectContaining({ status: "SENT", destination: "1001", matchId: null, providerMessageId: expect.any(String) })]);
     expect(stops()[0].body).toEqual({ chat_id: "1001", message_id: 5 });
 
     const [d] = await deliveries();
@@ -222,7 +233,7 @@ describe("close-and-post — first post", () => {
     await post({});
     const text = String(sends()[0].body.text);
     const body = formatTeamsHtml("10/5/26", TEAMS);
-    expect(text).toBe(`${body}\n\n<a href="${BASE}/g/org-a/group-a">View teams online</a>`);
+    expect(text).toBe(`${body}\n\n<a href="${BASE}/g/org-a/group-a">🔗 View teams online</a> · <a href="${BASE}/">🌐 TeamBalance Pro</a>`);
     expect(sends()[0].body).toMatchObject({ parse_mode: "HTML", disable_web_page_preview: true });
     expect(text).not.toMatch(/EXCELLENT|stamina|rating/);
   });
@@ -254,7 +265,9 @@ describe("close-and-post — first post", () => {
     for (const r of results.filter((r) => r.status !== 200)) {
       expect(r.status).toBe(409);
     }
-    expect(await prisma.messageDelivery.count()).toBe(1);
+    expect(await teamsDeliveryCount()).toBe(1);
+    expect(notices()).toHaveLength(1); // the closure notice too: exactly once
+    expect(await noticeRows()).toHaveLength(1);
   });
 
   it("posting again after SENT → already_posted, nothing sent (an open poll is still closed)", async () => {
@@ -262,9 +275,10 @@ describe("close-and-post — first post", () => {
     await prisma.telegramPoll.update({ where: { pollId: "poll-a" }, data: { isClosed: false } });
     tgCalls = [];
     const res = await post({});
-    expect(await res.json()).toMatchObject({ ok: true, status: "already_posted", closeStatus: "closed_now" });
+    expect(await res.json()).toMatchObject({ ok: true, status: "already_posted", closeStatus: "closed_now", noticeStatus: "exists" });
     expect(sends()).toHaveLength(0);
-    expect(await prisma.messageDelivery.count()).toBe(1);
+    expect(notices()).toHaveLength(0); // the notice was already sent with the first post — never twice
+    expect(await teamsDeliveryCount()).toBe(1);
   });
 });
 
@@ -448,7 +462,8 @@ describe("player-facing link in the teams message", () => {
   it("PRIVATE: never a URL, even when one is supplied", async () => {
     await prisma.group.update({ where: { id: "ga" }, data: { visibility: "PRIVATE" } });
     await post({ shareUrl: `${BASE}/share#${"A".repeat(43)}` });
-    expect(String(sends()[0].body.text)).toBe(formatTeamsHtml("10/5/26", TEAMS));
+    // PRIVATE: no player-facing URL — only the TeamBalance Pro website link.
+    expect(String(sends()[0].body.text)).toBe(`${formatTeamsHtml("10/5/26", TEAMS)}\n\n<a href="${BASE}/">🌐 TeamBalance Pro</a>`);
   });
 
   it("LINK: no link supplied → sent without a URL; an active link of THIS Group → included; foreign/revoked → refused", async () => {
@@ -463,7 +478,7 @@ describe("player-facing link in the teams message", () => {
     expect(tgCalls).toEqual([]);
 
     await post({ shareUrl: `${BASE}/share#${tokenA}` });
-    expect(String(sends()[0].body.text)).toContain(`<a href="${BASE}/share#${tokenA}">View teams online</a>`);
+    expect(String(sends()[0].body.text)).toContain(`<a href="${BASE}/share#${tokenA}">🔗 View teams online</a> · <a href="${BASE}/">🌐 TeamBalance Pro</a>`);
     const stored = JSON.stringify(await prisma.$queryRawUnsafe(`SELECT * FROM "MessageDelivery"`));
     expect(stored).not.toContain(tokenA);
     expect(stored).not.toContain("/share");
@@ -475,7 +490,8 @@ describe("player-facing link in the teams message", () => {
     await prisma.groupShareLink.create({ data: { groupId: "ga", tokenHash: hashToken(tokenA), revokedAt: new Date() } });
     expect((await post({ shareUrl: `${BASE}/share#${tokenA}` })).status).toBe(400);
     expect((await post({})).status).toBe(200);
-    expect(String(sends()[0].body.text)).toBe(formatTeamsHtml("10/5/26", TEAMS));
+    // No share link supplied: no player-facing URL — only the TeamBalance Pro website link.
+    expect(String(sends()[0].body.text)).toBe(`${formatTeamsHtml("10/5/26", TEAMS)}\n\n<a href="${BASE}/">🌐 TeamBalance Pro</a>`);
   });
 });
 
@@ -514,7 +530,7 @@ describe("Monday workflow (PUBLIC Group) end to end", () => {
     tgCalls = [];
     const res = await closePostRoute.POST(json("POST", { pollId: "tg-poll-new", teamGenerationId: published.id }), p(A));
     expect(await res.json()).toMatchObject({ ok: true, status: "posted", closeStatus: "closed_now" });
-    expect(tgCalls.map((c) => c.method)).toEqual(["stopPoll", "sendMessage"]);
+    expect(tgCalls.map((c) => c.method)).toEqual(["stopPoll", "sendMessage", "sendMessage"]); // close → notice → teams
     expect(String(sends()[0].body.text)).toContain(`${BASE}/g/org-a/group-a`);
   });
 });

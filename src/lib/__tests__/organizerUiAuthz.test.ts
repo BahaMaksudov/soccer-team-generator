@@ -66,7 +66,7 @@ describe("source gating (organizer controls exist only inside manager branches)"
       expect(i, marker).toBeGreaterThan(-1);
       return ws.lastIndexOf("view.canManage", i) > -1 && ws.lastIndexOf("view.canManage", i) > ws.lastIndexOf("return (", i);
     };
-    for (const marker of ["Mark completed", "Cancel match", 'm.attendanceClosed ? "Reopen attendance" : "Close attendance"', "Sync Telegram attendance", "<AttendanceStatusButtons", "<CanonicalGenerateSection", "Post poll to Telegram"])
+    for (const marker of ["Mark completed", "Cancel match", 'm.attendanceClosed ? "Reopen attendance" : "Close attendance"', "Sync Telegram attendance", "<AttendanceStatusButtons", "<CanonicalGenerateSection", "pollButtonView(view.telegram.pollPost"])
       expect(managed(marker), marker).toBe(true);
     expect(ws).toContain("<PublishedTeams teams={view.generation.teams}");
     // "Clear override" lives next to the canManage-gated attendance buttons (M9.3: AttendanceStatusButtons, the "Set attendance for …" group).

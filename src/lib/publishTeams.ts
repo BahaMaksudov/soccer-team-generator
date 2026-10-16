@@ -10,7 +10,6 @@ import { findSport, type SportDefinition } from "@/lib/sports";
 import { loadStoredBalanceWeights } from "@/lib/groupSettings";
 import { managersOnlyResponse } from "@/lib/tenantRoute";
 import { idsOutsideCommunity, OUTSIDE_COMMUNITY_MESSAGE } from "@/lib/communities";
-import { closeMatchAttendancePolls, POLL_CLOSE_MESSAGE } from "@/lib/matchPollClose";
 
 /**
  * Phase 2D.6D.3 — shared Publish core, originally extracted from the
@@ -244,14 +243,10 @@ export async function publishTeamsForContext(context: TenantContext, req: Reques
   revalidatePath(`/g/${context.organization.slug}/${context.activeGroup.slug}`);
   revalidatePath(`/g/${context.organization.slug}/${context.activeGroup.slug}/print/${saved.id}`);
 
-  // M9.2 — publishing a Match's teams closes its open Telegram attendance poll
-  // (after a final answer sync). The teams are already saved: a Telegram
-  // problem never undoes them, and its outcome is reported, never hidden.
-  // Posting the teams to Telegram stays the separate explicit action.
-  if (matchId) {
-    const poll = await closeMatchAttendancePolls(activeGroupId, matchId).catch(() => ({ status: "uncertain" as const, closed: 0, open: 1 }));
-    return NextResponse.json({ ok: true, id: saved.id, poll: { status: poll.status, message: POLL_CLOSE_MESSAGE[poll.status] } });
-  }
+  // Publishing on the website publishes the teams ONLY: it never touches the Telegram
+  // attendance poll. "Post teams to Telegram" closes the poll it posts to (then the
+  // one-time "Poll is closed" notice, then the teams); the attendance deadline still
+  // closes polls on its own.
   return NextResponse.json({ ok: true, id: saved.id });
 }
 

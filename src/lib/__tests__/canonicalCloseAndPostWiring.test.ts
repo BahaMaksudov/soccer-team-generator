@@ -47,11 +47,17 @@ describe("canonical Close Poll & Post Teams wiring", () => {
     expect(closePost).not.toMatch(/\bpollDate:/);
   });
 
-  it("canonical Close/Post never sends the legacy extra poll-closed chat message", () => {
+  it("Close/Post: verified close → the ONE-time \"Poll is closed\" notice (its own delivery record) → teams; never \"already closed\"", () => {
     const core = stripComments(read(path.join(root, "src/lib/telegramCloseAndPost.ts")));
-    expect(core).not.toMatch(/Poll is closed|Poll is already closed/);
-    const methods = [...core.matchAll(/callTelegram\("(\w+)"/g)].map((m) => m[1]);
-    expect(methods).toEqual(["stopPoll", "sendMessage"]);
+    // The teams message is the only direct send here; stopPoll + the notice live in src/lib/pollClosure.ts.
+    expect([...core.matchAll(/callTelegram\("(\w+)"/g)].map((m) => m[1])).toEqual(["sendMessage"]);
+    const close = core.indexOf("await closePollAndNotify(");
+    expect(close).toBeGreaterThan(-1);
+    expect(close).toBeLessThan(core.indexOf('callTelegram("sendMessage"')); // notice BEFORE the teams (the original order)
+    expect(core).toContain("isVerifiedClose(closeStatus)");
+    const closure = stripComments(read(path.join(root, "src/lib/pollClosure.ts")));
+    expect(closure).toContain("`✅ Poll is closed for ${displayDate}`");
+    expect(closure).not.toMatch(/Poll is already closed/); // a poll already closed gets no notice
   });
 
   it("action is labelled distinctly from Publish", () => {

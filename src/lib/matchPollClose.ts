@@ -1,11 +1,13 @@
 import { prisma } from "@/lib/prisma";
-import { callTelegram, TelegramAmbiguousError, TelegramApiRejectionError } from "@/lib/telegramApi";
+import { isVerifiedClose, sendPollClosedNotice, stopAttendancePoll, teamsPostedToPoll, type NoticeResult } from "@/lib/pollClosure";
+import { resolvePollDisplayDate } from "@/lib/telegramFormat";
 import { syncMatchAttendanceAnswers } from "@/lib/telegramAttendance";
 
 /**
- * M9.2 — close a Match's open Telegram ATTENDANCE poll(s) (restores the
- * pre-2D.6D.5E.5 behavior "publishing teams closes the attendance poll", now
- * as server-side orchestration; also used at the automation cutoff).
+ * M9.2 — close a Match's open Telegram ATTENDANCE poll(s): used at the
+ * attendance deadline / automation cutoff and by the organizer's "Close
+ * Telegram poll" action. (Website Publish no longer closes polls — "Post teams
+ * to Telegram" closes the poll it posts to.)
  *
  * Order: (1) if Team Balance Pro attendance is still open, replay the stored
  * answers (final sync, same mapping as the webhook); (2) stopPoll each open
@@ -18,18 +20,25 @@ import { syncMatchAttendanceAnswers } from "@/lib/telegramAttendance";
  *   failed          — Telegram definitively refused (poll left open locally);
  *   uncertain       — Telegram did not answer clearly (timeout/network): the
  *                     poll may or may not be closed; left open locally, retry safe.
- * Nothing here sends a message, and nothing here changes teams. No auth —
- * callers authorize; every query is scoped by groupId.
+ * Nothing here changes teams. It sends a message only with `notify` (the
+ * one-time closure notice, see below). No auth — callers authorize; every
+ * query is scoped by groupId.
  */
 export type PollCloseStatus = "no_poll" | "already_closed" | "closed" | "failed" | "uncertain";
-export type PollCloseResult = { status: PollCloseStatus; closed: number; open: number };
+export type PollCloseResult = { status: PollCloseStatus; closed: number; open: number; notices?: NoticeResult[] };
 
-export async function closeMatchAttendancePolls(groupId: string, matchId: string): Promise<PollCloseResult> {
+/**
+ * `notify` (organizer "Close Telegram poll" recovery only): after a VERIFIED
+ * close of a poll whose teams were already posted to Telegram, send its
+ * one-time "Poll is closed" notice (never for the deadline step, never after an
+ * unclear close, never twice — see src/lib/pollClosure.ts).
+ */
+export async function closeMatchAttendancePolls(groupId: string, matchId: string, notify?: { userId: string }): Promise<PollCloseResult> {
   const match = await prisma.match.findFirst({ where: { id: matchId, groupId }, select: { attendanceClosedAt: true } });
   if (!match) return { status: "no_poll", closed: 0, open: 0 };
   const polls = await prisma.telegramPoll.findMany({
     where: { matchId, groupId, kind: "ATTENDANCE" },
-    select: { pollId: true, chatId: true, messageId: true, isClosed: true },
+    select: { pollId: true, chatId: true, messageId: true, isClosed: true, question: true, pollDate: true },
   });
   if (polls.length === 0) return { status: "no_poll", closed: 0, open: 0 };
   const open = polls.filter((p) => !p.isClosed);
@@ -39,26 +48,18 @@ export async function closeMatchAttendancePolls(groupId: string, matchId: string
 
   let closed = 0;
   let worst: PollCloseStatus = "closed";
+  const notices: NoticeResult[] = [];
   for (const poll of open) {
-    if (poll.messageId == null) {
-      worst = "failed"; // cannot be closed through Telegram without its message id
-      continue;
-    }
-    try {
-      await callTelegram("stopPoll", { chat_id: poll.chatId.toString(), message_id: Number(poll.messageId) });
-    } catch (e) {
-      const alreadyClosed = e instanceof TelegramApiRejectionError && (e.description ?? e.message).toLowerCase().includes("already been closed");
-      if (!alreadyClosed) {
-        // A definite refusal is "failed"; anything ambiguous (timeout / network / unreadable) is "uncertain".
-        if (e instanceof TelegramAmbiguousError) worst = "uncertain";
-        else if (worst !== "uncertain") worst = "failed";
-        continue;
-      }
-    }
-    await prisma.telegramPoll.updateMany({ where: { pollId: poll.pollId, groupId }, data: { isClosed: true } });
+    const outcome = await stopAttendancePoll(groupId, poll);
+    if (outcome === "close_uncertain") worst = "uncertain";
+    else if ((outcome === "close_failed" || outcome === "missing_message_id") && worst !== "uncertain") worst = "failed";
+    if (!isVerifiedClose(outcome)) continue;
     closed++;
+    if (notify && (await teamsPostedToPoll(groupId, poll.pollId))) {
+      notices.push(await sendPollClosedNotice({ groupId, matchId, poll, displayDate: resolvePollDisplayDate(poll), userId: notify.userId }));
+    }
   }
-  return { status: worst, closed, open: open.length - closed };
+  return { status: worst, closed, open: open.length - closed, ...(notify ? { notices } : {}) };
 }
 
 export const POLL_CLOSE_MESSAGE: Record<PollCloseStatus, string | null> = {

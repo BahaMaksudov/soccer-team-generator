@@ -418,7 +418,7 @@ describe("M9.3 — a web-only Community end to end (no Telegram, no player accou
     expect(gen.status).toBe(200);
     const pub = await call(publishRoute.POST(json("POST", { date, teams: gen.body.teams, matchId: m.id }), g()));
     expect(pub.status).toBe(200);
-    expect(pub.body.poll).toMatchObject({ status: "no_poll" });
+    expect(pub.body).not.toHaveProperty("poll"); // website Publish never touches Telegram polls
 
     // Result, organizer POTM, recap — published.
     const pg = (body: unknown) => call(postGameRoute.POST(json("POST", body), gm(m.id)));

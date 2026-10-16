@@ -21,6 +21,8 @@ import { canonicalMatchPath } from "@/lib/matchPaths";
 import { postGameView } from "@/lib/postGame";
 import { defaultSelection, effectiveAttendance, recordParticipantResponse, type AttendanceRow } from "@/lib/attendance";
 import { matchAttendanceSnapshot } from "@/lib/attendanceSnapshot";
+import { attendancePollPostView } from "@/lib/attendancePollState";
+import { pollClosedNoticeState, teamsPostedToPoll } from "@/lib/pollClosure";
 import { gameDayUpdateStatus } from "@/lib/gameDayUpdate";
 import { schedulesOverLimit } from "@/lib/schedules";
 import {
@@ -468,6 +470,13 @@ export async function getMatchView(context: TenantContext, matchId: string): Pro
       poll: poll ? { pollId: manager ? poll.pollId : null, closed: poll.isClosed, postedAt: poll.createdAt.toISOString() } : null,
       unlinkedVoters,
       pollDelivery: pollDeliveries[0] ? { status: pollDeliveries[0].status, sentAt: pollDeliveries[0].sentAt?.toISOString() ?? null } : null,
+      // Telegram publishing — the PERSISTED poll-posting state of the SELECTED chat (+ other chats that
+      // already have this match's poll), and the closure / closure-notice state of the match's current poll.
+      pollPost: manager && selectedChat && selectedChat.disconnectedAt === null ? await attendancePollPostView(groupId, match, selectedChat) : null,
+      closure:
+        manager && poll
+          ? { closed: poll.isClosed, teamsPosted: await teamsPostedToPoll(groupId, poll.pollId), notice: await pollClosedNoticeState(groupId, poll.pollId) }
+          : null,
     },
   });
 }
