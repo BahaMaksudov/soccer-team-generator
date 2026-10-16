@@ -7,7 +7,7 @@
  * style roster) and FunnyStuff; one Player belongs to both. Group B is another
  * tenant.
  */
-import { describe, it, expect, vi, beforeAll, beforeEach, afterAll } from "vitest";
+import { describe, it, expect, vi, beforeAll, beforeEach, afterAll, afterEach } from "vitest";
 import fs from "node:fs";
 import path from "node:path";
 
@@ -528,6 +528,13 @@ describe("M9.2-5 — reusable Venues, match location and the Telegram maps link"
 });
 
 describe("M9.2-6/7 — weekly schedules and the Match Automation Agent", () => {
+  // The poll step checks "is attendance closed?" against the REAL clock while these scenarios run at fixed
+  // instants (Oct 11–13, 2026): pin the clock to the scenario's poll evening so the test doesn't depend on today's date.
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-10-12T00:10:00Z"));
+  });
+  afterEach(() => vi.useRealTimers());
   // Monday 9 PM New York; poll Sunday 8 PM; cutoff Monday 8 PM.
   const SCHED = { communityId: "c-uccne", timezone: "America/New_York", weekday: 1, startTime: "21:00", pollDaysBefore: 1, pollTime: "20:00", cutoffDaysBefore: 0, cutoffTime: "20:00" };
   const T = {

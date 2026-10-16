@@ -15,6 +15,8 @@ import { prisma } from "@/lib/prisma";
 import * as previewRoute from "@/app/api/admin/o/[organizationSlug]/g/[groupSlug]/matches/[matchId]/game-day-update/preview/route";
 import * as sendRoute from "@/app/api/admin/o/[organizationSlug]/g/[groupSlug]/matches/[matchId]/game-day-update/send/route";
 import * as markRoute from "@/app/api/admin/o/[organizationSlug]/g/[groupSlug]/matches/[matchId]/game-day-update/mark-sent/route";
+import * as matchRoute from "@/app/api/admin/o/[organizationSlug]/g/[groupSlug]/matches/[matchId]/route";
+import * as webhookRoute from "@/app/api/telegram/webhook/route";
 import { runMatchAutomation } from "@/lib/matchAutomation";
 import { resetGameDayPreviewLimitForTests } from "@/lib/gameDayManual";
 import { setWeatherProviderForTests } from "@/lib/weather";
@@ -173,7 +175,7 @@ describe("preview and confirmed send", () => {
       expiresInSeconds: 120,
     });
     expect(p.message!.html).toContain("⏰ Attendance closes in 3 hours (5:00 PM EDT).");
-    expect(p.message!.html).toContain("👥 1 player confirmed");
+    expect(p.message!.html).toContain("👥 Attendance Summary (3 players)\n✅ Playing: 1\n❌ Not Playing: 0\n🤔 Maybe: 0\n⏳ Not Responded: 2");
     expect(p.message!.html).toContain("68°F");
     expect(p.message!.html).not.toContain("Secret"); // counts only, never names
     expect(p.token).toEqual(expect.any(String));
@@ -447,5 +449,108 @@ describe("read-only weather check", () => {
     const { preview: p } = await preview();
     expect(p.weather).toMatchObject({ reason, forecast: null, includedInMessage: false });
     expect(p.state).toBe("READY");
+  });
+});
+
+// ================================================================ attendance summary (one shared calculation)
+describe("attendance summary: the website, the preview and the sent message agree", () => {
+  const TG_SECRET = "itest-webhook-secret";
+  // Community "c": members p1, p2, p3 (active), p5 (INACTIVE). p4 is in the group but NOT a member.
+  async function communityRoster() {
+    await prisma.player.createMany({
+      data: [
+        { id: "p4", groupId: "o-g", firstName: "Outsider", lastName: "X", position: "MIDFIELDER", rating: "GOOD", stamina: 3 },
+        { id: "p5", groupId: "o-g", firstName: "Gone", lastName: "X", position: "MIDFIELDER", rating: "GOOD", stamina: 3, isActive: false },
+      ],
+    });
+    await prisma.community.create({ data: { id: "c", groupId: "o-g", name: "Wednesdays" } });
+    await prisma.communityPlayer.createMany({ data: ["p1", "p2", "p3", "p5"].map((playerId) => ({ groupId: "o-g", communityId: "c", playerId })) });
+    await prisma.match.update({ where: { id: "m" }, data: { communityId: "c" } });
+    await prisma.telegramUserLink.create({ data: { groupId: "o-g", userId: 5002n, playerId: "p2" } });
+  }
+  const workspace = async () => {
+    const r = await matchRoute.GET(new Request("http://itest.local/"), ctx("m"));
+    const body = (await r.json()) as { counts: { PLAYING: number; NOT_PLAYING: number; MAYBE: number; NO_RESPONSE: number }; rosterSize: number };
+    return { ...body.counts, rosterSize: body.rosterSize };
+  };
+  const summaryOf = (html: string) => {
+    const m = html.match(/👥 Attendance Summary \((\d+) players?\)\n✅ Playing: (\d+)\n❌ Not Playing: (\d+)\n🤔 Maybe: (\d+)\n⏳ Not Responded: (\d+)/);
+    if (!m) throw new Error("no attendance summary in the message");
+    const [roster, PLAYING, NOT_PLAYING, MAYBE, NO_RESPONSE] = m.slice(1).map(Number);
+    return { PLAYING, NOT_PLAYING, MAYBE, NO_RESPONSE, rosterSize: roster };
+  };
+  const vote = (userId: number, optionIds: number[]) =>
+    webhookRoute.POST(
+      new Request("http://itest.local/", { method: "POST", headers: { "Content-Type": "application/json", "x-telegram-bot-api-secret-token": TG_SECRET }, body: JSON.stringify({ update_id: 1, poll_answer: { poll_id: "poll-m", user: { id: userId, first_name: "T" }, option_ids: optionIds } }) }) as never
+    );
+  beforeEach(() => vi.stubEnv("TELEGRAM_WEBHOOK_SECRET", TG_SECRET));
+
+  it("eligible roster only (active members), each player once; counts add up; equal on the website, in the preview and in the sent message", async () => {
+    await communityRoster();
+    await prisma.attendanceResponse.create({ data: { matchId: "m", groupId: "o-g", playerId: "p4", participantStatus: "PLAYING", participantSource: "WEB", participantRespondedAt: new Date() } }); // non-member
+    await prisma.attendanceResponse.create({ data: { matchId: "m", groupId: "o-g", playerId: "p5", participantStatus: "PLAYING", participantSource: "WEB", participantRespondedAt: new Date() } }); // inactive
+    const expected = { PLAYING: 1, NOT_PLAYING: 0, MAYBE: 0, NO_RESPONSE: 2, rosterSize: 3 };
+    expect(await workspace()).toEqual(expected);
+    const { preview: p } = await preview();
+    expect(summaryOf(p.message!.html)).toEqual(expected);
+    expect((await send(p.token)).body.result).toBe("sent");
+    expect(summaryOf(String(sends()[0].body.text))).toEqual(expected);
+  });
+
+  it("Telegram votes: a linked player's vote lowers Not Responded once; a duplicate event changes nothing; Playing → Maybe keeps the respondents; an unknown voter is never counted", async () => {
+    await communityRoster();
+    const before = await workspace();
+    expect(before).toMatchObject({ NO_RESPONSE: 2, rosterSize: 3 });
+    await vote(5002, [0]); // p2 → Playing
+    expect(await workspace()).toMatchObject({ PLAYING: 2, NO_RESPONSE: 1, rosterSize: 3 });
+    await vote(5002, [0]); // duplicate delivery of the same answer
+    expect(await workspace()).toMatchObject({ PLAYING: 2, NO_RESPONSE: 1 });
+    await vote(5002, [2]); // changes to Maybe: still a respondent
+    expect(await workspace()).toMatchObject({ PLAYING: 1, MAYBE: 1, NO_RESPONSE: 1, rosterSize: 3 });
+    await vote(9999, [1]); // a Telegram voter not linked to any player
+    const after = await workspace();
+    expect(after).toMatchObject({ PLAYING: 1, MAYBE: 1, NOT_PLAYING: 0, NO_RESPONSE: 1, rosterSize: 3 });
+    expect(after.PLAYING + after.NOT_PLAYING + after.MAYBE + after.NO_RESPONSE).toBe(after.rosterSize);
+    expect(summaryOf((await preview()).preview.message!.html)).toEqual(after);
+  });
+
+  it("organizer overrides and roster changes are reflected (override beats the player's answer; deactivated / removed players leave the total)", async () => {
+    await communityRoster();
+    await prisma.attendanceResponse.update({ where: { matchId_playerId: { matchId: "m", playerId: "p1" } }, data: { overrideStatus: "NOT_PLAYING", overrideAt: new Date() } });
+    expect(await workspace()).toEqual({ PLAYING: 0, NOT_PLAYING: 1, MAYBE: 0, NO_RESPONSE: 2, rosterSize: 3 });
+    await prisma.player.update({ where: { id: "p3" }, data: { isActive: false } });
+    expect(await workspace()).toEqual({ PLAYING: 0, NOT_PLAYING: 1, MAYBE: 0, NO_RESPONSE: 1, rosterSize: 2 });
+    await prisma.communityPlayer.deleteMany({ where: { communityId: "c", playerId: "p2" } });
+    const w = await workspace();
+    expect(w).toEqual({ PLAYING: 0, NOT_PLAYING: 1, MAYBE: 0, NO_RESPONSE: 0, rosterSize: 1 });
+    expect(summaryOf((await preview()).preview.message!.html)).toEqual(w);
+  });
+
+  it("a match without a Community counts every active player of the group (website and message alike)", async () => {
+    expect(await workspace()).toEqual({ PLAYING: 1, NOT_PLAYING: 0, MAYBE: 0, NO_RESPONSE: 2, rosterSize: 3 });
+    expect(summaryOf((await preview()).preview.message!.html)).toEqual(await workspace());
+  });
+
+  it.each([
+    ["a non-responder answers Not Playing (only Not Playing / Not Responded change)", async () => prisma.attendanceResponse.create({ data: { matchId: "m", groupId: "o-g", playerId: "p2", participantStatus: "NOT_PLAYING", participantSource: "WEB", participantRespondedAt: new Date() } })],
+    ["a player is deactivated (roster total changes)", async () => prisma.player.update({ where: { id: "p3" }, data: { isActive: false } })],
+    ["a new player joins the roster", async () => prisma.player.create({ data: { id: "p9", groupId: "o-g", firstName: "New", lastName: "X", position: "MIDFIELDER", rating: "GOOD", stamina: 3 } })],
+  ] as const)("any attendance or roster change after the preview → refreshed preview required: %s", async (_n, change) => {
+    const { preview: p } = await preview();
+    await change();
+    expect(await send(p.token)).toMatchObject({ status: 409, body: { result: "stale" } });
+    expect(sends()).toHaveLength(0);
+    const fresh = (await preview()).preview;
+    expect(summaryOf(fresh.message!.html)).toEqual(await workspace());
+    expect((await send(fresh.token)).body.result).toBe("sent");
+    expect(String(sends()[0].body.text)).toBe(fresh.message!.html);
+  });
+
+  it("automatic and manual updates use the same format", async () => {
+    await prisma.groupSetting.create({ data: { groupId: "o-g", key: "gameDayUpdate", value: JSON.stringify({ enabled: true, hoursBefore: 4, includeWeather: true, units: "imperial" }) } });
+    const manualHtml = (await preview()).preview.message!.html;
+    vi.useRealTimers();
+    expect((await runMatchAutomation(at(-3 * H))).gameDayUpdates).toBe(1);
+    expect(String(sends()[0].body.text)).toBe(manualHtml); // same instant, same facts → byte-identical
   });
 });

@@ -358,7 +358,8 @@ describe("content: escaping, attendance overrides, links", () => {
     await runMatchAutomation(at(-3 * H));
     const text = String(sends()[0].body.text);
     expect(text).toContain("<b>⚽ Game Day Update — A&amp;B &lt;Eagles&gt;</b>");
-    expect(text).toContain("👥 2 players confirmed · 1 maybe");
+    // p1 Playing, p2 Playing (override beats their own Not playing), p3 Maybe, p4 no answer — 4 eligible players.
+    expect(text).toContain("👥 Attendance Summary (4 players)\n✅ Playing: 2\n❌ Not Playing: 0\n🤔 Maybe: 1\n⏳ Not Responded: 1");
     expect(text).not.toMatch(/Secret|rating|GOOD/);
   });
 

@@ -1,3 +1,4 @@
+import type { Prisma } from "@prisma/client";
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { prisma } from "@/lib/prisma";
@@ -57,8 +58,13 @@ export function parseGameDayUpdateSettings(raw: string | null | undefined): Game
   };
 }
 
-export async function readGameDayUpdateSettings(groupId: string): Promise<GameDayUpdateSettings> {
-  const row = await prisma.groupSetting.findUnique({ where: { groupId_key: { groupId, key: GAME_DAY_UPDATE_KEY } }, select: { value: true } });
+/**
+ * `db`: pass the transaction client when called inside a transaction (the Game Day
+ * lock) — the read then uses that transaction's own connection instead of taking a
+ * second one from the pool (which concurrent lock-waiters may have exhausted).
+ */
+export async function readGameDayUpdateSettings(groupId: string, db: Prisma.TransactionClient | typeof prisma = prisma): Promise<GameDayUpdateSettings> {
+  const row = await db.groupSetting.findUnique({ where: { groupId_key: { groupId, key: GAME_DAY_UPDATE_KEY } }, select: { value: true } });
   return parseGameDayUpdateSettings(row?.value);
 }
 

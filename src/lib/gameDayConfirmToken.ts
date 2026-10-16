@@ -29,9 +29,11 @@ export type GameDayConfirmClaims = {
   c: string;
   /** deadline (epoch ms) */
   d: number;
-  /** attendance counts shown */
+  /** attendance counts shown (Playing, Maybe, Not Playing, Not Responded) */
   pl: number;
   mb: number;
+  np: number;
+  nr: number;
   /** weather snapshot shown (null = none) */
   w: GameDayWeather | null;
   /** SHA-256 (hex) of the exact message text */
@@ -73,7 +75,7 @@ export function verifyGameDayConfirm(token: unknown, expect: { o: string; g: str
     return { ok: false, reason: "INVALID" };
   }
   if (!c || c.o !== expect.o || c.g !== expect.g || c.m !== expect.m || c.u !== expect.u) return { ok: false, reason: "INVALID" };
-  if (![c.d, c.pl, c.mb, c.iat, c.exp].every((n) => typeof n === "number" && Number.isFinite(n))) return { ok: false, reason: "INVALID" };
+  if (![c.d, c.pl, c.mb, c.np, c.nr, c.iat, c.exp].every((n) => typeof n === "number" && Number.isFinite(n))) return { ok: false, reason: "INVALID" };
   if (typeof c.p !== "string" || typeof c.c !== "string" || typeof c.h !== "string" || !/^[0-9a-f]{64}$/.test(c.h)) return { ok: false, reason: "INVALID" };
   if (c.exp - c.iat !== PREVIEW_TTL_MS) return { ok: false, reason: "INVALID" };
   if (c.exp <= now) return { ok: false, reason: "EXPIRED" };

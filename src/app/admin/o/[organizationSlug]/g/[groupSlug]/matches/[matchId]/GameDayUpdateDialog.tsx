@@ -5,7 +5,8 @@ import Dialog from "@/components/app/Dialog";
 import { Button } from "@/components/ui/button";
 import { StateChip } from "@/components/game-day/parts";
 import { formatDeadline } from "@/lib/deadlineFormat";
-import { parseTelegramHtml } from "@/lib/telegramHtmlPreview";
+import { parseTelegramBlocks, type PreviewLine } from "@/lib/telegramHtmlPreview";
+import { WEATHER_ATTRIBUTION, WEATHER_DISCLAIMER } from "@/lib/weatherLegal";
 import type { GameDayPreview, WeatherReason } from "@/lib/gameDayUpdate";
 
 /**
@@ -37,25 +38,47 @@ const WEATHER_REASON: Record<WeatherReason, string> = {
   UNAVAILABLE: "The weather service didn't return a forecast for kickoff right now.",
 };
 
+function PreviewLineView({ line }: { line: PreviewLine }) {
+  return (
+    <div className="min-h-[1.25rem]">
+      {line.map((s, j) => {
+        const cls = [s.bold && "font-semibold", s.italic && "italic"].filter(Boolean).join(" ") || undefined;
+        return s.href ? (
+          <a key={j} className={`${cls ?? ""} text-primary underline`} href={s.href} target="_blank" rel="noopener noreferrer">
+            {s.text}
+          </a>
+        ) : (
+          <span key={j} className={cls}>
+            {s.text}
+          </span>
+        );
+      })}
+    </div>
+  );
+}
+
+/** Safe rendering of the Telegram HTML (text nodes only); an expandable quote is shown collapsed, as in Telegram. */
 export function TelegramMessagePreview({ html }: { html: string }) {
   return (
     <div className="whitespace-pre-wrap break-words rounded-lg border bg-card p-3 text-sm leading-relaxed" aria-label="Telegram message preview">
-      {parseTelegramHtml(html).map((line, i) => (
-        <div key={i} className="min-h-[1.25rem]">
-          {line.map((s, j) => {
-            const cls = [s.bold && "font-semibold", s.italic && "italic"].filter(Boolean).join(" ") || undefined;
-            return s.href ? (
-              <a key={j} className={`${cls ?? ""} text-primary underline`} href={s.href} target="_blank" rel="noopener noreferrer">
-                {s.text}
-              </a>
-            ) : (
-              <span key={j} className={cls}>
-                {s.text}
-              </span>
-            );
-          })}
-        </div>
-      ))}
+      {parseTelegramBlocks(html).map((b, i) =>
+        b.kind === "line" ? (
+          <PreviewLineView key={i} line={b.line} />
+        ) : b.expandable ? (
+          <details key={i} className="my-1 border-l-4 border-border pl-2 text-xs">
+            <summary className="cursor-pointer">{b.lines[0]?.map((s) => s.text).join("")}</summary>
+            {b.lines.slice(1).map((l, j) => (
+              <PreviewLineView key={j} line={l} />
+            ))}
+          </details>
+        ) : (
+          <blockquote key={i} className="my-1 border-l-4 border-border pl-2 text-xs">
+            {b.lines.map((l, j) => (
+              <PreviewLineView key={j} line={l} />
+            ))}
+          </blockquote>
+        )
+      )}
     </div>
   );
 }
@@ -142,6 +165,18 @@ export function GameDayUpdateReview({
         <p className="font-semibold">Weather check (read-only)</p>
         <p>{preview.weather.forecast ? forecastText(preview.weather.forecast, preview.units) : WEATHER_REASON[preview.weather.reason]}</p>
         {preview.weather.forecast && !preview.weather.includedInMessage && <p className="text-muted-foreground">Not included in the message: weather is turned off in Group Settings → Game Day Update.</p>}
+        {preview.weather.forecast && (
+          // The provider's attribution and its required end-user disclaimer go wherever its data is shown — here too.
+          <div className="mt-2 space-y-1 border-t pt-2 text-[11px] text-muted-foreground">
+            <p>
+              {WEATHER_ATTRIBUTION.before}{" "}
+              <a className="underline" href={WEATHER_ATTRIBUTION.url} target="_blank" rel="noopener noreferrer">
+                {WEATHER_ATTRIBUTION.text}
+              </a>
+            </p>
+            <p>⚠️ {WEATHER_DISCLAIMER}</p>
+          </div>
+        )}
       </div>
 
       {!preview.automaticEnabled && <p className="text-xs text-muted-foreground">Automatic Game Day Updates stay off. Sending this one doesn&apos;t turn them on.</p>}

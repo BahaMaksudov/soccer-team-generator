@@ -93,15 +93,16 @@ describe("weather attribution + disclaimer in the message", () => {
     timezone: "America/New_York",
     match: { date: "2026-10-19", startTime: "21:00", venueName: "ForeKicks" },
     deadline: new Date("2026-10-19T21:00:00Z"),
-    attendance: { playing: 14, maybe: 3 },
+    attendance: { playing: 14, notPlaying: 0, maybe: 3, noResponse: 10 },
     units: "imperial" as const,
     now: NOW,
   };
-  it("a linked 'Powered by WeatherAPI.com' and the conspicuous disclaimer accompany any forecast; nothing without weather", () => {
+  it("a linked 'Powered by WeatherAPI.com' and the complete, visible disclaimer accompany any forecast; nothing without weather", () => {
     const r = buildGameDayUpdate({ ...base, weather: { temperatureC: 14.4, condition: "Cloudy", rainChancePercent: 25, attributionLink: WEATHER_ATTRIBUTION, disclaimer: WEATHER_DISCLAIMER } });
     const html = r.ok ? r.html : "";
     expect(html).toContain('<i>Powered by <a href="https://www.weatherapi.com/">WeatherAPI.com</a></i>');
-    expect(html).toContain(`⚠️ <i>${WEATHER_DISCLAIMER}</i>`);
+    expect(html).toContain(`<blockquote>⚠️ ${WEATHER_DISCLAIMER}</blockquote>`);
+    expect(html).not.toContain("expandable");
     expect(Array.from(html).length).toBeLessThan(4096);
     const none = buildGameDayUpdate({ ...base, weather: null });
     expect(none.ok && none.html).not.toMatch(/WeatherAPI|informational/);
@@ -112,7 +113,7 @@ describe("weather attribution + disclaimer in the message", () => {
     for (const u of [WEATHER_ATTRIBUTION.url, GEOCODING_ATTRIBUTION.provider.url, GEOCODING_ATTRIBUTION.data.url]) expect(u).toMatch(/^https:\/\//);
   });
   it("an unsafe attribution URL is dropped", () => {
-    const r = buildGameDayUpdate({ ...base, weather: { temperatureC: 1, attributionLink: { before: "Powered by", text: "X", url: "javascript:alert(1)" } } });
+    const r = buildGameDayUpdate({ ...base, weather: { temperatureC: 1, disclaimer: WEATHER_DISCLAIMER, attributionLink: { before: "Powered by", text: "X", url: "javascript:alert(1)" } } });
     expect(r.ok && r.html).not.toContain("<a ");
   });
 });

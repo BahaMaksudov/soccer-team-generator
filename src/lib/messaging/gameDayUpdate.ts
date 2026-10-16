@@ -16,10 +16,19 @@ import { localYmd } from "@/lib/scheduleTime";
  *
  * Weather is optional INPUT (never generated here): canonical metric values
  * from the provider adapter, converted to the Group's units; missing fields are
- * simply omitted; indoor venues say "Outside at kickoff".
+ * simply omitted. Compact: one conditions line ("Outside at kickoff", plus
+ * "(indoor venue)" so nobody reads it as the weather inside), one rain · wind
+ * line, the provider attribution, and the provider-required disclaimer kept
+ * COMPLETE (verbatim) and always VISIBLE in a Telegram blockquote (not
+ * collapsed — a collapsed disclaimer is not confirmed to satisfy the provider's
+ * "clear, conspicuous" requirement).
+ *
+ * Attendance: the Attendance Summary over the eligible roster — Playing, Not
+ * Playing, Maybe, Not Responded (the shared calculation; they add up to the
+ * roster size shown).
  */
 export const TELEGRAM_TEXT_LIMIT = 4096;
-const CAP = { name: 80, venue: 80, condition: 60, attribution: 100, disclaimer: 600 } as const;
+const CAP = { name: 80, venue: 80, condition: 60, attribution: 100, disclaimer: 1000 } as const;
 
 export type GameDayWeather = {
   /** °C (converted to °F for imperial). */
@@ -33,9 +42,10 @@ export type GameDayWeather = {
   attribution?: string | null;
   /** A linked attribution ("Powered by" + <a href=url>text</a>); https URLs only. Shown with the forecast. */
   attributionLink?: { before: string; text: string; url: string } | null;
-  /** The provider-required end-user disclaimer, shown conspicuously with the forecast. */
+  /** The provider-required end-user disclaimer — always included in full, visible, with the forecast. */
   disclaimer?: string | null;
 };
+
 
 export type GameDayUpdateInput = {
   groupName: string;
@@ -47,8 +57,8 @@ export type GameDayUpdateInput = {
   match: { date: string; startTime: string | null; venueName?: string | null; isIndoor?: boolean };
   /** The match's attendance deadline (the one shared deadline). */
   deadline: Date;
-  /** Effective attendance (organizer overrides included) — counts only. */
-  attendance: { playing: number; maybe: number };
+  /** Effective attendance over the eligible roster (organizer overrides included) — counts only. */
+  attendance: { playing: number; notPlaying: number; maybe: number; noResponse: number };
   /** An attendance / match link the CALLER is authorized to share (absolute https URL), or null. Never built here. */
   link?: string | null;
   weather?: GameDayWeather | null;
@@ -115,14 +125,22 @@ function deadlineText(deadline: Date, now: Date, tz: string): string {
 
 function weatherLines(w: GameDayWeather | null | undefined, units: "imperial" | "metric", indoor: boolean, track: (t: boolean) => void): string[] {
   if (!w) return [];
+  // The provider-required disclaimer goes with the forecast COMPLETE or not at all: without the full
+  // text (missing, or too long to fit uncut) the message carries no weather — never a shortened disclaimer.
+  const disclaimer = clean(w.disclaimer, CAP.disclaimer);
+  if (!disclaimer.text || disclaimer.truncated) return [];
   const lines: string[] = [];
   const temp = finite(w.temperatureC) ? (units === "imperial" ? `${Math.round((w.temperatureC * 9) / 5 + 32)}°F` : `${Math.round(w.temperatureC)}°C`) : null;
   const cond = clean(w.condition, CAP.condition);
   track(cond.truncated);
   const main = [temp, cond.text ? cond.text.charAt(0).toLowerCase() + cond.text.slice(1) : null].filter(Boolean).join(", ");
-  if (main) lines.push(`🌤 ${indoor ? "Outside at kickoff" : "Kickoff forecast"}: ${escapeHtml(main)}`);
-  if (finite(w.rainChancePercent)) lines.push(`🌧 Rain chance: ${Math.min(100, Math.max(0, Math.round(w.rainChancePercent)))}%`);
-  if (finite(w.windKph) && w.windKph >= 0) lines.push(`💨 Wind: ${units === "imperial" ? `${Math.round(w.windKph / 1.609344)} mph` : `${Math.round(w.windKph)} km/h`}`);
+  // Always "outside": for an indoor venue it says so explicitly (the forecast is never the hall's conditions).
+  if (main) lines.push(`🌤 Outside at kickoff${indoor ? " (indoor venue)" : ""}: ${escapeHtml(main)}`);
+  const extra = [
+    finite(w.rainChancePercent) ? `🌧 Rain: ${Math.min(100, Math.max(0, Math.round(w.rainChancePercent)))}%` : null,
+    finite(w.windKph) && w.windKph >= 0 ? `💨 Wind: ${units === "imperial" ? `${Math.round(w.windKph / 1.609344)} mph` : `${Math.round(w.windKph)} km/h`}` : null,
+  ].filter(Boolean);
+  if (extra.length) lines.push(extra.join(" · "));
   if (lines.length) {
     const attr = clean(w.attribution, CAP.attribution);
     track(attr.truncated);
@@ -134,11 +152,27 @@ function weatherLines(w: GameDayWeather | null | undefined, units: "imperial" | 
       const text = clean(link.text, CAP.attribution).text;
       if (text) lines.push(`<i>${before ? `${escapeHtml(before)} ` : ""}<a href="${escapeHtml(url).replaceAll('"', "&quot;")}">${escapeHtml(text)}</a></i>`);
     }
-    const disclaimer = clean(w.disclaimer, CAP.disclaimer);
-    track(disclaimer.truncated);
-    if (disclaimer.text) lines.push(`⚠️ <i>${escapeHtml(disclaimer.text)}</i>`);
+    // Fully visible (a plain quote, never collapsed) and verbatim.
+    lines.push(`<blockquote>⚠️ ${escapeHtml(disclaimer.text)}</blockquote>`);
   }
   return lines;
+}
+
+/** "👥 Attendance Summary (27 players)" + the four effective counts (eligible roster; they add up). */
+function attendanceLines(a: GameDayUpdateInput["attendance"]): string[] {
+  const n = (v: unknown) => Math.max(0, Math.floor(finite(v) ? v : 0));
+  const playing = n(a.playing);
+  const notPlaying = n(a.notPlaying);
+  const maybe = n(a.maybe);
+  const noResponse = n(a.noResponse);
+  const roster = playing + notPlaying + maybe + noResponse;
+  return [
+    `👥 Attendance Summary (${plural(roster, "player")})`,
+    `✅ Playing: ${playing}`,
+    `❌ Not Playing: ${notPlaying}`,
+    `🤔 Maybe: ${maybe}`,
+    `⏳ Not Responded: ${noResponse}`,
+  ];
 }
 
 /** An authorized link from the caller, used only if it is an absolute https URL (never guessed or built here). */
@@ -171,8 +205,6 @@ export function buildGameDayUpdate(input: GameDayUpdateInput): GameDayUpdateMess
   track(name.truncated);
   const venue = clean(match.venueName, CAP.venue);
   track(venue.truncated);
-  const playing = Math.max(0, Math.floor(finite(input.attendance.playing) ? input.attendance.playing : 0));
-  const maybe = Math.max(0, Math.floor(finite(input.attendance.maybe) ? input.attendance.maybe : 0));
   const link = safeLink(input.link);
 
   const lines = [
@@ -181,7 +213,8 @@ export function buildGameDayUpdate(input: GameDayUpdateInput): GameDayUpdateMess
     `📅 ${kickoffLine(match.date, match.startTime, tz)}`,
     ...(venue.text ? [`📍 ${escapeHtml(venue.text)}`] : []),
     ...weatherLines(input.weather, input.units, Boolean(match.isIndoor), track),
-    `👥 ${plural(playing, "player")} confirmed${maybe > 0 ? ` · ${maybe} maybe` : ""}`,
+    "",
+    ...attendanceLines(input.attendance),
     "",
     `⏰ Attendance closes in ${timeLeftText(left)} (${deadlineText(deadline, now, tz)}).`,
     "",

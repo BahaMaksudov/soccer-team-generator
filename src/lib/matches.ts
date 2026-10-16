@@ -19,7 +19,8 @@ import { communityMemberIds, communityTelegramChat, groupCommunity } from "@/lib
 import { mapsUrl, organizationVenue } from "@/lib/venues";
 import { canonicalMatchPath } from "@/lib/matchPaths";
 import { postGameView } from "@/lib/postGame";
-import { countAttendance, defaultSelection, effectiveAttendance, recordParticipantResponse, type AttendanceRow } from "@/lib/attendance";
+import { defaultSelection, effectiveAttendance, recordParticipantResponse, type AttendanceRow } from "@/lib/attendance";
+import { matchAttendanceSnapshot } from "@/lib/attendanceSnapshot";
 import { gameDayUpdateStatus } from "@/lib/gameDayUpdate";
 import { schedulesOverLimit } from "@/lib/schedules";
 import {
@@ -393,8 +394,12 @@ export async function getMatchView(context: TenantContext, matchId: string): Pro
   const listed = members
     ? players.filter((p) => members.has(p.id) || byPlayer.has(p.id) || onTeams.has(p.id) || suggestions.includes(p.id))
     : players;
-  // The eligible roster everything roster-dependent is counted against.
-  const eligible = players.filter((p) => p.isActive && inCommunity(p.id));
+  // The eligible roster everything roster-dependent is counted against — the ONE shared
+  // calculation (src/lib/attendanceSnapshot.ts), also used by the Game Day Update.
+  const snapshot = await matchAttendanceSnapshot(groupId, matchId);
+  if (!snapshot) return NOT_FOUND();
+  const eligibleIds = new Set(snapshot.eligibleIds);
+  const eligible = players.filter((p) => eligibleIds.has(p.id));
   const pollDeliveries = manager
     ? await prisma.messageDelivery.findMany({
         where: { matchId, groupId, eventType: "ATTENDANCE_POLL_POSTED" },
@@ -435,12 +440,8 @@ export async function getMatchView(context: TenantContext, matchId: string): Pro
     }),
     // M9.2 — Playing / Maybe / Not Playing / Not Responded (NO_RESPONSE) over the
     // eligible roster only: they always add up to rosterSize.
-    counts: countAttendance(
-      eligible.map((p) => p.id),
-      rows,
-      closedAt
-    ),
-    rosterSize: eligible.length,
+    counts: snapshot.counts,
+    rosterSize: snapshot.rosterSize,
     defaultSelection: defaultSelection(eligible, rows, closedAt),
     // The PUBLISHED teams for this Match (organizer view: ids/names/roles only),
     // so the workspace can tell them apart from a working preview after a reload.

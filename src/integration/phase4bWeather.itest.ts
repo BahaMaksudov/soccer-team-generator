@@ -223,21 +223,20 @@ describe("kickoff forecasts in the Game Day Update", () => {
     expect((await runMatchAutomation(at(-3 * H))).gameDayUpdates).toBe(1);
     expect(weatherCalls).toEqual([{ lat: 42.1195, lon: -71.3251, kickoff: KICKOFF.toISOString(), now: at(-3 * H).toISOString() }]);
     const text = sentText();
-    expect(text).toContain("🌤 Kickoff forecast: 58°F, cloudy");
-    expect(text).toContain("🌧 Rain chance: 25%");
+    expect(text).toContain("🌤 Outside at kickoff: 58°F, cloudy\n🌧 Rain: 25% · 💨 Wind: 8 mph");
     expect(text).toContain('<i>Powered by <a href="https://www.weatherapi.com/">WeatherAPI.com</a></i>');
-    expect(text).toContain(`⚠️ <i>${WEATHER_DISCLAIMER}</i>`);
+    expect(text).toContain(`<blockquote>⚠️ ${WEATHER_DISCLAIMER}</blockquote>`); // complete and visible (never collapsed)
+    expect(text).not.toContain("expandable");
     expect(tg.at(-1)!.body).toMatchObject({ reply_parameters: { message_id: 77, allow_sending_without_reply: false }, parse_mode: "HTML" });
   });
 
-  it("indoor venue → 'Outside at kickoff'; metric units → °C / km/h", async () => {
+  it("indoor venue → 'Outside at kickoff (indoor venue)'; metric units → °C / km/h", async () => {
     await confirmedVenue();
     await prisma.venue.update({ where: { id: "o-v" }, data: { isIndoor: true } });
     await prisma.groupSetting.update({ where: { groupId_key: { groupId: "o-g", key: "gameDayUpdate" } }, data: { value: JSON.stringify({ enabled: true, hoursBefore: 4, includeWeather: true, units: "metric" }) } });
     await match();
     await runMatchAutomation(at(-3 * H));
-    expect(sentText()).toContain("🌤 Outside at kickoff: 14°C, cloudy");
-    expect(sentText()).toContain("💨 Wind: 13 km/h");
+    expect(sentText()).toContain("🌤 Outside at kickoff (indoor venue): 14°C, cloudy\n🌧 Rain: 25% · 💨 Wind: 13 km/h");
   });
 
   it("no weather request when: weather is off, the location is unconfirmed, or the match has no start time — the update is still sent", async () => {
