@@ -97,11 +97,12 @@ describe("weather attribution + disclaimer in the message", () => {
     units: "imperial" as const,
     now: NOW,
   };
-  it("a linked 'Powered by WeatherAPI.com' and the complete disclaimer (collapsed blockquote) accompany any forecast; nothing without weather", () => {
+  it("a linked 'Powered by WeatherAPI.com' and the complete, visible disclaimer accompany any forecast; nothing without weather", () => {
     const r = buildGameDayUpdate({ ...base, weather: { temperatureC: 14.4, condition: "Cloudy", rainChancePercent: 25, attributionLink: WEATHER_ATTRIBUTION, disclaimer: WEATHER_DISCLAIMER } });
     const html = r.ok ? r.html : "";
     expect(html).toContain('<i>Powered by <a href="https://www.weatherapi.com/">WeatherAPI.com</a></i>');
-    expect(html).toContain(`<blockquote expandable>⚠️ Weather disclaimer — forecasts are informational only\n${WEATHER_DISCLAIMER}</blockquote>`);
+    expect(html).toContain(`<blockquote>⚠️ ${WEATHER_DISCLAIMER}</blockquote>`);
+    expect(html).not.toContain("expandable");
     expect(Array.from(html).length).toBeLessThan(4096);
     const none = buildGameDayUpdate({ ...base, weather: null });
     expect(none.ok && none.html).not.toMatch(/WeatherAPI|informational/);

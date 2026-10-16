@@ -225,7 +225,8 @@ describe("kickoff forecasts in the Game Day Update", () => {
     const text = sentText();
     expect(text).toContain("🌤 Outside at kickoff: 58°F, cloudy\n🌧 Rain: 25% · 💨 Wind: 8 mph");
     expect(text).toContain('<i>Powered by <a href="https://www.weatherapi.com/">WeatherAPI.com</a></i>');
-    expect(text).toContain(`<blockquote expandable>⚠️ Weather disclaimer — forecasts are informational only\n${WEATHER_DISCLAIMER}</blockquote>`);
+    expect(text).toContain(`<blockquote>⚠️ ${WEATHER_DISCLAIMER}</blockquote>`); // complete and visible (never collapsed)
+    expect(text).not.toContain("expandable");
     expect(tg.at(-1)!.body).toMatchObject({ reply_parameters: { message_id: 77, allow_sending_without_reply: false }, parse_mode: "HTML" });
   });
 

@@ -77,22 +77,27 @@ describe("safe Telegram preview (no HTML injection)", () => {
   });
 });
 
-describe("safe preview: Telegram expandable blockquote (the collapsed weather disclaimer)", () => {
-  const msg = `🌤 Outside at kickoff: 70°F, sunny\n<i>Powered by <a href="https://www.weatherapi.com/">WeatherAPI.com</a></i>\n<blockquote expandable>⚠️ Weather disclaimer — forecasts are informational only\n${WEATHER_DISCLAIMER}</blockquote>\n\n👥 Attendance Summary (27 players)`;
+describe("safe preview: Telegram blockquotes (the visible weather disclaimer)", () => {
+  const msg = `🌤 Outside at kickoff: 70°F, sunny\n<i>Powered by <a href="https://www.weatherapi.com/">WeatherAPI.com</a></i>\n<blockquote>⚠️ ${WEATHER_DISCLAIMER}</blockquote>\n\n👥 Attendance Summary (27 players)`;
   it("parses the quote as one block of whole lines, no stray empty lines around it", () => {
     const blocks = parseTelegramBlocks(msg);
     expect(blocks.map((b) => b.kind)).toEqual(["line", "line", "quote", "line", "line"]);
     const q = blocks[2] as Extract<(typeof blocks)[number], { kind: "quote" }>;
-    expect(q.expandable).toBe(true);
-    expect(q.lines.map((l) => l.map((x) => x.text).join(""))).toEqual(["⚠️ Weather disclaimer — forecasts are informational only", WEATHER_DISCLAIMER]);
-    expect(parseTelegramHtml(msg)).toHaveLength(6); // flat view keeps every line
+    expect(q.expandable).toBe(false);
+    expect(q.lines.map((l) => l.map((x) => x.text).join(""))).toEqual([`⚠️ ${WEATHER_DISCLAIMER}`]);
+    expect(parseTelegramHtml(msg)).toHaveLength(5); // flat view keeps every line
   });
-  it("renders collapsed (details/summary) with the full text inside — never raw HTML", () => {
+  it("renders the disclaimer fully visible (a blockquote, not collapsed) — never raw HTML", () => {
     const html = renderToStaticMarkup(createElement(TelegramMessagePreview, { html: msg }));
-    expect(html).toMatch(/<details[^>]*><summary[^>]*>⚠️ Weather disclaimer — forecasts are informational only<\/summary>/);
+    expect(html).toMatch(new RegExp(`<blockquote[^>]*><div[^>]*><span>⚠️ ${WEATHER_DISCLAIMER.slice(0, 40)}`));
     expect(html).toContain(WEATHER_DISCLAIMER);
+    expect(html).not.toContain("<details");
     expect(html).not.toContain("&lt;blockquote");
     expect(html).toContain('href="https://www.weatherapi.com/"');
+  });
+  it("an expandable quote (not used by our messages) would render collapsed, still as text only", () => {
+    const html = renderToStaticMarkup(createElement(TelegramMessagePreview, { html: "<blockquote expandable>first\nrest</blockquote>" }));
+    expect(html).toMatch(/<details[^>]*><summary[^>]*>first<\/summary>/);
   });
 });
 

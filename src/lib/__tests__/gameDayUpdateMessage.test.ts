@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import fs from "node:fs";
 import path from "node:path";
-import { buildGameDayUpdate, DISCLAIMER_FIRST_LINE, TELEGRAM_TEXT_LIMIT, timeLeftText, type GameDayUpdateInput, type GameDayWeather } from "@/lib/messaging/gameDayUpdate";
+import { buildGameDayUpdate, TELEGRAM_TEXT_LIMIT, timeLeftText, type GameDayUpdateInput, type GameDayWeather } from "@/lib/messaging/gameDayUpdate";
 import { WEATHER_ATTRIBUTION, WEATHER_DISCLAIMER } from "@/lib/weatherLegal";
 
 /** Phase 4B step 5 — the pure Game Day Update message builder (no DB, no network, no clock). */
@@ -10,7 +10,7 @@ const TZ = "America/New_York";
 const W = (w: GameDayWeather): GameDayWeather => ({ attributionLink: WEATHER_ATTRIBUTION, disclaimer: WEATHER_DISCLAIMER, ...w });
 const LEGAL = [
   '<i>Powered by <a href="https://www.weatherapi.com/">WeatherAPI.com</a></i>',
-  `<blockquote expandable>${DISCLAIMER_FIRST_LINE}\n${WEATHER_DISCLAIMER}</blockquote>`,
+  `<blockquote>⚠️ ${WEATHER_DISCLAIMER}</blockquote>`,
 ];
 const SUMMARY = ["👥 Attendance Summary (27 players)", "✅ Playing: 14", "❌ Not Playing: 2", "🤔 Maybe: 3", "⏳ Not Responded: 8"];
 // Monday, October 19, 2026 — kickoff 21:00 EDT; deadline 17:00 EDT; built at 13:00 EDT (4 h before).
@@ -86,7 +86,7 @@ describe("the message", () => {
   });
 });
 
-describe("weather (input only — never generated): compact, outside conditions, full disclaimer collapsed", () => {
+describe("weather (input only — never generated): compact, outside conditions, full disclaimer visible", () => {
   it("missing → no weather lines, no attribution, no disclaimer", () => {
     const h = html({ weather: null });
     expect(h).not.toMatch(/🌤|🌧|💨|WeatherAPI|blockquote/);
@@ -109,12 +109,12 @@ describe("weather (input only — never generated): compact, outside conditions,
     expect(html({ weather: w, units: "imperial" })).toContain("🌤 Outside at kickoff: 58°F, cloudy\n🌧 Rain: 100% · 💨 Wind: 12 mph");
     expect(html({ weather: w, units: "metric" })).toContain("🌤 Outside at kickoff: 14°C, cloudy\n🌧 Rain: 100% · 💨 Wind: 20 km/h");
   });
-  it("the attribution link and the COMPLETE disclaimer (verbatim) in one collapsed expandable blockquote", () => {
+  it("the attribution link and the COMPLETE disclaimer (verbatim), fully visible in one plain blockquote (never collapsed)", () => {
     const h = html();
     for (const l of LEGAL) expect(h).toContain(l);
-    expect(h.match(/<blockquote expandable>/g)).toHaveLength(1);
+    expect(h.match(/<blockquote>/g)).toHaveLength(1);
+    expect(h).not.toContain("expandable"); // never collapsed
     expect(h).toContain(WEATHER_DISCLAIMER); // every word, unshortened
-    expect(DISCLAIMER_FIRST_LINE.length).toBeLessThan(60); // short visible first line
   });
   it("no forecast without its disclaimer: missing or too long to fit uncut → no weather at all (never a shortened disclaimer)", () => {
     expect(html({ weather: { temperatureC: 10, condition: "Sunny", attributionLink: WEATHER_ATTRIBUTION } })).not.toMatch(/🌤|WeatherAPI|blockquote/);
@@ -185,7 +185,7 @@ describe("safety: escaping, Unicode, links, length", () => {
     expect(h).toContain("&lt;i&gt;sunny&lt;/i&gt; &amp; dry");
     expect(h).toContain("<i>Weather by &lt;x&gt;</i>");
     // Only our own tags remain.
-    expect(h.match(/<\/?[a-z]+[^>]*>/g)!.filter((t) => !/^<\/?(b|i)>$/.test(t) && !/^<a href="https:\/\/www\.weatherapi\.com\/">$|^<\/a>$|^<blockquote expandable>$|^<\/blockquote>$/.test(t))).toEqual([]);
+    expect(h.match(/<\/?[a-z]+[^>]*>/g)!.filter((t) => !/^<\/?(b|i)>$/.test(t) && !/^<a href="https:\/\/www\.weatherapi\.com\/">$|^<\/a>$|^<blockquote>$|^<\/blockquote>$/.test(t))).toEqual([]);
   });
   it("unusual Unicode survives intact (emoji, RTL, combining marks)", () => {
     const h = html({ groupName: "Fútbol ⚽🇧🇷 فريق Ångström", match: { date: "2026-10-19", startTime: "21:00", venueName: "Ünïcödé Arena 🏟️" } });

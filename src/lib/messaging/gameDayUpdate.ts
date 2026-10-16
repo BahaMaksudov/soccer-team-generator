@@ -19,8 +19,9 @@ import { localYmd } from "@/lib/scheduleTime";
  * simply omitted. Compact: one conditions line ("Outside at kickoff", plus
  * "(indoor venue)" so nobody reads it as the weather inside), one rain · wind
  * line, the provider attribution, and the provider-required disclaimer kept
- * COMPLETE (verbatim) in a collapsed Telegram expandable blockquote under a
- * short first line.
+ * COMPLETE (verbatim) and always VISIBLE in a Telegram blockquote (not
+ * collapsed — a collapsed disclaimer is not confirmed to satisfy the provider's
+ * "clear, conspicuous" requirement).
  *
  * Attendance: the Attendance Summary over the eligible roster — Playing, Not
  * Playing, Maybe, Not Responded (the shared calculation; they add up to the
@@ -41,12 +42,10 @@ export type GameDayWeather = {
   attribution?: string | null;
   /** A linked attribution ("Powered by" + <a href=url>text</a>); https URLs only. Shown with the forecast. */
   attributionLink?: { before: string; text: string; url: string } | null;
-  /** The provider-required end-user disclaimer — always included in full with the forecast (collapsed). */
+  /** The provider-required end-user disclaimer — always included in full, visible, with the forecast. */
   disclaimer?: string | null;
 };
 
-/** Short, always-visible first line of the collapsed weather disclaimer (the full text follows it). */
-export const DISCLAIMER_FIRST_LINE = "⚠️ Weather disclaimer — forecasts are informational only";
 
 export type GameDayUpdateInput = {
   groupName: string;
@@ -153,7 +152,8 @@ function weatherLines(w: GameDayWeather | null | undefined, units: "imperial" | 
       const text = clean(link.text, CAP.attribution).text;
       if (text) lines.push(`<i>${before ? `${escapeHtml(before)} ` : ""}<a href="${escapeHtml(url).replaceAll('"', "&quot;")}">${escapeHtml(text)}</a></i>`);
     }
-    lines.push(`<blockquote expandable>${escapeHtml(DISCLAIMER_FIRST_LINE)}\n${escapeHtml(disclaimer.text)}</blockquote>`);
+    // Fully visible (a plain quote, never collapsed) and verbatim.
+    lines.push(`<blockquote>⚠️ ${escapeHtml(disclaimer.text)}</blockquote>`);
   }
   return lines;
 }
