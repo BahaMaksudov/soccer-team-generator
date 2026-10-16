@@ -13,6 +13,7 @@ export default function LoginClient({ googleEnabled }: { googleEnabled: boolean 
   // Only internal paths are honored (no open redirect); see src/lib/safeRedirect.ts.
   const callbackUrl = safeCallbackPath(sp.get("callbackUrl"));
   const passwordChanged = sp.get("passwordChanged") === "1";
+  const passwordReset = sp.get("passwordReset") === "1";
   // OAuth / Google outcomes come back as ?error=<code> (known codes only; never echoed).
   const oauthError = authErrorMessage(sp.get("error"));
 
@@ -50,6 +51,11 @@ export default function LoginClient({ googleEnabled }: { googleEnabled: boolean 
           <SuccessNote>Password changed. Please sign in again.</SuccessNote>
         </div>
       )}
+      {passwordReset && !alert && (
+        <div className="mb-6">
+          <SuccessNote>Your password was reset. Sign in with your new password.</SuccessNote>
+        </div>
+      )}
       {googleEnabled && (
         <>
           <GoogleButton callbackUrl={callbackUrl} />
@@ -78,6 +84,9 @@ export default function LoginClient({ googleEnabled }: { googleEnabled: boolean 
           onChange={(e) => setPassword(e.target.value)}
           required
         />
+        <p className="-mt-2 text-right text-sm">
+          <TextLink href="/forgot-password">Forgot password?</TextLink>
+        </p>
         <SubmitButton loading={loading} loadingText="Signing in…">
           Sign In
         </SubmitButton>

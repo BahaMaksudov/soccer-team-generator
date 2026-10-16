@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { telegramDenied } from "@/lib/entitlements";
+import { organizationPlan, telegramDenied } from "@/lib/entitlements";
 import { randomBytes } from "node:crypto";
 import { prisma } from "@/lib/prisma";
 import type { TenantContext } from "@/lib/tenantContext";
@@ -132,7 +132,7 @@ export async function markTelegramChatBotRemoved(chatId: number | string, status
 
 export type BindResult =
   | { ok: true; state: "connected" | "already_connected" | "reconnected"; groupName: string }
-  | { ok: false; code: "INVALID" | "NOT_A_GROUP" | "ANONYMOUS_SENDER" | "NOT_ADMIN" | "ALREADY_BOUND_ELSEWHERE" | "ADMIN_CHECK_FAILED" };
+  | { ok: false; code: "INVALID" | "NOT_A_GROUP" | "ANONYMOUS_SENDER" | "NOT_ADMIN" | "ALREADY_BOUND_ELSEWHERE" | "ADMIN_CHECK_FAILED" | "NOT_IN_PLAN" };
 
 type TgChat = { id: number | string; type?: string; title?: string };
 
@@ -143,8 +143,10 @@ export async function redeemTelegramBindCode(
 ): Promise<BindResult> {
   if (!isBindCode(params.code)) return { ok: false, code: "INVALID" };
   const codeHash = hashToken(params.code);
-  const row = await prisma.telegramChatBindCode.findUnique({ where: { codeHash }, select: { id: true, groupId: true, expiresAt: true, usedAt: true } });
+  const row = await prisma.telegramChatBindCode.findUnique({ where: { codeHash }, select: { id: true, groupId: true, expiresAt: true, usedAt: true, group: { select: { organizationId: true } } } });
   if (!row || row.usedAt || row.expiresAt <= now) return { ok: false, code: "INVALID" };
+  // M11.3 — a code issued during Pro / the trial can't connect a group after the plan ended (the code stays unused).
+  if (!(await organizationPlan(row.group.organizationId, now)).limits.telegram) return { ok: false, code: "NOT_IN_PLAN" };
   if (params.chat.type !== "group" && params.chat.type !== "supergroup") return { ok: false, code: "NOT_A_GROUP" };
   // Anonymous administrators post as the chat itself (sender_chat) with a fake `from`.
   if (params.senderChat || params.fromId === undefined || params.fromId === null) return { ok: false, code: "ANONYMOUS_SENDER" };
@@ -222,6 +224,8 @@ export function bindReplyText(result: BindResult): string {
       return "❌ This Telegram group is already connected to another Team Balance Pro group. Disconnect it there before connecting it here.";
     case "ADMIN_CHECK_FAILED":
       return "❌ Couldn't verify administrators right now. Please try again in a moment.";
+    case "NOT_IN_PLAN":
+      return "❌ Telegram integration is part of Pro, and this Team Balance Pro organization is on the Free plan. Nothing was connected.";
     default:
       return "❌ That connect code is invalid or has expired. Create a new one in Team Balance Pro → Communication Channels.";
   }

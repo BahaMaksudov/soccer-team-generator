@@ -59,6 +59,27 @@ export function trialDaysLeft(trialEndsAt: Date | null, now: Date = new Date()):
   return Math.ceil((trialEndsAt.getTime() - now.getTime()) / 86_400_000);
 }
 
+/**
+ * M11.3 — the trial as an Organization sees it (pure; UTC instants). Only a FREE
+ * Organization with a trial end has a trial; LEGACY / COMP / PRO never do.
+ *   active   → more than TRIAL_ENDING_DAYS left;
+ *   ending   → TRIAL_ENDING_DAYS or fewer left (banner + reminders);
+ *   expired  → trialEndsAt <= now: the Free plan applies from that exact instant.
+ */
+export const TRIAL_ENDING_DAYS = 14;
+export type TrialPhase = "none" | "active" | "ending" | "expired";
+export type TrialStatus = { phase: TrialPhase; endsAt: Date | null; daysLeft: number | null };
+
+export function trialStatus(org: { plan: OrganizationPlan; trialEndsAt: Date | null }, now: Date = new Date()): TrialStatus {
+  if (org.plan !== "FREE" || !org.trialEndsAt) return { phase: "none", endsAt: null, daysLeft: null };
+  const daysLeft = trialDaysLeft(org.trialEndsAt, now);
+  if (daysLeft === null) return { phase: "expired", endsAt: org.trialEndsAt, daysLeft: null };
+  return { phase: daysLeft <= TRIAL_ENDING_DAYS ? "ending" : "active", endsAt: org.trialEndsAt, daysLeft };
+}
+
+/** "Oct 1, 2026" (UTC) — the one date format of trial texts. */
+export const trialDateLabel = (d: Date) => d.toLocaleDateString("en-US", { timeZone: "UTC", month: "short", day: "numeric", year: "numeric" });
+
 type Db = Prisma.TransactionClient | typeof prisma;
 
 export async function organizationPlan(organizationId: string, now: Date = new Date(), db: Db = prisma) {
@@ -239,11 +260,37 @@ export function ownershipLimitResponse(e: OwnershipLimitError): NextResponse {
   return NextResponse.json({ error: e.message, code: "OWNERSHIP_LIMIT", owned: e.owned, allowed: e.allowed }, { status: 409 });
 }
 
-/** Telegram premium actions (connect a Telegram group, post polls / teams / post-game messages). */
-export async function assertTelegram(organizationId: string, now: Date = new Date()): Promise<void> {
-  const { plan, limits } = await organizationPlan(organizationId, now);
-  if (!limits.telegram) {
-    throw new EntitlementError("telegram", null, limitReachedMessage(plan, "Telegram integration is part of Pro; players use the match link"));
+/** Optional support contact (SUPPORT_EMAIL) for "coming soon" texts; null when not configured or malformed. */
+export function supportEmail(env: Env = process.env): string | null {
+  const v = env.SUPPORT_EMAIL?.trim() ?? "";
+  return /^[^\s@<>"]+@[^\s@<>"]+\.[^\s@<>"]+$/.test(v) ? v : null;
+}
+
+/** What a Free Organization can do about Pro right now: the Billing page once billing is on, else "coming soon" (+ contact). */
+export function upgradeHint(env: Env = process.env): string {
+  if (billingConfig().enabled) return FREE_LIMIT_UPGRADE;
+  const contact = supportEmail(env);
+  return contact ? `${FREE_LIMIT_COMING_SOON} Questions? Contact ${contact}.` : FREE_LIMIT_COMING_SOON;
+}
+
+/**
+ * M11.3 — why Telegram is unavailable, in words an organizer understands (never a generic error).
+ * After the trial: when it ended, that nothing was deleted, and what still works.
+ */
+export function telegramNotInPlanMessage(org: { plan: OrganizationPlan; trialEndsAt: Date | null }, now: Date = new Date(), env: Env = process.env): string {
+  const trial = trialStatus(org, now);
+  const why =
+    trial.phase === "expired" && trial.endsAt
+      ? `This organization's Pro trial ended on ${trialDateLabel(trial.endsAt)}, so it is now on the Free plan. Players can still answer through the match link, and existing polls, messages and connected Telegram groups are kept.`
+      : "This organization is on the Free plan; players can answer through the match link.";
+  return `Telegram integration is part of Pro. ${why} ${upgradeHint(env)}`;
+}
+
+/** Telegram premium actions (connect a Telegram group, post or close polls, post teams / post-game messages, Game Day Updates). */
+export async function assertTelegram(organizationId: string, now: Date = new Date(), db: Db = prisma): Promise<void> {
+  const org = await db.organization.findUniqueOrThrow({ where: { id: organizationId }, select: { plan: true, trialEndsAt: true } });
+  if (!PLAN_LIMITS[effectivePlan(org, now)].telegram) {
+    throw new EntitlementError("telegram", null, telegramNotInPlanMessage(org, now));
   }
 }
 
@@ -317,9 +364,15 @@ export async function monthlyMatchAllowance(organizationId: string, now: Date = 
 export async function planSummary(organizationId: string, now: Date = new Date()) {
   const { plan, limits, trialEndsAt } = await organizationPlan(organizationId, now);
   const [usage, aiUsed] = await Promise.all([capacityUsage(organizationId, now), aiCreditsUsed(organizationId, now)]);
+  const trial = trialStatus({ plan: plan === "TRIAL" || plan === "FREE" ? "FREE" : plan, trialEndsAt }, now);
   return {
     plan,
     label: PLAN_LABEL[plan],
+    // M11.3 — "active" | "ending" | "expired" | "none"; the end date also after expiry (Free plan explanation).
+    trialPhase: trial.phase,
+    trialEndedAt: trial.phase === "expired" && trialEndsAt ? trialEndsAt.toISOString() : null,
+    billingEnabled: billingConfig().enabled,
+    upgradeHint: plan === "FREE" || plan === "TRIAL" ? upgradeHint() : null,
     trialEndsAt: plan === "TRIAL" && trialEndsAt ? trialEndsAt.toISOString() : null,
     trialDaysLeft: plan === "TRIAL" ? trialDaysLeft(trialEndsAt, now) : null,
     telegram: limits.telegram,

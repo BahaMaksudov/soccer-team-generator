@@ -172,6 +172,8 @@ describe("UI primitives are presentation-only", () => {
         "src/app/admin/o/[organizationSlug]/billing/BillingActions.tsx",
         "src/app/pricing/page.tsx",
         "src/components/billing/PlanComparison.tsx",
+        // M11.3 — password reset landing page.
+        "src/app/reset-password/[token]/page.tsx",
         "src/app/account/security/page.tsx",
         "src/app/me/page.tsx",
       ].sort()

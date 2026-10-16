@@ -4,11 +4,13 @@ import { requireTenantContextForSlugs } from "@/lib/tenantContext";
 import { canonicalTenantErrorResponse, managersOnlyResponse, requireJsonRequest } from "@/lib/tenantRoute";
 import { findGroupMatch } from "@/lib/matches";
 import { recoverPollClosedNotice } from "@/lib/pollClosure";
+import { telegramDenied } from "@/lib/entitlements";
 
 /**
  * Telegram publishing — recovery for the one-time "Poll is closed" notice (OWNER/ADMIN;
  * MEMBER / foreign → 404): "retry" only a notice Telegram definitely refused;
  * "mark_sent" only an uncertain one the organizer found in the chat. Never re-sends otherwise.
+ * M11.3 — "retry" sends a Telegram message: Pro only. "mark_sent" only records what happened.
  */
 type Params = Promise<{ organizationSlug: string; groupSlug: string; matchId: string }>;
 const schema = z.object({ action: z.enum(["retry", "mark_sent"]), deliveryId: z.string().min(1).max(100) });
@@ -36,6 +38,10 @@ export async function POST(req: Request, { params }: { params: Params }) {
     if (!match) return NextResponse.json({ error: "Match not found" }, { status: 404 });
     const parsed = schema.safeParse(await req.json().catch(() => null));
     if (!parsed.success) return NextResponse.json({ error: "Closure notice not found." }, { status: 404 });
+    if (parsed.data.action === "retry") {
+      const notInPlan = await telegramDenied(context.organization.id);
+      if (notInPlan) return notInPlan;
+    }
     const r = await recoverPollClosedNotice({ groupId: context.activeGroup.id, matchId: match.id, deliveryId: parsed.data.deliveryId, action: parsed.data.action, userId: context.user.id });
     if (r.result === "not_found") return NextResponse.json({ error: "Closure notice not found." }, { status: 404 });
     const message = MESSAGES[r.result] ?? "Something went wrong.";

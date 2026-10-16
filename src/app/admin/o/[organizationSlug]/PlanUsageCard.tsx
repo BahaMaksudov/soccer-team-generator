@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { Gauge } from "lucide-react";
 import type { planSummary } from "@/lib/entitlements";
 import { cn } from "@/lib/cn";
@@ -5,6 +6,9 @@ import { cn } from "@/lib/cn";
 /**
  * M11.1 — read-only plan & usage (OWNER/ADMIN). Server-computed by
  * planSummary(); no billing controls until Stripe exists (M11.2).
+ * M11.3 — after the trial: when it ended, why Telegram is off, that nothing was
+ * deleted; "Upgrade to Pro" only when billing is on and the viewer may upgrade
+ * (`upgradeHref`), otherwise the honest "coming soon" hint.
  */
 type Summary = Awaited<ReturnType<typeof planSummary>>;
 
@@ -18,7 +22,8 @@ const ROWS: Array<{ key: keyof Summary["usage"]; label: string }> = [
 
 const dateLabel = (iso: string) => new Date(iso).toLocaleDateString("en-US", { timeZone: "UTC", month: "short", day: "numeric", year: "numeric" });
 
-export default function PlanUsageCard({ summary }: { summary: Summary }) {
+export default function PlanUsageCard({ summary, upgradeHref = null }: { summary: Summary; upgradeHref?: string | null }) {
+  const isFree = summary.plan === "FREE" || summary.plan === "TRIAL";
   return (
     <section aria-labelledby="org-plan" className="rounded-tbp-2xl border border-border bg-card p-5 shadow-card">
       <div className="flex flex-wrap items-start justify-between gap-2">
@@ -32,6 +37,20 @@ export default function PlanUsageCard({ summary }: { summary: Summary }) {
           Pro trial · <span className="font-semibold">{summary.trialDaysLeft} day{summary.trialDaysLeft === 1 ? "" : "s"} left</span> (ends {dateLabel(summary.trialEndsAt)}). Afterwards the Free plan applies; nothing is charged and no data is removed.
         </p>
       )}
+      {summary.plan === "FREE" && summary.trialEndedAt && (
+        <p className="mt-2 text-sm">
+          Your Pro trial ended on <span className="font-semibold">{dateLabel(summary.trialEndedAt)}</span>. On the Free plan, Telegram polls, team posts, match messages and Game Day Updates are off; players can still answer through the match link. Nothing was deleted — players, matches, history and connected Telegram groups are kept.
+        </p>
+      )}
+      {isFree && (upgradeHref && summary.billingEnabled ? (
+        <p className="mt-3">
+          <Link href={upgradeHref} className="inline-flex h-9 items-center rounded-tbp-sm bg-primary px-3 text-sm font-semibold text-primary-foreground hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2">
+            Upgrade to Pro
+          </Link>
+        </p>
+      ) : (
+        !summary.billingEnabled && summary.upgradeHint && <p className="mt-2 text-sm text-muted-foreground">{summary.upgradeHint}</p>
+      ))}
       {summary.plan === "LEGACY" && <p className="mt-2 text-sm text-muted-foreground">Your organization keeps everything it has today while plans are introduced.</p>}
       <dl className="mt-3 grid gap-x-6 gap-y-2 sm:grid-cols-2">
         {ROWS.map(({ key, label }) => {

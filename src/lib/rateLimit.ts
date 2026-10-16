@@ -74,6 +74,11 @@ const BUCKETS = {
   "geocode-search": { limit: 20, window: "10 m" },
   // Manual Game Day Update previews (each may make one weather request; per organizer).
   "gameday-preview": { limit: 10, window: "10 m" },
+  // M11.3 — password reset: requests per client address, requests per email address
+  // (excess requests get the same generic answer and send nothing), reset submissions per address.
+  "password-reset-ip": { limit: 10, window: "15 m" },
+  "password-reset-email": { limit: 3, window: "30 m" },
+  "password-reset-submit": { limit: 10, window: "15 m" },
 } as const;
 export type RateLimitBucket = keyof typeof BUCKETS;
 const bucketLimiters = new Map<RateLimitBucket, Ratelimit>();

@@ -97,3 +97,70 @@ export function buildAttendanceReadyEmail(params: {
     html: layout("Attendance is ready", lines, { label: "Review Match", url: params.url }, footer),
   };
 }
+
+/**
+ * M11.3 — trial lifecycle (organization OWNERs). States facts only: when the
+ * trial ends, what changes on Free, that nothing is deleted, and what the owner
+ * can do now. Never promises a payment option that isn't available.
+ */
+export function buildTrialEmail(params: {
+  to: string;
+  organizationName: string;
+  stage: "REMINDER" | "EXPIRED";
+  daysLeft: number | null;
+  endsOn: string; // "Jan 7, 2027"
+  upgradeLine: string;
+  url: string;
+}): OutgoingEmail {
+  const freeChanges =
+    "On the Free plan, Telegram attendance polls, team posts, match messages and Game Day Updates are turned off, and Free limits apply (1 active group, 30 active players, 4 new matches per month). Players can still answer through the match link.";
+  const kept = "Nothing is deleted: players, communities, matches, attendance, teams, history and your connected Telegram groups are all kept.";
+  const when = params.daysLeft === 1 ? "in less than a day" : `in ${params.daysLeft} days`;
+  const lines =
+    params.stage === "EXPIRED"
+      ? [`The Pro trial of ${params.organizationName} ended on ${params.endsOn}. The organization is now on the Free plan.`, freeChanges, kept, params.upgradeLine]
+      : [`The Pro trial of ${params.organizationName} ends ${when} (${params.endsOn}). Afterwards the Free plan applies automatically; nothing is charged.`, freeChanges, kept, params.upgradeLine];
+  const subject =
+    params.stage === "EXPIRED"
+      ? `Your Pro trial has ended — ${params.organizationName}`
+      : `Your Pro trial ends ${params.daysLeft === 1 ? "within a day" : `in ${params.daysLeft} days`} — ${params.organizationName}`;
+  const footer = `You receive this because you own ${params.organizationName} on ${BRAND}.`;
+  return {
+    to: params.to,
+    subject,
+    text: [...lines, "", `Open your organization: ${params.url}`, "", footer].join("\n"),
+    html: layout(params.stage === "EXPIRED" ? "Your Pro trial has ended" : "Your Pro trial is ending", lines, { label: "Open organization", url: params.url }, footer),
+  };
+}
+
+/** M11.3 — password reset link (credentials accounts). */
+export function buildPasswordResetEmail(params: { to: string; name: string | null; url: string; expiresAt: Date }): OutgoingEmail {
+  const lines = [
+    params.name ? `Hi ${params.name},` : "Hi,",
+    `Someone asked to reset the password of your ${BRAND} account. Use the link below to choose a new password.`,
+    `This link expires on ${formatDate(params.expiresAt)} (60 minutes after it was sent) and can be used once. Resetting signs you out everywhere else.`,
+  ];
+  const footer = `If you did not ask for this, you can ignore this email — your password stays the same.`;
+  return {
+    to: params.to,
+    subject: `Reset your ${BRAND} password`,
+    text: [...lines, "", `Reset your password: ${params.url}`, "", footer].join("\n"),
+    html: layout("Reset your password", lines, { label: "Reset password", url: params.url }, footer),
+  };
+}
+
+/** M11.3 — a reset was requested for an account that signs in with Google only (no password to reset). */
+export function buildGoogleOnlyResetEmail(params: { to: string; name: string | null; url: string }): OutgoingEmail {
+  const lines = [
+    params.name ? `Hi ${params.name},` : "Hi,",
+    `Someone asked to reset the password of your ${BRAND} account. Your account signs in with Google and has no password, so there is nothing to reset.`,
+    `To sign in, choose "Continue with Google" on the sign-in page.`,
+  ];
+  const footer = `If you did not ask for this, you can ignore this email.`;
+  return {
+    to: params.to,
+    subject: `Signing in to ${BRAND}`,
+    text: [...lines, "", `Sign in: ${params.url}`, "", footer].join("\n"),
+    html: layout("Sign in with Google", lines, { label: "Go to sign in", url: params.url }, footer),
+  };
+}

@@ -21,9 +21,10 @@ export const CHROME_HEADER = "x-tbp-chrome";
 export const REDESIGN_CHROME = "redesign";
 
 /** Public redesigned pages (exact paths / subtrees). */
-export const REDESIGNED_PATHS: readonly string[] = ["/", "/login", "/signup", "/verify-email", "/pricing"];
+export const REDESIGNED_PATHS: readonly string[] = ["/", "/login", "/signup", "/verify-email", "/pricing", "/forgot-password"];
 // M9.3 — /share/m/** is the redesigned player Match page (Match Link / share link; never auth-gated).
-export const REDESIGNED_PREFIXES: readonly string[] = ["/verify-email/", "/share/m/"];
+// M11.3 — /forgot-password and /reset-password/<token>: the redesigned auth screens (never auth-gated).
+export const REDESIGNED_PREFIXES: readonly string[] = ["/verify-email/", "/share/m/", "/reset-password/"];
 // Telegram publishing — the public Match page ("View teams online", /g/<org>/<group>/m/<id>) uses the
 // redesigned player view. Exactly that route: the rest of the public Group site keeps its current chrome.
 export const REDESIGNED_PATTERNS: readonly RegExp[] = [/^\/g\/[^/]+\/[^/]+\/m\/[^/]+\/?$/];

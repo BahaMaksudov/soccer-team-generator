@@ -1,6 +1,6 @@
 # Team Balance Pro — Roadmap & Architecture Notes
 
-Production: https://teambalancepro.com · Last updated: 2026-10-03
+Production: https://teambalancepro.com · Last updated: 2026-10-16
 
 Sequence decided 2026-10-01: Multi-Sport moved before AI (M7 ↔ M8 swapped)
 so AI consumes a sport-neutral engine instead of soccer-only assumptions.
@@ -29,10 +29,43 @@ require every future feature before launch.
 | M9-D | Result, MVP & AI Recap — result save/publish/post, Telegram MVP vote + deterministic winner, AI-assisted recap with deterministic fallback | COMPLETE — migration #20 (prod `8dec585`, 2026-10-03). **M9 is functionally complete for the MVP scope.** |
 | M10 | WhatsApp & Expanded Communications — GroupChannel, primary channel, WhatsApp identity, Meta Cloud API, multi-channel delivery | Planned (next) |
 | M10.5 | Organizer Agent & Match Automation — scheduled attendance → import → generate → analysis → organizer approval → publish/post; optional game-day updates (weather) | Planned |
-| M11 | Plans & Billing | Planned |
+| M11 | Plans & Billing | IN PROGRESS — M11.1 plans/trial/limits live; M11.2A Stripe TEST-mode billing merged but disabled in Production; M11.3 trial lifecycle + password recovery on branch `feature/m11-3-trial-lifecycle` (see below); M11.2B live billing not started |
 | M12 | Product UX / Analytics / Branding | Planned |
 | M13 | Production Hardening | Planned |
 | M14 | Commercial Launch | Planned |
+
+## M11.3 — Trial lifecycle & password recovery (branch, 2026-10-16)
+
+Approved decisions: every new Organization's first-owner trial is the standard
+90-day Pro trial (beta = regular); it starts at Organization creation; at the
+exact end the Free plan applies (computed per request — no job required);
+Telegram is Pro-only; a verified Stripe subscription restores Pro; nothing is
+deleted; LEGACY / COMP never change; independent of BILLING_ENABLED.
+
+- **Telegram on Free** — refused with an explanatory 402 (when the trial ended,
+  what is kept): post poll, organizer "Close Telegram poll", closure-notice
+  retry, post teams, post-game messages, MVP vote, Game Day Updates (manual and
+  automatic), connect a group (issuing AND redeeming a code). Still allowed:
+  viewing history, record-keeping ("mark as sent"), incoming votes on polls
+  posted during the trial, disconnecting a group, and the automatic close of an
+  already-posted poll at its attendance deadline (stopPoll only, no message).
+- **Trial job** (`src/lib/trialLifecycle.ts`, from `/api/cron/automation`):
+  `TRIAL_LIFECYCLE` off (default) / audit / send. Reminder emails at 14/7/3/1
+  days and one expiry email (within 7 days), OWNERs only, once per stage per
+  owner per trial end (TrialNotice unique claim + Resend Idempotency-Key; failed
+  sends retried up to 3 attempts). TRIAL_EXPIRED audit event once. Skips
+  Organizations that ever converted to Stripe Pro or have an entitling
+  subscription.
+- **UI** — trial banner (OWNER/ADMIN, ≤ 14 days left and ≤ 30 days after),
+  Plan & usage card explains the Free plan after the trial; "Upgrade to Pro"
+  only when billing is enabled, otherwise "coming soon" (+ SUPPORT_EMAIL).
+- **Password recovery** — /forgot-password, /reset-password/[token]; SHA-256
+  token hashes, 60 min, single use, generic answers, rate limits per address /
+  email / submission, Google-only accounts get sign-in guidance (no token),
+  sessions issued before a reset are void (User.sessionsValidAfter).
+- **Policy kept** — the trial is once per verified User (first owned
+  Organization). A second Organization starts on Free and is only possible when
+  an owned Organization is paid Pro / COMP / LEGACY (Phase 1 ownership rule).
 
 ## Product direction (M6+)
 

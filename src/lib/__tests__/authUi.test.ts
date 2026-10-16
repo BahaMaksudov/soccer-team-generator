@@ -158,11 +158,17 @@ describe("Sign In screen", () => {
     expect(html).toMatch(/autoComplete="current-password"|autocomplete="current-password"/i);
   });
 
-  it("no fake controls: no Keep me signed in, no Forgot password (no reset flow exists), no Terms/Privacy, no role picker", () => {
+  it("no fake controls: no Keep me signed in, no Terms/Privacy, no role picker", () => {
     const t = text(renderLogin()).toLowerCase();
-    for (const s of ["keep me signed in", "forgot", "reset", "terms", "privacy", "role", "owner", "organizer account"]) expect(t, s).not.toContain(s);
-    expect(fs.existsSync(path.join(root, "src/app/forgot-password"))).toBe(false);
-    expect(fs.existsSync(path.join(root, "src/app/api/forgot-password"))).toBe(false);
+    for (const s of ["keep me signed in", "terms", "privacy", "role", "owner", "organizer account"]) expect(t, s).not.toContain(s);
+  });
+
+  it("M11.3 — 'Forgot password?' links to the real reset flow (page + API exist)", () => {
+    const l = links(renderLogin());
+    expect(l.find((x) => x.text === "Forgot password?")?.href).toBe("/forgot-password");
+    for (const f of ["src/app/forgot-password/page.tsx", "src/app/reset-password/[token]/page.tsx", "src/app/api/password/forgot/route.ts", "src/app/api/password/reset/route.ts"]) {
+      expect(fs.existsSync(path.join(root, f)), f).toBe(true);
+    }
   });
 
   it("Continue with Google + divider appear only when Google is configured", () => {

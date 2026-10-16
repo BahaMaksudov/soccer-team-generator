@@ -3,6 +3,7 @@ import { requireTenantContextForSlugs } from "@/lib/tenantContext";
 import { canonicalTenantErrorResponse, managersOnlyResponse } from "@/lib/tenantRoute";
 import { findGroupMatch } from "@/lib/matches";
 import { closeMatchAttendancePolls, POLL_CLOSE_MESSAGE } from "@/lib/matchPollClose";
+import { telegramDenied } from "@/lib/entitlements";
 
 /**
  * M9.2 — close the Match's open Telegram attendance poll(s) again (OWNER/ADMIN;
@@ -10,6 +11,8 @@ import { closeMatchAttendancePolls, POLL_CLOSE_MESSAGE } from "@/lib/matchPollCl
  * teams. The recovery for "teams posted, poll still open": after a VERIFIED
  * close of a poll whose teams were posted, its one-time "Poll is closed"
  * notice is sent (never twice, never after an unclear close).
+ * M11.3 — an organizer action on Telegram: Pro only (402 PLAN_LIMIT on Free). An
+ * already-posted poll still closes at its attendance deadline (automation; no notice).
  */
 type Params = Promise<{ organizationSlug: string; groupSlug: string; matchId: string }>;
 
@@ -19,6 +22,8 @@ export async function POST(_req: Request, { params }: { params: Params }) {
     const context = await requireTenantContextForSlugs(slugs);
     const denied = managersOnlyResponse(context);
     if (denied) return denied;
+    const notInPlan = await telegramDenied(context.organization.id);
+    if (notInPlan) return notInPlan;
     const match = await findGroupMatch(context, matchId);
     if (!match) return NextResponse.json({ error: "Match not found" }, { status: 404 });
     const r = await closeMatchAttendancePolls(context.activeGroup.id, match.id, { userId: context.user.id });
