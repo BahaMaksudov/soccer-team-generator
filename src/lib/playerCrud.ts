@@ -1,3 +1,4 @@
+import type { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { assertCapacity, EntitlementError, planLimitResponse } from "@/lib/entitlements";
 import { NextResponse } from "next/server";
@@ -127,6 +128,30 @@ export function toMemberPlayer(p: AdminPlayerRow) {
   };
 }
 
+/** A community choice that is not one of this Group's Communities (or a new membership in an inactive one). */
+class CommunityChoiceError extends Error {}
+const communityChoiceResponse = (e: CommunityChoiceError) => NextResponse.json({ error: e.message, issues: { formErrors: [], fieldErrors: { communityIds: [e.message] } } }, { status: 400 });
+
+/**
+ * M9.2 — set a Player's Community memberships to exactly `desired`, inside the
+ * caller's transaction (atomic with the player write). Every id must be a
+ * Community of THIS Group (tenant boundary; the composite keys enforce it in the
+ * database too); NEW memberships only in active Communities (an existing one in
+ * a since-deactivated Community may be kept or removed). Duplicates are
+ * impossible: ids are deduplicated and (communityId, playerId) is unique.
+ */
+async function setCommunityMemberships(tx: Prisma.TransactionClient, p: { activeGroupId: string; playerId: string; desired: string[]; userId: string }) {
+  const { activeGroupId } = p; // always the URL-resolved Group (context.activeGroup.id)
+  const current = (await tx.communityPlayer.findMany({ where: { groupId: activeGroupId, playerId: p.playerId }, select: { communityId: true } })).map((r) => r.communityId);
+  const found = p.desired.length ? await tx.community.findMany({ where: { id: { in: p.desired }, groupId: activeGroupId }, select: { id: true, isActive: true } }) : [];
+  if (found.length !== p.desired.length) throw new CommunityChoiceError("Choose communities from this group.");
+  const toAdd = p.desired.filter((id) => !current.includes(id));
+  if (found.some((c) => toAdd.includes(c.id) && !c.isActive)) throw new CommunityChoiceError("Players can't be added to an inactive community.");
+  const toRemove = current.filter((id) => !p.desired.includes(id));
+  if (toRemove.length) await tx.communityPlayer.deleteMany({ where: { groupId: activeGroupId, playerId: p.playerId, communityId: { in: toRemove } } });
+  if (toAdd.length) await tx.communityPlayer.createMany({ data: toAdd.map((communityId) => ({ groupId: activeGroupId, communityId, playerId: p.playerId, createdByUserId: p.userId })), skipDuplicates: true });
+}
+
 export async function createPlayer(context: TenantContext, req: Request): Promise<NextResponse> {
   // UI-4A — organizer mutation: OWNER/ADMIN only (MEMBER gets the generic 404).
   const denied = managersOnlyResponse(context);
@@ -142,7 +167,7 @@ export async function createPlayer(context: TenantContext, req: Request): Promis
     return NextResponse.json(zodErrorResponse(parsed.error), { status: 400 });
   }
 
-  const { firstName, lastName, position, rating, isActive } = parsed.data;
+  const { firstName, lastName, position, rating, isActive, communityIds } = parsed.data;
   const stamina = parsed.data.stamina ?? 3;
   const invalidRole = roleError(context, position);
   if (invalidRole) return invalidRole;
@@ -151,7 +176,7 @@ export async function createPlayer(context: TenantContext, req: Request): Promis
     // M11.1 — an active Player counts toward the plan's unique active players (Organization-locked).
     const created = await prisma.$transaction(async (tx) => {
       if (isActive ?? true) await assertCapacity(tx, context.organization.id, "activePlayers");
-      return tx.player.create({
+      const player = await tx.player.create({
         data: {
           firstName,
           lastName,
@@ -163,11 +188,16 @@ export async function createPlayer(context: TenantContext, req: Request): Promis
         },
         select: { ...ADMIN_PLAYER_FIELDS, userId: true },
       });
+      if (!communityIds?.length) return player;
+      // M9.2 — the chosen Communities, in the same transaction (nothing is created if one is invalid).
+      await setCommunityMemberships(tx, { activeGroupId: context.activeGroup.id, playerId: player.id, desired: communityIds, userId: context.user.id });
+      return tx.player.findFirstOrThrow({ where: { id: player.id, groupId: context.activeGroup.id }, select: { ...ADMIN_PLAYER_FIELDS, userId: true, communityPlayers: { select: { communityId: true } } } });
     });
 
     return NextResponse.json(toAdminPlayer(created as AdminPlayerRow, await staminaCoefFor(context)));
   } catch (e: unknown) {
     if (e instanceof EntitlementError) return planLimitResponse(e);
+    if (e instanceof CommunityChoiceError) return communityChoiceResponse(e);
     // Phase 2D.6E.6C — never return raw database/Prisma messages.
     console.error("createPlayer failed", e);
     return NextResponse.json({ error: "Failed to create player" }, { status: 500 });
@@ -186,7 +216,7 @@ export async function updatePlayer(context: TenantContext, id: string, req: Requ
   }
 
   const groupId = context.activeGroup.id;
-  const { firstName, lastName, position, rating, stamina, isActive } = parsed.data;
+  const { firstName, lastName, position, rating, stamina, isActive, communityIds } = parsed.data;
   const data = { firstName, lastName, position, rating, stamina, isActive };
   const invalidRole = roleError(context, position);
   if (invalidRole) return invalidRole;
@@ -198,14 +228,17 @@ export async function updatePlayer(context: TenantContext, id: string, req: Requ
     // separate ownership check followed by a write by globally unique id.
     // A foreign-Group id and a nonexistent id both affect 0 rows and are
     // indistinguishable (plain 404, never 403).
-    if (hasChanges) {
+    if (hasChanges || communityIds !== undefined) {
       // M11.1 — reactivating an inactive Player counts toward active players (Organization-locked).
+      // M9.2 — field changes and the Community memberships are applied atomically (one transaction).
       const result = await prisma.$transaction(async (tx) => {
         if (isActive === true) {
           const current = await tx.player.findFirst({ where: { id, groupId }, select: { isActive: true } });
           if (current && !current.isActive) await assertCapacity(tx, context.organization.id, "activePlayers");
         }
-        return tx.player.updateMany({ where: { id, groupId }, data });
+        const updated = hasChanges ? await tx.player.updateMany({ where: { id, groupId }, data }) : { count: await tx.player.count({ where: { id, groupId } }) };
+        if (updated.count === 1 && communityIds !== undefined) await setCommunityMemberships(tx, { activeGroupId: groupId, playerId: id, desired: communityIds, userId: context.user.id });
+        return updated;
       });
       if (result.count !== 1) {
         return NextResponse.json({ error: "Player not found" }, { status: 404 });
@@ -215,7 +248,7 @@ export async function updatePlayer(context: TenantContext, id: string, req: Requ
     // Read back the Group-scoped row (never by id alone).
     const updated = await prisma.player.findFirst({
       where: { id, groupId },
-      select: { ...ADMIN_PLAYER_FIELDS, userId: true, telegramLink: { select: { id: true } } },
+      select: { ...ADMIN_PLAYER_FIELDS, userId: true, telegramLink: { select: { id: true } }, communityPlayers: { select: { communityId: true } } },
     });
     if (!updated) {
       return NextResponse.json({ error: "Player not found" }, { status: 404 });
@@ -223,6 +256,7 @@ export async function updatePlayer(context: TenantContext, id: string, req: Requ
     return NextResponse.json(toAdminPlayer(updated as AdminPlayerRow, await staminaCoefFor(context)));
   } catch (e: unknown) {
     if (e instanceof EntitlementError) return planLimitResponse(e);
+    if (e instanceof CommunityChoiceError) return communityChoiceResponse(e);
     console.error("updatePlayer failed", e);
     return NextResponse.json({ error: "Failed to update player" }, { status: 500 });
   }

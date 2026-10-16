@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useId, useState, type FormEvent } from "react";
 import { ratingLabel } from "@/lib/labels";
 import type { SportClientView } from "@/lib/sports";
@@ -21,7 +22,23 @@ import {
  * from the Group's SportDefinition (the server re-validates the role
  * against the Group's sport). Rating is shown as "Skill" (skill in this
  * Group's sport); stamina sits under "More" (optional, defaults to 3).
+ *
+ * M9.2 — optional Community memberships (multiple): only this Group's
+ * Communities are offered; new memberships only in active ones (a current
+ * membership in an inactive Community is shown and may be removed). Create
+ * ("always") passes the chosen set; Edit ("whenChanged") passes it ONLY when
+ * it differs from `initial` (undefined = leave memberships unchanged). The
+ * server applies it atomically with the player write.
  */
+export type PlayerFormCommunities = {
+  options: Array<{ id: string; name: string; isActive: boolean }>;
+  initial: string[];
+  /** "always" (Create) or "whenChanged" (Edit: unchanged → memberships untouched). */
+  submit: "always" | "whenChanged";
+  /** Where Communities are created (shown when the Group has none). */
+  settingsHref?: string;
+};
+
 export default function CanonicalPlayerForm({
   initial,
   sport,
@@ -29,16 +46,19 @@ export default function CanonicalPlayerForm({
   busyLabel,
   onSubmit,
   onCancel,
+  communities,
 }: {
   initial: PlayerFormValues;
   sport: SportClientView;
   submitLabel: string;
   busyLabel: string;
   /** Resolves to an error message (shown inline) or null on success. */
-  onSubmit: (values: PlayerFormValues) => Promise<string | null>;
+  onSubmit: (values: PlayerFormValues, communityIds?: string[]) => Promise<string | null>;
   onCancel?: () => void;
+  communities?: PlayerFormCommunities;
 }) {
   const [values, setValues] = useState<PlayerFormValues>(initial);
+  const [chosen, setChosen] = useState<string[]>(communities?.initial ?? []);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const uid = useId();
@@ -61,7 +81,8 @@ export default function CanonicalPlayerForm({
     setError(null);
     setBusy(true);
     try {
-      const err = await onSubmit(values);
+      const changed = communities ? !(chosen.length === communities.initial.length && chosen.every((id) => communities.initial.includes(id))) : false;
+      const err = await onSubmit(values, communities && (communities.submit === "always" || changed) ? chosen : undefined);
       if (err) setError(err);
     } finally {
       setBusy(false);
@@ -120,6 +141,53 @@ export default function CanonicalPlayerForm({
           Active
         </label>
       </div>
+      {communities && (
+        <fieldset className="space-y-1">
+          <legend className={labelCls}>Communities</legend>
+          {communities.options.length === 0 ? (
+            <p className="text-sm text-muted-foreground">
+              This group has no communities yet.
+              {communities.settingsHref && (
+                <>
+                  {" "}
+                  <Link className="font-semibold text-primary underline" href={communities.settingsHref}>
+                    Create one in Group Settings
+                  </Link>
+                  .
+                </>
+              )}
+            </p>
+          ) : (
+            <>
+              <p className="text-xs text-muted-foreground">Which rosters this player belongs to (any number). Attendance for a match counts its community&apos;s players.</p>
+              <ul className="grid gap-1 sm:grid-cols-2">
+                {communities.options
+                  .filter((c) => c.isActive || communities.initial.includes(c.id))
+                  .map((c) => {
+                    const on = chosen.includes(c.id);
+                    return (
+                      <li key={c.id}>
+                        <label className="flex min-h-9 items-center gap-2 text-sm">
+                          <input
+                            type="checkbox"
+                            className="size-4 accent-primary"
+                            checked={on}
+                            disabled={busy || (!c.isActive && !on)}
+                            onChange={(e) => setChosen((ids) => (e.target.checked ? [...ids, c.id] : ids.filter((id) => id !== c.id)))}
+                          />
+                          <span className="min-w-0 break-words">
+                            {c.name}
+                            {c.isActive ? "" : " (inactive)"}
+                          </span>
+                        </label>
+                      </li>
+                    );
+                  })}
+              </ul>
+            </>
+          )}
+        </fieldset>
+      )}
       {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
       <div className="flex flex-wrap gap-2">
         <button

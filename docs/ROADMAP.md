@@ -837,6 +837,13 @@ posts.
   revocation (M13).
 - Stale pre-2D.7 ops scripts (outside the repo; do not use).
 - Vercel Prisma advisory-lock (P1002) deploy risk.
+- Roster freezing for past matches (recorded 2026-10-15). A Match's eligible
+  roster (attendance counts, Not Responded, Game Day Update summary) is
+  computed from the CURRENT Community memberships and active players, not
+  frozen per Match: adding / removing a member or (de)activating a player also
+  changes the counts shown for that Community's PAST matches. Kept as-is for
+  now (no migration). Future: snapshot the eligible roster when attendance
+  closes (e.g. a MatchRoster table) and read past matches from it.
 
 ## Resolved in M9-B
 

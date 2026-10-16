@@ -140,6 +140,7 @@ describe("rendering", () => {
       date: "2026-10-01",
       startTime: "19:30",
       locationName: "Field 2",
+      communityName: "UCCNE - FC (Indoor Soccer)",
       status: "SCHEDULED",
       upcoming: false,
       attendanceClosed: true,
@@ -155,6 +156,20 @@ describe("rendering", () => {
     expect(html).toContain("Next: Publish result");
     expect(html).toMatch(/Team 1 <\/span>5[\s\S]*Team 2 <\/span>3/);
     expect(adminMatchesPath("a b", "c")).toBe("/admin/o/a%20b/g/c/matches");
+  });
+  it("match rows show the Match's own Community before the venue; 'No community assigned' when none", () => {
+    const row = (over: Partial<OverviewMatch>) =>
+      renderToStaticMarkup(
+        createElement(MatchList, {
+          matches: [{ id: "x", href: "/m", date: "2026-10-12", startTime: "21:00", locationName: "ForeKicks", communityName: "UCCNE - FC (Indoor Soccer)", status: "SCHEDULED", upcoming: true, attendanceClosed: false, teamsPublished: false, publishedResult: null, resultSaved: false, lifecycle: matchLifecycle(base({})), ...over }],
+          emptyText: "",
+        })
+      );
+    expect(row({})).toMatch(/UCCNE - FC \(Indoor Soccer\)<\/span> · ForeKicks/);
+    expect(row({ communityName: null })).toMatch(/No community assigned<\/span> · ForeKicks/);
+    expect(row({ communityName: null, locationName: null })).toContain("No community assigned</span></span>");
+    expect(row({ locationName: null })).toContain("UCCNE - FC (Indoor Soccer)</span></span>"); // no trailing " · "
+    expect(row({ communityName: "A & B <x>" })).toContain("A &amp; B &lt;x&gt;"); // escaped by React
   });
 });
 

@@ -27,6 +27,8 @@ export type OverviewMatch = {
   date: string;
   startTime: string | null;
   locationName: string | null;
+  /** The Match's OWN linked Community (null = none assigned) — never inferred from the Group or a chat. */
+  communityName: string | null;
   status: MatchStatus;
   upcoming: boolean;
   attendanceClosed: boolean;
@@ -64,6 +66,7 @@ export async function loadGroupOverview(context: TenantContext, now: Date = new 
         date: true,
         startTime: true,
         locationName: true,
+        community: { select: { name: true } },
         status: true,
         attendanceClosedAt: true,
         attendanceDeadlineAt: true,
@@ -90,6 +93,7 @@ export async function loadGroupOverview(context: TenantContext, now: Date = new 
       date,
       startTime: m.startTime,
       locationName: m.locationName,
+      communityName: m.community?.name ?? null,
       status: m.status,
       upcoming: isUpcomingYmd(m.status, date, today),
       attendanceClosed: attendanceIsClosed(m), // Phase 4B — shared deadline rule
