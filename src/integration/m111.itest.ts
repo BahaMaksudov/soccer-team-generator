@@ -6,7 +6,7 @@
  * Organizations: "free" (FREE, trial over), "trial" (FREE, trial running),
  * "comp" (COMP), "legacy" (grandfathered), "other" (another tenant).
  */
-import { describe, it, expect, vi, beforeAll, beforeEach, afterAll } from "vitest";
+import { describe, it, expect, vi, beforeAll, beforeEach, afterAll, afterEach } from "vitest";
 import fs from "node:fs";
 import path from "node:path";
 
@@ -349,6 +349,13 @@ describe("M11.1 — Telegram is a Pro capability", () => {
 
 // ============================================================ AUTOMATION + DOWNGRADE
 describe("M11.1 — automation respects the plan", () => {
+  // The poll step checks "is attendance closed?" against the REAL clock while these scenarios run at fixed
+  // instants (Oct 11–13, 2026): pin the clock to the scenario's poll evening so the test doesn't depend on today's date.
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-10-12T00:10:00Z"));
+  });
+  afterEach(() => vi.useRealTimers());
   const afterPoll = new Date("2026-10-12T00:05:00Z"); // Sunday 20:05 New York; game Monday Oct 12
 
   it("automatic matches count toward the monthly limit: at the limit nothing is created, nothing is sent, no error", async () => {

@@ -8,7 +8,7 @@
  * Players" (no Telegram) and Community "Weekend" (another roster); Group B is
  * another tenant.
  */
-import { describe, it, expect, vi, beforeAll, beforeEach, afterAll } from "vitest";
+import { describe, it, expect, vi, beforeAll, beforeEach, afterAll, afterEach } from "vitest";
 
 type TestSession = { user: { id?: string; email: string } } | null;
 let session: TestSession = null;
@@ -362,6 +362,13 @@ describe("M9.3 — anonymous attendance through the Match Link", () => {
 
 // ============================================================ WEB-ONLY END TO END (zero Telegram)
 describe("M9.3 — a web-only Community end to end (no Telegram, no player accounts)", () => {
+  // The poll step checks "is attendance closed?" against the REAL clock while these scenarios run at fixed
+  // instants (Oct 11–13, 2026): pin the clock to the scenario's poll evening so the test doesn't depend on today's date.
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-10-12T00:10:00Z"));
+  });
+  afterEach(() => vi.useRealTimers());
   // Monday 9 PM New York; poll Sunday 8 PM; cutoff Monday 8 PM — game Oct 12, 2026.
   const SCHED = { communityId: "c-mon", timezone: "America/New_York", weekday: 1, startTime: "21:00", pollDaysBefore: 1, pollTime: "20:00", cutoffDaysBefore: 0, cutoffTime: "20:00" };
   const afterPoll = new Date("2026-10-12T00:05:00Z");
