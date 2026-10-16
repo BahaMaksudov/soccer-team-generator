@@ -618,7 +618,7 @@ function PostGameReadOnly({ pg }: { pg: PostGameView }) {
         icon={<FileText className="size-5" />}
         action={pg.recap?.published ? <StateChip tone="done">Published</StateChip> : <StateChip tone="neutral">Not published</StateChip>}
       >
-        {pg.recap?.content ? <p className="whitespace-pre-line text-sm">{pg.recap.content}</p> : <p className="text-sm text-muted-foreground">No recap yet.</p>}
+        {pg.recap?.content ? <p className="whitespace-pre-line break-words text-sm">{pg.recap.content}</p> : <p className="text-sm text-muted-foreground">No recap yet.</p>}
       </SectionCard>
       <section id="summary" aria-labelledby="summary-heading" className="scroll-mt-20 space-y-3 rounded-tbp-2xl bg-pitch p-4 text-pitch-foreground shadow-lift pitch-lines sm:p-5">
         <h2 id="summary-heading" className="text-lg font-extrabold">Match Summary</h2>

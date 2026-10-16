@@ -50,6 +50,29 @@
     color: oklch(var(--tbp-primary));
   }
 
+  /*
+   * Native date / time / datetime-local inputs. On iOS, WebKit's RenderThemeIOS
+   * (adjustInputElementButtonStyle) styles every such input that keeps its NATIVE
+   * appearance and has no fixed width: it forces "padding: 0 0.5em", a min-width of
+   * the longest localized date, and box-sizing: content-box — so `w-full` became
+   * 100% + padding + border and the field stuck out of its card (selects take a
+   * different path and fit). Turning the native appearance off skips that
+   * adjustment; the native date/time PICKER is unaffected (it belongs to the input
+   * type). Our own classes (border, radius, padding, height) give the look.
+   */
+  .date-input {
+    -webkit-appearance: none;
+    appearance: none;
+    box-sizing: border-box;
+    min-width: 0;
+    max-width: 100%;
+  }
+  .date-input::-webkit-date-and-time-value {
+    margin: 0;
+    min-height: 1.5em; /* an empty value never collapses */
+    text-align: start; /* iOS centers it by default */
+  }
+
   .pitch-lines {
     background-image:
       linear-gradient(oklch(1 0 0 / 5%) 1px, transparent 1px),

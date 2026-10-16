@@ -247,21 +247,21 @@ export default function SchedulesSection({
             </label>
             <label className="text-sm font-semibold">
               Game time
-              <input type="time" required className={`${input} mt-1`} value={values.startTime} onChange={(e) => setValues({ ...values, startTime: e.target.value })} />
+              <input type="time" required className={`${input} date-input mt-1`} value={values.startTime} onChange={(e) => setValues({ ...values, startTime: e.target.value })} />
             </label>
             <div />
             <fieldset className="text-sm font-semibold">
               <legend>Send attendance poll</legend>
               <div className="mt-1 grid grid-cols-2 gap-2">
                 {daysSelect(values.pollDaysBefore, (n) => setValues({ ...values, pollDaysBefore: n }), "Poll: days before the game")}
-                <input type="time" aria-label="Poll time" required className={input} value={values.pollTime} onChange={(e) => setValues({ ...values, pollTime: e.target.value })} />
+                <input type="time" aria-label="Poll time" required className={`${input} date-input`} value={values.pollTime} onChange={(e) => setValues({ ...values, pollTime: e.target.value })} />
               </div>
             </fieldset>
             <fieldset className="text-sm font-semibold">
               <legend>Attendance cutoff</legend>
               <div className="mt-1 grid grid-cols-2 gap-2">
                 {daysSelect(values.cutoffDaysBefore, (n) => setValues({ ...values, cutoffDaysBefore: n }), "Cutoff: days before the game")}
-                <input type="time" aria-label="Cutoff time" required className={input} value={values.cutoffTime} onChange={(e) => setValues({ ...values, cutoffTime: e.target.value })} />
+                <input type="time" aria-label="Cutoff time" required className={`${input} date-input`} value={values.cutoffTime} onChange={(e) => setValues({ ...values, cutoffTime: e.target.value })} />
               </div>
             </fieldset>
           </div>

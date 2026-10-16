@@ -140,7 +140,7 @@ export function MatchView({ view, title, subtitle, attendance }: { view: PlayerM
       {/* 9: published recap */}
       {view.recap && (
         <Card id="recap" title="Match recap">
-          <p className="whitespace-pre-line text-sm leading-relaxed">{view.recap.text}</p>
+          <p className="whitespace-pre-line break-words text-sm leading-relaxed">{view.recap.text}</p>
         </Card>
       )}
     </>

@@ -54,8 +54,8 @@ export default async function OrganizationPage({ params }: { params: Params }) {
         </div>
       </header>
 
-      <div className="grid gap-4 sm:grid-cols-2">
-        <section aria-labelledby="org-groups" className="rounded-tbp-2xl border border-border bg-card p-5 shadow-card">
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+        <section aria-labelledby="org-groups" className="min-w-0 rounded-tbp-2xl border border-border bg-card p-5 shadow-card">
           <h2 id="org-groups" className="flex items-center gap-2 text-lg font-extrabold">
             <Layers className="size-5 text-primary" aria-hidden="true" /> Groups
           </h2>
@@ -78,7 +78,7 @@ export default async function OrganizationPage({ params }: { params: Params }) {
           </Link>
         </section>
 
-        <section aria-labelledby="org-members" className="rounded-tbp-2xl border border-border bg-card p-5 shadow-card">
+        <section aria-labelledby="org-members" className="min-w-0 rounded-tbp-2xl border border-border bg-card p-5 shadow-card">
           <h2 id="org-members" className="flex items-center gap-2 text-lg font-extrabold">
             <Users className="size-5 text-primary" aria-hidden="true" /> Members
           </h2>

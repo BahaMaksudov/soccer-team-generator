@@ -443,7 +443,7 @@ export default function CanonicalTelegramSection({
               <label className="block text-xs mb-1">Poll date</label>
               <input
                 type="date"
-                className="border rounded-md px-3 py-2 w-full"
+                className="date-input border rounded-md px-3 py-2 w-full"
                 value={pollDate}
                 onChange={(e) => setPollDate(e.target.value)}
               />
