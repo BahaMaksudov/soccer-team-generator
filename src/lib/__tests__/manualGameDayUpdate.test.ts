@@ -2,7 +2,8 @@ import { describe, it, expect, beforeAll, afterAll, vi } from "vitest";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { PREVIEW_TTL_MS, signGameDayConfirm, verifyGameDayConfirm, type GameDayConfirmClaims } from "@/lib/gameDayConfirmToken";
-import { parseTelegramHtml } from "@/lib/telegramHtmlPreview";
+import { parseTelegramBlocks, parseTelegramHtml } from "@/lib/telegramHtmlPreview";
+import { WEATHER_DISCLAIMER } from "@/lib/weatherLegal";
 import { GameDayUpdateReview, TelegramMessagePreview } from "@/app/admin/o/[organizationSlug]/g/[groupSlug]/matches/[matchId]/GameDayUpdateDialog";
 import type { GameDayPreview } from "@/lib/gameDayUpdate";
 
@@ -21,6 +22,8 @@ const claims = (over: Partial<Omit<GameDayConfirmClaims, "exp">> = {}): Omit<Gam
   d: T0 + 3 * 3600_000,
   pl: 9,
   mb: 2,
+  np: 1,
+  nr: 15,
   w: null,
   h: "a".repeat(64),
   iat: T0,
@@ -74,6 +77,25 @@ describe("safe Telegram preview (no HTML injection)", () => {
   });
 });
 
+describe("safe preview: Telegram expandable blockquote (the collapsed weather disclaimer)", () => {
+  const msg = `🌤 Outside at kickoff: 70°F, sunny\n<i>Powered by <a href="https://www.weatherapi.com/">WeatherAPI.com</a></i>\n<blockquote expandable>⚠️ Weather disclaimer — forecasts are informational only\n${WEATHER_DISCLAIMER}</blockquote>\n\n👥 Attendance Summary (27 players)`;
+  it("parses the quote as one block of whole lines, no stray empty lines around it", () => {
+    const blocks = parseTelegramBlocks(msg);
+    expect(blocks.map((b) => b.kind)).toEqual(["line", "line", "quote", "line", "line"]);
+    const q = blocks[2] as Extract<(typeof blocks)[number], { kind: "quote" }>;
+    expect(q.expandable).toBe(true);
+    expect(q.lines.map((l) => l.map((x) => x.text).join(""))).toEqual(["⚠️ Weather disclaimer — forecasts are informational only", WEATHER_DISCLAIMER]);
+    expect(parseTelegramHtml(msg)).toHaveLength(6); // flat view keeps every line
+  });
+  it("renders collapsed (details/summary) with the full text inside — never raw HTML", () => {
+    const html = renderToStaticMarkup(createElement(TelegramMessagePreview, { html: msg }));
+    expect(html).toMatch(/<details[^>]*><summary[^>]*>⚠️ Weather disclaimer — forecasts are informational only<\/summary>/);
+    expect(html).toContain(WEATHER_DISCLAIMER);
+    expect(html).not.toContain("&lt;blockquote");
+    expect(html).toContain('href="https://www.weatherapi.com/"');
+  });
+});
+
 const preview = (over: Partial<GameDayPreview> = {}): GameDayPreview => ({
   state: "READY",
   reason: null,
@@ -120,6 +142,14 @@ describe("review panel", () => {
     const html = review(preview());
     for (const s of ["Funny Org", "Indoor Soccer", "FunnyStuff", "Soccer Wed Jun 3 9 PM?", "Attendance closes", "in 3 hours", "exactly what will be sent", "68°F", "Partly cloudy", "rain 10%", "wind 10 mph", "Ready"]) expect(html).toContain(s);
     expect(html).toContain("Automatic Game Day Updates stay off");
+  });
+  it("the website weather check shows the WeatherAPI attribution and the full disclaimer with any forecast (and neither without one)", () => {
+    const html = review(preview());
+    expect(html).toContain('Powered by <a class="underline" href="https://www.weatherapi.com/"');
+    expect(html).toContain(WEATHER_DISCLAIMER);
+    const none = review(preview({ weather: { reason: "NO_LOCATION", includedInMessage: false, forecast: null } }));
+    expect(none).not.toContain(WEATHER_DISCLAIMER);
+    expect(none).toContain("no confirmed weather location");
   });
   it("Send needs the explicit confirmation checkbox, an unexpired preview and is labeled with the destination", () => {
     expect(sendButton(review(preview()))).toContain('disabled=""');

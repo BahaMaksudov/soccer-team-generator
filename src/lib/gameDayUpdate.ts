@@ -1,4 +1,5 @@
 import type { Prisma } from "@prisma/client";
+import type { AttendanceCounts } from "@/lib/attendance";
 import { prisma } from "@/lib/prisma";
 import { organizationPlan } from "@/lib/entitlements";
 import { readGameDayUpdateSettings } from "@/lib/gameDayUpdateSettings";
@@ -126,7 +127,7 @@ export async function deliverGameDayUpdate(params: {
   userId: string | null;
   now: Date;
   planPaused: boolean;
-  counts: () => Promise<{ PLAYING: number; MAYBE: number }>;
+  counts: () => Promise<AttendanceCounts>;
 }): Promise<GameDayResult> {
   const { groupId, organizationId, matchId, now } = params;
   // Lock-free pre-check: nothing (no weather request, no counts) unless an update is due right now.
@@ -163,7 +164,7 @@ async function readTeamName(groupId: string): Promise<string | null> {
 }
 
 /** The message from the loaded facts (shared by automatic, preview and manual send). */
-function buildMessage(loaded: Loaded, teamName: string | null, counts: { PLAYING: number; MAYBE: number }, weather: GameDayWeather | null, now: Date): GameDayUpdateMessage {
+function buildMessage(loaded: Loaded, teamName: string | null, counts: AttendanceCounts, weather: GameDayWeather | null, now: Date): GameDayUpdateMessage {
   const { m } = loaded;
   if (!m.attendanceDeadlineAt) return { ok: false, reason: "INVALID_INPUT" };
   return buildMessageHtml({
@@ -172,7 +173,7 @@ function buildMessage(loaded: Loaded, teamName: string | null, counts: { PLAYING
     timezone: m.group.timezone,
     match: { date: m.date.toISOString().slice(0, 10), startTime: m.startTime, venueName: m.venue?.name ?? m.locationName, isIndoor: m.venue?.isIndoor ?? false },
     deadline: m.attendanceDeadlineAt,
-    attendance: { playing: counts.PLAYING, maybe: counts.MAYBE },
+    attendance: { playing: counts.PLAYING, notPlaying: counts.NOT_PLAYING, maybe: counts.MAYBE, noResponse: counts.NO_RESPONSE },
     link: authorizedMatchLink(m.group.visibility, m.id, m.shareVersion),
     weather: loaded.settings.includeWeather ? weather : null, // re-checked: turned off meanwhile → none
     units: loaded.settings.units,
@@ -326,7 +327,7 @@ type ManualParams = {
   organizationName: string;
   matchId: string;
   userId: string;
-  counts: () => Promise<{ PLAYING: number; MAYBE: number }>;
+  counts: () => Promise<AttendanceCounts>;
 };
 
 async function userName(id: string | null | undefined): Promise<string | null> {
@@ -364,6 +365,8 @@ export async function previewManualGameDayUpdate(p: ManualParams, now: Date = ne
       d: deadline.getTime(),
       pl: counts.PLAYING,
       mb: counts.MAYBE,
+      np: counts.NOT_PLAYING,
+      nr: counts.NO_RESPONSE,
       w: included ? weatherCheck.weather : null,
       h: contentHashOf(message.html),
       iat: now.getTime(),
@@ -413,7 +416,8 @@ export type ManualSendResult =
 /**
  * Send the previewed message — only if the confirmation is valid, the match is
  * still eligible right now (manual rules, inside the lock), the destination,
- * deadline and counts are unchanged, and the message rebuilt from the current
+ * deadline and all four attendance counts are unchanged (any attendance or
+ * roster change → a refreshed preview is required), and the message rebuilt from the current
  * facts at the preview instant is byte-identical to the approved one.
  */
 export async function sendManualGameDayUpdate(p: ManualParams & { token: unknown }, now: Date = new Date()): Promise<ManualSendResult> {
@@ -436,7 +440,9 @@ export async function sendManualGameDayUpdate(p: ManualParams & { token: unknown
       poll.chatId.toString() === c.c &&
       m.attendanceDeadlineAt?.getTime() === c.d &&
       counts.PLAYING === c.pl &&
-      counts.MAYBE === c.mb;
+      counts.MAYBE === c.mb &&
+      counts.NOT_PLAYING === c.np &&
+      counts.NO_RESPONSE === c.nr;
     if (!same) return { kind: "stale", why: "CHANGED" };
     // Rebuilt at the PREVIEW instant with the previewed weather: identical text or nothing is sent.
     const message = buildMessage(loaded, teamName, counts, c.w, new Date(c.iat));

@@ -4,8 +4,8 @@ import type { TenantContext } from "@/lib/tenantContext";
 import { toDateOnlyUTC } from "@/lib/dateOnly";
 import { formatLongDateOnly } from "@/lib/dateOnly";
 import { canonicalAdminMatchPath } from "@/lib/matchPaths";
-import { communityRosterIds, communityTelegramChat } from "@/lib/communities";
-import { countAttendance, type AttendanceRow } from "@/lib/attendance";
+import { communityTelegramChat } from "@/lib/communities";
+import { matchAttendanceSnapshot, type AttendanceSnapshot } from "@/lib/attendanceSnapshot";
 import { postAttendancePollFor } from "@/lib/telegramAttendance";
 import { closeMatchAttendancePolls, POLL_CLOSE_MESSAGE } from "@/lib/matchPollClose";
 import { sendAttendanceReadyEmail } from "@/lib/email";
@@ -241,14 +241,11 @@ async function finalizeDeadline(ctx: TenantContext, matchId: string, now: Date):
   return count === 1;
 }
 
-/** Attendance summary over the Match's eligible roster (Community members, or the whole Group for a Community-less Match). */
-export async function attendanceSummary(groupId: string, matchId: string) {
-  const m = await prisma.match.findFirstOrThrow({
-    where: { id: matchId, groupId },
-    select: { date: true, communityId: true, attendanceClosedAt: true, attendanceDeadlineAt: true, community: { select: { name: true } }, attendance: { select: { playerId: true, participantStatus: true, participantSource: true, participantRespondedAt: true, overrideStatus: true, overrideAt: true } } },
-  });
-  const ids = m.communityId ? await communityRosterIds(groupId, m.communityId) : (await prisma.player.findMany({ where: { groupId, isActive: true }, select: { id: true } })).map((p) => p.id);
-  return { counts: countAttendance(ids, m.attendance as AttendanceRow[], effectiveClosedAt(m)), rosterSize: ids.length, communityName: m.community?.name ?? null, date: m.date };
+/** Attendance summary over the Match's eligible roster — the one shared calculation (src/lib/attendanceSnapshot.ts). */
+export async function attendanceSummary(groupId: string, matchId: string): Promise<AttendanceSnapshot> {
+  const snapshot = await matchAttendanceSnapshot(groupId, matchId);
+  if (!snapshot) throw new Error("Match not found");
+  return snapshot;
 }
 
 type Recipient = { userId: string; email: string; emailVerifiedAt: Date | null };
