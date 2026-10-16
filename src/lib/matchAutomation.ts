@@ -9,7 +9,7 @@ import { matchAttendanceSnapshot, type AttendanceSnapshot } from "@/lib/attendan
 import { postAttendancePollFor } from "@/lib/telegramAttendance";
 import { closeMatchAttendancePolls, POLL_CLOSE_MESSAGE } from "@/lib/matchPollClose";
 import { sendAttendanceReadyEmail } from "@/lib/email";
-import { assertCapacity, EntitlementError, organizationPlan } from "@/lib/entitlements";
+import { assertCapacity, EntitlementError, organizationPlan, telegramEntitledSince } from "@/lib/entitlements";
 import { schedulesOverLimit } from "@/lib/schedules";
 import { currentMatchLinkPath } from "@/lib/matchLink";
 import { CUTOFF_CATCH_UP_MS, dueForPoll, type WeeklySchedule } from "@/lib/scheduleTime";
@@ -185,9 +185,12 @@ async function ensureMatch(s: ScheduleRow, occ: ReturnType<typeof dueForPoll>[nu
 }
 
 /** Step 2 — post the attendance poll (once; never blindly retried after an uncertain delivery). */
-async function stepPoll(ctx: TenantContext, matchId: string, automationId: string, telegramAllowed = true): Promise<"posted" | "link" | "skipped" | "error"> {
+async function stepPoll(ctx: TenantContext, matchId: string, automationId: string, telegramAllowed = true, entitledSince: Date | null = null): Promise<"posted" | "link" | "skipped" | "error"> {
   const a = await prisma.matchAutomation.findUniqueOrThrow({ where: { id: automationId } });
   if (a.pollPostedAt) return "skipped";
+  // M11.3 — a poll that fell due while the organization was on Free is not posted late after an
+  // upgrade (no replay): this match stays on the match link; the organizer may still post manually.
+  if (entitledSince && a.pollDueAt.getTime() < entitledSince.getTime()) telegramAllowed = false;
   const m = await prisma.match.findFirst({
     where: { id: matchId, groupId: ctx.activeGroup.id },
     select: { status: true, communityId: true, telegramChatId: true, attendanceClosedAt: true, attendanceDeadlineAt: true, community: { select: { name: true } } },
@@ -375,11 +378,12 @@ export async function runMatchAutomation(now: Date = new Date(), scope: Automati
   };
   // M11.1 — per-Organization plan gate: automation pauses while the Organization has more
   // active schedules than its plan allows (the organizer chooses which one stays); Telegram is Pro.
-  const gates = new Map<string, { paused: boolean; telegram: boolean }>();
+  // M11.3 — and Telegram automation resumes after an upgrade only for steps due from then on.
+  const gates = new Map<string, { paused: boolean; telegram: boolean; since: Date | null }>();
   const gateFor = async (organizationId: string) => {
     if (!gates.has(organizationId)) {
-      const [{ limits }, over] = await Promise.all([organizationPlan(organizationId, now), schedulesOverLimit(organizationId)]);
-      gates.set(organizationId, { paused: over.over, telegram: limits.telegram });
+      const [{ limits }, over, since] = await Promise.all([organizationPlan(organizationId, now), schedulesOverLimit(organizationId), telegramEntitledSince(organizationId, now)]);
+      gates.set(organizationId, { paused: over.over, telegram: limits.telegram, since });
     }
     return gates.get(organizationId)!;
   };
@@ -406,7 +410,7 @@ export async function runMatchAutomation(now: Date = new Date(), scope: Automati
         const { matchId, automation, created } = ensured;
         if (created) run.created++;
         if (scope.matchId && scope.matchId !== matchId) continue;
-        if ((await withMatchLock(matchId, () => stepPoll(ctx, matchId, automation.id, gate.telegram))) === "posted") run.pollsPosted++;
+        if ((await withMatchLock(matchId, () => stepPoll(ctx, matchId, automation.id, gate.telegram, gate.since))) === "posted") run.pollsPosted++;
       } catch (e) {
         run.errors.push({ scheduleId: s.id, error: e instanceof Error ? e.message : "error" });
       }
@@ -434,7 +438,7 @@ export async function runMatchAutomation(now: Date = new Date(), scope: Automati
       continue;
     }
     try {
-      if ((await withMatchLock(a.matchId, () => stepPoll(ctx, a.matchId, a.id, gate.telegram))) === "posted") run.pollsPosted++;
+      if ((await withMatchLock(a.matchId, () => stepPoll(ctx, a.matchId, a.id, gate.telegram, gate.since))) === "posted") run.pollsPosted++;
     } catch (e) {
       run.errors.push({ matchId: a.matchId, error: e instanceof Error ? e.message : "error" });
     }

@@ -170,23 +170,28 @@ enum OrgRole {
 }
 
 model User {
-  id              String    @id @default(cuid())
-  email           String    @unique
+  id                 String    @id @default(cuid())
+  email              String    @unique
   // UI-2 — NULL for accounts that sign in with Google only (no password is
   // ever invented). Credentials login and Change Password require a hash.
-  passwordHash    String?
-  name            String?
+  passwordHash       String?
+  name               String?
   // M5 — set only by a successful email verification (or, once, by
   // migration #13 for Users who already owned an Organization before
   // self-service signup existed). NULL = unverified.
-  emailVerifiedAt DateTime?
+  emailVerifiedAt    DateTime?
   // M11.1 — the introductory Pro trial was used (one per User; set atomically with the trial Organization).
-  trialUsedAt     DateTime?
-  createdAt       DateTime  @default(now())
-  updatedAt       DateTime  @updatedAt
+  trialUsedAt        DateTime?
+  // M11.3 — set by a password reset: sessions (JWTs) issued before this instant
+  // (whole seconds, UTC) are no longer accepted. NULL = no reset yet.
+  sessionsValidAfter DateTime?
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
 
   memberships             OrganizationMembership[]
   emailVerificationTokens EmailVerificationToken[]
+  passwordResetTokens     PasswordResetToken[]
+  trialNotices            TrialNotice[]
   // M6-A — optional claimed Player profiles (none yet; claim flow is M6-C).
   players                 Player[]
   shareLinksCreated       GroupShareLink[]
@@ -268,6 +273,7 @@ model Organization {
   venues                  Venue[]
   aiUsages                AiUsage[]
   entitlementEvents       EntitlementEvent[]
+  trialNotices            TrialNotice[]
   // M11.2A — Stripe (test mode) billing.
   billingSubscriptions    BillingSubscription[]
   billingCheckoutSessions BillingCheckoutSession[]
@@ -341,6 +347,78 @@ model EmailVerificationToken {
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([userId])
+}
+
+// M11.3 — password reset: only the SHA-256 hash of the emailed token is stored.
+// Valid for 60 minutes, usable once; issuing a new one deletes the User's
+// older unused tokens. Consumed only by an explicit POST (never by GET).
+model PasswordResetToken {
+  id        String    @id @default(cuid())
+  userId    String
+  tokenHash String    @unique
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+// M11.3 — one row per trial email (reminder stage or expiry) per recipient per
+// trial end: the idempotency record of the trial lifecycle job. The unique key
+// makes concurrent / retried runs claim each email at most once; a trial
+// extension (new trialEndsAt) starts a new series. Only "send" mode writes rows.
+//   SENT      — Resend accepted it.
+//   FAILED    — Resend definitely did not accept it (4xx, configuration): retried
+//               up to the attempt cap.
+//   UNCERTAIN — no clear answer (timeout, network, 5xx, 409, interrupted): retried
+//               only inside Resend's 24 h idempotency window with the SAME key and
+//               the SAME content (daysLeft is stored), never after it.
+model TrialNotice {
+  id             String            @id @default(cuid())
+  organizationId String
+  userId         String
+  stage          String // "D14" | "D7" | "D3" | "D1" | "EXPIRED"
+  trialEndsAt    DateTime
+  // Frozen at the first claim so every retry renders identical content.
+  daysLeft       Int?
+  status         TrialNoticeStatus @default(SENDING)
+  attempts       Int               @default(1)
+  createdAt      DateTime          @default(now())
+  claimedAt      DateTime          @default(now())
+  sentAt         DateTime?
+  lastError      String?
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([organizationId, stage, trialEndsAt, userId])
+  @@index([status])
+}
+
+enum TrialNoticeStatus {
+  SENDING
+  SENT
+  FAILED
+  UNCERTAIN
+}
+
+// M11.3 — password-reset request log: the database rate limit (works without
+// Upstash; fails closed with the database). Only keyed HMACs of the email and
+// client address are stored — never the address itself. Rows older than a day
+// are purged as new requests arrive.
+model PasswordResetRequest {
+  id        String   @id @default(cuid())
+  emailHash String
+  ipHash    String
+  // false = refused by a limit (counted for the address, never emailed).
+  allowed   Boolean
+  createdAt DateTime @default(now())
+
+  @@index([emailHash, createdAt])
+  @@index([ipHash, createdAt])
+  @@index([createdAt])
 }
 
 // M5 — invitation to join an Organization. Only the SHA-256 hash of the

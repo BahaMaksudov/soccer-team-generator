@@ -1,6 +1,6 @@
 # Team Balance Pro — Roadmap & Architecture Notes
 
-Production: https://teambalancepro.com · Last updated: 2026-10-03
+Production: https://teambalancepro.com · Last updated: 2026-10-16
 
 Sequence decided 2026-10-01: Multi-Sport moved before AI (M7 ↔ M8 swapped)
 so AI consumes a sport-neutral engine instead of soccer-only assumptions.
@@ -29,10 +29,65 @@ require every future feature before launch.
 | M9-D | Result, MVP & AI Recap — result save/publish/post, Telegram MVP vote + deterministic winner, AI-assisted recap with deterministic fallback | COMPLETE — migration #20 (prod `8dec585`, 2026-10-03). **M9 is functionally complete for the MVP scope.** |
 | M10 | WhatsApp & Expanded Communications — GroupChannel, primary channel, WhatsApp identity, Meta Cloud API, multi-channel delivery | Planned (next) |
 | M10.5 | Organizer Agent & Match Automation — scheduled attendance → import → generate → analysis → organizer approval → publish/post; optional game-day updates (weather) | Planned |
-| M11 | Plans & Billing | Planned |
+| M11 | Plans & Billing | IN PROGRESS — M11.1 plans/trial/limits live; M11.2A Stripe TEST-mode billing merged but disabled in Production; M11.3 trial lifecycle + password recovery on branch `feature/m11-3-trial-lifecycle` (see below); M11.2B live billing not started |
 | M12 | Product UX / Analytics / Branding | Planned |
 | M13 | Production Hardening | Planned |
 | M14 | Commercial Launch | Planned |
+
+## M11.3 — Trial lifecycle & password recovery (branch, 2026-10-16)
+
+### Trial eligibility policy (approved 2026-10-16)
+**One standard 90-day Pro trial per customer account**, claimed atomically by the
+account's FIRST Organization when it is created (verified email required;
+`User.trialUsedAt`). Beta customers get exactly the same trial. Additional
+Organizations never get another trial: a second Organization starts on Free and
+is only allowed when an Organization the account owns is paid Pro, COMP or
+LEGACY (Phase 1 ownership rule). Retried / double-submitted creations replay the
+same Organization and never extend a trial. Wording lives in one place
+(`TRIAL_POLICY_NOTE`, `SECOND_ORGANIZATION_NOTE`); onboarding and pricing use it.
+
+### Expiry
+The trial end (`trialEndsAt`, UTC) is authoritative and evaluated on every
+request: Free applies at that exact instant, whether or not any job runs. No
+data is deleted, no Telegram group is disconnected, LEGACY / COMP never change.
+Customer-facing dates are shown in the organization's timezone (its first
+active Group's timezone, else UTC) with the zone named, e.g. "Jan 31, 2027, 5:30 AM EST".
+
+### Telegram on Free (after the trial)
+- Refused with an explanatory 402 (when the trial ended, what is kept): post a
+  poll, post teams, post-game messages, MVP vote, Game Day Updates (manual and
+  automatic), connect a group (issuing AND redeeming a code), closure-notice retry.
+- **Close-only:** an organizer may still close an already-posted poll (also one
+  without an attendance deadline) — `stopPoll` edits the existing poll; the
+  closure notice (a new message) is skipped inside `sendPollClosedNotice`
+  ("not_in_plan"). Idempotent. Deadline-based automatic close keeps working.
+- Plan checks sit at every send core (real clock): `postAttendancePollFor`,
+  `sendPollClosedNotice`, Game Day delivery (inside its lock), plus the entry
+  points. Bot replies to user commands in the webhook are not organization content.
+- **Scheduled matches:** matches, attendance (match link), deadlines and organizer
+  emails keep working; Telegram steps are skipped (the poll step completes as
+  "match link"). After a verified upgrade, automation resumes for steps due from
+  then on; anything that fell due while on Free is never sent late
+  (`telegramEntitledSince`; Game Day status "MISSED_WHILE_FREE"). Manual posting
+  stays available.
+
+### Trial emails (`src/lib/trialLifecycle.ts`, from `/api/cron/automation`)
+`TRIAL_LIFECYCLE` off (default) / audit / send. 14/7/3/1-day reminders and one
+expiry email (within 7 days) to verified OWNERs; once per stage per owner per
+trial end (TrialNotice unique claim). SENT / FAILED (definitely not accepted:
+retried up to 3 attempts) / UNCERTAIN (timeout, network, 5xx, 409, interrupted:
+retried only within 23 h with the same Resend Idempotency-Key and identical
+content, never after). Audit mode writes no TrialNotice rows. Organizations that
+ever converted to Stripe Pro or have an entitling subscription are skipped.
+
+### Password recovery and sessions
+/forgot-password, /reset-password/[token]; SHA-256 token hashes, 60 min, single
+use, consumed only by POST under a per-User lock; generic answers with the work
+after the response. Rate limits: database request log (always on, fails closed:
+10/15 min per address → 429; 3 emails/30 min per email and 200/hour service-wide
+→ generic answer, nothing sent) plus optional Upstash. Google-only accounts get
+sign-in guidance. A password reset OR a signed-in password change sets
+`User.sessionsValidAfter`: every older session (JWT) is void.
 
 ## Product direction (M6+)
 

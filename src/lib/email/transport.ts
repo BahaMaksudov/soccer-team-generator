@@ -15,7 +15,14 @@ import { EmailConfigError } from "./config";
  * — only provider, HTTP status and the provider's message id.
  */
 
-export type OutgoingEmail = { to: string; subject: string; text: string; html: string };
+export type OutgoingEmail = {
+  to: string;
+  subject: string;
+  text: string;
+  html: string;
+  /** M11.3 — sent as Resend's Idempotency-Key header: a retry with the same key is never delivered twice (provider window: 24 h). */
+  idempotencyKey?: string;
+};
 export type SendResult = { providerMessageId: string | null };
 
 export interface EmailTransport {
@@ -52,7 +59,11 @@ export function createResendTransport(options: {
       try {
         res = await doFetch(RESEND_ENDPOINT, {
           method: "POST",
-          headers: { Authorization: `Bearer ${options.apiKey}`, "Content-Type": "application/json" },
+          headers: {
+            Authorization: `Bearer ${options.apiKey}`,
+            "Content-Type": "application/json",
+            ...(message.idempotencyKey ? { "Idempotency-Key": message.idempotencyKey } : {}),
+          },
           body: JSON.stringify({
             from: message.from,
             to: [message.to],

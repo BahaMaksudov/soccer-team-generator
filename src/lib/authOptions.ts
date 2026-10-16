@@ -5,6 +5,8 @@ import { checkLoginRateLimit } from "@/lib/rateLimit";
 import { authenticateCredentials, normalizeEmail } from "@/lib/accounts";
 import { safeAuthRedirect } from "@/lib/safeRedirect";
 import { GOOGLE_PROVIDER_ID, googleAuthConfig, googleSessionUser, resolveGoogleSignIn } from "@/lib/googleAuth";
+import { prisma } from "@/lib/prisma";
+import { sessionIssuedBeforeReset } from "@/lib/passwordReset";
 
 const google = googleAuthConfig();
 
@@ -63,6 +65,16 @@ export const authOptions: NextAuthOptions = {
         token.uid = user.id;
         token.email = user.email;
         token.name = user.name;
+        return token;
+      }
+      // M11.3 — an existing session (server-side reads only; middleware never runs this):
+      // void after a password reset, or when the User no longer exists. A void token
+      // carries no identity, so every page / API treats the request as signed out.
+      // (Pre-M5 tokens carry no uid and are resolved by email, like everywhere else.)
+      const where = typeof token.uid === "string" ? { id: token.uid } : typeof token.email === "string" ? { email: normalizeEmail(token.email) } : null;
+      if (where) {
+        const row = await prisma.user.findUnique({ where, select: { sessionsValidAfter: true } });
+        if (!row || sessionIssuedBeforeReset(token.iat, row.sessionsValidAfter)) return {};
       }
       return token;
     },

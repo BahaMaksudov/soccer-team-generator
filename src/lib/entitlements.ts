@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import type { OrganizationPlan, Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { billingConfig, stripeModePermitted } from "@/lib/billing/config";
+import { isValidTimeZone } from "@/lib/scheduleTime";
 
 /**
  * M11.1 — plans, the introductory trial and entitlements: the ONE place that
@@ -57,6 +58,42 @@ export function utcMonth(now: Date = new Date()) {
 export function trialDaysLeft(trialEndsAt: Date | null, now: Date = new Date()): number | null {
   if (!trialEndsAt || trialEndsAt.getTime() <= now.getTime()) return null;
   return Math.ceil((trialEndsAt.getTime() - now.getTime()) / 86_400_000);
+}
+
+/**
+ * M11.3 — the trial as an Organization sees it (pure; UTC instants). Only a FREE
+ * Organization with a trial end has a trial; LEGACY / COMP / PRO never do.
+ *   active   → more than TRIAL_ENDING_DAYS left;
+ *   ending   → TRIAL_ENDING_DAYS or fewer left (banner + reminders);
+ *   expired  → trialEndsAt <= now: the Free plan applies from that exact instant.
+ */
+export const TRIAL_ENDING_DAYS = 14;
+export type TrialPhase = "none" | "active" | "ending" | "expired";
+export type TrialStatus = { phase: TrialPhase; endsAt: Date | null; daysLeft: number | null };
+
+export function trialStatus(org: { plan: OrganizationPlan; trialEndsAt: Date | null }, now: Date = new Date()): TrialStatus {
+  if (org.plan !== "FREE" || !org.trialEndsAt) return { phase: "none", endsAt: null, daysLeft: null };
+  const daysLeft = trialDaysLeft(org.trialEndsAt, now);
+  if (daysLeft === null) return { phase: "expired", endsAt: org.trialEndsAt, daysLeft: null };
+  return { phase: daysLeft <= TRIAL_ENDING_DAYS ? "ending" : "active", endsAt: org.trialEndsAt, daysLeft };
+}
+
+/**
+ * The one date format of trial texts. The instant is UTC-authoritative (trialEndsAt);
+ * it is SHOWN in the organization's timezone, with the zone named, e.g.
+ * "Jan 31, 2027, 5:30 AM EST" — so a customer never misreads the day.
+ */
+export const trialDateLabel = (d: Date, timeZone: string = "UTC") =>
+  d.toLocaleString("en-US", { timeZone: isValidTimeZone(timeZone) ? timeZone : "UTC", month: "short", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit", timeZoneName: "short" });
+
+/**
+ * An Organization has no timezone of its own: its display timezone is that of its
+ * first active Group (else its first Group), else UTC. Display only — never used
+ * to decide when a trial ends.
+ */
+export async function organizationTimeZone(organizationId: string, db: Prisma.TransactionClient | typeof prisma = prisma): Promise<string> {
+  const g = await db.group.findFirst({ where: { organizationId }, orderBy: [{ isActive: "desc" }, { createdAt: "asc" }], select: { timezone: true } });
+  return g && isValidTimeZone(g.timezone) ? g.timezone : "UTC";
 }
 
 type Db = Prisma.TransactionClient | typeof prisma;
@@ -221,7 +258,24 @@ export function ownershipLimitMessage(a: OwnershipAllowance): string | null {
 export const ownershipCountLabel = (a: OwnershipAllowance) => `Organizations owned: ${a.owned} of ${a.allowed}`;
 
 /** Shown before creating a second Organization: plans and billing never carry over. */
-export const SECOND_ORGANIZATION_NOTE = "A new organization starts on the Free plan, with its own separate billing. Pro on another organization doesn't carry over.";
+export const SECOND_ORGANIZATION_NOTE = "A new organization starts on the Free plan, with its own separate billing. The 90-day Pro trial is once per account, and Pro on another organization doesn't carry over.";
+
+/**
+ * M11.3 — THE trial eligibility policy (one place for the wording): one standard
+ * 90-day Pro trial per customer account, claimed by the account's first
+ * Organization at creation (verified email required). Additional Organizations
+ * never get another trial.
+ */
+export const TRIAL_POLICY_NOTE = `Your first organization includes the ${TRIAL_DAYS}-day Pro trial — one trial per account, no card required. Nothing is charged when it ends; the organization moves to Free.`;
+
+/** Whether this User's next Organization would get the trial (display only; workspaces.ts enforces it atomically). */
+export async function trialAvailableFor(userId: string, db: Db = prisma): Promise<boolean> {
+  const [user, owned] = await Promise.all([
+    db.user.findUnique({ where: { id: userId }, select: { trialUsedAt: true, emailVerifiedAt: true } }),
+    db.organizationMembership.count({ where: { userId, role: "OWNER" } }),
+  ]);
+  return Boolean(user && !user.trialUsedAt && user.emailVerifiedAt && owned === 0);
+}
 
 /** The Organization-creation ownership limit (HTTP 409, code OWNERSHIP_LIMIT). */
 export class OwnershipLimitError extends Error {
@@ -239,12 +293,69 @@ export function ownershipLimitResponse(e: OwnershipLimitError): NextResponse {
   return NextResponse.json({ error: e.message, code: "OWNERSHIP_LIMIT", owned: e.owned, allowed: e.allowed }, { status: 409 });
 }
 
-/** Telegram premium actions (connect a Telegram group, post polls / teams / post-game messages). */
-export async function assertTelegram(organizationId: string, now: Date = new Date()): Promise<void> {
-  const { plan, limits } = await organizationPlan(organizationId, now);
-  if (!limits.telegram) {
-    throw new EntitlementError("telegram", null, limitReachedMessage(plan, "Telegram integration is part of Pro; players use the match link"));
+/** Optional support contact (SUPPORT_EMAIL) for "coming soon" texts; null when not configured or malformed. */
+export function supportEmail(env: Env = process.env): string | null {
+  const v = env.SUPPORT_EMAIL?.trim() ?? "";
+  return /^[^\s@<>"]+@[^\s@<>"]+\.[^\s@<>"]+$/.test(v) ? v : null;
+}
+
+/** What a Free Organization can do about Pro right now: the Billing page once billing is on, else "coming soon" (+ contact). */
+export function upgradeHint(env: Env = process.env): string {
+  if (billingConfig().enabled) return FREE_LIMIT_UPGRADE;
+  const contact = supportEmail(env);
+  return contact ? `${FREE_LIMIT_COMING_SOON} Questions? Contact ${contact}.` : FREE_LIMIT_COMING_SOON;
+}
+
+/**
+ * M11.3 — why Telegram is unavailable, in words an organizer understands (never a generic error).
+ * After the trial: when it ended, that nothing was deleted, and what still works.
+ */
+export function telegramNotInPlanMessage(org: { plan: OrganizationPlan; trialEndsAt: Date | null }, now: Date = new Date(), env: Env = process.env, timeZone: string = "UTC"): string {
+  const trial = trialStatus(org, now);
+  const why =
+    trial.phase === "expired" && trial.endsAt
+      ? `This organization's Pro trial ended on ${trialDateLabel(trial.endsAt, timeZone)}, so it is now on the Free plan. Players can still answer through the match link, and existing polls, messages and connected Telegram groups are kept.`
+      : "This organization is on the Free plan; players can answer through the match link.";
+  return `Telegram integration is part of Pro. ${why} ${upgradeHint(env)}`;
+}
+
+/** Telegram premium actions (connect a Telegram group, post or close polls, post teams / post-game messages, Game Day Updates). */
+export async function assertTelegram(organizationId: string, now: Date = new Date(), db: Db = prisma): Promise<void> {
+  const org = await db.organization.findUniqueOrThrow({ where: { id: organizationId }, select: { plan: true, trialEndsAt: true } });
+  if (!PLAN_LIMITS[effectivePlan(org, now)].telegram) {
+    throw new EntitlementError("telegram", null, telegramNotInPlanMessage(org, now, process.env, await organizationTimeZone(organizationId, db)));
   }
+}
+
+/**
+ * M11.3 — since when the Organization has had Telegram WITHOUT a break, as far as
+ * the audit trail (EntitlementEvent) proves. Automation only: a Pro-only AUTOMATIC
+ * Telegram send whose due time fell before this instant was due while the
+ * Organization was not entitled — it is skipped, never sent late after an upgrade.
+ * Manual organizer actions are not restricted by it.
+ *   null → no restriction (LEGACY, or entitled with no recorded grant / start).
+ *   Trial → the start of the trial; after an operator "trial" action, that action
+ *           (continuity before it can't be proven → conservative).
+ *   PRO / COMP → the latest grant (Stripe Pro started / complimentary granted),
+ *           unless it happened while the trial was still running (continuous since
+ *           the trial start).
+ * Not entitled now → null (nothing automatic is sent anyway).
+ */
+export const GRANT_ACTIONS = ["STRIPE_PRO_STARTED", "GRANT_COMP"] as const;
+const CONVERSION_TOLERANCE_MS = 60_000; // the trial end and the grant event are written in one transaction
+
+export async function telegramEntitledSince(organizationId: string, now: Date = new Date(), db: Db = prisma): Promise<Date | null> {
+  const org = await db.organization.findUniqueOrThrow({ where: { id: organizationId }, select: { plan: true, trialStartedAt: true, trialEndsAt: true } });
+  const plan = effectivePlan(org, now);
+  if (!PLAN_LIMITS[plan].telegram || plan === "LEGACY") return null;
+  const latest = (actions: readonly string[]) =>
+    db.entitlementEvent.findFirst({ where: { organizationId, action: { in: [...actions] }, createdAt: { lte: now } }, orderBy: { createdAt: "desc" }, select: { createdAt: true } });
+  if (plan === "TRIAL") return (await latest(["TRIAL"]))?.createdAt ?? org.trialStartedAt ?? null;
+  const grant = await latest(GRANT_ACTIONS);
+  if (!grant) return null;
+  const at = grant.createdAt.getTime();
+  const duringTrial = org.trialEndsAt !== null && org.trialEndsAt.getTime() >= at - CONVERSION_TOLERANCE_MS && (!org.trialStartedAt || org.trialStartedAt.getTime() <= at);
+  return duringTrial ? (org.trialStartedAt ?? null) : grant.createdAt;
 }
 
 /** Route helper: null when allowed, else the 402 response. */
@@ -317,9 +428,18 @@ export async function monthlyMatchAllowance(organizationId: string, now: Date = 
 export async function planSummary(organizationId: string, now: Date = new Date()) {
   const { plan, limits, trialEndsAt } = await organizationPlan(organizationId, now);
   const [usage, aiUsed] = await Promise.all([capacityUsage(organizationId, now), aiCreditsUsed(organizationId, now)]);
+  const trial = trialStatus({ plan: plan === "TRIAL" || plan === "FREE" ? "FREE" : plan, trialEndsAt }, now);
+  const timeZone = trial.endsAt ? await organizationTimeZone(organizationId) : "UTC";
   return {
+    // M11.3 — display labels in the organization's timezone (the instants stay UTC).
+    trialEndsLabel: trial.endsAt ? trialDateLabel(trial.endsAt, timeZone) : null,
     plan,
     label: PLAN_LABEL[plan],
+    // M11.3 — "active" | "ending" | "expired" | "none"; the end date also after expiry (Free plan explanation).
+    trialPhase: trial.phase,
+    trialEndedAt: trial.phase === "expired" && trialEndsAt ? trialEndsAt.toISOString() : null,
+    billingEnabled: billingConfig().enabled,
+    upgradeHint: plan === "FREE" || plan === "TRIAL" ? upgradeHint() : null,
     trialEndsAt: plan === "TRIAL" && trialEndsAt ? trialEndsAt.toISOString() : null,
     trialDaysLeft: plan === "TRIAL" ? trialDaysLeft(trialEndsAt, now) : null,
     telegram: limits.telegram,

@@ -46,6 +46,12 @@ export type GameDayFacts = {
   poll: { postedAt: Date; chatConnected: boolean; chatMatchesMatch: boolean } | null;
   /** The latest Game Day Update delivery of this match (any destination). */
   delivery: GameDayDelivery | null;
+  /**
+   * M11.3 — automatic sends only: Telegram has been available without a break since
+   * this instant (telegramEntitledSince). A due time before it fell while the
+   * organization was on Free → never sent late. null/undefined = no restriction.
+   */
+  entitledSince?: Date | null;
 };
 
 export type GameDayBlock =
@@ -62,7 +68,8 @@ export type GameDayBlock =
   | "CHAT_DISCONNECTED"
   | "CHAT_MISMATCH"
   | "POLL_MESSAGE_MISSING"
-  | "TOO_CLOSE";
+  | "TOO_CLOSE"
+  | "MISSED_WHILE_FREE";
 
 export type GameDayDecision =
   | { kind: "send"; dueAt: Date; retry: boolean }
@@ -87,6 +94,7 @@ export function gameDayUpdateDecision(f: GameDayFacts, now: Date): GameDayDecisi
   const dueAt = new Date(Math.max(deadline - f.hoursBefore * 3600_000, f.poll.postedAt.getTime() + POLL_SETTLE_MS));
   const latest = deadline - MIN_LEFT_MS;
   if (dueAt.getTime() > latest) return { kind: "blocked", reason: "TOO_CLOSE", at: dueAt };
+  if (f.entitledSince && dueAt.getTime() < f.entitledSince.getTime()) return { kind: "blocked", reason: "MISSED_WHILE_FREE", at: dueAt };
   if (now.getTime() < dueAt.getTime()) return { kind: "wait", dueAt };
   if (now.getTime() > latest) return { kind: "blocked", reason: "TOO_CLOSE", at: dueAt };
   return { kind: "send", dueAt, retry: d?.status === "FAILED" };
@@ -139,6 +147,7 @@ export const GAME_DAY_STATUS_TEXT: Record<GameDayBlock | "WAIT" | "DUE" | "RETRY
   CHAT_MISMATCH: "Not sent: the attendance poll is in a different Telegram group than this match's selected group",
   POLL_MESSAGE_MISSING: "Not sent: the attendance poll message is no longer in the Telegram group",
   TOO_CLOSE: "Not sent: too close to the deadline",
+  MISSED_WHILE_FREE: "Not sent: it was due while the organization was on the Free plan",
   WAIT: "Scheduled",
   DUE: "Due — sent on the next automation run",
   RETRY: "Last attempt failed — retried on the next automation run",

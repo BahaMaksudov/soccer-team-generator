@@ -3,6 +3,7 @@ import { prisma } from "@/lib/prisma";
 import { callTelegram, TelegramAmbiguousError, TelegramApiRejectionError } from "@/lib/telegramApi";
 import { contentHashOf, STALE_SENDING_MS } from "@/lib/messaging/deliveryState";
 import { resolvePollDisplayDate } from "@/lib/telegramFormat";
+import { organizationPlan } from "@/lib/entitlements";
 
 /**
  * Telegram publishing — closing ONE attendance poll, and the one-time
@@ -82,7 +83,13 @@ export async function pollClosedNoticeState(groupId: string, pollId: string, now
   return { state: stateOf(row, now), deliveryId: row?.id ?? null };
 }
 
-export type NoticeResult = "sent" | "failed" | "uncertain" | "exists";
+export type NoticeResult = "sent" | "failed" | "uncertain" | "exists" | "not_in_plan";
+
+/** M11.3 — whether the Group's Organization may send Telegram messages right now (effective plan, real clock). */
+export async function groupTelegramAllowed(groupId: string, now: Date = new Date()): Promise<boolean> {
+  const group = await prisma.group.findUnique({ where: { id: groupId }, select: { organizationId: true } });
+  return group ? (await organizationPlan(group.organizationId, now)).limits.telegram : false;
+}
 
 /**
  * Send the notice for this poll — once. `retryFailed` (explicit organizer
@@ -92,6 +99,9 @@ export async function sendPollClosedNotice(
   p: { groupId: string; matchId: string | null; poll: { pollId: string; chatId: bigint }; displayDate: string; userId: string | null },
   opts: { retryFailed?: boolean } = {}
 ): Promise<NoticeResult> {
+  // M11.3 — the notice is a NEW Telegram message: Pro only. On Free a poll can still be
+  // closed (stopPoll), but nothing is announced and no delivery record is created.
+  if (!(await groupTelegramAllowed(p.groupId))) return "not_in_plan";
   const text = pollClosedNoticeText(p.displayDate);
   const reserved = await prisma.$transaction(async (tx) => {
     await lockPoll(tx, p.poll.pollId);

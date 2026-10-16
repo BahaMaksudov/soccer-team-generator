@@ -92,6 +92,7 @@ describe("usage wording", () => {
       createElement(PlanUsageCard, {
         summary: {
           plan: "TRIAL", label: "Pro trial", trialEndsAt: "2027-01-07T00:00:00.000Z", trialDaysLeft: 90, telegram: true, resetsAt: "2026-11-01T00:00:00.000Z",
+          trialPhase: "active", trialEndedAt: null, trialEndsLabel: "Jan 6, 2027, 7:00 PM EST", billingEnabled: false, upgradeHint: "Pro plans and upgrades are coming soon.",
           usage: { activeGroups: usage(1, 3), activePlayers: usage(31, 150), monthlyMatches: usage(4, null), activeSchedules: usage(1, null), monthlyAiRecaps: usage(3, 30) },
         },
       })
@@ -100,7 +101,9 @@ describe("usage wording", () => {
     expect(html).toContain("90 days left");
     expect(html).toContain("31 of 150");
     expect(html).toContain("4 · no limit");
-    expect(html).not.toMatch(/Upgrade|Manage billing|button/i);
+    // M11.3 — billing off: the honest "coming soon" hint, never an upgrade action.
+    expect(html).not.toMatch(/Upgrade to Pro|Manage billing|button|href/i);
+    expect(html).toContain("Pro plans and upgrades are coming soon.");
   });
 });
 

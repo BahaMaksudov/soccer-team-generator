@@ -71,12 +71,15 @@ describe("GitHub Actions scheduler workflow", () => {
   });
 });
 
+const TRIAL_OFF = { mode: "off", organizations: 0, expiredRecorded: 0, emailsSent: 0, emailsFailed: 0, emailsUncertain: 0, alreadyHandled: 0, wouldSend: 0, errorCount: 0 };
+
 describe("cron endpoint", () => {
   const SECRET = "fake-secret-for-unit-tests-0123456789";
   const req = (auth?: string) => new Request("https://example.test/api/cron/automation", { method: "POST", headers: auth ? { authorization: auth } : {} });
   const logs: string[] = [];
   beforeEach(() => {
     runMatchAutomation.mockReset();
+    vi.stubEnv("TRIAL_LIFECYCLE", ""); // M11.3 — default OFF, whatever the local environment says
     logs.length = 0;
     for (const k of ["log", "info", "warn", "error"] as const) vi.spyOn(console, k).mockImplementation((...a: unknown[]) => void logs.push(a.map(String).join(" ")));
   });
@@ -111,7 +114,8 @@ describe("cron endpoint", () => {
     const res = await POST(req(`Bearer ${SECRET}`));
     const body = await res.json();
     expect(res.status).toBe(200);
-    expect(body).toEqual({ ok: true, schedules: 1, created: 1, pollsPosted: 1, cutoffs: 0, notified: 0, errorCount: 0 });
+    // M11.3 — the trial lifecycle reports its counts too (OFF by default: TRIAL_LIFECYCLE unset → nothing runs).
+    expect(body).toEqual({ ok: true, schedules: 1, created: 1, pollsPosted: 1, cutoffs: 0, notified: 0, errorCount: 0, trial: TRIAL_OFF });
     expect(runMatchAutomation).toHaveBeenCalledTimes(1);
     expect(JSON.stringify(body) + logs.join("\n")).not.toContain(SECRET);
   });
@@ -133,6 +137,6 @@ describe("cron endpoint", () => {
     runMatchAutomation.mockRejectedValue(new Error("database unreachable"));
     const res = await POST(req(`Bearer ${SECRET}`));
     expect(res.status).toBe(500);
-    expect(await res.json()).toEqual({ ok: false, error: "Automation run failed." });
+    expect(await res.json()).toEqual({ ok: false, error: "Automation run failed.", trial: TRIAL_OFF });
   });
 });

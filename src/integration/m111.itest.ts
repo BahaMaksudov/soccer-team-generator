@@ -337,7 +337,9 @@ describe("M11.1 — Telegram is a Pro capability", () => {
     const chat = await prisma.telegramChat.create({ data: { chatId: -1001n, title: "Old chat", groupId: "free-g", communityId: "free-c" } });
     expect(await call(channelsRoute.POST(json("POST", {}), g("free")))).toMatchObject({
       status: 402,
-      body: { code: "PLAN_LIMIT", metric: "telegram", error: "Your Free plan limit has been reached (Telegram integration is part of Pro; players use the match link). Pro plans and upgrades are coming soon." },
+      body: { code: "PLAN_LIMIT", metric: "telegram", error:
+          // M11.3 — says WHY (the trial ended, in the organization’s timezone: 2026-01-01T00:00Z in New York), what is kept, and what’s next.
+          "Telegram integration is part of Pro. This organization's Pro trial ended on Dec 31, 2025, 7:00 PM EST, so it is now on the Free plan. Players can still answer through the match link, and existing polls, messages and connected Telegram groups are kept. Pro plans and upgrades are coming soon." },
     });
     expect((await call(pollRoute.POST(json("POST", { chatRef: chat.id, intent: "post" }), gm("free", m.id)))).status).toBe(402);
     expect(tgCalls).toEqual([]);

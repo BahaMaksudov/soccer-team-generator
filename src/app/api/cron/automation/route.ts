@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { authorizeCron } from "@/lib/cronAuth";
 import { runMatchAutomation } from "@/lib/matchAutomation";
+import { runTrialLifecycle } from "@/lib/trialLifecycle";
 
 /**
  * M9.2 — scheduled Match Automation entry point. The production clock is a
@@ -14,6 +15,11 @@ import { runMatchAutomation } from "@/lib/matchAutomation";
  * trigger fails visibly. The body holds counts only (it is printed in the
  * workflow log): no player data, no ids, no error text — details go to the
  * server log. The secret is never logged or returned.
+ *
+ * M11.3 — the same clock also runs the trial lifecycle (reminder / expiry
+ * emails, TRIAL_EXPIRED audit). It is OFF unless TRIAL_LIFECYCLE is "audit" or
+ * "send", is independent of match automation (one failing never skips the
+ * other) and never decides plan access (that is evaluated on every request).
  */
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
@@ -22,12 +28,27 @@ export async function POST(req: Request) {
   const auth = authorizeCron(req);
   if (auth === "not_configured") return NextResponse.json({ ok: false, error: "Automation is not configured." }, { status: 503 });
   if (auth === "unauthorized") return NextResponse.json({ ok: false, error: "Unauthorized" }, { status: 401 });
+  const now = new Date();
+  const trial = await trialLifecycleCounts(now);
   try {
-    const { errors, ...counts } = await runMatchAutomation(new Date());
+    const { errors, ...counts } = await runMatchAutomation(now);
     if (errors.length > 0) console.error(`[automation] run finished with ${errors.length} error(s): ${JSON.stringify(errors)}`);
-    return NextResponse.json({ ok: errors.length === 0, ...counts, errorCount: errors.length }, { status: errors.length === 0 ? 200 : 500 });
+    const ok = errors.length === 0 && trial.ok;
+    return NextResponse.json({ ok, ...counts, errorCount: errors.length, trial: trial.counts }, { status: ok ? 200 : 500 });
   } catch (e) {
     console.error(`[automation] run failed: ${e instanceof Error ? e.message : "error"}`);
-    return NextResponse.json({ ok: false, error: "Automation run failed." }, { status: 500 });
+    return NextResponse.json({ ok: false, error: "Automation run failed.", trial: trial.counts }, { status: 500 });
+  }
+}
+
+/** Counts only (printed in the workflow log); details go to the server log. */
+async function trialLifecycleCounts(now: Date) {
+  try {
+    const { errors, ...counts } = await runTrialLifecycle(now);
+    if (errors.length > 0) console.error(`[trial] run finished with ${errors.length} error(s): ${JSON.stringify(errors)}`);
+    return { ok: errors.length === 0, counts: { ...counts, errorCount: errors.length } };
+  } catch (e) {
+    console.error(`[trial] run failed: ${e instanceof Error ? e.message : "error"}`);
+    return { ok: false, counts: { failed: true } };
   }
 }

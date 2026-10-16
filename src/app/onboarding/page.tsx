@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
 import { listAccessibleTenants, requireSessionUser, TenantContextError } from "@/lib/tenantContext";
-import { ownershipAllowance, ownershipCountLabel, ownershipLimitMessage, SECOND_ORGANIZATION_NOTE, type OwnershipAllowance } from "@/lib/entitlements";
+import { ownershipAllowance, ownershipCountLabel, ownershipLimitMessage, SECOND_ORGANIZATION_NOTE, TRIAL_POLICY_NOTE, trialAvailableFor, type OwnershipAllowance } from "@/lib/entitlements";
 import { DEFAULT_TIMEZONE, SUPPORTED_SPORTS } from "@/lib/workspaces";
 import OnboardingClient from "./OnboardingClient";
 
@@ -14,10 +14,13 @@ import OnboardingClient from "./OnboardingClient";
 export default async function OnboardingPage() {
   let organizationCount: number;
   let allowance: OwnershipAllowance;
+  let trialAvailable: boolean;
   try {
     organizationCount = (await listAccessibleTenants()).length;
     // Phase 1 — display only; POST /api/admin/organizations enforces the allowance.
-    allowance = await ownershipAllowance((await requireSessionUser()).id);
+    const user = await requireSessionUser();
+    allowance = await ownershipAllowance(user.id);
+    trialAvailable = await trialAvailableFor(user.id); // M11.3 — display only
   } catch (e) {
     if (e instanceof TenantContextError) {
       // Organization creation requires a verified email (central rule in tenantContext).
@@ -35,6 +38,7 @@ export default async function OnboardingPage() {
         <h1 className="mt-1 text-3xl font-extrabold">{organizationCount === 0 ? "Create your organization" : "Create another organization"}</h1>
         <p className="mt-1 text-sm text-muted-foreground">An organization holds your groups. Each group has its own players, teams and settings.</p>
       </header>
+      {trialAvailable && <p className="text-sm text-muted-foreground">{TRIAL_POLICY_NOTE}</p>}
       {allowance.owned > 0 && (
         <p className="text-sm">
           <span className="font-semibold">{ownershipCountLabel(allowance)}.</span>{" "}

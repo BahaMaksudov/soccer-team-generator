@@ -21,7 +21,9 @@ import * as playersRoute from "@/app/api/admin/o/[organizationSlug]/g/[groupSlug
 import { setBillingStripeForTests, generateTestSignature } from "@/lib/billing/stripe";
 import { confirmCheckoutReturn } from "@/lib/billing/checkout";
 import { reconcileBilling, syncSubscription } from "@/lib/billing/sync";
-import { planSummary } from "@/lib/entitlements";
+import { assertTelegram, planSummary } from "@/lib/entitlements";
+import { runTrialLifecycle } from "@/lib/trialLifecycle";
+import { testOutbox } from "@/lib/email/transport";
 import { requireOrganizationContextForSlug } from "@/lib/tenantContext";
 import { createOrganizationWorkspace } from "@/lib/workspaces";
 import { createFakeStripe, type FakeStripe } from "./fakeStripe";
@@ -475,5 +477,35 @@ describe("M11.2A — Customer Portal and reconciliation", () => {
     expect((await call(reconcileRoute.POST(req("Bearer wrong-secret-value-xx")))).status).toBe(401);
     expect(await call(reconcileRoute.POST(req("Bearer billing-reconcile-test-secret")))).toMatchObject({ status: 200, body: { ok: true } });
     expect(otherNetwork).toBe(0);
+  });
+});
+
+// ============================================================ M11.3
+describe("M11.3 — after the trial ends, only a VERIFIED Stripe subscription restores Telegram", () => {
+  it("expired trial → Telegram denied; checkout alone or an unpaid status → still denied; active subscription (webhook-verified) → Pro + Telegram; cancel → Free again; no trial emails to a subscriber", async () => {
+    await prisma.organization.update({ where: { id: "free" }, data: { trialStartedAt: new Date(Date.now() - 91 * DAY), trialEndsAt: new Date(Date.now() - DAY) } });
+    await expect(assertTelegram("free")).rejects.toThrow(/Pro trial ended on/);
+
+    const { sub } = await subscribe("free", "month", "incomplete");
+    await expect(assertTelegram("free")).rejects.toThrow(/Telegram integration is part of Pro/); // the return from Checkout grants nothing
+    await webhook("customer.subscription.created", { id: sub.id });
+    await expect(assertTelegram("free")).rejects.toThrow(/Telegram integration is part of Pro/); // incomplete = not paid
+
+    stripe.updateSubscription(sub.id, { status: "active" });
+    await webhook("customer.subscription.updated", { id: sub.id });
+    expect(await plan("free")).toBe("PRO");
+    await expect(assertTelegram("free")).resolves.toBeUndefined();
+
+    // A subscriber never gets "your trial ended" email, even inside the expiry-email window.
+    testOutbox.clear();
+    const run = await runTrialLifecycle(new Date(), { mode: "send" });
+    expect(run.emailsSent).toBe(0);
+    expect(testOutbox.sent).toEqual([]);
+
+    stripe.updateSubscription(sub.id, { status: "canceled" });
+    await webhook("customer.subscription.deleted", { id: sub.id });
+    expect(await plan("free")).toBe("FREE");
+    await expect(assertTelegram("free")).rejects.toThrow(/Telegram integration is part of Pro/);
+    expect((await runTrialLifecycle(new Date(), { mode: "send" })).emailsSent).toBe(0); // converted once → never a trial email again
   });
 });

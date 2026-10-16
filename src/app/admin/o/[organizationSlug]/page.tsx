@@ -100,7 +100,7 @@ export default async function OrganizationPage({ params }: { params: Params }) {
 
       {plan && (
         <div className="space-y-2">
-          <PlanUsageCard summary={plan} />
+          <PlanUsageCard summary={plan} upgradeHref={isOwner ? `${base}/billing` : null} />
           {/* M11.2A — Billing (OWNER manages; ADMIN read-only). */}
           <Link href={`${base}/billing`} className={cn("inline-flex min-h-11 items-center gap-1 text-sm font-semibold text-primary hover:underline", focusRing)}>
             Billing <ArrowRight className="size-4" aria-hidden="true" />

@@ -1,7 +1,7 @@
 import type { Prisma } from "@prisma/client";
 import type { AttendanceCounts } from "@/lib/attendance";
 import { prisma } from "@/lib/prisma";
-import { organizationPlan } from "@/lib/entitlements";
+import { organizationPlan, telegramEntitledSince } from "@/lib/entitlements";
 import { readGameDayUpdateSettings } from "@/lib/gameDayUpdateSettings";
 import { contentHashOf, STALE_SENDING_MS } from "@/lib/messaging/deliveryState";
 import { callTelegram, TelegramApiRejectionError } from "@/lib/telegramApi";
@@ -69,11 +69,13 @@ async function loadFacts(groupId: string, organizationId: string, matchId: strin
     },
   });
   if (!m) return null;
-  const [settings, { limits }, poll, delivery] = await Promise.all([
+  const [settings, { limits }, entitledSince, poll, delivery] = await Promise.all([
     // Every read here uses `db` — inside the Game Day lock that is the transaction's own
     // connection, never a second one from the pool (pool-starvation deadlock otherwise).
     readGameDayUpdateSettings(groupId, db),
     organizationPlan(organizationId, now, db),
+    // M11.3 — automatic sends only: a due time before this fell while the org was on Free.
+    telegramEntitledSince(organizationId, now, db),
     // Deterministic destination: the most recently posted OPEN attendance poll of THIS match.
     db.telegramPoll.findFirst({
       where: { matchId, groupId, kind: "ATTENDANCE", isClosed: false, messageId: { not: null } },
@@ -99,6 +101,7 @@ async function loadFacts(groupId: string, organizationId: string, matchId: strin
     schedule: m.scheduleId === null ? "none" : m.schedule?.isActive && !planPaused ? "active" : "paused",
     poll: poll ? { postedAt: poll.createdAt, chatConnected, chatMatchesMatch } : null,
     delivery,
+    entitledSince,
   };
   return { m, settings, poll, delivery, facts, chatTitle: pollChat?.title ?? null };
 }
@@ -289,6 +292,7 @@ export const MANUAL_REASON_TEXT: Record<GameDayBlock, string> = {
   CHAT_MISMATCH: "The open attendance poll is in a different Telegram group than this match's selected group. Nothing is sent to a different group — select the right group or post the poll there.",
   POLL_MESSAGE_MISSING: "The attendance poll message is no longer in the Telegram group, so the update can't be sent as a reply to it.",
   TOO_CLOSE: "Less than 30 minutes remain before attendance closes.",
+  MISSED_WHILE_FREE: "The automatic update was due while this organization was on the Free plan.", // never applies to the manual action
 };
 
 const stateOfBlock = (reason: GameDayBlock): ManualState =>

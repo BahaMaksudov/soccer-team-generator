@@ -128,6 +128,10 @@ export async function postAttendancePollFor(
 ): Promise<NextResponse> {
   const denied = managersOnlyResponse(context);
   if (denied) return denied;
+  // M11.3 — enforced HERE too (the real clock, right before sending): the automation runner
+  // calls this core directly, so a plan that ended after its run-start check still can't post.
+  const notInPlan = await telegramDenied(context.organization.id);
+  if (notInPlan) return notInPlan;
   const groupId = context.activeGroup.id;
 
   const match = await findGroupMatch(context, matchId);
