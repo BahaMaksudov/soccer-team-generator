@@ -28,18 +28,18 @@ function Cell({ v }: { v: string | boolean }) {
 export default function PlanComparison({ className }: { className?: string }) {
   return (
     <div className={cn("overflow-x-auto rounded-tbp-2xl border border-border bg-card shadow-card", className)}>
-      <table className="w-full min-w-[320px] text-sm">
+      <table className="w-full min-w-[17.5rem] text-sm">
         <caption className="sr-only">Free and Pro plans compared</caption>
         <thead>
           <tr className="border-b border-border">
-            <th scope="col" className="p-3 text-left font-semibold text-muted-foreground">
+            <th scope="col" className="p-2 sm:p-3 text-left font-semibold text-muted-foreground">
               Feature
             </th>
-            <th scope="col" className="p-3 text-center">
+            <th scope="col" className="p-2 sm:p-3 text-center">
               <span className="block font-display text-base font-extrabold">Free</span>
               <span className="text-xs font-normal text-muted-foreground">$0 forever</span>
             </th>
-            <th scope="col" className="p-3 text-center">
+            <th scope="col" className="p-2 sm:p-3 text-center">
               <span className="block font-display text-base font-extrabold text-primary">Pro</span>
               <span className="text-xs font-normal text-muted-foreground">
                 {PRO_PRICES_USD.month}/month or {PRO_PRICES_USD.year}/year
@@ -50,13 +50,13 @@ export default function PlanComparison({ className }: { className?: string }) {
         <tbody>
           {ROWS.map((r) => (
             <tr key={r.label} className="border-b border-border/60 last:border-0">
-              <th scope="row" className="p-3 text-left font-medium">
+              <th scope="row" className="p-2 sm:p-3 text-left font-medium">
                 {r.label}
               </th>
-              <td className="p-3 text-center">
+              <td className="p-2 sm:p-3 text-center">
                 <Cell v={r.free} />
               </td>
-              <td className="p-3 text-center">
+              <td className="p-2 sm:p-3 text-center">
                 <Cell v={r.pro} />
               </td>
             </tr>

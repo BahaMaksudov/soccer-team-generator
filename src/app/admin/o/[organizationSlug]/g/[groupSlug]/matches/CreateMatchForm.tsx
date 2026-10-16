@@ -159,16 +159,16 @@ export default function CreateMatchForm({
           <p className="mt-1 text-xs text-muted-foreground">Attendance, teams and Player of the Match use this community&apos;s players.</p>
         </div>
       )}
-      <div className="grid gap-3 sm:grid-cols-3">
-        <div>
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+        <div className="min-w-0">
           <label htmlFor={`${id}-date`} className="mb-1 block text-sm font-semibold">Date</label>
-          <input id={`${id}-date`} type="date" required className={input} value={form.date} onChange={(e) => setForm({ ...form, date: e.target.value })} />
+          <input id={`${id}-date`} type="date" required className={`${input} date-input`} value={form.date} onChange={(e) => setForm({ ...form, date: e.target.value })} />
         </div>
-        <div>
+        <div className="min-w-0">
           <label htmlFor={`${id}-time`} className="mb-1 block text-sm font-semibold">Start time <span className="font-normal text-muted-foreground">(optional)</span></label>
-          <input id={`${id}-time`} type="time" className={input} value={form.startTime} onChange={(e) => setForm({ ...form, startTime: e.target.value })} />
+          <input id={`${id}-time`} type="time" className={`${input} date-input`} value={form.startTime} onChange={(e) => setForm({ ...form, startTime: e.target.value })} />
         </div>
-        <div>
+        <div className="min-w-0">
           <label htmlFor={`${id}-venue`} className="mb-1 block text-sm font-semibold">Venue / ground <span className="font-normal text-muted-foreground">(optional)</span></label>
           <select id={`${id}-venue`} className={input} value={venueId} onChange={(e) => setVenueId(e.target.value)}>
             <option value="">No venue</option>
@@ -185,7 +185,7 @@ export default function CreateMatchForm({
         </div>
       </div>
       {venueId === NEW && (
-        <div className="grid gap-3 sm:grid-cols-2">
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 [&>*]:min-w-0">
           <div>
             <label htmlFor={`${id}-vname`} className="mb-1 block text-sm font-semibold">Venue name</label>
             <input id={`${id}-vname`} required className={input} maxLength={80} placeholder="ForeKicks" value={newVenue.name} onChange={(e) => setNewVenue({ ...newVenue, name: e.target.value })} />
@@ -209,7 +209,7 @@ export default function CreateMatchForm({
         <input
           id={`${id}-deadline`}
           type="datetime-local"
-          className={`${input} sm:max-w-xs`}
+          className={`${input} date-input sm:max-w-xs`}
           value={form.attendanceDeadline}
           aria-describedby={`${id}-deadline-hint`}
           onChange={(e) => setForm({ ...form, attendanceDeadline: e.target.value })}

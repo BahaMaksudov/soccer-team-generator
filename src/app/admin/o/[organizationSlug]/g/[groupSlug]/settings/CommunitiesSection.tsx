@@ -110,10 +110,10 @@ export default function CommunitiesSection({ organizationSlug, groupSlug, player
                   {t.title}
                   {t.connected ? "" : " (disconnected)"}
                 </span>
-                <label className="text-xs">
+                <label className="min-w-0 max-w-full text-xs">
                   <span className="sr-only">Community of {t.title}</span>
                   <select
-                    className="h-9 rounded-md border px-2 text-sm"
+                    className="h-9 w-full min-w-0 max-w-full rounded-md border px-2 text-sm sm:w-auto"
                     value={t.communityId}
                     disabled={busy}
                     onChange={(e) => send(`/channels/telegram/${t.ref}/community`, "PUT", { communityId: e.target.value }, "Telegram group moved to the community.")}

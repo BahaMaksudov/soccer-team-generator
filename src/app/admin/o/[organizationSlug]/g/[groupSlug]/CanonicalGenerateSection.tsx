@@ -271,7 +271,7 @@ export default function CanonicalGenerateSection({
             <input
               id="generate-date"
               type="date"
-              className="h-10 rounded-tbp-sm border border-input bg-card px-2 text-sm"
+              className="date-input h-10 rounded-tbp-sm border border-input bg-card px-2 text-sm"
               value={date}
               onChange={(e) => onDateChange(e.target.value)}
             />
@@ -386,7 +386,7 @@ export default function CanonicalGenerateSection({
             <label className="block text-xs">Date</label>
             <input
               type="date"
-              className="border rounded px-2 py-1 text-sm"
+              className="date-input border rounded px-2 py-1 text-sm"
               value={deleteDate}
               onChange={(e) => {
                 setDeleteDate(e.target.value);

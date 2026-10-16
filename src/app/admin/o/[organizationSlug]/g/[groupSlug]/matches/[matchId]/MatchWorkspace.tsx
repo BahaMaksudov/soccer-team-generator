@@ -473,7 +473,7 @@ export default function MatchWorkspace({
         </div>
         {view.canManage && edit && (
           <form
-            className="mt-4 grid gap-3 border-t border-border pt-4 sm:grid-cols-2 lg:grid-cols-[repeat(4,minmax(0,1fr))_auto]"
+            className="mt-4 grid grid-cols-1 gap-3 border-t border-border pt-4 sm:grid-cols-2 lg:grid-cols-[repeat(4,minmax(0,1fr))_auto] [&>*]:min-w-0"
             onSubmit={(e) => {
               e.preventDefault();
               const { venueId, deadline, initialDeadline, date, ...rest } = edit;
@@ -497,14 +497,14 @@ export default function MatchWorkspace({
               Date
               <input
                 type="date"
-                className={cn(input, "mt-1 block w-full font-normal disabled:opacity-60")}
+                className={cn(input, "date-input mt-1 block w-full font-normal disabled:opacity-60")}
                 value={edit.date}
                 disabled={m.recurring}
                 aria-describedby={m.recurring ? "match-date-locked" : undefined}
                 onChange={(e) => setEdit({ ...edit, date: e.target.value })}
               />
             </label>
-            <label className="text-sm font-semibold">Start time<input type="time" className={cn(input, "mt-1 block w-full font-normal")} value={edit.startTime} onChange={(e) => setEdit({ ...edit, startTime: e.target.value })} /></label>
+            <label className="text-sm font-semibold">Start time<input type="time" className={cn(input, "date-input mt-1 block w-full font-normal")} value={edit.startTime} onChange={(e) => setEdit({ ...edit, startTime: e.target.value })} /></label>
             <label className="text-sm font-semibold">
               Venue
               <select
@@ -532,7 +532,7 @@ export default function MatchWorkspace({
                 <input
                   id="match-deadline"
                   type="datetime-local"
-                  className={cn(input, "w-full font-normal sm:w-64 disabled:opacity-60")}
+                  className={cn(input, "date-input w-full font-normal sm:w-64 disabled:opacity-60")}
                   value={edit.deadline}
                   disabled={m.attendanceClosed}
                   aria-describedby="match-deadline-hint"
@@ -601,7 +601,7 @@ export default function MatchWorkspace({
                       type="datetime-local"
                       aria-label="New attendance deadline"
                       required
-                      className="mt-2 h-11 w-full rounded-tbp-md border border-input bg-card px-3 text-base focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring sm:w-64 md:text-sm"
+                      className="date-input mt-2 h-11 w-full rounded-tbp-md border border-input bg-card px-3 text-base focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring sm:w-64 md:text-sm"
                       value={reopen.deadline}
                       onChange={(e) => setReopen({ ...reopen, deadline: e.target.value })}
                     />
@@ -688,7 +688,7 @@ export default function MatchWorkspace({
             <div role="note" className="mb-3 flex flex-wrap items-center gap-2 rounded-tbp-xl border border-accent/40 bg-accent/10 p-3 text-sm">
               <span className="min-w-0 flex-1 basis-56">This match has no community yet, so every player in the group is listed. Choose the community it belongs to:</span>
               <label className="sr-only" htmlFor="match-community">Community</label>
-              <select id="match-community" className="h-9 rounded-tbp-sm border border-input bg-card px-2" defaultValue="" disabled={busy} onChange={(e) => e.target.value && setCommunity(e.target.value)}>
+              <select id="match-community" className="h-9 w-full min-w-0 max-w-full rounded-tbp-sm border border-input bg-card px-2 sm:w-auto" defaultValue="" disabled={busy} onChange={(e) => e.target.value && setCommunity(e.target.value)}>
                 <option value="">Choose…</option>
                 {(view.communities ?? []).map((c) => (
                   <option key={c.id} value={c.id}>
@@ -750,10 +750,10 @@ export default function MatchWorkspace({
           {view.canManage &&
             (view.telegram.connected && chats.length > 0 ? (
               <>
-                <label className="flex items-center gap-2 font-semibold">
+                <label className="flex min-w-0 max-w-full flex-wrap items-center gap-2 font-semibold">
                   Telegram group
                   <select
-                    className="h-9 rounded-tbp-sm border border-input bg-card px-2 font-normal"
+                    className="h-9 w-full min-w-0 max-w-full rounded-tbp-sm border border-input bg-card px-2 font-normal sm:w-auto"
                     value={chatRef ?? ""}
                     disabled={busy}
                     onChange={(e) => call("/telegram-chat", { chatRef: e.target.value ? Number(e.target.value) : null }, "Telegram group saved for this match. Nothing was sent.")}

@@ -109,8 +109,8 @@ export default async function CanonicalAdminHome({ params }: { params: Params })
 
 function Stat({ label, value }: { label: string; value: number }) {
   return (
-    <div className="rounded-tbp bg-muted px-3 py-2">
-      <dt className="text-xs font-semibold text-muted-foreground">{label}</dt>
+    <div className="min-w-0 rounded-tbp bg-muted px-2 py-2 sm:px-3">
+      <dt className="break-words text-xs font-semibold text-muted-foreground">{label}</dt>
       <dd className="font-display text-2xl font-black tabular-nums">{value}</dd>
     </div>
   );

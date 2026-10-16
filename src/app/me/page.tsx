@@ -251,7 +251,7 @@ function RecentGame({ g }: { g: MyRecentGame }) {
               Player of the Match voting is open in your group&apos;s Telegram poll.
             </p>
           )}
-          {g.recap && <p className="whitespace-pre-line text-muted-foreground">{g.recap.text}</p>}
+          {g.recap && <p className="whitespace-pre-line break-words text-muted-foreground">{g.recap.text}</p>}
         </div>
       )}
       <Link href={g.matchHref} className={cn("mt-3 inline-flex text-sm font-semibold text-primary hover:underline", focusRing)}>
