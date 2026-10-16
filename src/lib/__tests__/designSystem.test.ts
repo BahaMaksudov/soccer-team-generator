@@ -157,6 +157,8 @@ describe("UI primitives are presentation-only", () => {
         "src/app/admin/o/[organizationSlug]/g/[groupSlug]/matches/[matchId]/ShareMatchCard.tsx",
         // M9.3 — the redesigned player Match page (Match Link).
         "src/components/match-link/MatchLinkPage.tsx",
+        // Telegram publishing — the shared player Match view (Match Link page + public Match page).
+        "src/components/match-link/MatchView.tsx",
         "src/components/game-day/MatchList.tsx",
         // M9.3 — organizer attendance buttons (effective status highlighted).
         "src/components/game-day/AttendanceStatusButtons.tsx",

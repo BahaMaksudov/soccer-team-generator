@@ -710,8 +710,10 @@ describe("published teams vs working preview (manual-smoke regression)", () => {
     expect(assignmentKey((await view(id)).generation.teams)).toBe(assignmentKey(b.teams));
     expect(sends("sendMessage").length).toBe(sendsAfterPostA);
     expect(await status()).toBe("updated_available"); // → "Post Updated Teams to Telegram"
-    expect(await prisma.messageDelivery.count()).toBe(deliveriesBefore + 1); // only the explicit post
-    expect(sendsAfterPostA - sendsBefore).toBe(1);
+    // Only the explicit post: its teams record + the one-time "Poll is closed" notice record (Publish closed nothing).
+    expect(await prisma.messageDelivery.count()).toBe(deliveriesBefore + 2);
+    expect(await prisma.messageDelivery.count({ where: { eventType: "POLL_CLOSED_NOTICE" } })).toBe(1);
+    expect(sendsAfterPostA - sendsBefore).toBe(2); // the notice + the teams message
   });
 });
 
@@ -1261,7 +1263,9 @@ describe("M9-C — Telegram 'View teams online' targets the exact Match", () => 
     await setVisibility("ga", "PRIVATE");
     await publishFor(id, teamsOf([["ga-p2"], ["ga-p1"]]));
     expect((await post({ intent: "post_updated", shareUrl: `${BASE}/share#${token}` })).status).toBe(200);
-    expect(lastText()).not.toMatch(/https?:\/\//);
+    // No player-facing URL (only the TeamBalance Pro website link in the footer).
+    expect(lastText()).not.toMatch(/\/share|\/g\/org-a|View teams online/);
+    expect(lastText().match(/https?:\/\/[^"]+/g)).toEqual([`${BASE}/`]);
     session = null;
     expect(await pageView(id)).toBeNull();
     expect((await shareView(token, id)).status).toBe(404);

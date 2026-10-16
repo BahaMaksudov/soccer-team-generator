@@ -27,6 +27,7 @@ import type { Player } from "../../CanonicalAdminWorkspace";
 import { computeSelection, NO_ADJUSTMENTS, reconcileAdjustments, toggleSelection, type EffectiveStatuses, type SelectionAdjustments } from "@/lib/matchSelection";
 import { runFeedback, type RunResult } from "@/lib/automationFeedback";
 import Dialog from "@/components/app/Dialog";
+import { closeAndPostFeedback, pollButtonView, type PollPostView } from "@/lib/telegramPublishingUi";
 import { formatDeadline, localKickoff, timeZoneAbbreviation, toLocalInput } from "@/lib/deadlineFormat";
 
 /**
@@ -104,6 +105,10 @@ type MatchView = {
     poll: { pollId: string | null; closed: boolean; postedAt: string } | null;
     unlinkedVoters: number;
     pollDelivery: { status: string; sentAt: string | null } | null;
+    /** Persisted poll-posting state of the SELECTED chat (+ other chats that already have this match's poll). */
+    pollPost?: PollPostView | null;
+    /** The match's current poll: closed?, teams posted to it?, and its one-time closure notice. */
+    closure?: { closed: boolean; teamsPosted: boolean; notice: { state: "none" | "sending" | "sent" | "failed" | "uncertain"; deliveryId: string | null } } | null;
   };
 };
 
@@ -147,6 +152,9 @@ export default function MatchWorkspace({
   const [reopen, setReopen] = useState<{ choice: "none" | "new"; deadline: string; error?: string } | null>(null);
   // Manual "Send Game Day Update now" (preview → explicit confirmation → send).
   const [gameDayOpen, setGameDayOpen] = useState(false);
+  // Posting to a SECOND Telegram group of this match needs an explicit confirmation (also enforced server-side).
+  const [secondChat, setSecondChat] = useState<{ existing: string[]; target: string } | null>(null);
+  const [noticeChecked, setNoticeChecked] = useState(false);
   // M9.2 — the Organization's Venues (loaded when the organizer edits the match).
   const [venues, setVenues] = useState<Array<{ id: string; name: string; address: string | null; isActive: boolean }>>([]);
   useEffect(() => {
@@ -264,8 +272,36 @@ export default function MatchWorkspace({
         body: JSON.stringify({ pollId: view.telegram.poll.pollId, teamGenerationId: published.id, intent, ...(deliveryId ? { deliveryId } : {}), ...(shareUrl.trim() ? { shareUrl: shareUrl.trim() } : {}) }),
       });
       const data = await res.json().catch(() => ({}));
-      setMessage(res.ok ? (data.status === "already_posted" ? "These teams were already posted — nothing was sent again." : "Teams posted to Telegram.") : data?.error ?? "Could not post the teams.");
+      setMessage(closeAndPostFeedback(res.ok, data));
       await loadTeamsDelivery();
+      await load(); // the poll's closed state + closure notice are server state
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  /** "Close Telegram poll" — the server's message says exactly what happened (closed / failed / unconfirmed + notice). */
+  async function closePollAgain() {
+    setBusy(true);
+    setMessage(null);
+    try {
+      const res = await fetch(api("/poll/close"), { method: "POST" });
+      const data = await res.json().catch(() => ({}));
+      setMessage(data?.message ?? data?.error ?? (res.ok ? "Attendance poll closed in Telegram." : "Could not close the poll."));
+      await load();
+    } finally {
+      setBusy(false);
+    }
+  }
+  async function noticeAction(action: "retry" | "mark_sent", deliveryId: string) {
+    setBusy(true);
+    setMessage(null);
+    try {
+      const res = await fetch(api("/poll/close-notice"), { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action, deliveryId }) });
+      const data = await res.json().catch(() => ({}));
+      setMessage(data?.message ?? data?.error ?? "Something went wrong.");
+      setNoticeChecked(false);
+      await load();
     } finally {
       setBusy(false);
     }
@@ -728,21 +764,41 @@ export default function MatchWorkspace({
                     ))}
                   </select>
                 </label>
-                <Button
-                  type="button"
-                  size="sm"
-                  disabled={busy || chatRef === null || m.status === "CANCELED" || m.attendanceClosed}
-                  title={m.attendanceClosed ? "Attendance is closed. Reopen it before posting a new poll." : undefined}
-                  onClick={() => call("/poll", { chatRef, intent: "post" }, "Attendance poll posted to Telegram.")}
-                >
-                  <Send aria-hidden="true" /> Post poll to Telegram
-                </Button>
+                {/* Telegram publishing — the button follows the PERSISTED state of the selected chat (server-enforced too). */}
+                {(() => {
+                  const pb = pollButtonView(view.telegram.pollPost, view.telegram.selectedChat?.title ?? null);
+                  const firstInSecondChat = (view.telegram.pollPost?.state ?? "not_posted") === "not_posted" && (view.telegram.pollPost?.otherChats.length ?? 0) > 0;
+                  return (
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant={pb.done ? "outline" : "default"}
+                      disabled={busy || !pb.enabled || chatRef === null || m.status === "CANCELED" || m.attendanceClosed}
+                      title={m.attendanceClosed ? "Attendance is closed. Reopen it before posting a new poll." : undefined}
+                      onClick={() =>
+                        firstInSecondChat
+                          ? setSecondChat({ existing: view.telegram.pollPost!.otherChats, target: view.telegram.selectedChat?.title ?? "this Telegram group" })
+                          : call("/poll", { chatRef, intent: "post" }, "Attendance poll posted to Telegram.")
+                      }
+                    >
+                      {pb.done ? <CircleCheck aria-hidden="true" /> : <Send aria-hidden="true" />} {pb.label}
+                    </Button>
+                  );
+                })()}
               </>
             ) : (
               <span className="text-muted-foreground">Players answer through the match link (Share Match). Telegram (optional): connect a group in <Link className="font-semibold text-primary underline" href={`${adminGroupSettingsPath(organizationSlug, groupSlug)}#telegram`}>Group settings</Link> to also post polls there.</span>
             ))}
         </div>
-        {view.canManage && view.telegram.pollDelivery && <p className="mt-2 text-xs text-muted-foreground">Last poll post: {view.telegram.pollDelivery.status.toLowerCase()}</p>}
+        {view.canManage && view.telegram.pollPost && (() => {
+          const pb = pollButtonView(view.telegram.pollPost, view.telegram.selectedChat?.title ?? null);
+          const at = view.telegram.pollPost.at ? ` · ${formatDeadline(view.telegram.pollPost.at, tz)}` : "";
+          return (
+            <p className={cn("mt-2 text-xs", pb.warn ? "font-semibold text-destructive" : "text-muted-foreground")} aria-live="polite">
+              {pb.note ?? (view.telegram.pollPost.state === "posted" ? `Poll posted to ${view.telegram.selectedChat?.title ?? "the Telegram group"}${at}.` : `No poll posted to ${view.telegram.selectedChat?.title ?? "this Telegram group"} yet.`)}
+            </p>
+          );
+        })()}
         {/* Phase 4B — Telegram Game Day Update status (organizers; times in the Group's timezone). */}
         {view.canManage && view.gameDayUpdate && (
           <div className="mt-2 flex flex-wrap items-center gap-2 text-xs" aria-live="polite">
@@ -778,18 +834,67 @@ export default function MatchWorkspace({
           </div>
         )}
         {view.canManage && <GameDayUpdateDialog open={gameDayOpen} onClose={() => setGameDayOpen(false)} api={api} timezone={tz} onChanged={load} />}
-        {/* M9.2 — publishing teams closes the attendance poll; if Telegram didn't confirm, close it again here (safe to repeat).
-            Phase 4B — also once attendance is closed (by hand or deadline) while the poll still shows as open in the chat:
-            answers there no longer count, and the organizer can close that ONE poll (never in bulk). */}
-        {view.canManage && view.telegram.poll && !view.telegram.poll.closed && (view.generation || m.attendanceClosed) && (
-          <div className="mt-2 flex flex-wrap items-center gap-2 text-xs">
-            <span className="text-muted-foreground">
-              {m.attendanceClosed
-                ? "Attendance is closed, but the Telegram poll still shows as open in the chat. Answers given there now are not counted."
-                : "The Telegram attendance poll is still open."}
+        {view.canManage && (
+          <Dialog open={secondChat !== null} title="Post a second attendance poll?" onClose={() => setSecondChat(null)}>
+            {secondChat && (
+              <div className="space-y-3 text-sm">
+                <p>
+                  This match already has an attendance poll in <b>{secondChat.existing.join(", ")}</b>.
+                </p>
+                <p>
+                  Posting to <b>{secondChat.target}</b> creates a <b>separate poll</b>. Answers from both polls count (each player&apos;s latest answer wins). The original poll is not changed or closed.
+                </p>
+                <div className="flex flex-wrap gap-2">
+                  <Button
+                    type="button"
+                    disabled={busy}
+                    onClick={async () => {
+                      setSecondChat(null);
+                      await call("/poll", { chatRef, intent: "post", confirmSecondChat: true }, `Attendance poll posted to ${secondChat.target}.`);
+                    }}
+                  >
+                    Post a separate poll to {secondChat.target}
+                  </Button>
+                  <Button type="button" variant="outline" onClick={() => setSecondChat(null)}>
+                    Cancel
+                  </Button>
+                </div>
+              </div>
+            )}
+          </Dialog>
+        )}
+        {/* Telegram publishing — "Post teams to Telegram" closes the poll it posts to. If that close failed or wasn't
+            confirmed (or attendance closed while the poll still shows as open), close that ONE poll here — safe to
+            repeat; after the teams were posted it also sends the one-time closure notice. */}
+        {view.canManage && view.telegram.poll && !view.telegram.poll.closed && (view.telegram.closure?.teamsPosted || m.attendanceClosed) && (
+          <div className="mt-2 flex flex-wrap items-center gap-2 text-xs" role="status">
+            <span className="font-semibold text-destructive">
+              {view.telegram.closure?.teamsPosted
+                ? "Teams were posted, but the Telegram attendance poll is still open (or closing it wasn't confirmed)."
+                : "Attendance is closed, but the Telegram poll still shows as open in the chat. Answers given there now are not counted."}
             </span>
-            <Button type="button" variant="outline" size="sm" disabled={busy} onClick={() => call("/poll/close", {}, "Attendance poll closed in Telegram.")}>
+            <Button type="button" variant="outline" size="sm" disabled={busy} onClick={closePollAgain}>
               Close Telegram poll
+            </Button>
+          </div>
+        )}
+        {view.canManage && view.telegram.closure?.notice.state === "failed" && view.telegram.closure.notice.deliveryId && (
+          <div className="mt-2 flex flex-wrap items-center gap-2 text-xs" role="status">
+            <span className="font-semibold text-destructive">Telegram refused the “Poll is closed” notice — nothing was posted.</span>
+            <Button type="button" variant="outline" size="sm" disabled={busy} onClick={() => noticeAction("retry", view.telegram.closure!.notice.deliveryId!)}>
+              Retry closure notice
+            </Button>
+          </div>
+        )}
+        {view.canManage && view.telegram.closure?.notice.state === "uncertain" && view.telegram.closure.notice.deliveryId && (
+          <div className="mt-2 space-y-1 text-xs" role="status">
+            <p className="font-semibold text-destructive">Telegram didn&apos;t confirm the “Poll is closed” notice. Check the group — it is never re-sent automatically.</p>
+            <label className="flex items-center gap-2">
+              <input type="checkbox" className="size-4" checked={noticeChecked} onChange={(e) => setNoticeChecked(e.target.checked)} />
+              I found the “Poll is closed” notice in the Telegram group.
+            </label>
+            <Button type="button" variant="outline" size="sm" disabled={busy || !noticeChecked} onClick={() => noticeAction("mark_sent", view.telegram.closure!.notice.deliveryId!)}>
+              Mark as sent
             </Button>
           </div>
         )}

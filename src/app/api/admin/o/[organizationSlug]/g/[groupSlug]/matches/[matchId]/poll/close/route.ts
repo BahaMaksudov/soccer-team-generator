@@ -6,8 +6,10 @@ import { closeMatchAttendancePolls, POLL_CLOSE_MESSAGE } from "@/lib/matchPollCl
 
 /**
  * M9.2 — close the Match's open Telegram attendance poll(s) again (OWNER/ADMIN;
- * MEMBER / foreign → 404). Safe to repeat: stopPoll is idempotent. Sends no
- * message and changes no teams.
+ * MEMBER / foreign → 404). Safe to repeat: stopPoll is idempotent. Changes no
+ * teams. The recovery for "teams posted, poll still open": after a VERIFIED
+ * close of a poll whose teams were posted, its one-time "Poll is closed"
+ * notice is sent (never twice, never after an unclear close).
  */
 type Params = Promise<{ organizationSlug: string; groupSlug: string; matchId: string }>;
 
@@ -19,10 +21,11 @@ export async function POST(_req: Request, { params }: { params: Params }) {
     if (denied) return denied;
     const match = await findGroupMatch(context, matchId);
     if (!match) return NextResponse.json({ error: "Match not found" }, { status: 404 });
-    const r = await closeMatchAttendancePolls(context.activeGroup.id, match.id);
+    const r = await closeMatchAttendancePolls(context.activeGroup.id, match.id, { userId: context.user.id });
     const ok = r.status === "closed" || r.status === "already_closed" || r.status === "no_poll";
-    const message = POLL_CLOSE_MESSAGE[r.status];
-    return NextResponse.json({ ok, status: r.status, message, ...(ok ? {} : { error: message }) }, { status: ok ? 200 : 502 });
+    const notice = (r.notices ?? []).includes("uncertain") ? " The closure notice wasn't confirmed — check the group." : (r.notices ?? []).includes("failed") ? " Telegram refused the closure notice — you can retry it." : (r.notices ?? []).includes("sent") ? " Closure notice sent." : "";
+    const message = `${POLL_CLOSE_MESSAGE[r.status] ?? ""}${ok ? notice : ""}`.trim() || null;
+    return NextResponse.json({ ok, status: r.status, notices: r.notices ?? [], message, ...(ok ? {} : { error: message }) }, { status: ok ? 200 : 502 });
   } catch (e) {
     return canonicalTenantErrorResponse(e);
   }

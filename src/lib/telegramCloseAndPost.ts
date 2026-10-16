@@ -15,7 +15,7 @@ import {
 import type { TenantContext } from "@/lib/tenantContext";
 import { renderTelegramHtml } from "@/lib/messaging/telegram";
 import { teamsContent } from "@/lib/messaging/content";
-import { playerFacingViewUrl } from "@/lib/messaging/links";
+import { playerFacingViewUrl, teamBalanceProWebsiteUrl } from "@/lib/messaging/links";
 import {
   contentHashOf,
   deliveryStateOf,
@@ -26,6 +26,8 @@ import {
 } from "@/lib/messaging/deliveryState";
 import { hashToken, isWellFormedToken } from "@/lib/secureToken";
 import { mapsUrl } from "@/lib/venues";
+import { isVerifiedClose, sendPollClosedNotice, stopAttendancePoll, type NoticeResult, type StopOutcome } from "@/lib/pollClosure";
+import { syncMatchAttendanceAnswers } from "@/lib/telegramAttendance";
 
 /**
  * Canonical Close Poll + Post Teams (Phase 2D.6D.5D), on durable
@@ -60,16 +62,15 @@ import { mapsUrl } from "@/lib/venues";
  * still written on success, so already-posted polls are never treated as
  * unposted and a rollback to the previous release stays safe.
  *
- * Canonical Telegram side effects are ONLY stopPoll and the teams
- * message. Nothing here stores raw provider responses, URLs or tokens.
+ * Telegram side effects, in this order: stopPoll; then — only after a
+ * VERIFIED close by this action — the one-time "✅ Poll is closed for M/D/YY"
+ * notice (its own POLL_CLOSED_NOTICE delivery record, at most one per poll;
+ * src/lib/pollClosure.ts); then the teams message. Nothing here stores raw
+ * provider responses, URLs or tokens.
  */
 
-export type CloseStatus =
-  | "closed_now"
-  | "already_closed_locally"
-  | "already_closed_on_telegram"
-  | "missing_message_id"
-  | "close_failed";
+/** The poll-closing step's outcome (src/lib/pollClosure.ts) — close_failed vs close_uncertain kept apart. */
+export type CloseStatus = StopOutcome;
 
 export type CloseAndPostStatus =
   | "posted"
@@ -151,30 +152,28 @@ async function loadDeliveriesInTx(tx: Prisma.TransactionClient, activeGroupId: s
   return [created];
 }
 
-/** Telegram-poll concern only: close the poll if it is still open. Never blocks posting. */
-async function closeTelegramPoll(poll: PollRow, activeGroupId: string): Promise<CloseStatus> {
-  if (poll.isClosed) return "already_closed_locally";
-  if (poll.messageId == null) return "missing_message_id";
-  let closeStatus: CloseStatus;
-  try {
-    await callTelegram("stopPoll", { chat_id: poll.chatId.toString(), message_id: Number(poll.messageId) });
-    closeStatus = "closed_now";
-  } catch (e: unknown) {
-    const msg = e instanceof Error ? e.message : String(e);
-    closeStatus =
-      e instanceof TelegramApiRejectionError && msg.toLowerCase().includes("already been closed")
-        ? "already_closed_on_telegram"
-        : "close_failed";
+/**
+ * Telegram-poll concern: final answer sync (attendance still open), then close the poll
+ * (verified only); after a verified close, the one-time "✅ Poll is closed for M/D/YY"
+ * notice — BEFORE the teams message (the original order). Never blocks posting.
+ */
+async function closePollAndNotify(
+  poll: PollRow,
+  activeGroupId: string,
+  displayDate: string,
+  userId: string
+): Promise<{ closeStatus: CloseStatus; noticeStatus: NoticeResult | null }> {
+  if (!poll.isClosed && poll.matchId) {
+    const match = await prisma.match.findFirst({ where: { id: poll.matchId, groupId: activeGroupId }, select: { attendanceClosedAt: true } });
+    if (match && !match.attendanceClosedAt) await syncMatchAttendanceAnswers(activeGroupId, poll.matchId).catch(() => {});
   }
-  if (closeStatus === "closed_now" || closeStatus === "already_closed_on_telegram") {
-    await prisma.telegramPoll
-      .updateMany({ where: { pollId: poll.pollId, groupId: activeGroupId }, data: { isClosed: true } })
-      .catch(() => {
-        // Telegram is the source of truth for the poll being closed;
-        // a failed local sync is reconciled on the next attempt.
-      });
-  }
-  return closeStatus;
+  const closeStatus = await stopAttendancePoll(activeGroupId, poll);
+  // A notice only after THIS action verifiably closed the poll — never for a poll already closed
+  // locally (deadline / an earlier action), never after an unclear or refused close, never twice.
+  const noticeStatus = isVerifiedClose(closeStatus)
+    ? await sendPollClosedNotice({ groupId: activeGroupId, matchId: poll.matchId ?? null, poll, displayDate, userId }).catch(() => "uncertain" as const)
+    : null;
+  return { closeStatus, noticeStatus };
 }
 
 type Validated = {
@@ -282,10 +281,10 @@ export async function resolveViewUrl(
   return link ? { ok: true, url } : invalid;
 }
 
-function stateResponse(state: DeliveryState, closeStatus: CloseStatus | null, teamGenerationId: string): NextResponse {
+function stateResponse(state: DeliveryState, closeStatus: CloseStatus | null, teamGenerationId: string, noticeStatus: NoticeResult | null = null): NextResponse {
   switch (state.kind) {
     case "posted":
-      return NextResponse.json({ ok: true, status: "already_posted" satisfies CloseAndPostStatus, closeStatus, teamGenerationId });
+      return NextResponse.json({ ok: true, status: "already_posted" satisfies CloseAndPostStatus, closeStatus, noticeStatus, teamGenerationId });
     case "sending":
       return NextResponse.json(
         { ok: false, status: "post_in_progress_or_unknown" satisfies CloseAndPostStatus, closeStatus, error: VERIFY_CHAT_MESSAGE },
@@ -424,8 +423,8 @@ export async function closePollAndPostTeamsForContext(context: TenantContext, re
   if (decision.kind === "reject") return stateResponse(decision.state, null, teamGenerationId);
 
   // --- 1. Telegram poll concern ---
-  const closeStatus = await closeTelegramPoll(poll, activeGroupId);
-  if (decision.kind === "already_posted") return stateResponse(decision.state, closeStatus, teamGenerationId);
+  const { closeStatus, noticeStatus } = await closePollAndNotify(poll, activeGroupId, displayDate, context.user.id);
+  if (decision.kind === "already_posted") return stateResponse(decision.state, closeStatus, teamGenerationId, noticeStatus);
 
   // --- 2. TEAMS_PUBLISHED delivery (exactly one send per reservation) ---
   // The link never changes the content hash (computed from `body`).
@@ -434,7 +433,9 @@ export async function closePollAndPostTeamsForContext(context: TenantContext, re
     ? (await prisma.match.findFirst({ where: { id: generation.matchId, groupId: activeGroupId }, select: { venue: { select: { name: true, address: true } } } }))?.venue ?? null
     : null;
   const location = venue ? { name: venue.name, address: venue.address, mapsUrl: mapsUrl(venue.address) } : null;
-  const html = view.url || location ? renderTelegramHtml(teamsContent({ type: "TEAMS_PUBLISHED", displayDate, teams, viewUrl: view.url, location })) : body;
+  // Footer: "🔗 View teams online · 🌐 TeamBalance Pro" (the website = APP_BASE_URL; omitted if not configured).
+  const websiteUrl = teamBalanceProWebsiteUrl();
+  const html = view.url || location || websiteUrl ? renderTelegramHtml(teamsContent({ type: "TEAMS_PUBLISHED", displayDate, teams, viewUrl: view.url, location, websiteUrl })) : body;
   const reservedId = decision.deliveryId;
 
   let sent: { message_id?: unknown } | null;
@@ -466,6 +467,7 @@ export async function closePollAndPostTeamsForContext(context: TenantContext, re
           ok: false,
           status: "telegram_rejected" satisfies CloseAndPostStatus,
           closeStatus,
+          noticeStatus,
           deliveryId: reservedId,
           telegramDescription: e.description,
           error: `Telegram rejected the teams message (${e.message}). Nothing was posted; you can retry after fixing the cause.`,
@@ -496,6 +498,7 @@ export async function closePollAndPostTeamsForContext(context: TenantContext, re
         ok: false,
         status: "delivery_unknown" satisfies CloseAndPostStatus,
         closeStatus,
+        noticeStatus,
         deliveryId: reservedId,
         error: `Could not confirm whether Telegram received the teams message. ${VERIFY_CHAT_MESSAGE}`,
       },
@@ -527,6 +530,7 @@ export async function closePollAndPostTeamsForContext(context: TenantContext, re
         ok: false,
         status: "delivered_confirmation_failed" satisfies CloseAndPostStatus,
         closeStatus,
+        noticeStatus,
         error:
           "Telegram accepted the teams message, but it could not be recorded as posted. " +
           "Do not retry — the teams are already in the chat.",
@@ -535,7 +539,7 @@ export async function closePollAndPostTeamsForContext(context: TenantContext, re
     );
   }
 
-  return NextResponse.json({ ok: true, status: "posted" satisfies CloseAndPostStatus, closeStatus, teamGenerationId });
+  return NextResponse.json({ ok: true, status: "posted" satisfies CloseAndPostStatus, closeStatus, noticeStatus, teamGenerationId });
 }
 
 /**

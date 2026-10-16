@@ -42,6 +42,8 @@ export type TextContent = {
   /** M9.2 — venue line(s) after the sections ("📍 Name" + a maps link for the address). */
   location?: { name: string; address: string | null; mapsUrl: string | null } | null;
   link: { label: string; url: string } | null;
+  /** Footer links on ONE line ("🔗 View teams online · 🌐 TeamBalance Pro"); used instead of `link`. */
+  footerLinks?: Array<{ label: string; url: string }>;
 };
 
 /** YYYY-MM-DD → M/D/YY (no leading zeros), the poll question's date style. */
@@ -71,7 +73,11 @@ export function teamsContent(event: Extract<MessagingEvent, { type: "TEAMS_PUBLI
       items: (Array.isArray(t.players) ? t.players : []).map((p) => playerDisplayName(p ?? {})),
     })),
     location: event.location ?? null,
-    link: event.viewUrl ? { label: "View teams online", url: event.viewUrl } : null,
+    // Without a website link the message is byte-identical to before (the single "View teams online" link).
+    link: !event.websiteUrl && event.viewUrl ? { label: "View teams online", url: event.viewUrl } : null,
+    footerLinks: event.websiteUrl
+      ? [...(event.viewUrl ? [{ label: "🔗 View teams online", url: event.viewUrl }] : []), { label: "🌐 TeamBalance Pro", url: event.websiteUrl }]
+      : undefined,
   };
 }
 

@@ -83,6 +83,7 @@ describe("flat operational Admin APIs are deleted", () => {
         canonical("matches/[matchId]/attendance/sync"),
         canonical("matches/[matchId]/poll"),
         canonical("matches/[matchId]/poll/close"), // M9.2
+        canonical("matches/[matchId]/poll/close-notice"), // Telegram publishing — retry / mark sent the one-time closure notice
         canonical("channels/telegram"),
         canonical("channels/telegram/[ref]"),
         canonical("channels/telegram/[ref]/players"), // M9-B
@@ -253,15 +254,22 @@ describe("Telegram delivery invariant", () => {
       rel("src/lib/telegramCloseAndPost.ts"),
     ]);
     // M9-D — closing a Match's MVP vote also stops its Telegram poll (an explicit OWNER/ADMIN action).
-    // M9.2 — publishing a Match's teams (and the attendance cutoff) closes its attendance poll.
-    expect(filesMatching(/["']stopPoll["']/)).toEqual([rel("src/lib/matchPollClose.ts"), rel("src/lib/postGame.ts"), rel("src/lib/telegramCloseAndPost.ts")].sort());
+    // Telegram publishing — ONE place stops attendance polls (verified close): "Post teams to Telegram",
+    // "Close Telegram poll" and the attendance deadline all call stopAttendancePoll (src/lib/pollClosure.ts).
+    expect(filesMatching(/["']stopPoll["']/)).toEqual([rel("src/lib/pollClosure.ts"), rel("src/lib/postGame.ts")].sort());
+    expect(code.get(rel("src/lib/pollClosure.ts"))!.match(/["']stopPoll["']/g)).toHaveLength(1);
     expect(filesMatching(/teamsPostStatus/)).toEqual([rel("src/lib/telegramCloseAndPost.ts")]);
   });
 
   it("sendMessage is used only by Close/Post (teams), the explicit post-game posts (M9-D), the webhook (bot command replies) and the Game Day Update (Phase 4B)", () => {
     expect(filesMatching(/["']sendMessage["']/)).toEqual(
-      [rel("src/app/api/telegram/webhook/route.ts"), rel("src/lib/gameDayUpdate.ts"), rel("src/lib/postGame.ts"), rel("src/lib/telegramCloseAndPost.ts")].sort()
+      [rel("src/app/api/telegram/webhook/route.ts"), rel("src/lib/gameDayUpdate.ts"), rel("src/lib/pollClosure.ts"), rel("src/lib/postGame.ts"), rel("src/lib/telegramCloseAndPost.ts")].sort()
     );
+    // Telegram publishing — the one-time "Poll is closed" notice: exactly one send, after the lock-guarded reservation.
+    const notice = code.get(rel("src/lib/pollClosure.ts"))!;
+    expect(notice.match(/["']sendMessage["']/g)).toHaveLength(1);
+    expect(notice.indexOf("await lockPoll(tx, p.poll.pollId)")).toBeGreaterThan(-1);
+    expect(notice.indexOf("await lockPoll(tx, p.poll.pollId)")).toBeLessThan(notice.indexOf('"sendMessage"'));
     // Phase 4B — exactly one send: the reply to the match's attendance poll, after the lock-guarded reservation.
     const gameDay = code.get(rel("src/lib/gameDayUpdate.ts"))!;
     expect(gameDay.match(/["']sendMessage["']/g)).toHaveLength(1);

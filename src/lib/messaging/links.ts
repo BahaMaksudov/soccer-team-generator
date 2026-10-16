@@ -43,3 +43,13 @@ export function playerFacingViewUrl(params: {
   }
   return null;
 }
+
+/** The TeamBalance Pro website for message footers: the canonical APP_BASE_URL (https only), or null. */
+export function teamBalanceProWebsiteUrl(env?: Record<string, string | undefined>): string | null {
+  try {
+    const base = getAppBaseUrl(env);
+    return /^https:\/\//.test(base) ? `${base}/` : null;
+  } catch {
+    return null;
+  }
+}

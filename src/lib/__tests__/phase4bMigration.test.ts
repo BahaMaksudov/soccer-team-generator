@@ -8,10 +8,11 @@ const sql = fs.readFileSync(path.join(process.cwd(), DIR, "migration.sql"), "utf
 const code = sql.replace(/--.*$/gm, ""); // statements only (comments removed)
 
 describe("Phase 4B step 1 migration", () => {
-  it("is the newest migration and sorts after Phase 2's", () => {
+  it("sorts after Phase 2's (followed only by the poll-closed-notice enum value)", () => {
     const all = fs.readdirSync(path.join(process.cwd(), "prisma/migrations")).filter((d) => /^\d{14}_/.test(d)).sort();
-    expect(all.at(-1)).toBe(path.basename(DIR));
-    expect(all.at(-2)).toBe("20261018120000_phase2_match_schedule_skips");
+    expect(all.at(-2)).toBe(path.basename(DIR));
+    expect(all.at(-3)).toBe("20261018120000_phase2_match_schedule_skips");
+    expect(all.at(-1)).toBe("20261020120000_poll_closed_notice");
   });
   it("adds only: one enum value (idempotent), one Match column + index, six Venue columns", () => {
     expect(code).toMatch(/ALTER TYPE "MessageEventType" ADD VALUE IF NOT EXISTS 'GAME_DAY_UPDATE_POSTED';/);

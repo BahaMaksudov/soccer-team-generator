@@ -56,7 +56,7 @@ describe("Phase 4B step 1 — schema", () => {
   });
   it("MessageEventType has GAME_DAY_UPDATE_POSTED (usable by MessageDelivery)", async () => {
     const labels = await prisma.$queryRawUnsafe<Array<{ enumlabel: string }>>(`SELECT enumlabel FROM pg_enum WHERE enumtypid = '"MessageEventType"'::regtype ORDER BY enumsortorder`);
-    expect(labels.map((l) => l.enumlabel).at(-1)).toBe("GAME_DAY_UPDATE_POSTED");
+    expect(labels.map((l) => l.enumlabel).slice(-2)).toEqual(["GAME_DAY_UPDATE_POSTED", "POLL_CLOSED_NOTICE"]); // + the later notice value
     const d = await prisma.messageDelivery.create({ data: { groupId: "g", eventType: "GAME_DAY_UPDATE_POSTED", channel: "TELEGRAM", destination: "-1", contentHash: "x", status: "SENDING", claimedAt: new Date() } });
     expect(d.eventType).toBe("GAME_DAY_UPDATE_POSTED");
   });
