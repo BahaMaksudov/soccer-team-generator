@@ -13,6 +13,7 @@ import { Button } from "@/components/ui/button";
 import Dialog from "@/components/app/Dialog";
 import { cn } from "@/lib/cn";
 import CanonicalPlayerForm from "../CanonicalPlayerForm";
+import { adminGroupSettingsPath } from "@/lib/matchPaths";
 import PlayerAccountCell from "../PlayerAccountCell";
 import PlayerTelegramCell from "../PlayerTelegramCell";
 import type { Player } from "../CanonicalAdminWorkspace";
@@ -140,9 +141,10 @@ export default function PlayersRoster({
     : [];
   const roleOf = (key: string) => roleLabel(sport.key, key);
 
-  async function create(values: PlayerFormValues): Promise<string | null> {
+  async function create(values: PlayerFormValues, communityIds?: string[]): Promise<string | null> {
     setMessage(null);
-    const res = await fetch(playersUrl, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(playerFormToBody(values)) });
+    const body = { ...playerFormToBody(values), ...(communityIds?.length ? { communityIds } : {}) };
+    const res = await fetch(playersUrl, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) return data?.error ?? "Failed to create player";
     setForm(null);
@@ -150,9 +152,11 @@ export default function PlayersRoster({
     await load();
     return null;
   }
-  async function save(id: string, values: PlayerFormValues): Promise<string | null> {
+  async function save(id: string, values: PlayerFormValues, communityIds?: string[]): Promise<string | null> {
     setMessage(null);
-    const res = await fetch(playerUrl(id), { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(playerFormToBody(values)) });
+    // Memberships are sent only when the organizer changed them (undefined = unchanged).
+    const body = { ...playerFormToBody(values), ...(communityIds !== undefined ? { communityIds } : {}) };
+    const res = await fetch(playerUrl(id), { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) return data?.error ?? "Failed to update player";
     setForm(null);
@@ -422,7 +426,14 @@ export default function PlayersRoster({
               sport={sport}
               submitLabel={form.mode === "edit" ? "Save changes" : "Add player"}
               busyLabel={form.mode === "edit" ? "Saving…" : "Adding…"}
-              onSubmit={(values) => (form.mode === "edit" ? save(form.player.id, values) : create(values))}
+              onSubmit={(values, communityIds) => (form.mode === "edit" ? save(form.player.id, values, communityIds) : create(values, communityIds))}
+              communities={{
+                options: communities,
+                // Edit: the player's current memberships. Add: the community the roster is filtered to (if active).
+                initial: form.mode === "edit" ? (form.player.communityIds ?? []) : selectedCommunity?.isActive ? [selectedCommunity.id] : [],
+                submit: form.mode === "edit" ? "whenChanged" : "always",
+                settingsHref: adminGroupSettingsPath(organizationSlug, groupSlug),
+              }}
               onCancel={() => setForm(null)}
             />
           )}

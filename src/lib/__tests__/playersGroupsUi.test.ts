@@ -55,7 +55,8 @@ describe("positions come from the real sport registry", () => {
 describe("Players page behavior", () => {
   it("uses the existing tenant-bound APIs (same payloads as the group page)", () => {
     expect(roster).toContain('adminTenantApiPath({ organizationSlug, groupSlug, path: "/players" })');
-    expect(roster).toContain("JSON.stringify(playerFormToBody(values))");
+    expect(roster).toContain("{ ...playerFormToBody(values), ...(communityIds?.length ? { communityIds } : {}) }"); // create: + chosen Communities
+    expect(roster).toContain("{ ...playerFormToBody(values), ...(communityIds !== undefined ? { communityIds } : {}) }"); // edit: only when changed
     expect(roster).toContain("JSON.stringify({ isActive: !p.isActive })");
     expect(roster).toContain('method: "DELETE"');
     expect(read(`${G}/players/page.tsx`)).toContain("if (!context) notFound();");

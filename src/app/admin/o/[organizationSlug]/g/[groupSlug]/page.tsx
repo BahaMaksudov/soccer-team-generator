@@ -11,6 +11,7 @@ import { ROLE_LABELS } from "@/lib/appShell";
 import { ActionLink, focusRing, LifecycleSteps, PhasePill, ResultSummary, SectionCard } from "@/components/game-day/parts";
 import { MatchList } from "@/components/game-day/MatchList";
 import { cn } from "@/lib/cn";
+import { NO_COMMUNITY_LABEL } from "@/lib/matchCommunityLabel";
 
 /**
  * Phase 2D.6C — canonical tenant Admin entry point; UI-4 — redesigned as the
@@ -129,14 +130,18 @@ function FocusMatch({ focus }: { focus: NonNullable<GroupOverview["focus"]> }) {
         <h2 id="focus-match" className="text-2xl font-extrabold sm:text-3xl">
           {formatLongDateOnly(m.date)}
         </h2>
-        {(time || m.locationName) && (
-          <ul className="flex flex-wrap gap-x-5 gap-y-1 text-sm opacity-85">
+        <ul className="flex flex-wrap gap-x-5 gap-y-1 text-sm opacity-85">
             {time && (
               <li className="flex items-center gap-1.5">
                 <Clock className="size-4" aria-hidden="true" />
                 {time}
               </li>
             )}
+            {/* The Match's own Community, before the venue. */}
+            <li className="flex min-w-0 items-center gap-1.5">
+              <Users className="size-4 shrink-0" aria-hidden="true" />
+              <span className={cn("truncate", !m.communityName && "italic")}>{m.communityName ?? NO_COMMUNITY_LABEL}</span>
+            </li>
             {m.locationName && (
               <li className="flex min-w-0 items-center gap-1.5">
                 <MapPin className="size-4 shrink-0" aria-hidden="true" />
@@ -144,7 +149,6 @@ function FocusMatch({ focus }: { focus: NonNullable<GroupOverview["focus"]> }) {
               </li>
             )}
           </ul>
-        )}
       </div>
       <dl className="grid grid-cols-1 gap-px bg-pitch-foreground/10 sm:grid-cols-3">
         <div className="bg-pitch px-5 py-4 sm:px-6">

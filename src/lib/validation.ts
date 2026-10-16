@@ -18,6 +18,11 @@ export const positionSchema = z.string().trim().regex(/^[A-Z][A-Z0-9_]{0,39}$/, 
 export const ratingSchema = z.nativeEnum(Rating);
 
 const staminaSchema = z.coerce.number().min(1).max(5);
+/** M9.2 — Community memberships chosen in the player form (ids of this Group's Communities; deduplicated). */
+const communityIdsSchema = z
+  .array(z.string().trim().min(1).max(64), { invalid_type_error: "Choose communities from the list." })
+  .max(50, "Too many communities.")
+  .transform((ids) => [...new Set(ids)]);
 
 export const playerCreateSchema = z.object({
   firstName: z.string().trim().min(1, "First name is required."),
@@ -26,6 +31,8 @@ export const playerCreateSchema = z.object({
   rating: ratingSchema,
   stamina: staminaSchema.optional(),
   isActive: z.boolean().optional(),
+  /** The player's Communities (optional; omitted = none). */
+  communityIds: communityIdsSchema.optional(),
 });
 
 export const playerUpdateSchema = z.object({
@@ -35,6 +42,8 @@ export const playerUpdateSchema = z.object({
   rating: ratingSchema.optional(),
   stamina: staminaSchema.optional(),
   isActive: z.boolean().optional(),
+  /** The COMPLETE desired set of the player's Communities; omitted = memberships unchanged. */
+  communityIds: communityIdsSchema.optional(),
 });
 
 export const generateTeamsSchema = z.object({

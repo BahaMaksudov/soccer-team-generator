@@ -1,10 +1,11 @@
 import type { MatchStatus } from "@prisma/client";
-import { attendanceIsClosed, effectiveClosedAt } from "@/lib/attendanceDeadline";
+import { attendanceIsClosed } from "@/lib/attendanceDeadline";
 import { prisma } from "@/lib/prisma";
 import type { TenantContext } from "@/lib/tenantContext";
 import { isManager } from "@/lib/tenantRoute";
 import { formatYMDFromDate } from "@/lib/telegramFormat";
-import { countAttendance, type AttendanceCounts, type AttendanceRow } from "@/lib/attendance";
+import type { AttendanceCounts } from "@/lib/attendance";
+import { matchAttendanceSnapshot } from "@/lib/attendanceSnapshot";
 import { parseResult, resultView, type ResultView } from "@/lib/postGame";
 import { canonicalAdminMatchPath } from "@/lib/matchPaths";
 import { isUpcomingYmd, matchLifecycle, todayUtcYmd, type Lifecycle } from "@/lib/matchLifecycle";
@@ -27,6 +28,8 @@ export type OverviewMatch = {
   date: string;
   startTime: string | null;
   locationName: string | null;
+  /** The Match's OWN linked Community (null = none assigned) — never inferred from the Group or a chat. */
+  communityName: string | null;
   status: MatchStatus;
   upcoming: boolean;
   attendanceClosed: boolean;
@@ -64,6 +67,7 @@ export async function loadGroupOverview(context: TenantContext, now: Date = new 
         date: true,
         startTime: true,
         locationName: true,
+        community: { select: { name: true } },
         status: true,
         attendanceClosedAt: true,
         attendanceDeadlineAt: true,
@@ -90,6 +94,7 @@ export async function loadGroupOverview(context: TenantContext, now: Date = new 
       date,
       startTime: m.startTime,
       locationName: m.locationName,
+      communityName: m.community?.name ?? null,
       status: m.status,
       upcoming: isUpcomingYmd(m.status, date, today),
       attendanceClosed: attendanceIsClosed(m), // Phase 4B — shared deadline rule
@@ -122,11 +127,10 @@ export async function loadGroupOverview(context: TenantContext, now: Date = new 
   const focusRow = nextRow ?? latestRow;
   let focusCounts: AttendanceCounts = { PLAYING: 0, MAYBE: 0, NOT_PLAYING: 0, NO_RESPONSE: activeIds.length };
   if (focusRow) {
-    const att = (await prisma.attendanceResponse.findMany({
-      where: { matchId: focusRow.id, groupId },
-      select: { playerId: true, participantStatus: true, participantSource: true, participantRespondedAt: true, overrideStatus: true, overrideAt: true },
-    })) as AttendanceRow[];
-    focusCounts = countAttendance(activeIds, att, effectiveClosedAt(focusRow));
+    // The ONE shared calculation (src/lib/attendanceSnapshot.ts) — the same numbers as the Match
+    // Workspace and the Game Day Update: the match's own Community roster (whole Group without one).
+    const snapshot = await matchAttendanceSnapshot(groupId, focusRow.id);
+    if (snapshot) focusCounts = snapshot.counts;
   }
 
   const upcoming = upcomingRows.map((m) => toMatch(m, m.id === focusRow?.id ? focusCounts.PLAYING : 0));
