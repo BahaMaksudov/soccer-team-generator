@@ -419,7 +419,8 @@ export default function MatchWorkspace({
   const openEdit = (focusDeadline = false) => {
     const current = toLocalInput(m.attendanceDeadlineAt, tz);
     setEdit({ date: m.date, startTime: m.startTime ?? "", locationName: m.locationName ?? "", venueId: m.venue?.id ?? "", deadline: current, initialDeadline: current });
-    if (focusDeadline) setTimeout(() => document.getElementById("match-deadline")?.focus(), 0);
+    // Bring the deadline field into view — not focus(): on iOS that would open the date/time picker unasked.
+    if (focusDeadline) setTimeout(() => document.getElementById("match-deadline")?.scrollIntoView({ block: "center", behavior: "smooth" }), 0);
   };
   const reopenAttendance = () => {
     // A passed deadline would close it again at once: the organizer chooses (atomic on the server).

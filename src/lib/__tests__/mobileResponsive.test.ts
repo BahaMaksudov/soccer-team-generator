@@ -29,7 +29,7 @@ describe("native date / time inputs (the iPhone Safari bug)", () => {
     for (const f of walk("src")) {
       const lines = read(f).split("\n");
       lines.forEach((l, i) => {
-        if (!/type="(date|time|datetime-local)"/.test(l)) return;
+        if (!/type="(date|time|datetime-local)"/.test(l) || /:not\(\[type=/.test(l)) return; // (skip CSS selector strings)
         found++;
         if (!lines.slice(Math.max(0, i - 3), i + 6).join("\n").includes("date-input")) missing.push(`${f}:${i + 1}`);
       });
@@ -76,5 +76,51 @@ describe("narrow-screen layout fixes", () => {
     const f = read("src/components/billing/PlanComparison.tsx");
     expect(f).toContain('<table className="w-full min-w-[17.5rem] text-sm">');
     expect(f).not.toMatch(/className="p-3 /);
+  });
+});
+
+describe("iOS: a date/time picker never opens without a tap (regression)", () => {
+  // On iOS, focusing a date / time / datetime-local input opens its native picker. Opening a form or a
+  // dialog must therefore never focus one programmatically; the picker opens only on the user's tap.
+  const files = walk("src");
+  const dateInputIds: Array<{ file: string; id: string }> = [];
+  for (const f of files) {
+    const lines = read(f).split("\n");
+    lines.forEach((l, i) => {
+      if (!/type="(date|time|datetime-local)"/.test(l) || /:not\(\[type=/.test(l)) return;
+      // The input's own id: its own line first, then the lines after it, then the ones before.
+      const order = [i, i + 1, i + 2, i + 3, i + 4, i - 1, i - 2, i - 3].filter((k) => k >= 0 && k < lines.length);
+      for (const k of order) {
+        const m = lines[k].match(/\bid=(?:"([^"]+)"|\{`([^`]+)`\})/);
+        if (m) {
+          dateInputIds.push({ file: f, id: m[1] ?? m[2] });
+          break;
+        }
+      }
+    });
+  }
+  it("finds the date/time inputs with ids (New match, Edit match)", () => {
+    expect(dateInputIds.map((d) => d.id)).toEqual(expect.arrayContaining(["${id}-date", "${id}-time", "${id}-deadline", "match-deadline"]));
+  });
+  it("no code focuses a date/time input (by id), uses autoFocus on one, or calls showPicker()", () => {
+    const offenders: string[] = [];
+    for (const f of files) {
+      const src = read(f);
+      for (const { id } of dateInputIds) {
+        const lit = id.includes("${") ? `\`${id}\`` : `"${id}"`;
+        if (src.includes(`getElementById(${lit})?.focus(`) || src.includes(`getElementById(${lit}).focus(`)) offenders.push(`${f}: focus(${id})`);
+      }
+      src.split("\n").forEach((l, i, all) => {
+        if (/type="(date|time|datetime-local)"/.test(l) && /autoFocus|autofocus/.test(all.slice(Math.max(0, i - 4), i + 5).join("\n"))) offenders.push(`${f}:${i + 1}: autoFocus`);
+      });
+      if (/\.showPicker\(/.test(src)) offenders.push(`${f}: showPicker()`);
+    }
+    expect(offenders).toEqual([]);
+  });
+  it("opening New match focuses its heading; the Dialog's first-focus skips date/time inputs", () => {
+    const form = read(`${G}/matches/CreateMatchForm.tsx`);
+    expect(form).toContain("if (open) document.getElementById(`${id}-title`)?.focus();");
+    expect(form).toContain("<h2 id={`${id}-title`} tabIndex={-1}");
+    expect(read("src/components/app/Dialog.tsx")).toContain(`'input:not([type="date"]):not([type="time"]):not([type="datetime-local"]),select,textarea,button:not([data-dialog-close])'`);
   });
 });
