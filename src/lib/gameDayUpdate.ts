@@ -70,7 +70,9 @@ async function loadFacts(groupId: string, organizationId: string, matchId: strin
   });
   if (!m) return null;
   const [settings, { limits }, poll, delivery] = await Promise.all([
-    readGameDayUpdateSettings(groupId),
+    // Every read here uses `db` — inside the Game Day lock that is the transaction's own
+    // connection, never a second one from the pool (pool-starvation deadlock otherwise).
+    readGameDayUpdateSettings(groupId, db),
     organizationPlan(organizationId, now, db),
     // Deterministic destination: the most recently posted OPEN attendance poll of THIS match.
     db.telegramPoll.findFirst({

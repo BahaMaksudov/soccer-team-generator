@@ -110,3 +110,23 @@ describe("manual send (organizer's explicit action)", () => {
     expect(manual({ delivery: { status: "FAILED", claimedAt: now, sentAt: null, failedAt: now, failureCode: "TELEGRAM_REJECTED" } }, now)).toEqual({ kind: "ready", retry: true });
   });
 });
+
+describe("connections inside the Game Day lock (regression: pool-starvation deadlock)", () => {
+  const src = fs.readFileSync(path.join(process.cwd(), "src/lib/gameDayUpdate.ts"), "utf8");
+  const bodyOf = (start: string, end: string) => src.slice(src.indexOf(start), src.indexOf(end, src.indexOf(start)));
+  it("loadFacts reads ONLY through the passed client (the transaction inside the lock)", () => {
+    const loadFacts = bodyOf("async function loadFacts(", "\n}\n");
+    expect(loadFacts).not.toMatch(/\bprisma\./);
+    expect(loadFacts).toContain("readGameDayUpdateSettings(groupId, db)");
+    expect(loadFacts).toContain("organizationPlan(organizationId, now, db)");
+  });
+  it("every locked transaction body uses only its transaction client", () => {
+    const bodies = src.split("prisma.$transaction(async (tx").slice(1).map((b) => b.slice(0, b.indexOf("\n  });")));
+    expect(bodies).toHaveLength(3); // automatic send, manual send, mark as sent
+    for (const b of bodies) {
+      expect(b).toContain("await lockMatch(tx, ");
+      expect(b).not.toMatch(/\bprisma\./);
+      expect(b).not.toMatch(/loadFacts\([^)]*\bprisma\b/);
+    }
+  });
+});
