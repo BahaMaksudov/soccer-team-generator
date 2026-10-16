@@ -70,8 +70,10 @@ export default function CreateMatchForm({
   useEffect(() => {
     if (window.location.hash === "#new") setOpen(true);
   }, []);
+  // Move focus INTO the opened form via its heading — never onto a date/time input: on iOS, focusing one
+  // opens its native picker, so the calendar would appear without the user tapping the field.
   useEffect(() => {
-    if (open) document.getElementById(`${id}-date`)?.focus();
+    if (open) document.getElementById(`${id}-title`)?.focus();
   }, [open, id]);
 
   async function create(e: React.FormEvent) {
@@ -138,7 +140,7 @@ export default function CreateMatchForm({
   return (
     <form id="new" onSubmit={create} aria-labelledby={`${id}-title`} className="w-full scroll-mt-20 space-y-4 rounded-tbp-2xl border border-border bg-card p-4 shadow-card sm:p-5">
       <div className="flex items-center justify-between gap-2">
-        <h2 id={`${id}-title`} className="text-lg font-extrabold">
+        <h2 id={`${id}-title`} tabIndex={-1} className="text-lg font-extrabold focus:outline-none">
           New match
         </h2>
         <Button type="button" variant="ghost" size="icon" aria-label="Close new match form" onClick={() => setOpen(false)}>

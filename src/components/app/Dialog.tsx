@@ -29,7 +29,8 @@ export default function Dialog({
   useEffect(() => {
     if (!open) return;
     restore.current = document.activeElement as HTMLElement | null;
-    const first = panel.current?.querySelector<HTMLElement>("input,select,textarea,button:not([data-dialog-close])") ?? panel.current;
+    // Never a date/time input: on iOS, focusing one opens its native picker without a tap.
+    const first = panel.current?.querySelector<HTMLElement>('input:not([type="date"]):not([type="time"]):not([type="datetime-local"]),select,textarea,button:not([data-dialog-close])') ?? panel.current;
     first?.focus();
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") onClose();
