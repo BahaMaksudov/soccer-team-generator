@@ -368,15 +368,24 @@ model PasswordResetToken {
 // M11.3 — one row per trial email (reminder stage or expiry) per recipient per
 // trial end: the idempotency record of the trial lifecycle job. The unique key
 // makes concurrent / retried runs claim each email at most once; a trial
-// extension (new trialEndsAt) starts a new series.
+// extension (new trialEndsAt) starts a new series. Only "send" mode writes rows.
+//   SENT      — Resend accepted it.
+//   FAILED    — Resend definitely did not accept it (4xx, configuration): retried
+//               up to the attempt cap.
+//   UNCERTAIN — no clear answer (timeout, network, 5xx, 409, interrupted): retried
+//               only inside Resend's 24 h idempotency window with the SAME key and
+//               the SAME content (daysLeft is stored), never after it.
 model TrialNotice {
   id             String            @id @default(cuid())
   organizationId String
   userId         String
   stage          String // "D14" | "D7" | "D3" | "D1" | "EXPIRED"
   trialEndsAt    DateTime
+  // Frozen at the first claim so every retry renders identical content.
+  daysLeft       Int?
   status         TrialNoticeStatus @default(SENDING)
   attempts       Int               @default(1)
+  createdAt      DateTime          @default(now())
   claimedAt      DateTime          @default(now())
   sentAt         DateTime?
   lastError      String?
@@ -392,6 +401,24 @@ enum TrialNoticeStatus {
   SENDING
   SENT
   FAILED
+  UNCERTAIN
+}
+
+// M11.3 — password-reset request log: the database rate limit (works without
+// Upstash; fails closed with the database). Only keyed HMACs of the email and
+// client address are stored — never the address itself. Rows older than a day
+// are purged as new requests arrive.
+model PasswordResetRequest {
+  id        String   @id @default(cuid())
+  emailHash String
+  ipHash    String
+  // false = refused by a limit (counted for the address, never emailed).
+  allowed   Boolean
+  createdAt DateTime @default(now())
+
+  @@index([emailHash, createdAt])
+  @@index([ipHash, createdAt])
+  @@index([createdAt])
 }
 
 // M5 — invitation to join an Organization. Only the SHA-256 hash of the

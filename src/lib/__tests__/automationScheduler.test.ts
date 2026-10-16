@@ -71,7 +71,7 @@ describe("GitHub Actions scheduler workflow", () => {
   });
 });
 
-const TRIAL_OFF = { mode: "off", organizations: 0, expiredRecorded: 0, emailsSent: 0, emailsFailed: 0, alreadyHandled: 0, wouldSend: 0, errorCount: 0 };
+const TRIAL_OFF = { mode: "off", organizations: 0, expiredRecorded: 0, emailsSent: 0, emailsFailed: 0, emailsUncertain: 0, alreadyHandled: 0, wouldSend: 0, errorCount: 0 };
 
 describe("cron endpoint", () => {
   const SECRET = "fake-secret-for-unit-tests-0123456789";

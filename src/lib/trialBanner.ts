@@ -8,7 +8,8 @@ import { trialDateLabel, trialStatus, upgradeHint } from "@/lib/entitlements";
  *   expired (≤ 30 days after the end) → Free plan, why Telegram is off, nothing deleted;
  *   otherwise                          → no banner (the Plan & usage card still explains).
  * The Upgrade action appears only when billing is enabled, and only for the OWNER
- * (the Billing page's upgrade is OWNER-only).
+ * (the Billing page's upgrade is OWNER-only). Dates are shown in the organization's
+ * timezone (organizationTimeZone); the end instant itself is UTC.
  */
 export const EXPIRED_BANNER_DAYS = 30;
 export type TrialBannerView = { phase: "ending" | "expired"; title: string; body: string; hint: string | null; upgradeHref: string | null };
@@ -17,14 +18,15 @@ export function trialBannerView(
   org: { slug: string; plan: OrganizationPlan; trialEndsAt: Date | null },
   role: OrgRole,
   now: Date = new Date(),
-  billingEnabled: boolean = billingConfig().enabled
+  billingEnabled: boolean = billingConfig().enabled,
+  timeZone: string = "UTC"
 ): TrialBannerView | null {
   if (role !== "OWNER" && role !== "ADMIN") return null;
   const t = trialStatus(org, now);
   if (!t.endsAt) return null;
   const upgradeHref = billingEnabled && role === "OWNER" ? `/admin/o/${encodeURIComponent(org.slug)}/billing` : null;
   const hint = billingEnabled ? (role === "OWNER" ? null : "The organization owner can upgrade to Pro on the Billing page.") : upgradeHint();
-  const date = trialDateLabel(t.endsAt);
+  const date = trialDateLabel(t.endsAt, timeZone);
   if (t.phase === "ending") {
     const when = t.daysLeft === 1 ? "in less than a day" : `in ${t.daysLeft} days`;
     return {

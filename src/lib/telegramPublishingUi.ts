@@ -28,7 +28,7 @@ export function pollButtonView(p: PollPostView | null | undefined, chatTitle: st
 }
 
 type CloseStatus = "closed_now" | "already_closed_locally" | "already_closed_on_telegram" | "missing_message_id" | "close_failed" | "close_uncertain" | null | undefined;
-type NoticeStatus = "sent" | "failed" | "uncertain" | "exists" | null | undefined;
+type NoticeStatus = "sent" | "failed" | "uncertain" | "exists" | "not_in_plan" | null | undefined;
 
 /** The poll / notice part of a "Post teams to Telegram" result — never claims a close that wasn't verified. */
 export function pollCloseFeedback(closeStatus: CloseStatus, noticeStatus: NoticeStatus): string {

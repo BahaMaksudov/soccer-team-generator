@@ -2,8 +2,8 @@ import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { ENTITLING_STATUSES } from "@/lib/billing/sync";
 import { billingConfig } from "@/lib/billing/config";
-import { trialDateLabel, trialDaysLeft, trialStatus, upgradeHint } from "@/lib/entitlements";
-import { sendTrialEmail } from "@/lib/email";
+import { organizationTimeZone, trialDateLabel, trialDaysLeft, trialStatus, upgradeHint } from "@/lib/entitlements";
+import { EmailConfigError, EmailDeliveryError, sendTrialEmail } from "@/lib/email";
 
 /**
  * M11.3 — the trial lifecycle job: reminder emails before a Pro trial ends, one
@@ -20,11 +20,21 @@ import { sendTrialEmail } from "@/lib/email";
  *
  * Idempotency: one TrialNotice row per (Organization, stage, trialEndsAt, OWNER),
  * claimed by a unique insert before sending, so concurrent or repeated runs send
- * each email at most once. A refused send is FAILED and retried on later runs
- * (MAX_ATTEMPTS) under the same provider Idempotency-Key, so a retry of an email
- * that actually went out is not delivered twice. A late run sends only the
- * CURRENT stage (missed earlier reminders are not sent in a burst). A trial
- * extension (new trialEndsAt) starts a new series.
+ * each email at most once. Outcomes:
+ *   SENT      — Resend accepted it (2xx). Never sent again.
+ *   FAILED    — Resend definitely did NOT accept it (4xx other than 409, or our
+ *               own configuration error): retried on later runs up to MAX_ATTEMPTS.
+ *   UNCERTAIN — no clear answer (timeout, network error, 5xx, 409, or a claim left
+ *               SENDING by a crash): it may have gone out. Retried only inside
+ *               Resend's idempotency window (UNCERTAIN_RETRY_WINDOW_MS after the
+ *               first attempt), with the SAME Idempotency-Key and the SAME content
+ *               (daysLeft is frozen on the row), so Resend delivers it at most once.
+ *               After the window it is never sent again.
+ * Audit mode writes no TrialNotice row at all: it neither marks an email as
+ * delivered nor uses up a send opportunity.
+ * A late run sends only the CURRENT stage (missed earlier reminders are not sent
+ * in a burst). A trial extension (new trialEndsAt) starts a new series.
+ * Dates are shown in the organization's timezone; the end instant is UTC.
  */
 export type TrialLifecycleMode = "off" | "audit" | "send";
 export type TrialStage = "D14" | "D7" | "D3" | "D1" | "EXPIRED";
@@ -34,8 +44,17 @@ export const REMINDER_DAYS = [1, 3, 7, 14] as const;
 /** The expiry email goes out only within this window after the end (never months later). */
 export const EXPIRED_NOTICE_WINDOW_MS = 7 * DAY_MS;
 export const MAX_ATTEMPTS = 3;
-/** A SENDING claim older than this was interrupted (crash/timeout) and may be retried. */
+/** A SENDING claim older than this was interrupted (crash/timeout): treated as UNCERTAIN. */
 export const STALE_CLAIM_MS = 10 * 60_000;
+/** Resend keeps idempotency keys for 24 h; uncertain sends are retried only well inside that. */
+export const UNCERTAIN_RETRY_WINDOW_MS = 23 * 3_600_000;
+
+/** How a send error is recorded: definitely-not-accepted vs. maybe-sent. */
+export function classifySendError(e: unknown): "FAILED" | "UNCERTAIN" {
+  if (e instanceof EmailConfigError) return "FAILED"; // nothing was handed to the provider
+  if (e instanceof EmailDeliveryError && e.reason === "http" && e.status !== null && e.status >= 400 && e.status < 500 && e.status !== 409) return "FAILED";
+  return "UNCERTAIN"; // timeout, network, 5xx, 409 (same key in flight / reused), anything unexpected
+}
 /** TRIAL_EXPIRED events are recorded for trials that ended within this period (bounded scan). */
 const AUDIT_LOOKBACK_MS = 400 * DAY_MS;
 export const TRIAL_ACTOR = "system:trial-lifecycle";
@@ -59,6 +78,8 @@ export type TrialLifecycleRun = {
   expiredRecorded: number;
   emailsSent: number;
   emailsFailed: number;
+  /** maybe delivered (timeout / 5xx …): retried only with the same key inside Resend's window. */
+  emailsUncertain: number;
   alreadyHandled: number;
   /** audit mode: emails that "send" mode would send now. */
   wouldSend: number;
@@ -92,38 +113,48 @@ async function recordExpiry(org: { id: string; trialEndsAt: Date }, now: Date): 
   });
 }
 
-type Claim = { id: string } | null;
+type Claim = { id: string; daysLeft: number | null } | null;
+type NoticeKey = { organizationId: string; userId: string; stage: TrialStage; trialEndsAt: Date };
+type NoticeRow = { status: "SENDING" | "SENT" | "FAILED" | "UNCERTAIN"; attempts: number; claimedAt: Date; createdAt: Date };
 
-/** Claims one email: a new row, or a retry of a FAILED / interrupted one. null = already handled (or claimed by another run). */
-async function claimNotice(key: { organizationId: string; userId: string; stage: TrialStage; trialEndsAt: Date }, now: Date): Promise<Claim> {
+/** Whether an existing row may be sent again now (pure). */
+export function noticeRetryable(row: NoticeRow, now: Date): boolean {
+  if (row.status === "SENT" || row.attempts >= MAX_ATTEMPTS) return false;
+  if (row.status === "FAILED") return true;
+  const maybeSent = row.status === "UNCERTAIN" || (row.status === "SENDING" && row.claimedAt.getTime() <= now.getTime() - STALE_CLAIM_MS);
+  return maybeSent && now.getTime() - row.createdAt.getTime() < UNCERTAIN_RETRY_WINDOW_MS;
+}
+
+/** Claims one email: a new row, or a permitted retry of an existing one. null = handled already (or claimed by another run). */
+async function claimNotice(key: NoticeKey, daysLeft: number | null, now: Date): Promise<Claim> {
   try {
-    return await prisma.trialNotice.create({ data: { ...key, status: "SENDING", claimedAt: now }, select: { id: true } });
+    const created = await prisma.trialNotice.create({ data: { ...key, daysLeft, status: "SENDING", createdAt: now, claimedAt: now }, select: { id: true } });
+    return { id: created.id, daysLeft };
   } catch (e) {
     if (!(e instanceof Prisma.PrismaClientKnownRequestError && e.code === "P2002")) throw e;
   }
   const row = await prisma.trialNotice.findUnique({
     where: { organizationId_stage_trialEndsAt_userId: key },
-    select: { id: true, status: true, attempts: true, claimedAt: true },
+    select: { id: true, status: true, attempts: true, claimedAt: true, createdAt: true, daysLeft: true },
   });
-  if (!row || row.status === "SENT" || row.attempts >= MAX_ATTEMPTS) return null;
-  const retryable = row.status === "FAILED" || (row.status === "SENDING" && row.claimedAt.getTime() <= now.getTime() - STALE_CLAIM_MS);
-  if (!retryable) return null;
+  if (!row || !noticeRetryable(row, now)) return null;
   // Conditional: exactly one concurrent run wins the retry.
   const { count } = await prisma.trialNotice.updateMany({
-    where: { id: row.id, status: row.status, attempts: row.attempts },
+    where: { id: row.id, status: row.status, attempts: row.attempts, claimedAt: row.claimedAt },
     data: { status: "SENDING", attempts: { increment: 1 }, claimedAt: now, lastError: null },
   });
-  return count === 1 ? { id: row.id } : null;
+  return count === 1 ? { id: row.id, daysLeft: row.daysLeft } : null;
 }
 
-async function noticeHandled(key: { organizationId: string; userId: string; stage: TrialStage; trialEndsAt: Date }): Promise<boolean> {
-  const row = await prisma.trialNotice.findUnique({ where: { organizationId_stage_trialEndsAt_userId: key }, select: { status: true, attempts: true } });
-  return Boolean(row && (row.status === "SENT" || row.attempts >= MAX_ATTEMPTS));
+/** Audit mode: would "send" mode send this email now? Read-only. */
+async function wouldSend(key: NoticeKey, now: Date): Promise<boolean> {
+  const row = await prisma.trialNotice.findUnique({ where: { organizationId_stage_trialEndsAt_userId: key }, select: { status: true, attempts: true, claimedAt: true, createdAt: true } });
+  return !row || noticeRetryable(row, now);
 }
 
 export async function runTrialLifecycle(now: Date = new Date(), options: { mode?: TrialLifecycleMode } = {}): Promise<TrialLifecycleRun> {
   const mode = options.mode ?? trialLifecycleMode();
-  const run: TrialLifecycleRun = { mode, organizations: 0, expiredRecorded: 0, emailsSent: 0, emailsFailed: 0, alreadyHandled: 0, wouldSend: 0, errors: [] };
+  const run: TrialLifecycleRun = { mode, organizations: 0, expiredRecorded: 0, emailsSent: 0, emailsFailed: 0, emailsUncertain: 0, alreadyHandled: 0, wouldSend: 0, errors: [] };
   if (mode === "off") return run;
 
   const orgs = await prisma.organization.findMany({
@@ -156,6 +187,7 @@ export async function runTrialLifecycle(now: Date = new Date(), options: { mode?
       // 2 — the email of the current stage, once per verified OWNER.
       const stage = trialNoticeStage(trialEndsAt, now);
       if (!stage) continue;
+      const timeZone = await organizationTimeZone(org.id);
       const owners = await prisma.organizationMembership.findMany({
         where: { organizationId: org.id, role: "OWNER", user: { emailVerifiedAt: { not: null } } },
         select: { user: { select: { id: true, email: true } } },
@@ -164,11 +196,11 @@ export async function runTrialLifecycle(now: Date = new Date(), options: { mode?
       for (const { user } of owners) {
         const key = { organizationId: org.id, userId: user.id, stage, trialEndsAt };
         if (mode === "audit") {
-          if (await noticeHandled(key)) run.alreadyHandled++;
-          else run.wouldSend++;
+          if (await wouldSend(key, now)) run.wouldSend++;
+          else run.alreadyHandled++;
           continue;
         }
-        const claim = await claimNotice(key, now);
+        const claim = await claimNotice(key, stage === "EXPIRED" ? null : trialDaysLeft(trialEndsAt, now), now);
         if (!claim) {
           run.alreadyHandled++;
           continue;
@@ -178,8 +210,8 @@ export async function runTrialLifecycle(now: Date = new Date(), options: { mode?
             to: user.email,
             organizationName: org.name,
             stage: stage === "EXPIRED" ? "EXPIRED" : "REMINDER",
-            daysLeft: trialDaysLeft(trialEndsAt, now),
-            endsOn: trialDateLabel(trialEndsAt),
+            daysLeft: claim.daysLeft, // frozen at the first claim: a retry is byte-identical
+            endsOn: trialDateLabel(trialEndsAt, timeZone),
             upgradeLine: billingConfig().enabled ? "To keep Pro, subscribe on your organization's Billing page." : upgradeHint(),
             path: `/admin/o/${encodeURIComponent(org.slug)}`,
             idempotencyKey: `trial-notice/${claim.id}`,
@@ -187,10 +219,12 @@ export async function runTrialLifecycle(now: Date = new Date(), options: { mode?
           await prisma.trialNotice.update({ where: { id: claim.id }, data: { status: "SENT", sentAt: new Date() } });
           run.emailsSent++;
         } catch (e) {
-          const reason = e instanceof Error ? e.name : "error";
-          await prisma.trialNotice.update({ where: { id: claim.id }, data: { status: "FAILED", lastError: reason.slice(0, 200) } });
-          run.emailsFailed++;
-          console.error(`[trial] email not sent (stage ${stage}): ${reason}`);
+          const status = classifySendError(e);
+          const reason = e instanceof EmailDeliveryError ? `${e.reason}${e.status ? ` ${e.status}` : ""}` : e instanceof Error ? e.name : "error";
+          await prisma.trialNotice.update({ where: { id: claim.id }, data: { status, lastError: reason.slice(0, 200) } });
+          if (status === "UNCERTAIN") run.emailsUncertain++;
+          else run.emailsFailed++;
+          console.error(`[trial] email ${status === "UNCERTAIN" ? "delivery unclear" : "not sent"} (stage ${stage}): ${reason}`);
         }
       }
     } catch (e) {

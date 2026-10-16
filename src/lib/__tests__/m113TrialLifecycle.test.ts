@@ -62,7 +62,7 @@ describe("Telegram 'not in plan' message — understandable, honest about billin
   it("after the trial: when it ended, what still works, nothing deleted, coming soon (billing off)", () => {
     vi.stubEnv("BILLING_ENABLED", "");
     expect(telegramNotInPlanMessage({ plan: "FREE", trialEndsAt: END }, at(DAY), {})).toBe(
-      "Telegram integration is part of Pro. This organization's Pro trial ended on Jan 31, 2027, so it is now on the Free plan. Players can still answer through the match link, and existing polls, messages and connected Telegram groups are kept. Pro plans and upgrades are coming soon."
+      "Telegram integration is part of Pro. This organization's Pro trial ended on Jan 31, 2027, 10:30 AM UTC, so it is now on the Free plan. Players can still answer through the match link, and existing polls, messages and connected Telegram groups are kept. Pro plans and upgrades are coming soon."
     );
     expect(telegramNotInPlanMessage({ plan: "FREE", trialEndsAt: null }, END, {})).toBe(
       "Telegram integration is part of Pro. This organization is on the Free plan; players can answer through the match link. Pro plans and upgrades are coming soon."
@@ -82,9 +82,9 @@ describe("trial banner", () => {
   it("OWNER/ADMIN only; ending (≤ 14 days) and expired (≤ 30 days after); never for MEMBER, LEGACY, COMP or long-expired", () => {
     expect(trialBannerView(org, "MEMBER", at(-DAY), false)).toBeNull();
     expect(trialBannerView(org, "OWNER", at(-15 * DAY), false)).toBeNull();
-    expect(trialBannerView(org, "OWNER", at(-3 * DAY), false)).toMatchObject({ phase: "ending", title: "Your Pro trial ends in 3 days (Jan 31, 2027).", upgradeHref: null, hint: "Pro plans and upgrades are coming soon." });
-    expect(trialBannerView(org, "ADMIN", at(-1), false)?.title).toBe("Your Pro trial ends in less than a day (Jan 31, 2027).");
-    expect(trialBannerView(org, "OWNER", at(DAY), false)).toMatchObject({ phase: "expired", title: "Your Pro trial ended on Jan 31, 2027. This organization is on the Free plan." });
+    expect(trialBannerView(org, "OWNER", at(-3 * DAY), false)).toMatchObject({ phase: "ending", title: "Your Pro trial ends in 3 days (Jan 31, 2027, 10:30 AM UTC).", upgradeHref: null, hint: "Pro plans and upgrades are coming soon." });
+    expect(trialBannerView(org, "ADMIN", at(-1), false)?.title).toBe("Your Pro trial ends in less than a day (Jan 31, 2027, 10:30 AM UTC).");
+    expect(trialBannerView(org, "OWNER", at(DAY), false)).toMatchObject({ phase: "expired", title: "Your Pro trial ended on Jan 31, 2027, 10:30 AM UTC. This organization is on the Free plan." });
     expect(trialBannerView(org, "OWNER", at(DAY), false)!.body).toMatch(/Telegram polls.*off on Free.*kept/);
     expect(trialBannerView(org, "OWNER", at(31 * DAY), false)).toBeNull();
     for (const plan of ["LEGACY", "COMP", "PRO"] as const) expect(trialBannerView({ ...org, plan }, "OWNER", at(-DAY), false)).toBeNull();
@@ -145,10 +145,13 @@ describe("session cutoff after a password reset", () => {
 });
 
 describe("wiring (source checks)", () => {
-  it("organizer poll close and closure-notice retry check the Telegram plan after the role check; mark_sent does not send", () => {
+  it("close-only: organizer poll close has NO entry plan check (closing isn't a new message); the notice sender checks the plan before reserving anything; retry still needs Pro", () => {
     const close = read("src/app/api/admin/o/[organizationSlug]/g/[groupSlug]/matches/[matchId]/poll/close/route.ts");
-    expect(close.indexOf("telegramDenied(context.organization.id)")).toBeGreaterThan(close.indexOf("managersOnlyResponse(context)"));
-    expect(close.indexOf("telegramDenied(context.organization.id)")).toBeLessThan(close.indexOf("closeMatchAttendancePolls(context"));
+    expect(close).not.toContain("telegramDenied");
+    const closure = read("src/lib/pollClosure.ts");
+    const fn = closure.slice(closure.indexOf("export async function sendPollClosedNotice"));
+    expect(fn.indexOf('if (!(await groupTelegramAllowed(p.groupId))) return "not_in_plan";')).toBeGreaterThan(0);
+    expect(fn.indexOf("groupTelegramAllowed")).toBeLessThan(fn.indexOf("prisma.$transaction"));
     const notice = read("src/app/api/admin/o/[organizationSlug]/g/[groupSlug]/matches/[matchId]/poll/close-notice/route.ts");
     expect(notice).toMatch(/if \(parsed\.data\.action === "retry"\) \{\s*const notInPlan = await telegramDenied/);
   });
@@ -178,5 +181,76 @@ describe("wiring (source checks)", () => {
     const forgot = read("src/app/api/password/forgot/route.ts");
     expect(forgot).toContain("after(");
     expect(forgot.match(/NextResponse\.json\(\{ ok: true, message: FORGOT_PASSWORD_MESSAGE \}\)/g)).toHaveLength(1);
+  });
+});
+
+describe("M11.3 review — email outcome classification and retry window", () => {
+  it("4xx (except 409) and configuration errors are FAILED; timeout / network / 5xx / 409 / unknown are UNCERTAIN", async () => {
+    const { classifySendError } = await import("@/lib/trialLifecycle");
+    const { EmailDeliveryError } = await import("@/lib/email/transport");
+    const { EmailConfigError } = await import("@/lib/email/config");
+    expect(classifySendError(new EmailDeliveryError("http", 422))).toBe("FAILED");
+    expect(classifySendError(new EmailDeliveryError("http", 429))).toBe("FAILED");
+    expect(classifySendError(new EmailConfigError("x"))).toBe("FAILED");
+    for (const e of [new EmailDeliveryError("timeout"), new EmailDeliveryError("network"), new EmailDeliveryError("http", 500), new EmailDeliveryError("http", 409), new Error("?")]) expect(classifySendError(e)).toBe("UNCERTAIN");
+  });
+  it("retryable: FAILED below the cap; UNCERTAIN / stale SENDING only inside the window; never SENT", async () => {
+    const { noticeRetryable, MAX_ATTEMPTS, STALE_CLAIM_MS, UNCERTAIN_RETRY_WINDOW_MS } = await import("@/lib/trialLifecycle");
+    const t0 = new Date("2027-01-01T00:00:00Z");
+    const at = (ms: number) => new Date(t0.getTime() + ms);
+    const row = (status: "SENDING" | "SENT" | "FAILED" | "UNCERTAIN", attempts = 1, claimed = t0) => ({ status, attempts, claimedAt: claimed, createdAt: t0 });
+    expect(noticeRetryable(row("SENT"), at(1))).toBe(false);
+    expect(noticeRetryable(row("FAILED"), at(1))).toBe(true);
+    expect(noticeRetryable(row("FAILED", MAX_ATTEMPTS), at(1))).toBe(false);
+    expect(noticeRetryable(row("UNCERTAIN"), at(UNCERTAIN_RETRY_WINDOW_MS - 1))).toBe(true);
+    expect(noticeRetryable(row("UNCERTAIN"), at(UNCERTAIN_RETRY_WINDOW_MS))).toBe(false);
+    expect(noticeRetryable(row("SENDING"), at(STALE_CLAIM_MS - 1))).toBe(false); // may still be sending
+    expect(noticeRetryable(row("SENDING"), at(STALE_CLAIM_MS))).toBe(true);
+    expect(UNCERTAIN_RETRY_WINDOW_MS).toBeLessThan(24 * 3_600_000); // inside Resend's idempotency window
+  });
+});
+
+describe("M11.3 review — automatic Game Day never sent for a due time on Free", () => {
+  it("MISSED_WHILE_FREE when the due time precedes entitledSince; manual sending is not affected", async () => {
+    const { gameDayUpdateDecision, manualGameDayDecision } = await import("@/lib/gameDayUpdateSchedule");
+    const deadline = new Date("2099-06-03T21:00:00Z");
+    const facts = {
+      enabled: true, hoursBefore: 4, telegramAllowed: true, matchStatus: "SCHEDULED" as const, attendanceClosedAt: null, attendanceDeadlineAt: deadline, schedule: "none" as const,
+      poll: { postedAt: new Date(deadline.getTime() - 24 * 3_600_000), chatConnected: true, chatMatchesMatch: true }, delivery: null,
+    };
+    const now = new Date(deadline.getTime() - 2 * 3_600_000); // due was 2 h ago
+    expect(gameDayUpdateDecision(facts, now).kind).toBe("send");
+    expect(gameDayUpdateDecision({ ...facts, entitledSince: new Date(now.getTime() - 60_000) }, now)).toMatchObject({ kind: "blocked", reason: "MISSED_WHILE_FREE" });
+    expect(gameDayUpdateDecision({ ...facts, entitledSince: new Date(deadline.getTime() - 5 * 3_600_000) }, now).kind).toBe("send");
+    expect(manualGameDayDecision({ ...facts, entitledSince: new Date(now.getTime() - 60_000) }, now).kind).toBe("ready");
+  });
+});
+
+describe("M11.3 review — every Telegram send site is plan-guarded (source inventory)", () => {
+  it("each callTelegram send / close site is in a reviewed list with its guard; nothing new appears unreviewed", () => {
+    const walk = (d: string): string[] => fs.readdirSync(path.join(process.cwd(), d), { withFileTypes: true }).flatMap((e) => (e.isDirectory() ? walk(path.join(d, e.name)) : /\.ts$/.test(e.name) && !/test\.ts$/.test(e.name) ? [path.join(d, e.name)] : []));
+    const sites: string[] = [];
+    for (const f of walk("src")) {
+      const src = read(f).replace(/^\s*\/\/.*$/gm, "");
+      for (const m of src.matchAll(/callTelegram\("(\w+)"/g)) sites.push(`${f}:${m[1]}`);
+    }
+    // guard: E = plan check at the entry point (real clock); C = plan check inside the send core; X = close-only / read (allowed on Free)
+    const REVIEWED: Record<string, string> = {
+      "src/lib/telegramAttendance.ts:sendPoll": "C postAttendancePollFor → telegramDenied",
+      "src/lib/telegramAdmin.ts:sendPoll": "E createTelegramPollForContext → telegramDenied",
+      "src/lib/pollClosure.ts:stopPoll": "X closes an already-posted poll (no new message)",
+      "src/lib/pollClosure.ts:sendMessage": "C sendPollClosedNotice → groupTelegramAllowed",
+      "src/lib/telegramChannels.ts:getChatAdministrators": "X read; after the NOT_IN_PLAN check of redeemTelegramBindCode",
+      "src/lib/telegramCloseAndPost.ts:sendMessage": "E closePollAndPostTeamsForContext → telegramDenied",
+      "src/lib/postGame.ts:sendPoll": "E start_mvp → telegramDenied",
+      "src/lib/postGame.ts:stopPoll": "X close_mvp closes an already-posted MVP poll",
+      "src/lib/postGame.ts:sendMessage": "E post_message → telegramDenied",
+      "src/lib/gameDayUpdate.ts:sendMessage": "C loadFacts → organizationPlan + entitledSince inside the Game Day lock",
+    };
+    expect([...new Set(sites)].sort()).toEqual(Object.keys(REVIEWED).sort());
+    expect(read("src/lib/pollClosure.ts")).toMatch(/if \(!\(await groupTelegramAllowed\(p\.groupId\)\)\) return "not_in_plan";/);
+    expect(read("src/lib/telegramAttendance.ts").split("export async function postAttendancePollFor")[1]).toMatch(/const notInPlan = await telegramDenied\(context\.organization\.id\);/);
+    // The webhook's own replies answer a user's command in that chat (connect / help texts) — not organization content.
+    expect(read("src/app/api/telegram/webhook/route.ts").replace(/^\s*\/\/.*$/gm, "")).not.toMatch(/sendPoll"|callTelegram\(/);
   });
 });

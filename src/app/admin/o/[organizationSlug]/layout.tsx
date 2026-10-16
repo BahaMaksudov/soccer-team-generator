@@ -3,6 +3,8 @@ import { unstable_rethrow } from "next/navigation";
 import { prisma } from "@/lib/prisma";
 import { requireOrganizationContextForSlug } from "@/lib/tenantContext";
 import { trialBannerView } from "@/lib/trialBanner";
+import { billingConfig } from "@/lib/billing/config";
+import { organizationTimeZone } from "@/lib/entitlements";
 import { TrialBanner } from "@/components/billing/TrialBanner";
 
 /**
@@ -20,7 +22,7 @@ export default async function OrganizationLayout({ children, params }: { childre
   try {
     const context = await requireOrganizationContextForSlug({ organizationSlug });
     const org = await prisma.organization.findUniqueOrThrow({ where: { id: context.organization.id }, select: { slug: true, plan: true, trialEndsAt: true } });
-    banner = trialBannerView(org, context.membership.role);
+    banner = trialBannerView(org, context.membership.role, new Date(), billingConfig().enabled, await organizationTimeZone(context.organization.id));
   } catch (e) {
     unstable_rethrow(e); // Next.js control flow (dynamic rendering, redirects) is never swallowed
     banner = null;

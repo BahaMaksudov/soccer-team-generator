@@ -29,7 +29,7 @@ export default function PricingPage() {
           <p className="text-xs font-bold uppercase tracking-widest text-accent">Pricing</p>
           <h1 className="text-4xl font-black leading-tight sm:text-5xl">Simple plans for pickup sports</h1>
           <p className="mx-auto max-w-2xl text-muted-foreground">
-            Start free — your first organization includes a {TRIAL_DAYS}-day Pro trial with no card required. Nothing is charged when it ends; you simply move to Free.
+            Start free — your first organization includes a {TRIAL_DAYS}-day Pro trial (one per account) with no card required. Nothing is charged when it ends; you simply move to Free.
           </p>
           <div className="flex flex-wrap justify-center gap-3">
             <Button asChild size="lg">

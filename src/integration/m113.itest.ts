@@ -37,8 +37,13 @@ import * as forgotRoute from "@/app/api/password/forgot/route";
 import * as resetRoute from "@/app/api/password/reset/route";
 import { createOrganizationWorkspace } from "@/lib/workspaces";
 import { runMatchAutomation } from "@/lib/matchAutomation";
-import { assertTelegram, effectivePlan, organizationPlan, TRIAL_DAYS } from "@/lib/entitlements";
-import { runTrialLifecycle, MAX_ATTEMPTS, STALE_CLAIM_MS } from "@/lib/trialLifecycle";
+import { assertTelegram, changeEntitlement, effectivePlan, organizationPlan, telegramEntitledSince, TRIAL_DAYS, trialAvailableFor } from "@/lib/entitlements";
+import { runTrialLifecycle, MAX_ATTEMPTS, STALE_CLAIM_MS, UNCERTAIN_RETRY_WINDOW_MS } from "@/lib/trialLifecycle";
+import * as closeAndPostRoute from "@/app/api/admin/o/[organizationSlug]/g/[groupSlug]/telegram/close-and-post/route";
+import { changePassword } from "@/lib/changePassword";
+import { gameDayUpdateStatus } from "@/lib/gameDayUpdate";
+import { setEmailTransportForTests, EmailDeliveryError, type EmailTransport, type CapturedEmail } from "@/lib/email/transport";
+import { RESET_LIMITS } from "@/lib/passwordResetLimit";
 import { redeemTelegramBindCode, bindReplyText } from "@/lib/telegramChannels";
 import { getPasswordResetPreview, resetPassword, PASSWORD_RESET_TTL_MS, FORGOT_PASSWORD_MESSAGE } from "@/lib/passwordReset";
 import { authenticateCredentials, hashPassword } from "@/lib/accounts";
@@ -97,7 +102,7 @@ const CHAT = (org: OrgId) => BigInt(-1000 - ORGS.indexOf(org));
 
 async function seed() {
   await prisma.$executeRawUnsafe(
-    `TRUNCATE "TrialNotice","PasswordResetToken","EntitlementEvent","MatchAutomationEmail","MatchAutomation","MatchSchedule","MessageDelivery","AttendanceResponse","TeamGeneration","Match","CommunityPlayer","Community","TelegramChatPlayer","TelegramChatBindCode","TelegramPollAnswer","TelegramPoll","TelegramChat","GroupSetting","Player","Group","OrganizationMembership","Organization","User","AppSetting" RESTART IDENTITY CASCADE`
+    `TRUNCATE "TrialNotice","PasswordResetToken","PasswordResetRequest","EntitlementEvent","MatchAutomationEmail","MatchAutomation","MatchSchedule","MessageDelivery","AttendanceResponse","TeamGeneration","Match","CommunityPlayer","Community","TelegramChatPlayer","TelegramChatBindCode","TelegramPollAnswer","TelegramPoll","TelegramChat","GroupSetting","Player","Group","OrganizationMembership","Organization","User","AppSetting" RESTART IDENTITY CASCADE`
   );
   NOW = new Date();
   const pw = await hashPassword("old-password-123");
@@ -223,18 +228,36 @@ describe("M11.3 — the 90-day trial", () => {
 
 // ============================================================ PART C — Telegram after expiry
 describe("M11.3 — Telegram after the trial ended", () => {
-  it("every organizer Telegram action is refused with an understandable 402 (never a generic error) and NOTHING is sent", async () => {
-    const msg = /^Telegram integration is part of Pro\. This organization's Pro trial ended on .+, so it is now on the Free plan\. .*kept\. Pro plans and upgrades are coming soon\.$/;
+  it("every organizer Telegram SEND is refused with an understandable 402 (never a generic error), dated in the organization's timezone; NOTHING is sent", async () => {
+    const msg = /^Telegram integration is part of Pro\. This organization's Pro trial ended on \w{3} \d{1,2}, \d{4}, \d{1,2}:\d{2} [AP]M E[SD]T, so it is now on the Free plan\. .*kept\. Pro plans and upgrades are coming soon\.$/;
     const post = await call(pollRoute.POST(json("POST", { intent: "post" }), gm("expired", "expired-m")));
     expect(post).toMatchObject({ status: 402, body: { code: "PLAN_LIMIT", metric: "telegram" } });
     expect(String(post.body.error)).toMatch(msg);
-    const close = await call(pollCloseRoute.POST(json("POST"), gm("expired", "expired-m")));
-    expect(close).toMatchObject({ status: 402, body: { code: "PLAN_LIMIT", metric: "telegram" } });
     expect(await call(closeNoticeRoute.POST(json("POST", { action: "retry", deliveryId: "d1" }), gm("expired", "expired-m")))).toMatchObject({ status: 402, body: { code: "PLAN_LIMIT" } });
     expect(await call(channelsRoute.POST(json("POST", {}), g("expired")))).toMatchObject({ status: 402, body: { code: "PLAN_LIMIT" } });
+    // "Post teams to Telegram" (closes the poll AND posts a message) stays Pro-only as a whole.
+    expect(await call(closeAndPostRoute.POST(json("POST", { matchId: "expired-m" }), g("expired")))).toMatchObject({ status: 402, body: { code: "PLAN_LIMIT" } });
     expect(tg).toEqual([]);
-    // The poll posted during the trial stays as it is (no silent close by an organizer action).
     expect((await prisma.telegramPoll.findUniqueOrThrow({ where: { pollId: "poll-expired" } })).isClosed).toBe(false);
+  });
+
+  it("CLOSE-ONLY: an organizer can close an already-posted poll without a deadline — stopPoll only, no closure notice even after teams were posted; repeating is a no-op", async () => {
+    await prisma.messageDelivery.create({ data: { groupId: "expired-g", matchId: "expired-m", eventType: "TEAMS_PUBLISHED", channel: "TELEGRAM", destination: CHAT("expired").toString(), telegramPollId: "poll-expired", contentHash: "t", status: "SENT", claimedAt: VERIFIED, sentAt: VERIFIED } });
+    expect((await prisma.match.findUniqueOrThrow({ where: { id: "expired-m" } })).attendanceDeadlineAt).toBeNull();
+    const first = await call(pollCloseRoute.POST(json("POST"), gm("expired", "expired-m")));
+    expect(first).toMatchObject({ status: 200, body: { ok: true, status: "closed", notices: ["not_in_plan"] } });
+    expect(String(first.body.message)).toMatch(/No closure notice was posted — Telegram messages are part of Pro\./);
+    expect(tgMethods()).toEqual(["stopPoll"]);
+    expect((await prisma.telegramPoll.findUniqueOrThrow({ where: { pollId: "poll-expired" } })).isClosed).toBe(true);
+    expect(await prisma.messageDelivery.count({ where: { eventType: "POLL_CLOSED_NOTICE" } })).toBe(0);
+    // Idempotent: closing again calls nothing and sends nothing.
+    tg = [];
+    expect(await call(pollCloseRoute.POST(json("POST"), gm("expired", "expired-m")))).toMatchObject({ status: 200, body: { ok: true, status: "already_closed" } });
+    expect(tg).toEqual([]);
+    // The same flow on an entitled organization still announces the close (unchanged behavior).
+    await prisma.messageDelivery.create({ data: { groupId: "legacy-g", matchId: "legacy-m", eventType: "TEAMS_PUBLISHED", channel: "TELEGRAM", destination: CHAT("legacy").toString(), telegramPollId: "poll-legacy", contentHash: "t", status: "SENT", claimedAt: VERIFIED, sentAt: VERIFIED } });
+    expect(await call(pollCloseRoute.POST(json("POST"), gm("legacy", "legacy-m")))).toMatchObject({ status: 200, body: { notices: ["sent"] } });
+    expect(tgMethods()).toEqual(["stopPoll", "sendMessage"]);
   });
 
   it("record-keeping stays available: marking an unclear notice as sent is not a Telegram send (passes the plan check)", async () => {
@@ -243,13 +266,16 @@ describe("M11.3 — Telegram after the trial ended", () => {
     expect(tg).toEqual([]);
   });
 
-  it("one User, several Organizations: the expired one is refused while the trial / LEGACY / COMP ones keep working", async () => {
-    expect((await call(pollCloseRoute.POST(json("POST"), gm("expired", "expired-m")))).status).toBe(402);
+  it("one User, several Organizations: posting is refused for the expired one while the trial / LEGACY / COMP ones keep working", async () => {
+    const expiredChat = await prisma.telegramChat.findFirstOrThrow({ where: { groupId: "expired-g" } });
+    expect((await call(pollRoute.POST(json("POST", { chatRef: expiredChat.id, intent: "post" }), gm("expired", "expired-m")))).status).toBe(402);
     for (const org of ["trial", "legacy", "comp"] as const) {
-      const r = await call(pollCloseRoute.POST(json("POST"), gm(org, `${org}-m`)));
-      expect(r.status, org).toBe(200);
+      const chat = await prisma.telegramChat.findFirstOrThrow({ where: { groupId: `${org}-g` } });
+      await prisma.match.create({ data: { id: `${org}-m2`, groupId: `${org}-g`, date: new Date("2099-06-10T00:00:00Z"), startTime: "21:00", communityId: `${org}-c`, telegramChatId: chat.id } });
+      const r = await call(pollRoute.POST(json("POST", { chatRef: chat.id, intent: "post" }), gm(org, `${org}-m2`)));
+      expect(r.status, `${org}: ${JSON.stringify(r.body)}`).toBeLessThan(300);
     }
-    expect(tgMethods().filter((m) => m === "stopPoll")).toHaveLength(3);
+    expect(tgMethods().filter((m) => m === "sendPoll")).toHaveLength(3);
     expect(tg.some((c) => c.body.chat_id === CHAT("expired").toString())).toBe(false);
   });
 
@@ -378,23 +404,93 @@ describe("M11.3 — trial reminder and expiry emails", () => {
     expect(testOutbox.sent.filter((m) => /has ended/.test(m.subject))).toEqual([]); // outside the 7-day window
   });
 
-  it("partial failure + retry: a refused email is retried on the next run (same idempotency key), others aren't re-sent; attempts are capped", async () => {
-    testOutbox.failNext = 1; // the first of the two owners of "expired"
-    const r1 = await runTrialLifecycle(NOW, { mode: "send" });
-    expect(r1).toMatchObject({ emailsSent: 1, emailsFailed: 1 });
-    const failed = await prisma.trialNotice.findFirstOrThrow({ where: { status: "FAILED" } });
-    testOutbox.clear();
-    const r2 = await runTrialLifecycle(new Date(NOW.getTime() + 15 * 60_000), { mode: "send" });
-    expect(r2).toMatchObject({ emailsSent: 1, emailsFailed: 0 });
-    expect(testOutbox.sent).toHaveLength(1);
-    expect(testOutbox.sent[0].idempotencyKey).toBe(`trial-notice/${failed.id}`);
-    expect(await prisma.trialNotice.findUniqueOrThrow({ where: { id: failed.id } })).toMatchObject({ status: "SENT", attempts: 2 });
+  /** A transport that fails the first `n` sends with `error`, then accepts (and records) like the outbox. */
+  const flaky = (n: number, error: () => Error): EmailTransport & { sent: CapturedEmail[] } => {
+    let left = n;
+    const t = {
+      name: "flaky",
+      sent: [] as CapturedEmail[],
+      async send(m: CapturedEmail) {
+        if (left-- > 0) throw error();
+        t.sent.push({ ...m });
+        return { providerMessageId: `ok-${t.sent.length}` };
+      },
+    };
+    return t;
+  };
 
-    // Cap: a notice that keeps failing stops after MAX_ATTEMPTS.
-    await prisma.trialNotice.update({ where: { id: failed.id }, data: { status: "FAILED", attempts: MAX_ATTEMPTS } });
-    testOutbox.clear();
-    await runTrialLifecycle(new Date(NOW.getTime() + 30 * 60_000), { mode: "send" });
+  it("FAILED (Resend definitely refused, 4xx): retried on later runs up to the attempt cap; the other owner's email isn't re-sent", async () => {
+    const t = flaky(1, () => new EmailDeliveryError("http", 422));
+    setEmailTransportForTests(t);
+    try {
+      expect(await runTrialLifecycle(NOW, { mode: "send" })).toMatchObject({ emailsSent: 1, emailsFailed: 1, emailsUncertain: 0 });
+      const failed = await prisma.trialNotice.findFirstOrThrow({ where: { status: "FAILED" } });
+      expect(failed.lastError).toBe("http 422");
+      expect(await runTrialLifecycle(new Date(NOW.getTime() + 15 * 60_000), { mode: "send" })).toMatchObject({ emailsSent: 1, alreadyHandled: 1 });
+      expect(t.sent).toHaveLength(2);
+      expect(t.sent[1].idempotencyKey).toBe(`trial-notice/${failed.id}`);
+      expect(await prisma.trialNotice.findUniqueOrThrow({ where: { id: failed.id } })).toMatchObject({ status: "SENT", attempts: 2 });
+      // Cap: a notice that keeps failing stops after MAX_ATTEMPTS.
+      await prisma.trialNotice.update({ where: { id: failed.id }, data: { status: "FAILED", attempts: MAX_ATTEMPTS } });
+      t.sent.length = 0;
+      await runTrialLifecycle(new Date(NOW.getTime() + 30 * 60_000), { mode: "send" });
+      expect(t.sent).toEqual([]);
+    } finally {
+      setEmailTransportForTests(null);
+    }
+  });
+
+  it("UNCERTAIN (timeout / network / 5xx / 409): retried only inside Resend's idempotency window with the SAME key; never after the window", async () => {
+    for (const error of [() => new EmailDeliveryError("timeout"), () => new EmailDeliveryError("http", 503), () => new EmailDeliveryError("http", 409)]) {
+      await prisma.trialNotice.deleteMany();
+      const t = flaky(2, error); // both owners: unclear outcome
+      setEmailTransportForTests(t);
+      try {
+        expect(await runTrialLifecycle(NOW, { mode: "send" })).toMatchObject({ emailsSent: 0, emailsUncertain: 2, emailsFailed: 0 });
+        expect(await prisma.trialNotice.count({ where: { status: "UNCERTAIN" } })).toBe(2);
+        await runTrialLifecycle(new Date(NOW.getTime() + 5 * H), { mode: "send" });
+        const rows = await prisma.trialNotice.findMany();
+        expect(t.sent.map((m) => m.idempotencyKey).sort()).toEqual(rows.map((r) => `trial-notice/${r.id}`).sort());
+        expect(rows.every((r) => r.status === "SENT" && r.attempts === 2)).toBe(true);
+      } finally {
+        setEmailTransportForTests(null);
+      }
+    }
+    await prisma.trialNotice.deleteMany();
+    const t = flaky(2, () => new EmailDeliveryError("network"));
+    setEmailTransportForTests(t);
+    try {
+      await runTrialLifecycle(NOW, { mode: "send" });
+      await runTrialLifecycle(new Date(NOW.getTime() + UNCERTAIN_RETRY_WINDOW_MS + 1), { mode: "send" });
+      expect(t.sent).toEqual([]); // Resend would no longer de-duplicate: never sent again
+      expect(await prisma.trialNotice.count({ where: { status: "UNCERTAIN" } })).toBe(2);
+    } finally {
+      setEmailTransportForTests(null);
+    }
+  });
+
+  it("a retried reminder is byte-identical to its first attempt (daysLeft frozen at the first claim)", async () => {
+    const at0 = new Date("2027-03-01T12:00:00Z");
+    await prisma.organization.update({ where: { id: "expired" }, data: { trialEndsAt: null } });
+    await ending("trial", 6 * DAY + 2 * H, at0); // D7 stage; ceil → 7 days left
+    const t = flaky(1, () => new EmailDeliveryError("timeout"));
+    setEmailTransportForTests(t);
+    try {
+      await runTrialLifecycle(at0, { mode: "send" });
+      await runTrialLifecycle(new Date(at0.getTime() + 20 * H), { mode: "send" }); // same D7 stage; ceil would now be 6
+      expect(t.sent).toHaveLength(1);
+      expect(t.sent[0].subject).toBe("Your Pro trial ends in 7 days — Org trial");
+    } finally {
+      setEmailTransportForTests(null);
+    }
+  });
+
+  it("audit mode never marks an email delivered nor uses up the send opportunity", async () => {
+    expect(await runTrialLifecycle(NOW, { mode: "audit" })).toMatchObject({ wouldSend: 2, emailsSent: 0 });
+    expect(await prisma.trialNotice.count()).toBe(0);
     expect(testOutbox.sent).toEqual([]);
+    expect((await runTrialLifecycle(NOW, { mode: "send" })).emailsSent).toBe(2);
+    expect(await runTrialLifecycle(NOW, { mode: "audit" })).toMatchObject({ wouldSend: 0, alreadyHandled: 2 });
   });
 
   it("an interrupted send (stale SENDING claim) is retried once it is stale — never while another run may still be sending", async () => {
@@ -499,20 +595,43 @@ describe("M11.3 — password recovery", () => {
     expect(results.filter((r) => !r.ok).every((r) => !r.ok && r.code === "RESET_USED")).toBe(true);
   });
 
-  it("rate limits: requests per address (429) and per email (generic answer, nothing sent); submissions per address", async () => {
-    await forgot("owner@example.test");
-    expect(rateLimitCalls).toEqual([
-      { bucket: "password-reset-ip", key: "203.0.113.7" },
-      { bucket: "password-reset-email", key: "owner@example.test" },
-    ]);
-    testOutbox.clear();
-    rateLimitDeny = "password-reset-email";
+  it("rate limits WITHOUT Upstash (database log, always on): 3 emails per email / 30 min, then the same generic answer with nothing sent; 10 requests per address → 429", async () => {
+    // Upstash isn't configured here (its spy allows everything) — the database limit still holds.
+    for (let i = 0; i < RESET_LIMITS.email.max; i++) await forgot("owner@example.test");
+    expect(testOutbox.sent).toHaveLength(RESET_LIMITS.email.max);
     expect(await forgot("owner@example.test")).toEqual({ status: 200, body: { ok: true, message: FORGOT_PASSWORD_MESSAGE } });
-    expect(testOutbox.sent).toEqual([]);
+    expect(await forgot(" OWNER@example.test")).toEqual({ status: 200, body: { ok: true, message: FORGOT_PASSWORD_MESSAGE } }); // normalized: the same email
+    expect(testOutbox.sent).toHaveLength(RESET_LIMITS.email.max);
+    // Unknown addresses count the same way (nothing to observe).
+    for (let i = 0; i < RESET_LIMITS.ip.max - 5; i++) expect((await forgot(`nobody${i}@example.test`)).status).toBe(200);
+    expect((await forgot("someone@example.test")).status).toBe(429); // the 11th request from this address
+    // Another address is unaffected; stored rows hold only keyed digests.
+    expect((await call(forgotRoute.POST(json("POST", { email: "admin@example.test" }, { "x-forwarded-for": "198.51.100.9" })))).status).toBe(200);
+    expect(JSON.stringify(await prisma.passwordResetRequest.findMany())).not.toMatch(/example\.test|203\.0\.113|198\.51/);
+    // The optional Upstash layer is honored when it does answer "no".
     rateLimitDeny = "password-reset-ip";
-    expect((await forgot("owner@example.test")).status).toBe(429);
+    expect((await call(forgotRoute.POST(json("POST", { email: "admin@example.test" }, { "x-forwarded-for": "192.0.2.1" })))).status).toBe(429);
+    expect(rateLimitCalls.every((c) => c.bucket === "password-reset-ip")).toBe(true);
     rateLimitDeny = "password-reset-submit";
     expect((await reset("x".repeat(43))).status).toBe(429);
+  });
+
+  it("the database limit is serialized: a concurrent burst for one email from many addresses sends at most 3 emails", async () => {
+    await Promise.all(Array.from({ length: 8 }, (_, i) => call(forgotRoute.POST(json("POST", { email: "owner@example.test" }, { "x-forwarded-for": `192.0.2.${i + 10}` })))));
+    await runAfter();
+    expect(testOutbox.sent).toHaveLength(RESET_LIMITS.email.max);
+  });
+
+  it("a signed-in password change ends every older session (same rule as a reset)", async () => {
+    const jwt = authOptions.callbacks!.jwt!;
+    const oldIat = Math.floor(Date.now() / 1000) - 5;
+    expect(await changePassword("u-admin", { currentPassword: "old-password-123", newPassword: "changed-pass-77", confirmPassword: "changed-pass-77" })).toEqual({ ok: true });
+    expect(await jwt({ token: { uid: "u-admin", email: "admin@example.test", iat: oldIat }, account: null } as never)).toEqual({});
+    expect(await jwt({ token: { uid: "u-admin", email: "admin@example.test", iat: Math.floor(Date.now() / 1000) + 2 }, account: null } as never)).toMatchObject({ uid: "u-admin" });
+    expect(await jwt({ token: { uid: "u-owner", email: "owner@example.test", iat: oldIat }, account: null } as never)).toMatchObject({ uid: "u-owner" }); // others untouched
+    // A wrong current password changes nothing (no session cutoff either).
+    expect(await changePassword("u-owner", { currentPassword: "nope-nope-1", newPassword: "x-changed-88", confirmPassword: "x-changed-88" })).toEqual({ ok: false, code: "CURRENT_PASSWORD_INCORRECT" });
+    expect((await prisma.user.findUniqueOrThrow({ where: { id: "u-owner" } })).sessionsValidAfter).toBeNull();
   });
 
   it("a Google-only account can't get a password through a reset token", async () => {
@@ -520,6 +639,107 @@ describe("M11.3 — password recovery", () => {
     await prisma.passwordResetToken.create({ data: { userId: "u-google", tokenHash: hashToken("g".repeat(43)), expiresAt: new Date(Date.now() + H) } });
     expect(await reset("g".repeat(43))).toMatchObject({ status: 400, body: { code: "RESET_INVALID" } });
     expect((await prisma.user.findUniqueOrThrow({ where: { id: "u-google" } })).passwordHash).toBeNull();
+  });
+});
+
+// ============================================================ upgrade after expiry: resume, never replay
+describe("M11.3 — after a verified upgrade, automation resumes without replaying what was missed on Free", () => {
+  const schedule = async (org: OrgId) =>
+    prisma.matchSchedule.create({
+      data: { id: `${org}-s`, groupId: `${org}-g`, communityId: `${org}-c`, timezone: TZ, weekday: 1, startTime: "21:00", pollDaysBefore: 1, pollTime: "20:00", cutoffDaysBefore: 0, cutoffTime: "20:00" },
+    });
+  let occurrence = 0;
+  const scheduledMatch = async (org: OrgId, id: string, pollDueAt: Date) => {
+    const chat = await prisma.telegramChat.findFirstOrThrow({ where: { groupId: `${org}-g` } });
+    const date = new Date(Date.UTC(2099, 6, 6 + 7 * occurrence++)); // one match per schedule occurrence
+    await prisma.match.create({ data: { id, groupId: `${org}-g`, date, startTime: "21:00", communityId: `${org}-c`, telegramChatId: chat.id, scheduleId: `${org}-s` } });
+    await prisma.matchAutomation.create({ data: { matchId: id, groupId: `${org}-g`, pollDueAt, cutoffDueAt: new Date(pollDueAt.getTime() + 2 * DAY) } });
+  };
+
+  it("on Free: the scheduled poll step completes as 'match link' (match and attendance kept); nothing is posted", async () => {
+    await schedule("expired");
+    await scheduledMatch("expired", "exp-s1", new Date(Date.now() - H));
+    await runMatchAutomation(new Date(), { matchId: "exp-s1" });
+    expect(tg).toEqual([]);
+    expect(await prisma.matchAutomation.findUniqueOrThrow({ where: { matchId: "exp-s1" } })).toMatchObject({ pollPostedAt: expect.any(Date) });
+    expect(await prisma.match.findUniqueOrThrow({ where: { id: "exp-s1" } })).toMatchObject({ status: "SCHEDULED", telegramChatId: expect.any(Number) });
+  });
+
+  it("upgrade (verified grant): a poll that fell due while on Free is NOT posted late; one due after the upgrade IS; manual posting works for the skipped one", async () => {
+    await schedule("expired");
+    await scheduledMatch("expired", "exp-missed", new Date(Date.now() - H)); // due while Free, automation hadn't run yet
+    await changeEntitlement({ organizationId: "expired", action: "grant-comp", reason: "itest upgrade", actor: "itest" });
+    const since = await telegramEntitledSince("expired");
+    expect(since!.getTime()).toBeGreaterThan(Date.now() - 60_000);
+    await scheduledMatch("expired", "exp-after", new Date(Date.now() + 60_000));
+
+    await runMatchAutomation(new Date(Date.now() + 2 * 60_000), { matchId: "exp-missed" });
+    expect(tg).toEqual([]); // no replay
+    expect((await prisma.matchAutomation.findUniqueOrThrow({ where: { matchId: "exp-missed" } })).pollPostedAt).not.toBeNull();
+
+    await runMatchAutomation(new Date(Date.now() + 2 * 60_000), { matchId: "exp-after" });
+    expect(tgMethods()).toEqual(["sendPoll"]); // resumed per existing settings
+
+    tg = [];
+    const chat = await prisma.telegramChat.findFirstOrThrow({ where: { groupId: "expired-g" } });
+    const manual = await call(pollRoute.POST(json("POST", { chatRef: chat.id, intent: "post" }), gm("expired", "exp-missed")));
+    expect(manual.status, JSON.stringify(manual.body)).toBeLessThan(300);
+    expect(tgMethods()).toEqual(["sendPoll"]);
+  });
+
+  it("Game Day: an automatic update that fell due while on Free is never sent after the upgrade (status says why); an org entitled throughout still catches up", async () => {
+    const now = Date.now();
+    for (const org of ["expired", "trial"] as const) {
+      await prisma.groupSetting.create({ data: { groupId: `${org}-g`, key: "gameDayUpdate", value: JSON.stringify({ enabled: true, hoursBefore: 4, includeWeather: false, units: "imperial" }) } });
+      await prisma.match.update({ where: { id: `${org}-m` }, data: { attendanceDeadlineAt: new Date(now + 3 * H) } }); // due = now − 1 h
+      await prisma.telegramPoll.update({ where: { pollId: `poll-${org}` }, data: { createdAt: new Date(now - 24 * H) } });
+    }
+    await changeEntitlement({ organizationId: "expired", action: "grant-comp", reason: "itest upgrade", actor: "itest" });
+    const runAt = new Date(now + 60_000);
+    await runMatchAutomation(runAt, { groupId: "expired-g" });
+    expect(tg).toEqual([]);
+    expect(await gameDayUpdateStatus("expired-g", "expired", "expired-m", false, runAt)).toMatchObject({ state: "MISSED_WHILE_FREE", text: "Not sent: it was due while the organization was on the Free plan" });
+    await runMatchAutomation(runAt, { groupId: "trial-g" });
+    expect(tgMethods()).toEqual(["sendMessage"]);
+  });
+
+  it("entitledSince: trial → its start; LEGACY → no restriction; Stripe/COMP during a running trial → continuous since the trial start", async () => {
+    expect((await telegramEntitledSince("trial"))?.toISOString()).toBe(PLANS(NOW).trial.trialStartedAt!.toISOString());
+    expect(await telegramEntitledSince("legacy")).toBeNull();
+    await changeEntitlement({ organizationId: "trial", action: "grant-comp", reason: "comp during trial", actor: "itest" });
+    expect((await telegramEntitledSince("trial"))?.toISOString()).toBe(PLANS(NOW).trial.trialStartedAt!.toISOString());
+  });
+});
+
+describe("M11.3 — trial policy, timezone display, untouched data", () => {
+  it("one trial per account: the first organization only; a second (LEGACY-qualified) organization starts on Free", async () => {
+    expect(await trialAvailableFor("u-beta")).toBe(true);
+    expect(await trialAvailableFor("u-owner")).toBe(false); // already owns organizations
+    await prisma.organization.create({ data: { id: "beta-legacy", name: "Beta Legacy", slug: "beta-legacy", plan: "LEGACY" } });
+    await prisma.organizationMembership.create({ data: { userId: "u-beta", organizationId: "beta-legacy", role: "OWNER" } });
+    expect(await trialAvailableFor("u-beta")).toBe(false);
+    const second = await createOrganizationWorkspace("u-beta", { organizationName: "Beta Second", groupName: "G", sportKey: "soccer", timezone: "UTC" });
+    expect(await prisma.organization.findUniqueOrThrow({ where: { id: second.organization.id } })).toMatchObject({ plan: "FREE", trialStartedAt: null, trialEndsAt: null });
+  });
+
+  it("UTC end is authoritative; the plan card label is shown in the organization's timezone with the zone named", async () => {
+    const { planSummary } = await import("@/lib/entitlements");
+    await prisma.organization.update({ where: { id: "trial" }, data: { trialEndsAt: new Date("2099-01-01T03:00:00Z") } });
+    const s = await planSummary("trial", new Date("2098-12-30T00:00:00Z"));
+    expect(s.trialEndsAt).toBe("2099-01-01T03:00:00.000Z");
+    expect(s.trialEndsLabel).toBe("Dec 31, 2098, 10:00 PM EST"); // America/New_York: the previous calendar day
+  });
+
+  it("expiry + automation + close never delete data, disconnect Telegram, or touch LEGACY / COMP", async () => {
+    const before = await counts();
+    const orgsBefore = await prisma.organization.findMany({ where: { id: { in: ["legacy", "comp"] } }, orderBy: { id: "asc" } });
+    await runMatchAutomation(new Date());
+    await runTrialLifecycle(new Date(), { mode: "send" });
+    await call(pollCloseRoute.POST(json("POST"), gm("expired", "expired-m")));
+    const after = await counts();
+    expect(after).toEqual(before);
+    expect(await prisma.telegramChat.count({ where: { disconnectedAt: { not: null } } })).toBe(0);
+    expect(await prisma.organization.findMany({ where: { id: { in: ["legacy", "comp"] } }, orderBy: { id: "asc" } })).toEqual(orgsBefore);
   });
 });
 

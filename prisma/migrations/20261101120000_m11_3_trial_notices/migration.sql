@@ -7,7 +7,7 @@
 --   DELETE FROM "_prisma_migrations" WHERE "migration_name" = '20261101120000_m11_3_trial_notices';
 
 -- CreateEnum
-CREATE TYPE "TrialNoticeStatus" AS ENUM ('SENDING', 'SENT', 'FAILED');
+CREATE TYPE "TrialNoticeStatus" AS ENUM ('SENDING', 'SENT', 'FAILED', 'UNCERTAIN');
 
 -- CreateTable
 CREATE TABLE "TrialNotice" (
@@ -16,8 +16,10 @@ CREATE TABLE "TrialNotice" (
     "userId" TEXT NOT NULL,
     "stage" TEXT NOT NULL,
     "trialEndsAt" TIMESTAMP(3) NOT NULL,
+    "daysLeft" INTEGER,
     "status" "TrialNoticeStatus" NOT NULL DEFAULT 'SENDING',
     "attempts" INTEGER NOT NULL DEFAULT 1,
+    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "claimedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "sentAt" TIMESTAMP(3),
     "lastError" TEXT,

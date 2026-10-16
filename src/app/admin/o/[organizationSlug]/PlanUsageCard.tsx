@@ -34,12 +34,12 @@ export default function PlanUsageCard({ summary, upgradeHref = null }: { summary
       </div>
       {summary.plan === "TRIAL" && summary.trialEndsAt && (
         <p className="mt-2 text-sm">
-          Pro trial · <span className="font-semibold">{summary.trialDaysLeft} day{summary.trialDaysLeft === 1 ? "" : "s"} left</span> (ends {dateLabel(summary.trialEndsAt)}). Afterwards the Free plan applies; nothing is charged and no data is removed.
+          Pro trial · <span className="font-semibold">{summary.trialDaysLeft} day{summary.trialDaysLeft === 1 ? "" : "s"} left</span> (ends {summary.trialEndsLabel ?? dateLabel(summary.trialEndsAt)}). Afterwards the Free plan applies; nothing is charged and no data is removed.
         </p>
       )}
       {summary.plan === "FREE" && summary.trialEndedAt && (
         <p className="mt-2 text-sm">
-          Your Pro trial ended on <span className="font-semibold">{dateLabel(summary.trialEndedAt)}</span>. On the Free plan, Telegram polls, team posts, match messages and Game Day Updates are off; players can still answer through the match link. Nothing was deleted — players, matches, history and connected Telegram groups are kept.
+          Your Pro trial ended on <span className="font-semibold">{summary.trialEndsLabel ?? dateLabel(summary.trialEndedAt)}</span>. On the Free plan, Telegram polls, team posts, match messages and Game Day Updates are off; players can still answer through the match link. Nothing was deleted — players, matches, history and connected Telegram groups are kept.
         </p>
       )}
       {isFree && (upgradeHref && summary.billingEnabled ? (

@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { prisma } from "@/lib/prisma";
 import { hashPassword, passwordSchema, verifyPassword } from "@/lib/accounts";
+import { sessionsCutoff } from "@/lib/passwordReset";
 
 /**
  * M5.1 — authenticated Change Password.
@@ -15,6 +16,10 @@ import { hashPassword, passwordSchema, verifyPassword } from "@/lib/accounts";
  *   cannot be silently overwritten.
  * - UI-2 — an account that signs in with Google only (passwordHash NULL)
  *   has no password to change; setting a first password is not supported.
+ * - M11.3 — a change also sets User.sessionsValidAfter (same rule as a password
+ *   reset): every session issued up to now — other devices AND this one — stops
+ *   working. The form already signs this browser out and asks to sign in again,
+ *   so nothing changes for the person changing it; a stolen session elsewhere ends.
  */
 
 export const changePasswordSchema = z
@@ -44,7 +49,7 @@ export async function accountHasPassword(userId: string): Promise<boolean> {
   return !!user?.passwordHash;
 }
 
-export async function changePassword(userId: string, input: ChangePasswordInput): Promise<ChangePasswordResult> {
+export async function changePassword(userId: string, input: ChangePasswordInput, now: Date = new Date()): Promise<ChangePasswordResult> {
   const user = await prisma.user.findUnique({ where: { id: userId }, select: { email: true, passwordHash: true } });
   if (!user) return { ok: false, code: "CURRENT_PASSWORD_INCORRECT" };
   if (!user.passwordHash) return { ok: false, code: "NO_PASSWORD" };
@@ -55,7 +60,7 @@ export async function changePassword(userId: string, input: ChangePasswordInput)
   const passwordHash = await hashPassword(input.newPassword);
   const { count } = await prisma.user.updateMany({
     where: { id: userId, passwordHash: user.passwordHash },
-    data: { passwordHash },
+    data: { passwordHash, sessionsValidAfter: sessionsCutoff(now) },
   });
   return count === 1 ? { ok: true } : { ok: false, code: "CONFLICT" };
 }
