@@ -13,6 +13,7 @@ vi.mock("next/cache", () => ({ revalidatePath: vi.fn() }));
 import { prisma } from "@/lib/prisma";
 import * as playersRoute from "@/app/api/admin/o/[organizationSlug]/g/[groupSlug]/players/route";
 import * as playerRoute from "@/app/api/admin/o/[organizationSlug]/g/[groupSlug]/players/[id]/route";
+import * as matchRoute from "@/app/api/admin/o/[organizationSlug]/g/[groupSlug]/matches/[matchId]/route";
 import { loadGroupOverview } from "@/lib/groupOverview";
 import { requireTenantContextForSlugs } from "@/lib/tenantContext";
 import { matchAttendanceSnapshot } from "@/lib/attendanceSnapshot";
@@ -208,5 +209,84 @@ describe("Edit Player: Community memberships", () => {
     const list = (await (await playersRoute.GET(new Request("http://itest.local/"), groupParams())).json()) as Array<{ id: string; communityIds: string[] }>;
     const p1 = list.find((p) => p.id === "p1")!;
     expect(p1.communityIds.sort()).toEqual(["c-fc", "c-wk"]);
+  });
+});
+
+// ================================================================ Overview card attendance = Match Workspace
+describe("Overview Next / Latest match card: the same attendance numbers as the Match Workspace", () => {
+  // a: FC only · b: Weekend only · c: FC + Weekend · d: no Community · e: FC but INACTIVE · f: FC, then REMOVED from FC
+  beforeEach(async () => {
+    await prisma.player.createMany({
+      data: ["a", "b", "c", "d", "e", "f"].map((id) => ({ id, groupId: "o-g", firstName: id.toUpperCase(), lastName: "X", position: "MIDFIELDER", rating: "GOOD", stamina: 3, isActive: id !== "e" })),
+    });
+    await prisma.communityPlayer.createMany({
+      data: [
+        ["c-fc", "a"], ["c-wk", "b"], ["c-fc", "c"], ["c-wk", "c"], ["c-fc", "e"], ["c-fc", "f"],
+      ].map(([communityId, playerId]) => ({ groupId: "o-g", communityId, playerId })),
+    });
+  });
+  const answers = async (matchId: string) => {
+    const at = new Date("2026-10-01T12:00:00Z");
+    await prisma.attendanceResponse.createMany({
+      data: [
+        { playerId: "a", participantStatus: "PLAYING" as const },
+        { playerId: "b", participantStatus: "NOT_PLAYING" as const },
+        { playerId: "c", participantStatus: "MAYBE" as const },
+        { playerId: "d", participantStatus: "PLAYING" as const },
+        { playerId: "e", participantStatus: "PLAYING" as const },
+      ].map((r) => ({ ...r, matchId, groupId: "o-g", participantSource: "WEB" as const, participantRespondedAt: at })),
+    });
+  };
+  const workspace = async (matchId: string) => {
+    const body = (await (await matchRoute.GET(new Request("http://itest.local/"), { params: Promise.resolve({ organizationSlug: "o", groupSlug: "o-g", matchId }) })).json()) as { counts: Record<string, number>; rosterSize: number };
+    return body;
+  };
+  const card = async () => (await loadGroupOverview(await requireTenantContextForSlugs({ organizationSlug: "o", groupSlug: "o-g" }))).focus!;
+  const total = (c: Record<string, number>) => c.PLAYING + c.NOT_PLAYING + c.MAYBE + c.NO_RESPONSE;
+
+  it("a Community match (multiple Communities in the group): only that Community's active members, each once", async () => {
+    await prisma.match.create({ data: { id: "m", groupId: "o-g", date: new Date("2099-06-03T00:00:00Z"), communityId: "c-fc" } });
+    await answers("m");
+    // FC roster: a (Playing), c (Maybe — also in Weekend, counted once), f (no answer); e inactive; b, d not members.
+    const expected = { PLAYING: 1, NOT_PLAYING: 0, MAYBE: 1, NO_RESPONSE: 1 };
+    const f = await card();
+    expect(f).toMatchObject({ kind: "next", match: { id: "m", communityName: "UCCNE - FC (Indoor Soccer)" } });
+    expect(f.counts).toEqual(expected);
+    const w = await workspace("m");
+    expect(w.counts).toEqual(expected);
+    expect(total(f.counts)).toBe(w.rosterSize);
+    // f removed from FC → leaves the roster (card and workspace alike).
+    await prisma.communityPlayer.deleteMany({ where: { communityId: "c-fc", playerId: "f" } });
+    expect((await card()).counts).toEqual({ PLAYING: 1, NOT_PLAYING: 0, MAYBE: 1, NO_RESPONSE: 0 });
+    expect((await workspace("m")).counts).toEqual((await card()).counts);
+  });
+
+  it("the other Community's match counts its own members (a player in both Communities counts in each)", async () => {
+    await prisma.match.create({ data: { id: "m", groupId: "o-g", date: new Date("2099-06-03T00:00:00Z"), communityId: "c-wk" } });
+    await answers("m");
+    const f = await card();
+    expect(f.counts).toEqual({ PLAYING: 0, NOT_PLAYING: 1, MAYBE: 1, NO_RESPONSE: 0 }); // b Not playing, c Maybe
+    expect((await workspace("m")).counts).toEqual(f.counts);
+  });
+
+  it("a match without a Community keeps the whole-group fallback (every ACTIVE player)", async () => {
+    await prisma.match.create({ data: { id: "m", groupId: "o-g", date: new Date("2099-06-03T00:00:00Z") } });
+    await answers("m");
+    const f = await card();
+    expect(f.match.communityName).toBeNull();
+    expect(f.counts).toEqual({ PLAYING: 2, NOT_PLAYING: 1, MAYBE: 1, NO_RESPONSE: 1 }); // a, d · b · c · f (e inactive)
+    const w = await workspace("m");
+    expect(w.counts).toEqual(f.counts);
+    expect(w.rosterSize).toBe(5);
+  });
+
+  it("the Latest (past) match card uses the same calculation", async () => {
+    await prisma.match.create({ data: { id: "p", groupId: "o-g", date: new Date("2020-06-03T00:00:00Z"), communityId: "c-fc" } });
+    await answers("p");
+    await prisma.player.update({ where: { id: "a" }, data: { isActive: false } }); // deactivated after answering
+    const f = await card();
+    expect(f).toMatchObject({ kind: "latest", match: { id: "p" } });
+    expect(f.counts).toEqual({ PLAYING: 0, NOT_PLAYING: 0, MAYBE: 1, NO_RESPONSE: 1 }); // c, f
+    expect((await workspace("p")).counts).toEqual(f.counts);
   });
 });

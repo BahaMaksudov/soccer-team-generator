@@ -37,3 +37,18 @@ describe("player form: Communities", () => {
     expect(html).toContain(">Add player</button>");
   });
 });
+
+describe("player form: memberships are saved only on submit", () => {
+  const fs = require("node:fs") as typeof import("node:fs");
+  const form = fs.readFileSync("src/app/admin/o/[organizationSlug]/g/[groupSlug]/CanonicalPlayerForm.tsx", "utf8");
+  const roster = fs.readFileSync("src/app/admin/o/[organizationSlug]/g/[groupSlug]/players/PlayersRoster.tsx", "utf8");
+  it("ticking a checkbox only changes local form state (no request); the parent sends it with the form", () => {
+    expect(form).not.toMatch(/fetch\(/);
+    expect(form).toContain("onChange={(e) => setChosen(");
+    expect(form).toContain('communities && (communities.submit === "always" || changed) ? chosen : undefined');
+  });
+  it("Edit sends communityIds only when the selection changed (unchanged → memberships untouched)", () => {
+    expect(roster).toContain('submit: form.mode === "edit" ? "whenChanged" : "always"');
+    expect(roster).toContain("...(communityIds !== undefined ? { communityIds } : {})");
+  });
+});
