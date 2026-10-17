@@ -31,7 +31,7 @@ vi.mock("@/lib/invitations", () => invitations);
 import LoginPage from "@/app/login/page";
 import SignupPage from "@/app/signup/page";
 import { authErrorMessage } from "@/lib/authErrors";
-import { googleAuthConfig, isGoogleAuthConfigured, resolveGoogleSignIn, verifiedGoogleEmail, type GoogleUserStore } from "@/lib/googleAuth";
+import { googleAuthConfig, googleSubject, isGoogleAuthConfigured, resolveGoogleSignIn, verifiedGoogleEmail } from "@/lib/googleAuth";
 import { PASSWORD_MIN_LENGTH } from "@/lib/accounts";
 
 const root = process.cwd();
@@ -81,66 +81,23 @@ describe("Google provider configuration", () => {
   });
 });
 
-describe("Google identity resolution (provider boundary mocked)", () => {
-  const row = (over: Partial<{ id: string; email: string; name: string | null; emailVerifiedAt: Date | null }> = {}) => ({
-    id: "u1",
-    email: "a@example.com",
-    name: "A",
-    emailVerifiedAt: new Date("2026-01-01"),
-    ...over,
-  });
-  const store = (existing: ReturnType<typeof row> | null, createImpl?: () => Promise<ReturnType<typeof row>>) => {
-    const db = {
-      user: {
-        findUnique: vi.fn(async () => existing),
-        create: vi.fn(createImpl ?? (async (args: { data: { email: string; name: string | null } }) => row({ id: "new", email: args.data.email, name: args.data.name }))),
-      },
-    };
-    return db as typeof db & GoogleUserStore;
-  };
-
+describe("Google identity inputs (pure; account resolution is covered against the real DB in googleAuth.itest.ts)", () => {
   it("requires Google's email_verified === true and normalizes the email", () => {
     expect(verifiedGoogleEmail({ email: " A@Example.COM ", email_verified: true })).toBe("a@example.com");
     for (const p of [{ email: "a@example.com", email_verified: false }, { email: "a@example.com", email_verified: "true" }, { email: "a@example.com" }, { email_verified: true }, { email: "not-an-email", email_verified: true }, null])
       expect(verifiedGoogleEmail(p)).toBeNull();
   });
 
-  it("existing VERIFIED User → that same User, nothing written", async () => {
-    const db = store(row());
-    expect(await resolveGoogleSignIn({ email: "A@example.com", email_verified: true, name: "Other" }, db)).toEqual({ ok: true, user: { id: "u1", email: "a@example.com", name: "A" }, created: false });
-    expect(db.user.create).not.toHaveBeenCalled();
+  it("the Google identity is the stable account id (sub) — from the OAuth account, else the profile; never the email", () => {
+    expect(googleSubject({ providerAccountId: "123" }, { sub: "999" })).toBe("123");
+    expect(googleSubject(null, { sub: "999" })).toBe("999");
+    expect(googleSubject({}, { email: "a@example.com" })).toBeNull();
+    expect(googleSubject({ providerAccountId: "x".repeat(300) }, null)).toBeNull();
   });
 
-  it("existing UNVERIFIED User → refused, nothing written", async () => {
-    const db = store(row({ emailVerifiedAt: null }));
-    expect(await resolveGoogleSignIn({ email: "a@example.com", email_verified: true }, db)).toEqual({ ok: false, code: "AccountEmailUnverified" });
-    expect(db.user.create).not.toHaveBeenCalled();
-  });
-
-  it("no User → creates one: verified now, Google name (trimmed, ≤100), passwordHash NULL — never a fake password", async () => {
-    const db = store(null);
-    const now = new Date("2026-10-03T00:00:00Z");
-    const r = await resolveGoogleSignIn({ email: "new@example.com", email_verified: true, name: `  ${"N".repeat(150)} ` }, db, now);
-    expect(r).toMatchObject({ ok: true, created: true });
-    expect(db.user.create).toHaveBeenCalledWith({
-      data: { email: "new@example.com", name: "N".repeat(100), passwordHash: null, emailVerifiedAt: now },
-      select: { id: true, email: true, name: true, emailVerifiedAt: true },
-    });
-  });
-
-  it("unverified Google email never touches the database", async () => {
-    const db = store(null);
-    expect(await resolveGoogleSignIn({ email: "x@example.com", email_verified: false }, db)).toEqual({ ok: false, code: "GoogleEmailUnverified" });
-    expect(db.user.findUnique).not.toHaveBeenCalled();
-  });
-
-  it("a concurrent create (unique violation) resolves to the row that won, under the same rules", async () => {
-    const p2002 = new Prisma.PrismaClientKnownRequestError("dup", { code: "P2002", clientVersion: "test" });
-    const db = store(null, async () => {
-      throw p2002;
-    });
-    db.user.findUnique.mockResolvedValueOnce(null).mockResolvedValueOnce(row({ id: "winner", emailVerifiedAt: null }));
-    expect(await resolveGoogleSignIn({ email: "a@example.com", email_verified: true }, db)).toEqual({ ok: false, code: "AccountEmailUnverified" });
+  it("an unverified Google email is refused before any database access", async () => {
+    expect(await resolveGoogleSignIn({ email: "x@example.com", email_verified: false }, { providerAccountId: "1" })).toEqual({ ok: false, code: "GoogleEmailUnverified" });
+    expect(await resolveGoogleSignIn({ email: "x@example.com", email_verified: true }, {})).toEqual({ ok: false, code: "GoogleAccountMissing" });
   });
 });
 
@@ -189,7 +146,10 @@ describe("Sign In screen", () => {
     expect(text(html)).toContain("Sign-in didn't complete");
     expect(authErrorMessage(null)).toBeNull();
     expect(authErrorMessage("toString")).toBe("Sign-in didn't complete. Please try again.");
-    expect(authErrorMessage("OAuthCallback")).toBe("Sign-in didn't complete. Please try again.");
+    expect(authErrorMessage("SomethingElse")).toBe("Sign-in didn't complete. Please try again.");
+    // M12-A — cancelled Google sign-in and the explicit-linking outcomes have their own fixed text.
+    expect(authErrorMessage("OAuthCallback")).toMatch(/cancelled or didn't complete/);
+    expect(authErrorMessage("GoogleLinkRequired")).toMatch(/Sign in with your password, then connect Google/);
   });
 });
 

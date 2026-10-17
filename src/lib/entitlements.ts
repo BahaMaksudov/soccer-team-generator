@@ -293,11 +293,9 @@ export function ownershipLimitResponse(e: OwnershipLimitError): NextResponse {
   return NextResponse.json({ error: e.message, code: "OWNERSHIP_LIMIT", owned: e.owned, allowed: e.allowed }, { status: 409 });
 }
 
-/** Optional support contact (SUPPORT_EMAIL) for "coming soon" texts; null when not configured or malformed. */
-export function supportEmail(env: Env = process.env): string | null {
-  const v = env.SUPPORT_EMAIL?.trim() ?? "";
-  return /^[^\s@<>"]+@[^\s@<>"]+\.[^\s@<>"]+$/.test(v) ? v : null;
-}
+/** Optional support contact (SUPPORT_EMAIL) for "coming soon" texts — see src/lib/support.ts. */
+export { supportEmail } from "@/lib/support";
+import { supportEmail } from "@/lib/support";
 
 /** What a Free Organization can do about Pro right now: the Billing page once billing is on, else "coming soon" (+ contact). */
 export function upgradeHint(env: Env = process.env): string {

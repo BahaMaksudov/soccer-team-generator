@@ -14,6 +14,7 @@ export default function LoginClient({ googleEnabled }: { googleEnabled: boolean 
   const callbackUrl = safeCallbackPath(sp.get("callbackUrl"));
   const passwordChanged = sp.get("passwordChanged") === "1";
   const passwordReset = sp.get("passwordReset") === "1";
+  const googleDisconnected = sp.get("googleDisconnected") === "1";
   // OAuth / Google outcomes come back as ?error=<code> (known codes only; never echoed).
   const oauthError = authErrorMessage(sp.get("error"));
 
@@ -49,6 +50,11 @@ export default function LoginClient({ googleEnabled }: { googleEnabled: boolean 
       {passwordChanged && !alert && (
         <div className="mb-6">
           <SuccessNote>Password changed. Please sign in again.</SuccessNote>
+        </div>
+      )}
+      {googleDisconnected && !alert && (
+        <div className="mb-6">
+          <SuccessNote>Google was disconnected. Sign in with your email and password.</SuccessNote>
         </div>
       )}
       {passwordReset && !alert && (

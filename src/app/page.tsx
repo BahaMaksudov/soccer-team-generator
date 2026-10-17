@@ -25,6 +25,7 @@ import MarketingHeader from "@/components/marketing/MarketingHeader";
 import { BalanceBadge, Logo, MARKETING_NAV, SectionHead, TeamColumn, linkFocus } from "@/components/marketing/parts";
 import { marketingSports } from "@/lib/marketing/sports";
 import { cn } from "@/lib/cn";
+import { supportEmail } from "@/lib/support";
 import pickupGame from "../../public/marketing/pickup-game.jpg";
 
 /**
@@ -460,7 +461,15 @@ function Footer() {
             Sign In
           </Link>
         </nav>
-        <p className="text-sm opacity-75">© {new Date().getFullYear()} Team Balance Pro</p>
+        <div className="space-y-1 text-sm">
+          {/* M12-A — support contact only when SUPPORT_EMAIL is configured (never invented). */}
+          {supportEmail() && (
+            <p className="break-all opacity-85">
+              Support: <a href={`mailto:${supportEmail()}`} className={cn("underline-offset-2 hover:underline", linkFocus)}>{supportEmail()}</a>
+            </p>
+          )}
+          <p className="opacity-75">© {new Date().getFullYear()} Team Balance Pro</p>
+        </div>
       </div>
     </footer>
   );

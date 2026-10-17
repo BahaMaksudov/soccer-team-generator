@@ -4,7 +4,8 @@ import type { NextAuthOptions } from "next-auth";
 import { checkLoginRateLimit } from "@/lib/rateLimit";
 import { authenticateCredentials, normalizeEmail } from "@/lib/accounts";
 import { safeAuthRedirect } from "@/lib/safeRedirect";
-import { GOOGLE_PROVIDER_ID, googleAuthConfig, googleSessionUser, resolveGoogleSignIn } from "@/lib/googleAuth";
+import { cookies } from "next/headers";
+import { GOOGLE_PROVIDER_ID, googleAuthConfig, googleSessionUser, LINK_INTENT_COOKIE, resolveGoogleSignIn } from "@/lib/googleAuth";
 import { prisma } from "@/lib/prisma";
 import { sessionIssuedBeforeReset } from "@/lib/passwordReset";
 
@@ -52,13 +53,18 @@ export const authOptions: NextAuthOptions = {
   callbacks: {
     async signIn({ account, profile }) {
       if (account?.provider !== GOOGLE_PROVIDER_ID) return true;
-      const result = await resolveGoogleSignIn(profile);
-      return result.ok ? true : `/login?error=${result.code}`;
+      // M12-A — an explicit "Connect Google" started on Account → Sign-in methods leaves a
+      // single-use intent cookie (httpOnly, /api/auth, 10 min). Read it once and clear it.
+      const linkIntentToken = await takeLinkIntentCookie();
+      const result = await resolveGoogleSignIn(profile, account, { linkIntentToken });
+      if (result.ok) return true;
+      // A failed CONNECT returns to the account page (still signed in as before); a failed sign-in to /login.
+      return linkIntentToken ? `/account/security?googleError=${result.code}` : `/login?error=${result.code}`;
     },
     async jwt({ token, user, account, profile }) {
       if (user && account?.provider === GOOGLE_PROVIDER_ID) {
         // Never the Google subject id or picture: the canonical User only.
-        const dbUser = await googleSessionUser(profile);
+        const dbUser = await googleSessionUser(profile, account);
         return { uid: dbUser.id, sub: dbUser.id, email: dbUser.email, name: dbUser.name };
       }
       if (user) {
@@ -91,3 +97,15 @@ export const authOptions: NextAuthOptions = {
     },
   },
 };
+
+/** The link-intent cookie of this request (then deleted), or null outside a request / when absent. */
+async function takeLinkIntentCookie(): Promise<string | null> {
+  try {
+    const jar = await cookies();
+    const value = jar.get(LINK_INTENT_COOKIE)?.value ?? null;
+    if (value) jar.delete({ name: LINK_INTENT_COOKIE, path: "/api/auth" });
+    return value;
+  } catch {
+    return null;
+  }
+}

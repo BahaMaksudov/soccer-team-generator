@@ -191,6 +191,8 @@ model User {
   memberships             OrganizationMembership[]
   emailVerificationTokens EmailVerificationToken[]
   passwordResetTokens     PasswordResetToken[]
+  oauthAccounts           OAuthAccount[]
+  accountLinkIntents      AccountLinkIntent[]
   trialNotices            TrialNotice[]
   // M6-A — optional claimed Player profiles (none yet; claim flow is M6-C).
   players                 Player[]
@@ -339,6 +341,43 @@ model EmailVerificationToken {
   id        String    @id @default(cuid())
   userId    String
   email     String
+  tokenHash String    @unique
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+// M12-A — an external sign-in identity (Google) linked to ONE User. Keyed by the
+// provider's stable account id (Google "sub"), never by email: a Google account
+// signs in only as the User it was explicitly linked to (created by a Google
+// sign-up, or connected by the signed-in owner after re-entering the password).
+model OAuthAccount {
+  id                String    @id @default(cuid())
+  userId            String
+  provider          String // "google"
+  providerAccountId String // Google "sub"
+  // The verified provider email at link time (audit / display only — never used to authorize).
+  emailAtLink       String
+  createdAt         DateTime  @default(now())
+  lastUsedAt        DateTime?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+  @@unique([userId, provider])
+}
+
+// M12-A — a single-use, 10-minute intent to connect a provider to the signed-in
+// User, created only after the User re-entered the password. The raw token lives
+// in an httpOnly cookie scoped to /api/auth; only its SHA-256 hash is stored.
+model AccountLinkIntent {
+  id        String    @id @default(cuid())
+  userId    String
+  provider  String
   tokenHash String    @unique
   expiresAt DateTime
   usedAt    DateTime?

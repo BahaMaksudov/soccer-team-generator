@@ -3,7 +3,9 @@ import { redirect } from "next/navigation";
 import { Building2, KeyRound, Mail, MessageCircle, ShieldCheck, Ticket, UserRound } from "lucide-react";
 import { listAccessibleTenants, requireSessionAccount, TenantContextError, type AccessibleOrganization } from "@/lib/tenantContext";
 import { accountHasPassword } from "@/lib/changePassword";
-import { isGoogleAuthConfigured } from "@/lib/googleAuth";
+import { googleLinkStatus, isGoogleAuthConfigured } from "@/lib/googleAuth";
+import { authErrorMessage } from "@/lib/authErrors";
+import GoogleConnection from "./GoogleConnection";
 import { prisma } from "@/lib/prisma";
 import { ROLE_LABELS } from "@/lib/appShell";
 import { cn } from "@/lib/cn";
@@ -36,7 +38,10 @@ function Card({ title, icon, children }: { title: string; icon: React.ReactNode;
   );
 }
 
-export default async function AccountSecurityPage() {
+type SearchParams = Promise<{ google?: string | string[]; googleError?: string | string[] }>;
+
+export default async function AccountSecurityPage({ searchParams }: { searchParams: SearchParams }) {
+  const sp = await searchParams;
   let account;
   let hasPassword: boolean;
   try {
@@ -60,6 +65,10 @@ export default async function AccountSecurityPage() {
     ).map((p) => ({ firstName: p.firstName, lastName: p.lastName, telegramConnected: p.telegramLink.length > 0, group: p.group.name, organization: p.group.organization.name }));
   }
   const google = isGoogleAuthConfigured();
+  // M12-A — explicit Google connection (never inferred from the email).
+  const googleLink = await googleLinkStatus(account.id);
+  const connected = sp.google === "connected" && googleLink.linked;
+  const googleError = typeof sp.googleError === "string" ? authErrorMessage(sp.googleError) : null;
 
   return (
     <div className="mx-auto max-w-2xl space-y-6">
@@ -92,18 +101,26 @@ export default async function AccountSecurityPage() {
       </Card>
 
       <Card title="Sign-in methods" icon={<KeyRound className="size-5" />}>
+        {connected && <p role="status" className="mb-3 text-sm font-semibold text-primary">Google is now connected. You can sign in with Google or with your password.</p>}
+        {googleError && <p role="alert" className="mb-3 text-sm text-destructive">{googleError}</p>}
         <ul className="space-y-2 text-sm">
           <li className="flex items-center gap-2">
             <Mail className="size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
             {hasPassword ? "Email and password" : "No password — this account signs in with Google."}
           </li>
-          {google && hasPassword && (
-            <li className="flex items-center gap-2 text-muted-foreground">
-              <ShieldCheck className="size-4 shrink-0" aria-hidden="true" />
-              Continue with Google is also available for this verified email.
+          {googleLink.linked && (
+            <li className="flex min-w-0 items-center gap-2">
+              <ShieldCheck className="size-4 shrink-0 text-primary" aria-hidden="true" />
+              <span className="min-w-0 break-words">Google connected{googleLink.emailAtLink ? <> ({googleLink.emailAtLink})</> : null}</span>
             </li>
           )}
         </ul>
+        {google && hasPassword && account.emailVerified && (
+          <div className="mt-4 border-t border-border pt-4">
+            <GoogleConnection linked={googleLink.linked} email={account.email} />
+          </div>
+        )}
+        {google && hasPassword && !account.emailVerified && <p className="mt-3 text-sm text-muted-foreground">Verify your email to connect Google.</p>}
       </Card>
 
       <Card title="Organizations" icon={<Building2 className="size-5" />}>
