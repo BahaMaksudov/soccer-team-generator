@@ -5,6 +5,7 @@ import { hashPassword, passwordSchema } from "@/lib/accounts";
 import { normalizeEmail } from "@/lib/emailAddress";
 import { generateToken, hashToken, isWellFormedToken } from "@/lib/secureToken";
 import { sendGoogleOnlyResetEmail, sendPasswordResetEmail } from "@/lib/email";
+import { recordEmailOwnershipProof } from "@/lib/loginLimit";
 
 /**
  * M11.3 — Forgot password / Reset password.
@@ -110,7 +111,7 @@ export async function resetPassword(token: string, newPassword: string, now: Dat
   if (!found) return { ok: false, code: "RESET_INVALID" };
   const passwordHash = await hashPassword(newPassword);
 
-  return prisma.$transaction(async (tx): Promise<ResetResult> => {
+  const result = await prisma.$transaction(async (tx): Promise<ResetResult & { email?: string }> => {
     await lockUser(tx, found.userId);
     // Re-read under the lock: a concurrent reset / new request may have changed it.
     const row = await tx.passwordResetToken.findUnique({ where: { tokenHash }, select: { id: true, userId: true, expiresAt: true, usedAt: true } });
@@ -125,8 +126,12 @@ export async function resetPassword(token: string, newPassword: string, now: Dat
     if (count !== 1) return { ok: false, code: "RESET_USED" };
     await tx.user.update({ where: { id: row.userId }, data: { passwordHash, sessionsValidAfter: sessionsCutoff(now) } });
     await tx.passwordResetToken.deleteMany({ where: { userId: row.userId, usedAt: null } });
-    return { ok: true };
+    const owner = await tx.user.findUniqueOrThrow({ where: { id: row.userId }, select: { email: true } });
+    return { ok: true, email: owner.email };
   });
+  // M12-A — the reset proved inbox ownership: that email's sign-in failure count restarts.
+  if (result.ok && result.email) await recordEmailOwnershipProof(result.email);
+  return result.ok ? { ok: true } : result;
 }
 
 /**

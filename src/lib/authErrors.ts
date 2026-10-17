@@ -8,6 +8,9 @@ const MESSAGES: Record<string, string> = {
   AccountEmailUnverified:
     "An account with this email already exists but its email address isn't verified yet. Sign in with your password and verify your email, then you can connect Google.",
   CredentialsSignin: "Invalid email or password.",
+  // M12-A — database-backed sign-in limit (same text whether or not the account exists; no thresholds).
+  LoginRateLimited: "Too many sign-in attempts. Please wait a few minutes and try again, or reset your password.",
+  LoginUnavailable: "Sign-in is temporarily unavailable. Please try again in a few minutes.",
   // M12-A — explicit account linking (an email match alone never links accounts).
   GoogleLinkRequired:
     "An account with this email already exists. Sign in with your password, then connect Google under Account → Sign-in methods.",

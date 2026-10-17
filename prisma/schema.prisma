@@ -388,6 +388,37 @@ model AccountLinkIntent {
   @@index([userId])
 }
 
+// M12-A — credentials sign-in attempt log: the database rate limit for password
+// checks (sign-in, change password, connect / disconnect Google). Works without
+// Upstash and fails CLOSED with the database. Only keyed HMACs of the normalized
+// email and the client address — never passwords, hashes, tokens or the values.
+//   PENDING  — reserved before the password check (counts as a failure until settled);
+//   SUCCESS  — kept 30 days (a "known" email + address pair is never locked out by
+//              someone else's failures); everything else is purged after a day.
+//   BLOCKED  — refused by a limit (not counted, so a lockout can't extend itself).
+model LoginAttempt {
+  id        String              @id @default(cuid())
+  emailHash String
+  ipHash    String
+  outcome   LoginAttemptOutcome
+  // "login" | "change-password" | "google-link"
+  source    String
+  createdAt DateTime            @default(now())
+  settledAt DateTime?
+
+  @@index([emailHash, createdAt])
+  @@index([ipHash, createdAt])
+  @@index([emailHash, ipHash, outcome, createdAt])
+  @@index([createdAt])
+}
+
+enum LoginAttemptOutcome {
+  PENDING
+  SUCCESS
+  FAILURE
+  BLOCKED
+}
+
 // M11.3 — password reset: only the SHA-256 hash of the emailed token is stored.
 // Valid for 60 minutes, usable once; issuing a new one deletes the User's
 // older unused tokens. Consumed only by an explicit POST (never by GET).

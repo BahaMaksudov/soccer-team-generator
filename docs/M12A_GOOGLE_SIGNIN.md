@@ -83,8 +83,21 @@ never echoed.
 9. **Test:** with the app in *Testing*, only listed test users can sign in. Run
    the Preview checklist below, then Production, then publish.
 
+## Credentials sign-in limit (M12-A)
+
+Enable Google publicly only together with the database-backed password limit
+(`src/lib/loginLimit.ts`; details, thresholds and acceptance steps in
+`docs/M12_LAUNCH_HARDENING.md` § 5): 10 failed checks / 15 min per address,
+5 per email (except from an address that signed in as it within 30 days),
+fail-closed on database errors. Google OAuth never consumes or is blocked by this
+limit; a "Too many sign-in attempts" message still leaves "Continue with Google"
+and "Forgot password?" available.
+
 ## Database
 
-Migration `20261110120000_m12a_oauth_accounts` (additive): tables
-`OAuthAccount` (unique `(provider, providerAccountId)` and `(userId, provider)`)
-and `AccountLinkIntent`. No existing table or row changes.
+Migrations (additive, in order):
+1. `20261110120000_m12a_oauth_accounts`: tables `OAuthAccount` (unique
+   `(provider, providerAccountId)` and `(userId, provider)`) and `AccountLinkIntent`.
+2. `20261110130000_m12a_login_attempts`: enum `LoginAttemptOutcome` and table
+   `LoginAttempt` (indexes for the rolling-window counts and cleanup).
+No existing table or row changes.

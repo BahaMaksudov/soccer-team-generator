@@ -1,6 +1,6 @@
-import { createHmac } from "node:crypto";
 import type { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
+import { rateLimitDigest } from "@/lib/rateLimitKeys";
 
 /**
  * M11.3 — the password-reset rate limit that does NOT depend on Upstash.
@@ -20,7 +20,8 @@ import { prisma } from "@/lib/prisma";
  * addresses, so neither the answer nor its timing reveals whether an account exists.
  *
  * Privacy: only keyed HMAC-SHA256 digests of the normalized email and the client
- * address are stored (key: NEXTAUTH_SECRET), never the values. Rows older than a
+ * address are stored (key: RATE_LIMIT_HASH_SECRET, else NEXTAUTH_SECRET — see
+ * src/lib/rateLimitKeys.ts), never the values. Rows older than a
  * day are purged as new requests arrive.
  */
 export const RESET_LIMITS = {
@@ -32,10 +33,7 @@ const RETENTION_MS = 24 * 60 * 60_000;
 
 export type ResetLimitDecision = "send" | "ip_limited" | "email_limited" | "global_limited";
 
-function digest(kind: string, value: string, env: Record<string, string | undefined> = process.env): string {
-  const key = env.NEXTAUTH_SECRET?.trim() || "tbp-password-reset-rate-limit";
-  return createHmac("sha256", key).update(`${kind}:${value}`, "utf8").digest("hex");
-}
+const digest = (kind: string, value: string) => rateLimitDigest(kind, value);
 
 const lock = (tx: Prisma.TransactionClient, key: string) => tx.$queryRaw`SELECT 1 AS locked FROM pg_advisory_xact_lock(hashtext(${"pwreset-rl:" + key}))`;
 

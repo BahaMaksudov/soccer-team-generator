@@ -34,8 +34,9 @@ export default function LoginClient({ googleEnabled }: { googleEnabled: boolean 
 
     if (!res || res.error) {
       setLoading(false);
-      // Generic on purpose: never reveals whether the email exists.
-      setErr(res ? "Invalid email or password." : "Login failed. Please try again.");
+      // Generic on purpose: never reveals whether the email exists. A temporary sign-in limit
+      // (M12-A) or an unavailable check gets its own fixed text — the same for every email.
+      setErr(!res ? "Login failed. Please try again." : res.error === "LoginRateLimited" || res.error === "LoginUnavailable" ? authErrorMessage(res.error) : "Invalid email or password.");
       return;
     }
 

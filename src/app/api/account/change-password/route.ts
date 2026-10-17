@@ -4,6 +4,8 @@ import { changePassword, changePasswordSchema } from "@/lib/changePassword";
 import { checkLoginRateLimit } from "@/lib/rateLimit";
 import { accountRouteErrorResponse, requireJsonRequest } from "@/lib/tenantRoute";
 import { zodErrorResponse } from "@/lib/validation";
+import { checkPasswordWithLimit } from "@/lib/loginLimit";
+import { clientAddress } from "@/lib/rateLimitKeys";
 
 /**
  * M5.1 — change the SIGNED-IN User's password. The User comes only from
@@ -25,8 +27,12 @@ export async function POST(req: Request) {
     const parsed = changePasswordSchema.safeParse((await req.json().catch(() => null)) ?? {});
     if (!parsed.success) return NextResponse.json(zodErrorResponse(parsed.error), { status: 400 });
 
-    const result = await changePassword(account.id, parsed.data);
+    // M12-A — the current-password check counts toward the database sign-in limit (fails closed).
+    const result = await changePassword(account.id, parsed.data, new Date(), (verify) =>
+      checkPasswordWithLimit({ email: account.email, clientAddress: clientAddress(req.headers), source: "change-password" }, verify)
+    );
     if (!result.ok) {
+      if (result.code === "RATE_LIMITED") return NextResponse.json({ error: "Too many attempts. Please try again later." }, { status: 429 });
       if (result.code === "NO_PASSWORD") {
         return NextResponse.json({ error: "This account signs in with Google and has no password to change." }, { status: 400 });
       }

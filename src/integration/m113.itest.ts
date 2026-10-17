@@ -160,6 +160,7 @@ beforeAll(async () => {
   vi.stubEnv("BILLING_ENABLED", "");
   vi.stubEnv("SUPPORT_EMAIL", "");
   vi.stubEnv("TRIAL_LIFECYCLE", "");
+  vi.stubEnv("VERCEL", "1"); // M12-A — client addresses come from forwarding headers only behind Vercel's proxy
 });
 beforeEach(async () => {
   session = null;

@@ -83,7 +83,8 @@ describe("M5.1 — Change Password stays narrow; no env credentials", () => {
   it("the route resolves the User only from the session and the service writes only passwordHash (+ M11.3 session cutoff)", () => {
     const route = stripComments(read("src/app/api/account/change-password/route.ts"));
     expect(route).toContain("requireSessionAccount()");
-    expect(route).toContain("changePassword(account.id, parsed.data)");
+    expect(route).toContain("changePassword(account.id, parsed.data, new Date(), (verify) =>"); // M12-A — current password checked under the DB limit
+    expect(route).toContain('checkPasswordWithLimit({ email: account.email, clientAddress: clientAddress(req.headers), source: "change-password" }, verify)');
     const svc = stripComments(read("src/lib/changePassword.ts"));
     const writes = [...svc.matchAll(/data:\s*\{([^}]*)\}/g)].map((m) => m[1].trim());
     expect(writes).toEqual(["passwordHash, sessionsValidAfter: sessionsCutoff(now)"]); // M11.3 — older sessions end

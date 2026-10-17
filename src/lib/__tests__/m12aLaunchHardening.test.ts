@@ -27,7 +27,8 @@ describe("Google OAuth secret handling", () => {
   it("the link-intent cookie is httpOnly, SameSite=Lax, scoped to /api/auth, 10 minutes; connect and disconnect require the current password", () => {
     const route = read("src/app/api/account/google-link/route.ts");
     expect(route).toMatch(/httpOnly: true, secure: process\.env\.NODE_ENV === "production", sameSite: "lax", path: "\/api\/auth"/);
-    expect(route).toContain("verifyPassword(parsed.data.currentPassword, user.passwordHash)");
+    expect(route).toContain("() => verifyPassword(parsed.data.currentPassword, hash)");
+    expect(route).toContain('checkPasswordWithLimit({ email: account.email, clientAddress: clientAddress(req.headers), source: "google-link" }');
     expect(read("src/lib/googleAuth.ts")).toContain("export const LINK_INTENT_TTL_MS = 10 * 60_000;");
   });
 });

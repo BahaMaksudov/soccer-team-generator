@@ -2,7 +2,9 @@ import CredentialsProvider from "next-auth/providers/credentials";
 import GoogleProvider from "next-auth/providers/google";
 import type { NextAuthOptions } from "next-auth";
 import { checkLoginRateLimit } from "@/lib/rateLimit";
-import { authenticateCredentials, normalizeEmail } from "@/lib/accounts";
+import { authenticateCredentials, normalizeEmail, type AuthenticatedUser } from "@/lib/accounts";
+import { checkPasswordWithLimit, LOGIN_RATE_LIMITED, LOGIN_UNAVAILABLE } from "@/lib/loginLimit";
+import { clientAddress } from "@/lib/rateLimitKeys";
 import { safeAuthRedirect } from "@/lib/safeRedirect";
 import { cookies } from "next/headers";
 import { GOOGLE_PROVIDER_ID, googleAuthConfig, googleSessionUser, LINK_INTENT_COOKIE, resolveGoogleSignIn } from "@/lib/googleAuth";
@@ -31,18 +33,30 @@ export const authOptions: NextAuthOptions = {
         email: { label: "Email", type: "text" },
         password: { label: "Password", type: "password" },
       },
-      async authorize(credentials) {
+      async authorize(credentials, req) {
         const email = normalizeEmail(credentials?.email ?? "");
         const password = credentials?.password ?? "";
         if (!email || !password) return null;
 
-        // Rate-limited by the submitted email so a scripted brute force
-        // against one account can't run unbounded. See
-        // src/lib/rateLimit.ts for activation requirements.
+        // Optional first layer (Upstash, per email; inactive / fail-open when not configured).
         const { allowed } = await checkLoginRateLimit(email);
-        if (!allowed) return null;
+        if (!allowed) throw new Error(LOGIN_RATE_LIMITED);
 
-        return authenticateCredentials(email, password);
+        // M12-A — the authoritative, database-backed limit (src/lib/loginLimit.ts). It fails
+        // CLOSED: without the database no password is checked. Unknown and existing emails
+        // are counted and answered identically; errors become signIn().error codes.
+        let user: AuthenticatedUser | null = null;
+        let outcome;
+        try {
+          outcome = await checkPasswordWithLimit({ email, clientAddress: clientAddress(req?.headers), source: "login" }, async () => {
+            user = await authenticateCredentials(email, password);
+            return user !== null;
+          });
+        } catch {
+          throw new Error(LOGIN_UNAVAILABLE);
+        }
+        if (outcome === "limited") throw new Error(LOGIN_RATE_LIMITED);
+        return outcome === "ok" ? user : null;
       },
     }),
     ...(google ? [GoogleProvider({ clientId: google.clientId, clientSecret: google.clientSecret })] : []),

@@ -97,7 +97,7 @@ async function identityFingerprint() {
 
 async function seed() {
   await prisma.$executeRawUnsafe(
-    `TRUNCATE "AccountLinkIntent","OAuthAccount","PasswordResetToken","PasswordResetRequest","EntitlementEvent","TelegramConnectCode","PlayerClaim","EmailVerificationToken","OrganizationInvitation","TelegramPollAnswer","TelegramPoll","TelegramUserLink","TelegramChat","TeamGeneration","GroupSetting","Player","Group","OrganizationMembership","Organization","User","AppSetting" RESTART IDENTITY CASCADE`
+    `TRUNCATE "LoginAttempt","AccountLinkIntent","OAuthAccount","PasswordResetToken","PasswordResetRequest","EntitlementEvent","TelegramConnectCode","PlayerClaim","EmailVerificationToken","OrganizationInvitation","TelegramPollAnswer","TelegramPoll","TelegramUserLink","TelegramChat","TeamGeneration","GroupSetting","Player","Group","OrganizationMembership","Organization","User","AppSetting" RESTART IDENTITY CASCADE`
   );
   const owner = await prisma.user.create({
     data: { id: "u-owner", email: OWNER_EMAIL, name: "Owner", passwordHash: bcrypt.hashSync(OWNER_PASSWORD, 4), emailVerifiedAt: VERIFIED_AT },

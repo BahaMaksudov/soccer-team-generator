@@ -3,6 +3,8 @@ import { z } from "zod";
 import { prisma } from "@/lib/prisma";
 import { requireSessionAccount } from "@/lib/tenantContext";
 import { verifyPassword } from "@/lib/accounts";
+import { checkPasswordWithLimit } from "@/lib/loginLimit";
+import { clientAddress } from "@/lib/rateLimitKeys";
 import { checkLoginRateLimit } from "@/lib/rateLimit";
 import { accountRouteErrorResponse, requireJsonRequest } from "@/lib/tenantRoute";
 import { createGoogleLinkIntent, googleLinkStatus, isGoogleAuthConfigured, LINK_INTENT_COOKIE, LINK_INTENT_TTL_MS, unlinkGoogle } from "@/lib/googleAuth";
@@ -33,7 +35,11 @@ async function authorize(req: Request): Promise<{ userId: string } | NextRespons
   if (!parsed.success) return NextResponse.json({ error: "Enter your current password." }, { status: 400 });
   const user = await prisma.user.findUnique({ where: { id: account.id }, select: { passwordHash: true } });
   if (!user?.passwordHash) return NextResponse.json({ error: "This account signs in with Google only." }, { status: 400 });
-  if (!(await verifyPassword(parsed.data.currentPassword, user.passwordHash))) return NextResponse.json({ error: "Current password is incorrect." }, { status: 400 });
+  // M12-A — counts toward the database sign-in limit (fails closed: a database error propagates → 500).
+  const hash = user.passwordHash;
+  const checked = await checkPasswordWithLimit({ email: account.email, clientAddress: clientAddress(req.headers), source: "google-link" }, () => verifyPassword(parsed.data.currentPassword, hash));
+  if (checked === "limited") return NextResponse.json({ error: "Too many attempts. Please try again later." }, { status: 429 });
+  if (checked !== "ok") return NextResponse.json({ error: "Current password is incorrect." }, { status: 400 });
   return { userId: account.id };
 }
 
