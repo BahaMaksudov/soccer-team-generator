@@ -79,14 +79,32 @@ describe("design tokens", () => {
 });
 
 describe("fonts", () => {
-  it("Archivo (display) and Manrope (body) via next/font/google, exposed as CSS variables on <html> only", () => {
-    expect(layout).toContain('import { Archivo, Manrope } from "next/font/google";');
-    expect(layout).toContain('variable: "--font-tbp-display"');
-    expect(layout).toContain('variable: "--font-tbp-body"');
-    expect(layout).toContain('<html lang="en" className={`${displayFont.variable} ${bodyFont.variable}`}>');
+  it("Archivo (display) and Manrope (body), SELF-HOSTED via next/font/local, exposed as CSS variables on <html> only", () => {
+    const fonts = read("src/app/fonts.ts");
+    expect(layout).toContain('import { fontVariableClasses } from "./fonts";');
+    expect(layout).toContain('<html lang="en" className={fontVariableClasses}>');
+    expect(layout).not.toContain("next/font/google");
+    expect(fonts).toContain('import localFont from "next/font/local";');
+    expect(fonts).not.toContain("next/font/google");
+    // One face per Google subset file, Google's exact unicode-range; only latin preloaded / with the adjusted fallback.
+    expect(fonts.match(/localFont\(\{/g)).toHaveLength(9);
+    expect(fonts.match(/preload: true/g)).toHaveLength(2);
+    expect(fonts.match(/adjustFontFallback: "Arial"/g)).toHaveLength(2);
+    expect(fonts.match(/prop: "unicode-range"/g)).toHaveLength(9);
+    expect(fonts.match(/weight: "600 900"/g)).toHaveLength(3); // Archivo display 600–900
+    expect(fonts.match(/weight: "400 700"/g)).toHaveLength(6); // Manrope body 400–700
+    for (const f of [...fonts.matchAll(/src: "\.\/fonts\/([\w-]+\.woff2)"/g)].map((m) => m[1])) {
+      const buf = fs.readFileSync(path.join(root, "src/app/fonts", f));
+      expect(buf.subarray(0, 4).toString("latin1"), f).toBe("wOF2");
+    }
+    expect(fs.existsSync(path.join(root, "src/app/fonts/OFL-Archivo.txt"))).toBe(true);
+    expect(fs.existsSync(path.join(root, "src/app/fonts/OFL-Manrope.txt"))).toBe(true);
+    // The two public variables are composed from the faces (latin last, then its fallback) — names unchanged for Tailwind.
+    expect(css).toMatch(/\.tbp-fonts \{\s*--font-tbp-display: var\(--tbp-archivo-vietnamese\), var\(--tbp-archivo-latin-ext\), var\(--tbp-archivo-latin\);/);
+    expect(css).toMatch(/--font-tbp-body: var\(--tbp-manrope-cyrillic-ext\),[^;]*var\(--tbp-manrope-latin\);/);
     expect(tailwind.theme.extend.fontFamily.display[0]).toBe("var(--font-tbp-display)");
     expect(tailwind.theme.extend.fontFamily.body[0]).toBe("var(--font-tbp-body)");
-    expect(layout).not.toMatch(/fonts\.googleapis|fonts\.gstatic/); // no runtime Google Fonts request
+    expect(layout + fonts).not.toMatch(/fonts\.googleapis|fonts\.gstatic/); // no Google Fonts request at build or run time
   });
   it("the existing body chrome is unchanged (background, SiteHeader, footer — in LegacyChrome since UI-1)", () => {
     expect(layout).toContain('<body className="min-h-screen text-slate-900 relative overflow-x-hidden">');
