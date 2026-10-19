@@ -16,7 +16,7 @@ vi.mock("next/navigation", () => ({ usePathname: () => nav.pathname, redirect: n
 vi.mock("next/image", () => ({ default: (p: { alt: string; className?: string }) => createElement("img", { alt: p.alt, className: p.className }) }));
 const hdr = vi.hoisted(() => ({ chrome: null as string | null }));
 vi.mock("next/headers", () => ({ headers: async () => new Headers(hdr.chrome === null ? {} : { "x-tbp-chrome": hdr.chrome }) }));
-vi.mock("next/font/google", () => ({ Archivo: () => ({ variable: "font-display-var" }), Manrope: () => ({ variable: "font-body-var" }) }));
+vi.mock("next/font/local", () => ({ default: (o: { variable: string }) => ({ variable: o.variable }) }));
 const settings = vi.hoisted(() => ({ getTeamName: vi.fn(async () => "Team Balance Pro") }));
 vi.mock("@/lib/settings", () => settings);
 vi.mock("next/link", () => ({
