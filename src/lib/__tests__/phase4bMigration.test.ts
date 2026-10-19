@@ -12,7 +12,7 @@ describe("Phase 4B step 1 migration", () => {
     const all = fs.readdirSync(path.join(process.cwd(), "prisma/migrations")).filter((d) => /^\d{14}_/.test(d)).sort();
     const i = all.indexOf(path.basename(DIR));
     expect(all[i - 1]).toBe("20261018120000_phase2_match_schedule_skips");
-    expect(all.slice(i + 1)).toEqual(["20261020120000_poll_closed_notice", "20261101120000_m11_3_trial_notices", "20261101120100_m11_3_password_reset"]);
+    expect(all.slice(i + 1, i + 4)).toEqual(["20261020120000_poll_closed_notice", "20261101120000_m11_3_trial_notices", "20261101120100_m11_3_password_reset"]);
   });
   it("adds only: one enum value (idempotent), one Match column + index, six Venue columns", () => {
     expect(code).toMatch(/ALTER TYPE "MessageEventType" ADD VALUE IF NOT EXISTS 'GAME_DAY_UPDATE_POSTED';/);

@@ -14,6 +14,7 @@ export default function LoginClient({ googleEnabled }: { googleEnabled: boolean 
   const callbackUrl = safeCallbackPath(sp.get("callbackUrl"));
   const passwordChanged = sp.get("passwordChanged") === "1";
   const passwordReset = sp.get("passwordReset") === "1";
+  const googleDisconnected = sp.get("googleDisconnected") === "1";
   // OAuth / Google outcomes come back as ?error=<code> (known codes only; never echoed).
   const oauthError = authErrorMessage(sp.get("error"));
 
@@ -33,8 +34,9 @@ export default function LoginClient({ googleEnabled }: { googleEnabled: boolean 
 
     if (!res || res.error) {
       setLoading(false);
-      // Generic on purpose: never reveals whether the email exists.
-      setErr(res ? "Invalid email or password." : "Login failed. Please try again.");
+      // Generic on purpose: never reveals whether the email exists. A temporary sign-in limit
+      // (M12-A) or an unavailable check gets its own fixed text — the same for every email.
+      setErr(!res ? "Login failed. Please try again." : res.error === "LoginRateLimited" || res.error === "LoginUnavailable" ? authErrorMessage(res.error) : "Invalid email or password.");
       return;
     }
 
@@ -49,6 +51,11 @@ export default function LoginClient({ googleEnabled }: { googleEnabled: boolean 
       {passwordChanged && !alert && (
         <div className="mb-6">
           <SuccessNote>Password changed. Please sign in again.</SuccessNote>
+        </div>
+      )}
+      {googleDisconnected && !alert && (
+        <div className="mb-6">
+          <SuccessNote>Google was disconnected. Sign in with your email and password.</SuccessNote>
         </div>
       )}
       {passwordReset && !alert && (

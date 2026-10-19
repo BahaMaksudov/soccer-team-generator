@@ -262,7 +262,7 @@ describe("Phase 3.1 — Account Settings keeps the sidebar context (real members
 
   it("Account Settings opened directly (no context) still renders normally", async () => {
     signIn("multi");
-    const html = renderToStaticMarkup(await AccountSecurityPage());
+    const html = renderToStaticMarkup(await AccountSecurityPage({ searchParams: Promise.resolve({}) }));
     expect(html.length).toBeGreaterThan(0);
   });
 });

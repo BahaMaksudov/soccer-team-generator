@@ -18,6 +18,7 @@ describe("forgot password without Upstash", () => {
     limit.mockReset();
     prepare.mockReset();
     vi.stubEnv("UPSTASH_REDIS_REST_URL", "");
+    vi.stubEnv("VERCEL", "1"); // M12-A — forwarding headers are trusted only behind Vercel's proxy
     vi.spyOn(console, "error").mockImplementation(() => {});
     vi.spyOn(console, "warn").mockImplementation(() => {});
   });

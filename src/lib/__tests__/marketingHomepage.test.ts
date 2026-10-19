@@ -116,7 +116,7 @@ describe("3: presentation only — no tenant inference, session, data or storage
       // (Marketing copy may mention "Telegram"; actual modules are covered by the import allow-list below.)
       expect(src, f).not.toMatch(/prisma|next-auth|getServerSession|TenantContext|tenantContext|cookies\(|headers\(|localStorage|sessionStorage|document\.cookie|\bfetch\(|openai|defaultPublicGroup|DEFAULT_PUBLIC|organizationSlug|groupSlug/i);
       for (const m of src.matchAll(/from\s+["']([^"']+)["']/g)) {
-        expect(["react", "next/link", "next/image", "lucide-react", "@/components/ui/button", "@/components/marketing/MarketingHeader", "@/components/marketing/parts", "@/lib/marketing/sports", "@/lib/sports", "@/lib/cn", "../../public/marketing/pickup-game.jpg"], `${f}: ${m[1]}`).toContain(m[1]);
+        expect(["react", "next/link", "next/image", "lucide-react", "@/components/ui/button", "@/components/marketing/MarketingHeader", "@/components/marketing/parts", "@/lib/marketing/sports", "@/lib/sports", "@/lib/cn", "@/lib/support" /* M12-A: optional SUPPORT_EMAIL (env only) */, "../../public/marketing/pickup-game.jpg"], `${f}: ${m[1]}`).toContain(m[1]);
       }
     }
   });

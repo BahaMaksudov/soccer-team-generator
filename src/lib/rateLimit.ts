@@ -1,5 +1,6 @@
 import { Ratelimit } from "@upstash/ratelimit";
 import { Redis } from "@upstash/redis";
+import { clientAddress } from "@/lib/rateLimitKeys";
 
 /**
  * Login rate limiting, backed by Upstash Redis (a real, serverless-safe
@@ -99,7 +100,7 @@ export async function checkRateLimit(bucket: RateLimitBucket, key: string): Prom
   }
 }
 
-/** Client address for rate-limit keys only (first X-Forwarded-For hop on Vercel). */
+/** Client address for rate-limit keys only (trusted-proxy aware, IPv6 /64 — see src/lib/rateLimitKeys.ts). */
 export function clientKey(req: Request): string {
-  return (req.headers.get("x-forwarded-for") ?? "").split(",")[0].trim() || req.headers.get("x-real-ip") || "unknown";
+  return clientAddress(req.headers);
 }

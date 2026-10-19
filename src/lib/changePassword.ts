@@ -41,7 +41,11 @@ export type ChangePasswordInput = z.infer<typeof changePasswordSchema>;
 
 export type ChangePasswordResult =
   | { ok: true }
-  | { ok: false; code: "CURRENT_PASSWORD_INCORRECT" | "CONFLICT" | "NO_PASSWORD" };
+  | { ok: false; code: "CURRENT_PASSWORD_INCORRECT" | "CONFLICT" | "NO_PASSWORD" | "RATE_LIMITED" };
+
+/** M12-A — runs the current-password check under the database limit (src/lib/loginLimit.ts). Default: unlimited (tests / internal). */
+export type PasswordGuard = (verify: () => Promise<boolean>) => Promise<"ok" | "invalid" | "limited">;
+const unguarded: PasswordGuard = async (verify) => ((await verify()) ? "ok" : "invalid");
 
 /** UI-2 — whether the account has a password (false for Google-only accounts). */
 export async function accountHasPassword(userId: string): Promise<boolean> {
@@ -49,12 +53,15 @@ export async function accountHasPassword(userId: string): Promise<boolean> {
   return !!user?.passwordHash;
 }
 
-export async function changePassword(userId: string, input: ChangePasswordInput, now: Date = new Date()): Promise<ChangePasswordResult> {
+export async function changePassword(userId: string, input: ChangePasswordInput, now: Date = new Date(), guard: PasswordGuard = unguarded): Promise<ChangePasswordResult> {
   const user = await prisma.user.findUnique({ where: { id: userId }, select: { email: true, passwordHash: true } });
   if (!user) return { ok: false, code: "CURRENT_PASSWORD_INCORRECT" };
   if (!user.passwordHash) return { ok: false, code: "NO_PASSWORD" };
 
-  if (!(await verifyPassword(input.currentPassword, user.passwordHash))) return { ok: false, code: "CURRENT_PASSWORD_INCORRECT" };
+  const hash = user.passwordHash;
+  const checked = await guard(() => verifyPassword(input.currentPassword, hash));
+  if (checked === "limited") return { ok: false, code: "RATE_LIMITED" };
+  if (checked !== "ok") return { ok: false, code: "CURRENT_PASSWORD_INCORRECT" };
   // newPassword !== currentPassword is enforced by changePasswordSchema.
 
   const passwordHash = await hashPassword(input.newPassword);
