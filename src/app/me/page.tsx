@@ -7,6 +7,8 @@ import { formatStartTime } from "@/lib/messaging/content";
 import { loadMyGames, type MyGamesProfile, type MyRecentGame, type MyUpcomingGame } from "@/lib/myGames";
 import ConnectTelegram from "./ConnectTelegram";
 import MyAttendance from "./MyAttendance";
+import JoinRequests from "./JoinRequests";
+import { listMyJoinRequests } from "@/lib/groupJoin";
 import { cn } from "@/lib/cn";
 
 /**
@@ -38,7 +40,7 @@ export default async function MyGamesPage() {
     );
   }
 
-  const profiles = await loadMyGames(account.id);
+  const [profiles, joinRequests] = await Promise.all([loadMyGames(account.id), listMyJoinRequests(account.id)]);
 
   return (
     <div className="mx-auto max-w-3xl space-y-8">
@@ -52,10 +54,12 @@ export default async function MyGamesPage() {
         )}
       </header>
 
+      <JoinRequests requests={joinRequests} />
+
       {profiles.length === 0 ? (
         <EmptyState title="No player profile connected">
           <p>Your account isn&apos;t connected to a player in any group yet, so there are no games to show.</p>
-          <p className="mt-2">Ask your organizer for a player claim link and open it while signed in. You can still answer attendance polls in Telegram without one.</p>
+          <p className="mt-2">Ask your organizer for the group&apos;s invite link (or a player claim link) and open it while signed in. You can still answer attendance polls in Telegram without one.</p>
         </EmptyState>
       ) : (
         profiles.map((p) => <Profile key={p.playerId} p={p} single={profiles.length === 1} />)
@@ -171,7 +175,7 @@ function NextGame({ g }: { g: MyUpcomingGame }) {
       <div className="space-y-4 p-5">
         <div>
           <h4 className="mb-2 font-semibold">Are you playing?</h4>
-          <MyAttendance matchId={g.matchId} status={g.myStatus} byOrganizer={g.myStatusByOrganizer} closed={g.attendanceClosed} />
+          <MyAttendance matchId={g.matchId} status={g.myStatus} byOrganizer={g.myStatusByOrganizer} closed={g.attendanceClosed} telegram={g.attendanceMode === "telegram"} />
         </div>
         <div className="border-t border-border pt-4 text-sm">
           {g.myTeam ? (

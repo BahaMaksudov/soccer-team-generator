@@ -6,7 +6,7 @@ import type { MetadataRoute } from "next";
  * carry player names; there is no public SEO for rosters). Those pages also
  * send noindex themselves (metadata + X-Robots-Tag, next.config.js).
  */
-export const PRIVATE_PREFIXES = ["/share", "/g/", "/api/", "/admin", "/me", "/claim", "/account", "/onboarding", "/invite", "/print", "/players", "/verify-email", "/attend"] as const;
+export const PRIVATE_PREFIXES = ["/share", "/g/", "/api/", "/admin", "/me", "/claim", "/account", "/onboarding", "/invite", "/print", "/players", "/verify-email", "/attend", "/join"] as const;
 
 export default function robots(): MetadataRoute.Robots {
   return { rules: [{ userAgent: "*", allow: "/", disallow: [...PRIVATE_PREFIXES] }] };

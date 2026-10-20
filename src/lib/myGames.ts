@@ -1,4 +1,5 @@
 import { prisma } from "@/lib/prisma";
+import { attendanceMode } from "@/lib/attendanceClosure";
 import { attendanceIsClosed, effectiveClosedAt } from "@/lib/attendanceDeadline";
 import { effectiveAttendance, type AttendanceRow } from "@/lib/attendance";
 import { participantsOf } from "@/lib/matchParticipants";
@@ -37,6 +38,8 @@ export type MyUpcomingGame = {
   myStatus: "PLAYING" | "NOT_PLAYING" | "MAYBE" | null;
   myStatusByOrganizer: boolean;
   attendanceClosed: boolean;
+  /** M13A — "telegram": answered in the Telegram poll only (no website buttons). */
+  attendanceMode: "telegram" | "web";
   teamsPublished: boolean;
   myTeam: MyTeam | null;
 };
@@ -149,7 +152,8 @@ export async function loadMyGames(userId: string, now: Date = new Date()): Promi
         }),
       ]);
 
-      const upcoming: MyUpcomingGame[] = upcomingRows.map((m) => {
+      const modes = await Promise.all(upcomingRows.map((m) => attendanceMode(p.group.id, m.id)));
+      const upcoming: MyUpcomingGame[] = upcomingRows.map((m, i) => {
         const eff = effectiveAttendance(m.attendance[0] as AttendanceRow | undefined, effectiveClosedAt(m));
         return {
           matchId: m.id,
@@ -160,6 +164,7 @@ export async function loadMyGames(userId: string, now: Date = new Date()): Promi
           myStatus: eff.status,
           myStatusByOrganizer: eff.overridden,
           attendanceClosed: attendanceIsClosed(m), // Phase 4B — shared deadline rule
+          attendanceMode: modes[i] ?? "web",
           teamsPublished: m.generation !== null,
           myTeam: myTeamIn(m.generation?.teamsJson, p.id),
         };

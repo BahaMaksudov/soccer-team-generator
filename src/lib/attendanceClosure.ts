@@ -1,3 +1,4 @@
+import type { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { syncMatchAttendanceAnswers } from "@/lib/telegramAttendance";
 import { groupTelegramAllowed, isVerifiedClose, sendPollClosedNotice, stopAttendancePoll, type NoticeResult, type StopOutcome } from "@/lib/pollClosure";
@@ -32,15 +33,41 @@ import { resolvePollDisplayDate } from "@/lib/telegramFormat";
  */
 export type AttendanceMode = "telegram" | "web";
 
-export async function attendanceMode(groupId: string, matchId: string): Promise<AttendanceMode | null> {
-  const m = await prisma.match.findFirst({
+/**
+ * `db` lets a caller decide INSIDE its write transaction (M13A): after locking the
+ * Match row (lockMatchForAnswer) a concurrent poll insert / chat assignment can't
+ * slip in between this decision and the answer it guards.
+ */
+export async function attendanceMode(groupId: string, matchId: string, db: Prisma.TransactionClient = prisma): Promise<AttendanceMode | null> {
+  const m = await db.match.findFirst({
     where: { id: matchId, groupId },
     select: { telegramChat: { select: { disconnectedAt: true } }, _count: { select: { telegramPolls: { where: { kind: "ATTENDANCE" } } } } },
   });
   if (!m) return null;
   if (m._count.telegramPolls > 0) return "telegram";
-  if (m.telegramChat && m.telegramChat.disconnectedAt === null && (await groupTelegramAllowed(groupId))) return "telegram";
+  if (m.telegramChat && m.telegramChat.disconnectedAt === null && (await groupTelegramAllowed(groupId, new Date(), db))) return "telegram";
   return "web";
+}
+
+/**
+ * M13A — lock everything attendanceMode() depends on before a website answer, so
+ * a switch to Telegram-managed attendance either commits first (and the check in
+ * the same transaction sees it) or waits until the answer is committed:
+ *   - the Match row, FOR UPDATE: inserting a TelegramPoll for the Match takes
+ *     FOR KEY SHARE on it (foreign key) and assigning a Telegram chat updates it;
+ *   - its Telegram chat row, FOR SHARE: reconnecting a disconnected chat
+ *     (disconnectedAt → null) updates that row;
+ *   - its Organization row, FOR SHARE (only when a chat is assigned — the plan
+ *     matters only then): a plan change / trial / Stripe upgrade updates that row.
+ * Lock order is always Match → TelegramChat → Organization; none of those other
+ * writers touches a Match row, so no deadlock cycle. FOR SHARE never blocks
+ * other answers. (A trial EXPIRING needs no write and only moves a match from
+ * Telegram to web — never towards a competing workflow.)
+ */
+export async function lockMatchForAnswer(tx: Prisma.TransactionClient, matchId: string): Promise<void> {
+  await tx.$queryRaw`SELECT 1 AS locked FROM "Match" WHERE "id" = ${matchId} FOR UPDATE`;
+  await tx.$queryRaw`SELECT 1 AS locked FROM "TelegramChat" c JOIN "Match" m ON m."telegramChatId" = c."id" WHERE m."id" = ${matchId} FOR SHARE OF c`;
+  await tx.$queryRaw`SELECT 1 AS locked FROM "Organization" o JOIN "Group" g ON g."organizationId" = o."id" JOIN "Match" m ON m."groupId" = g."id" WHERE m."id" = ${matchId} AND m."telegramChatId" IS NOT NULL FOR SHARE OF o`;
 }
 
 export function deadlineNoticeEnabled(env: Record<string, string | undefined> = process.env): boolean {

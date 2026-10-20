@@ -206,6 +206,10 @@ model User {
   playerClaimsAccepted    PlayerClaim[]            @relation("ClaimAcceptedBy")
   playerClaimsUnlinked    PlayerClaim[]            @relation("ClaimUnlinkedBy")
   telegramConnectCodes    TelegramConnectCode[]
+  // M13A — group join links created; join requests made / decided.
+  groupJoinLinksCreated   GroupJoinLink[]          @relation("JoinLinkCreatedBy")
+  groupJoinRequests       GroupJoinRequest[]       @relation("JoinRequestUser")
+  groupJoinDecisions      GroupJoinRequest[]       @relation("JoinRequestDecidedBy")
 
   // M5 — invitations this User created / accepted (audit trail only;
   // never an authorization source — OrganizationMembership is).
@@ -454,6 +458,64 @@ model PersonalAttendanceLink {
 // M11.3 — password reset: only the SHA-256 hash of the emailed token is stored.
 // Valid for 60 minutes, usable once; issuing a new one deletes the User's
 // older unused tokens. Consumed only by an explicit POST (never by GET).
+// M13A — a revocable group invitation link (/join#<token>). Only the SHA-256 of the
+// 32-byte token is stored. Holding it lets a signed-in, VERIFIED user ASK to join the
+// Group — nothing else (no membership, roster, attendance or claim). Generating a new
+// link revokes the Group's previous active one; revoking stops NEW requests only.
+model GroupJoinLink {
+  id              String    @id @default(cuid())
+  organizationId  String
+  groupId         String
+  tokenHash       String    @unique
+  createdByUserId String?
+  createdAt       DateTime  @default(now())
+  expiresAt       DateTime
+  revokedAt       DateTime?
+
+  group     Group              @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  createdBy User?              @relation("JoinLinkCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
+  requests  GroupJoinRequest[]
+
+  @@index([groupId])
+}
+
+enum GroupJoinRequestStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  CANCELED
+}
+
+// M13A — a user's request to join a Group, decided MANUALLY by an OWNER/ADMIN:
+// approve = link the user to an existing unclaimed Player or a new Player
+// (Player.userId stays THE player-membership relation); reject = nothing linked.
+// At most one PENDING request per (groupId, userId): partial unique index
+// "GroupJoinRequest_groupId_userId_pending_key" (migration SQL; Prisma can't model it).
+model GroupJoinRequest {
+  id              String                 @id @default(cuid())
+  organizationId  String
+  groupId         String
+  userId          String
+  joinLinkId      String?
+  firstName       String
+  lastName        String
+  status          GroupJoinRequestStatus @default(PENDING)
+  playerId        String?
+  decidedByUserId String?
+  decidedAt       DateTime?
+  createdAt       DateTime               @default(now())
+  updatedAt       DateTime               @updatedAt
+
+  group     Group          @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  user      User           @relation("JoinRequestUser", fields: [userId], references: [id], onDelete: Cascade)
+  joinLink  GroupJoinLink? @relation(fields: [joinLinkId], references: [id], onDelete: SetNull)
+  player    Player?        @relation(fields: [playerId], references: [id], onDelete: SetNull)
+  decidedBy User?          @relation("JoinRequestDecidedBy", fields: [decidedByUserId], references: [id], onDelete: SetNull)
+
+  @@index([groupId, status])
+  @@index([userId])
+}
+
 model PasswordResetToken {
   id        String    @id @default(cuid())
   userId    String
@@ -596,6 +658,9 @@ model Group {
   matchAutomations        MatchAutomation[]
   // Phase 2
   matchScheduleSkips      MatchScheduleSkip[]
+  // M13A
+  joinLinks               GroupJoinLink[]
+  joinRequests            GroupJoinRequest[]
 
   @@unique([organizationId, slug])
 }
@@ -771,6 +836,7 @@ model Player {
   telegramConnectCodes    TelegramConnectCode[]
   attendanceResponses     AttendanceResponse[]
   personalAttendanceLinks PersonalAttendanceLink[]
+  joinRequests            GroupJoinRequest[]
   telegramChatPlayers     TelegramChatPlayer[]
   communityPlayers        CommunityPlayer[]
   mvpVotesCast            MatchMvpVote[]           @relation("MvpVoter")

@@ -126,6 +126,10 @@ export default function PlayersRoster({
   }, [playersUrl]);
   useEffect(() => {
     load();
+    // M13A — an approved join request adds / links a player (InvitePlayersCard on this page).
+    const onChanged = () => void load();
+    window.addEventListener("tbp:players-changed", onChanged);
+    return () => window.removeEventListener("tbp:players-changed", onChanged);
   }, [load]);
 
   const list = useMemo(

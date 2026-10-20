@@ -4,7 +4,7 @@ import { generateToken, hashToken, isWellFormedToken } from "@/lib/secureToken";
 import { communityRosterIds } from "@/lib/communities";
 import { attendanceIsClosed, effectiveClosedAt, kickoffAt } from "@/lib/attendanceDeadline";
 import { effectiveAttendance, recordParticipantResponse, type AttendanceRow } from "@/lib/attendance";
-import { attendanceMode } from "@/lib/attendanceClosure";
+import { attendanceMode, lockMatchForAnswer } from "@/lib/attendanceClosure";
 import { formatDeadline } from "@/lib/deadlineFormat";
 
 /**
@@ -209,8 +209,11 @@ export async function answerPersonal(token: unknown, status: AttendanceStatus, n
   if (!r) return { ok: false, reason: "invalid" };
   const state = await stateOf(r, now);
   if (state !== "open") return { ok: false, reason: state };
-  const outcome = await prisma.$transaction(async (tx): Promise<"ok" | "rate_limited" | "revoked" | "closed"> => {
+  const outcome = await prisma.$transaction(async (tx): Promise<"ok" | "rate_limited" | "revoked" | "closed" | "telegram"> => {
     await tx.$queryRaw`SELECT 1 AS locked FROM pg_advisory_xact_lock(hashtext(${"personal-link:" + r.link.id}))`;
+    // M13A — a poll posted (or a Telegram chat assigned) meanwhile makes this a Telegram match: decided under the Match row lock.
+    await lockMatchForAnswer(tx, r.link.matchId);
+    if ((await attendanceMode(r.link.groupId, r.link.matchId, tx)) === "telegram") return "telegram";
     const link = await tx.personalAttendanceLink.findUniqueOrThrow({ where: { id: r.link.id }, select: { revokedAt: true, windowStartedAt: true, windowCount: true } });
     if (link.revokedAt) return "revoked";
     // Re-checked inside the transaction: attendance may have closed meanwhile.

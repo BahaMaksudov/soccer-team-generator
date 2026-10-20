@@ -194,6 +194,9 @@ describe("UI primitives are presentation-only", () => {
         // M12B — personal attendance (player page; organizer card).
         "src/app/attend/PersonalAttendancePage.tsx",
         "src/app/admin/o/[organizationSlug]/g/[groupSlug]/matches/[matchId]/PersonalLinksCard.tsx",
+        // M13A — group invitation page; "Invite players" card; /me group requests
+        "src/app/join/JoinGroupPage.tsx",
+        "src/app/admin/o/[organizationSlug]/g/[groupSlug]/players/InvitePlayersCard.tsx",
         "src/app/account/security/page.tsx",
         "src/app/me/page.tsx",
       ].sort()

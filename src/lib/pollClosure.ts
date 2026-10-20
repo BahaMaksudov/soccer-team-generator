@@ -85,10 +85,13 @@ export async function pollClosedNoticeState(groupId: string, pollId: string, now
 
 export type NoticeResult = "sent" | "failed" | "uncertain" | "exists" | "not_in_plan";
 
-/** M11.3 — whether the Group's Organization may send Telegram messages right now (effective plan, real clock). */
-export async function groupTelegramAllowed(groupId: string, now: Date = new Date()): Promise<boolean> {
-  const group = await prisma.group.findUnique({ where: { id: groupId }, select: { organizationId: true } });
-  return group ? (await organizationPlan(group.organizationId, now)).limits.telegram : false;
+/**
+ * M11.3 — whether the Group's Organization may send Telegram messages right now (effective plan, real clock).
+ * `db`: read inside a caller's transaction (M13A — attendanceMode under the answer locks).
+ */
+export async function groupTelegramAllowed(groupId: string, now: Date = new Date(), db: Prisma.TransactionClient = prisma): Promise<boolean> {
+  const group = await db.group.findUnique({ where: { id: groupId }, select: { organizationId: true } });
+  return group ? (await organizationPlan(group.organizationId, now, db)).limits.telegram : false;
 }
 
 /**
