@@ -152,6 +152,41 @@ async function setCommunityMemberships(tx: Prisma.TransactionClient, p: { active
   if (toAdd.length) await tx.communityPlayer.createMany({ data: toAdd.map((communityId) => ({ groupId: activeGroupId, communityId, playerId: p.playerId, createdByUserId: p.userId })), skipDuplicates: true });
 }
 
+/**
+ * The Player insert shared by "Add player" and M13A join-request approval, inside the
+ * caller's transaction: plan capacity (M11.1 — an active Player counts toward the
+ * plan's unique active players, Organization-locked), the row in the URL-resolved
+ * Group, then the chosen Communities (M9.2; nothing is created if one is invalid).
+ * `userId` links an account (approval only). Callers validate the body
+ * (playerCreateSchema) and the role (playerRoleError) first.
+ */
+export async function insertPlayerInTx(
+  tx: Prisma.TransactionClient,
+  context: TenantContext,
+  data: { firstName: string; lastName: string; position: string; rating: Prisma.PlayerCreateInput["rating"]; stamina?: number; isActive?: boolean; communityIds?: string[] },
+  userId: string | null
+): Promise<AdminPlayerRow> {
+  if (data.isActive ?? true) await assertCapacity(tx, context.organization.id, "activePlayers");
+  const player = await tx.player.create({
+    data: {
+      firstName: data.firstName,
+      lastName: data.lastName,
+      position: data.position,
+      rating: data.rating,
+      stamina: data.stamina ?? 3,
+      isActive: data.isActive ?? true,
+      groupId: context.activeGroup.id,
+      ...(userId ? { userId } : {}),
+    },
+    select: { ...ADMIN_PLAYER_FIELDS, userId: true },
+  });
+  if (!data.communityIds?.length) return player;
+  await setCommunityMemberships(tx, { activeGroupId: context.activeGroup.id, playerId: player.id, desired: data.communityIds, userId: context.user.id });
+  return tx.player.findFirstOrThrow({ where: { id: player.id, groupId: context.activeGroup.id }, select: { ...ADMIN_PLAYER_FIELDS, userId: true, communityPlayers: { select: { communityId: true } } } });
+}
+
+export { roleError as playerRoleError, CommunityChoiceError, communityChoiceResponse };
+
 export async function createPlayer(context: TenantContext, req: Request): Promise<NextResponse> {
   // UI-4A — organizer mutation: OWNER/ADMIN only (MEMBER gets the generic 404).
   const denied = managersOnlyResponse(context);
@@ -173,26 +208,7 @@ export async function createPlayer(context: TenantContext, req: Request): Promis
   if (invalidRole) return invalidRole;
 
   try {
-    // M11.1 — an active Player counts toward the plan's unique active players (Organization-locked).
-    const created = await prisma.$transaction(async (tx) => {
-      if (isActive ?? true) await assertCapacity(tx, context.organization.id, "activePlayers");
-      const player = await tx.player.create({
-        data: {
-          firstName,
-          lastName,
-          position,
-          rating,
-          stamina,
-          isActive: isActive ?? true,
-          groupId: context.activeGroup.id,
-        },
-        select: { ...ADMIN_PLAYER_FIELDS, userId: true },
-      });
-      if (!communityIds?.length) return player;
-      // M9.2 — the chosen Communities, in the same transaction (nothing is created if one is invalid).
-      await setCommunityMemberships(tx, { activeGroupId: context.activeGroup.id, playerId: player.id, desired: communityIds, userId: context.user.id });
-      return tx.player.findFirstOrThrow({ where: { id: player.id, groupId: context.activeGroup.id }, select: { ...ADMIN_PLAYER_FIELDS, userId: true, communityPlayers: { select: { communityId: true } } } });
-    });
+    const created = await prisma.$transaction((tx) => insertPlayerInTx(tx, context, { firstName, lastName, position, rating, stamina, isActive, communityIds }, null));
 
     return NextResponse.json(toAdminPlayer(created as AdminPlayerRow, await staminaCoefFor(context)));
   } catch (e: unknown) {

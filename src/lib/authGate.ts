@@ -19,6 +19,9 @@ export const PROTECTED_MATCHER = [
   "/account/:path*",
   "/me/:path*",
   "/api/claims/accept",
+  // M13A — filing / canceling a group join request (the preview /api/join stays public).
+  "/api/join/request",
+  "/api/join/cancel",
 ];
 
 export type AuthGateDecision =

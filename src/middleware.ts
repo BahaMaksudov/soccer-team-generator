@@ -30,5 +30,5 @@ function taggedNext(req: NextRequest) {
 // Must be a static literal for Next.js; kept identical to the redesigned
 // (never gated) paths of src/lib/chrome.ts plus PROTECTED_MATCHER — asserted in tests.
 export const config = {
-  matcher: ["/", "/login", "/signup", "/verify-email/:path*", "/share/m/:path*", "/forgot-password", "/reset-password/:path*", "/attend", "/g/:organizationSlug/:groupSlug/m/:matchId", "/pricing", "/admin/:path*", "/api/admin/:path*", "/onboarding/:path*", "/api/invitations/:path*", "/api/account/:path*", "/account/:path*", "/me/:path*", "/api/claims/accept"],
+  matcher: ["/", "/login", "/signup", "/verify-email/:path*", "/share/m/:path*", "/forgot-password", "/reset-password/:path*", "/attend", "/join", "/g/:organizationSlug/:groupSlug/m/:matchId", "/pricing", "/admin/:path*", "/api/admin/:path*", "/onboarding/:path*", "/api/invitations/:path*", "/api/account/:path*", "/account/:path*", "/me/:path*", "/api/claims/accept", "/api/join/request", "/api/join/cancel"],
 };
