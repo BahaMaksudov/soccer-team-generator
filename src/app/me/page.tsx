@@ -171,7 +171,7 @@ function NextGame({ g }: { g: MyUpcomingGame }) {
       <div className="space-y-4 p-5">
         <div>
           <h4 className="mb-2 font-semibold">Are you playing?</h4>
-          <MyAttendance matchId={g.matchId} status={g.myStatus} byOrganizer={g.myStatusByOrganizer} closed={g.attendanceClosed} />
+          <MyAttendance matchId={g.matchId} status={g.myStatus} byOrganizer={g.myStatusByOrganizer} closed={g.attendanceClosed} telegram={g.attendanceMode === "telegram"} />
         </div>
         <div className="border-t border-border pt-4 text-sm">
           {g.myTeam ? (

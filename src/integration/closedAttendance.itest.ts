@@ -138,8 +138,8 @@ describe("organizer attendance (OWNER / ADMIN)", () => {
   });
 
   it("13: closing and 9: reopening never modify existing answers or overrides; 10: changes work again after reopening", async () => {
-    await signIn("member@example.test");
-    expect((await self("m1", "MAYBE")).status).toBe(200);
+    // m1 is a Telegram match (M13A: answered in the poll, not on /me): p2's Telegram vote.
+    expect(await prisma.$transaction((tx) => applyTelegramAttendanceAnswer(tx, { matchId: "m1", groupId: "ga", telegramUserId: 7002n, optionIds: [2], at: new Date() }))).toBe("recorded");
     await signIn("owner@example.test");
     expect((await override("p2", "NOT_PLAYING")).status).toBe(200);
     const before = await rows();
@@ -176,24 +176,27 @@ describe("organizer attendance (OWNER / ADMIN)", () => {
 
 describe("player self-attendance (claimed Player)", () => {
   it("6: works while OPEN; 7: rejected while CLOSED (409, nothing changes); 11: works again after reopening", async () => {
+    // M13A — /me answers only website-only matches; m1 (Telegram poll) is answered in the poll.
+    await prisma.match.create({ data: { id: "mw", groupId: "ga", date: new Date("2099-06-01T00:00:00Z") } });
     await signIn("member@example.test");
-    expect((await self("m1", "PLAYING")).status).toBe(200);
-    expect(await row("p1")).toMatchObject({ participantStatus: "PLAYING", participantSource: "WEB" });
+    expect(await self("m1", "PLAYING")).toMatchObject({ status: 409 });
+    expect((await self("mw", "PLAYING")).status).toBe(200);
+    expect(await row("p1", "mw")).toMatchObject({ participantStatus: "PLAYING", participantSource: "WEB" });
 
     await signIn("owner@example.test");
-    await setClosed(true);
+    await setClosed(true, "mw");
     await signIn("member@example.test");
-    const before = await rows();
-    const res = await self("m1", "NOT_PLAYING");
+    const before = await rows("mw");
+    const res = await self("mw", "NOT_PLAYING");
     expect(res.status).toBe(409);
     expect(await res.json()).toEqual(CLOSED);
-    expect(await rows()).toBe(before);
+    expect(await rows("mw")).toBe(before);
 
     await signIn("owner@example.test");
-    await setClosed(false);
+    await setClosed(false, "mw");
     await signIn("member@example.test");
-    expect((await self("m1", "NOT_PLAYING")).status).toBe(200);
-    expect(await row("p1")).toMatchObject({ participantStatus: "NOT_PLAYING", participantSource: "WEB" });
+    expect((await self("mw", "NOT_PLAYING")).status).toBe(200);
+    expect(await row("p1", "mw")).toMatchObject({ participantStatus: "NOT_PLAYING", participantSource: "WEB" });
   });
 
   it("a user without a claimed Player in the Match's Group still gets the generic 404 (closed state is not revealed)", async () => {

@@ -620,7 +620,7 @@ describe("Generate, publish and post for a Match", () => {
 });
 
 describe("default selection follows every attendance change (manual-smoke regression)", () => {
-  it("override, clear-revealing-PLAYING, Telegram and web PLAYING all appear in defaultSelection after refresh", async () => {
+  it("override, clear-revealing-PLAYING and Telegram PLAYING appear in defaultSelection after refresh; a website answer on this Telegram match is refused (M13A)", async () => {
     await signInAs("owner@example.test");
     const id = (await createMatch()).data.match.id;
     await postPoll(id);
@@ -636,9 +636,12 @@ describe("default selection follows every attendance change (manual-smoke regres
     expect((await view(id)).defaultSelection).toEqual(["ga-p1", "ga-p2", "ga-p6"]);
     await overrideRoute.POST(json("POST", { playerId: "ga-p4", status: null }), gm(A, id)); // reveals Telegram PLAYING
     await signInAs("player@example.test");
-    await selfAttendanceRoute.POST(json("POST", { status: "PLAYING" }), { params: Promise.resolve({ matchId: id }) }); // ga-p3 via web
+    // ga-p3 via the website: refused — this match is answered in its Telegram poll.
+    const web = await selfAttendanceRoute.POST(json("POST", { status: "PLAYING" }), { params: Promise.resolve({ matchId: id }) });
+    expect(web.status).toBe(409);
+    expect(await web.json()).toMatchObject({ code: "TELEGRAM_MATCH" });
     await signInAs("owner@example.test");
-    expect((await view(id)).defaultSelection).toEqual(["ga-p1", "ga-p2", "ga-p3", "ga-p4", "ga-p6"]);
+    expect((await view(id)).defaultSelection).toEqual(["ga-p1", "ga-p2", "ga-p4", "ga-p6"]);
   });
 });
 

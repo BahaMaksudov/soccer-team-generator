@@ -3,6 +3,8 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 
+export const TELEGRAM_POLL_ONLY = "Attendance is managed through the Telegram poll. Please submit or update your response in Telegram.";
+
 const OPTIONS = [
   { status: "PLAYING", label: "Playing" },
   { status: "MAYBE", label: "Maybe" },
@@ -15,16 +17,20 @@ export default function MyAttendance({
   status,
   byOrganizer,
   closed = false,
+  telegram = false,
 }: {
   matchId: string;
   status: "PLAYING" | "NOT_PLAYING" | "MAYBE" | null;
   byOrganizer: boolean;
   /** UI-4B — closed attendance is read-only (the server rejects changes too). */
   closed?: boolean;
+  /** M13A — a Telegram match: answered in the Telegram poll only (the server rejects website answers too). */
+  telegram?: boolean;
 }) {
   const router = useRouter();
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  const [pollOnly, setPollOnly] = useState(telegram);
 
   async function choose(next: (typeof OPTIONS)[number]["status"]) {
     if (busy) return;
@@ -36,12 +42,33 @@ export default function MyAttendance({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ status: next }),
       });
-      if (!res.ok) setErr(res.status === 409 ? "Attendance is closed. Your organizer can reopen it." : "Could not save your answer.");
-      else router.refresh();
+      if (res.ok) router.refresh();
+      else {
+        const code = res.status === 409 ? ((await res.json().catch(() => null)) as { code?: string } | null)?.code : undefined;
+        if (code === "TELEGRAM_MATCH") {
+          // This page was stale: a Telegram poll now runs this match.
+          setPollOnly(true);
+          router.refresh();
+        } else setErr(res.status === 409 ? "Attendance is closed. Your organizer can reopen it." : "Could not save your answer.");
+      }
     } catch {
       setErr("Could not save your answer.");
     }
     setBusy(false);
+  }
+
+  if (pollOnly) {
+    const label = OPTIONS.find((o) => o.status === status)?.label;
+    return (
+      <div className="space-y-1">
+        <p className="text-sm">{TELEGRAM_POLL_ONLY}</p>
+        {label && (
+          <div className="text-xs text-muted-foreground">
+            Current answer: <span className="font-medium">{label}</span>
+          </div>
+        )}
+      </div>
+    );
   }
 
   if (closed) {

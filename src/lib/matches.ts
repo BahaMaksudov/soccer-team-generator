@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { closeMatchAttendance, closeSummary } from "@/lib/attendanceClosure";
+import { attendanceMode, closeMatchAttendance, closeSummary, lockMatchForAnswer } from "@/lib/attendanceClosure";
 import type { AttendanceStatus, MatchStatus } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { CUTOFF_CATCH_UP_MS } from "@/lib/scheduleTime";
@@ -605,17 +605,28 @@ export async function setAttendanceClosed(context: TenantContext, matchId: strin
  * they have claimed a Player. Never for another Player. Canceled Matches
  * accept no responses. UI-4B — nor does a Match whose attendance is closed
  * ("closed" is reported only to a claimed participant of that Match's Group).
+ *
+ * M13A — a TELEGRAM match (attendanceMode) is answered in the Telegram poll only:
+ * "telegram" (→ 409 TELEGRAM_MATCH), so a website answer can never replace a poll
+ * vote. Decided inside the write transaction after locking the Match row, so a
+ * poll posted meanwhile (or a stale /me page) can't slip a website answer in.
  */
-export async function setOwnAttendance(userId: string, matchId: string, status: AttendanceStatus): Promise<"ok" | "not_found" | "closed"> {
-  const match = await prisma.match.findFirst({ where: { id: matchId, status: { not: "CANCELED" } }, select: { id: true, groupId: true, attendanceClosedAt: true, attendanceDeadlineAt: true, communityId: true } });
+export const TELEGRAM_MATCH_MESSAGE = "Attendance is managed through the Telegram poll. Please submit or update your response in Telegram.";
+
+export async function setOwnAttendance(userId: string, matchId: string, status: AttendanceStatus): Promise<"ok" | "not_found" | "closed" | "telegram"> {
+  const match = await prisma.match.findFirst({ where: { id: matchId, status: { not: "CANCELED" } }, select: { id: true, groupId: true, communityId: true } });
   if (!match) return "not_found";
   const player = await prisma.player.findFirst({ where: { groupId: match.groupId, userId }, select: { id: true } });
   if (!player) return "not_found";
   // M9.2 — a Community Match accepts answers only from that Community's players (indistinguishable from unknown).
   if (match.communityId && !(await prisma.communityPlayer.findFirst({ where: { groupId: match.groupId, communityId: match.communityId, playerId: player.id }, select: { id: true } }))) return "not_found";
-  if (attendanceIsClosed(match)) return "closed"; // Phase 4B — shared deadline rule
-  await prisma.$transaction((tx) =>
-    recordParticipantResponse(tx, { matchId: match.id, groupId: match.groupId, playerId: player.id, status, source: "WEB", at: new Date() })
-  );
-  return "ok";
+  return prisma.$transaction(async (tx): Promise<"ok" | "not_found" | "closed" | "telegram"> => {
+    await lockMatchForAnswer(tx, match.id);
+    const fresh = await tx.match.findFirst({ where: { id: match.id, groupId: match.groupId }, select: { status: true, attendanceClosedAt: true, attendanceDeadlineAt: true } });
+    if (!fresh || fresh.status === "CANCELED") return "not_found";
+    if ((await attendanceMode(match.groupId, match.id, tx)) === "telegram") return "telegram";
+    if (attendanceIsClosed(fresh)) return "closed"; // Phase 4B — shared deadline rule
+    await recordParticipantResponse(tx, { matchId: match.id, groupId: match.groupId, playerId: player.id, status, source: "WEB", at: new Date() });
+    return "ok";
+  });
 }

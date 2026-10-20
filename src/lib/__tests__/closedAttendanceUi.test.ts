@@ -6,7 +6,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 
 vi.mock("next/navigation", () => ({ useRouter: () => ({ refresh: vi.fn() }) }));
 
-import MyAttendance from "@/app/me/MyAttendance";
+import MyAttendance, { TELEGRAM_POLL_ONLY } from "@/app/me/MyAttendance";
 
 /**
  * UI-4B — closed attendance is presented READ-ONLY (controls are not rendered,
@@ -48,5 +48,22 @@ describe("player self-attendance (/me)", () => {
     expect(h).toContain(">Maybe</span>");
     expect(h).toContain("Attendance is closed. Your organizer can reopen it.");
     expect(html(true, null)).toContain("No answer");
+  });
+});
+
+describe("M13A — /me on a TELEGRAM match: poll only, no website answer controls", () => {
+  const html = (status: "PLAYING" | "MAYBE" | "NOT_PLAYING" | null, closed = false) =>
+    renderToStaticMarkup(createElement(MyAttendance, { matchId: "m1", status, byOrganizer: false, closed, telegram: true }));
+  it("no buttons; the Telegram instruction; the current (poll) answer read-only", () => {
+    const h = html("NOT_PLAYING");
+    expect(h).not.toContain("<button");
+    expect(h).toContain("Attendance is managed through the Telegram poll. Please submit or update your response in Telegram.");
+    expect(h).toContain(">Not playing</span>");
+    expect(html(null)).not.toContain("Current answer");
+    expect(html("PLAYING", true)).not.toContain("<button"); // closed too
+  });
+  it("the client text equals the server's 409 message", () => {
+    const src = fs.readFileSync(path.join(process.cwd(), "src/lib/matches.ts"), "utf8");
+    expect(src).toContain(`TELEGRAM_MATCH_MESSAGE = ${JSON.stringify(TELEGRAM_POLL_ONLY)}`);
   });
 });

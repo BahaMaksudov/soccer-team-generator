@@ -1,3 +1,4 @@
+import type { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { syncMatchAttendanceAnswers } from "@/lib/telegramAttendance";
 import { groupTelegramAllowed, isVerifiedClose, sendPollClosedNotice, stopAttendancePoll, type NoticeResult, type StopOutcome } from "@/lib/pollClosure";
@@ -32,8 +33,13 @@ import { resolvePollDisplayDate } from "@/lib/telegramFormat";
  */
 export type AttendanceMode = "telegram" | "web";
 
-export async function attendanceMode(groupId: string, matchId: string): Promise<AttendanceMode | null> {
-  const m = await prisma.match.findFirst({
+/**
+ * `db` lets a caller decide INSIDE its write transaction (M13A): after locking the
+ * Match row (lockMatchForAnswer) a concurrent poll insert / chat assignment can't
+ * slip in between this decision and the answer it guards.
+ */
+export async function attendanceMode(groupId: string, matchId: string, db: Prisma.TransactionClient = prisma): Promise<AttendanceMode | null> {
+  const m = await db.match.findFirst({
     where: { id: matchId, groupId },
     select: { telegramChat: { select: { disconnectedAt: true } }, _count: { select: { telegramPolls: { where: { kind: "ATTENDANCE" } } } } },
   });
@@ -41,6 +47,16 @@ export async function attendanceMode(groupId: string, matchId: string): Promise<
   if (m._count.telegramPolls > 0) return "telegram";
   if (m.telegramChat && m.telegramChat.disconnectedAt === null && (await groupTelegramAllowed(groupId))) return "telegram";
   return "web";
+}
+
+/**
+ * M13A — lock the Match row for a website answer (FOR UPDATE). Inserting a
+ * TelegramPoll for the Match takes FOR KEY SHARE on this row (foreign key) and
+ * assigning a Telegram chat updates it, so both wait for — or are seen by — the
+ * attendanceMode() check that follows in the same transaction.
+ */
+export async function lockMatchForAnswer(tx: Prisma.TransactionClient, matchId: string): Promise<void> {
+  await tx.$queryRaw`SELECT 1 AS locked FROM "Match" WHERE "id" = ${matchId} FOR UPDATE`;
 }
 
 export function deadlineNoticeEnabled(env: Record<string, string | undefined> = process.env): boolean {
