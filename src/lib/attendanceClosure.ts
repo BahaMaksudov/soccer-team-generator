@@ -45,18 +45,29 @@ export async function attendanceMode(groupId: string, matchId: string, db: Prism
   });
   if (!m) return null;
   if (m._count.telegramPolls > 0) return "telegram";
-  if (m.telegramChat && m.telegramChat.disconnectedAt === null && (await groupTelegramAllowed(groupId))) return "telegram";
+  if (m.telegramChat && m.telegramChat.disconnectedAt === null && (await groupTelegramAllowed(groupId, new Date(), db))) return "telegram";
   return "web";
 }
 
 /**
- * M13A — lock the Match row for a website answer (FOR UPDATE). Inserting a
- * TelegramPoll for the Match takes FOR KEY SHARE on this row (foreign key) and
- * assigning a Telegram chat updates it, so both wait for — or are seen by — the
- * attendanceMode() check that follows in the same transaction.
+ * M13A — lock everything attendanceMode() depends on before a website answer, so
+ * a switch to Telegram-managed attendance either commits first (and the check in
+ * the same transaction sees it) or waits until the answer is committed:
+ *   - the Match row, FOR UPDATE: inserting a TelegramPoll for the Match takes
+ *     FOR KEY SHARE on it (foreign key) and assigning a Telegram chat updates it;
+ *   - its Telegram chat row, FOR SHARE: reconnecting a disconnected chat
+ *     (disconnectedAt → null) updates that row;
+ *   - its Organization row, FOR SHARE (only when a chat is assigned — the plan
+ *     matters only then): a plan change / trial / Stripe upgrade updates that row.
+ * Lock order is always Match → TelegramChat → Organization; none of those other
+ * writers touches a Match row, so no deadlock cycle. FOR SHARE never blocks
+ * other answers. (A trial EXPIRING needs no write and only moves a match from
+ * Telegram to web — never towards a competing workflow.)
  */
 export async function lockMatchForAnswer(tx: Prisma.TransactionClient, matchId: string): Promise<void> {
   await tx.$queryRaw`SELECT 1 AS locked FROM "Match" WHERE "id" = ${matchId} FOR UPDATE`;
+  await tx.$queryRaw`SELECT 1 AS locked FROM "TelegramChat" c JOIN "Match" m ON m."telegramChatId" = c."id" WHERE m."id" = ${matchId} FOR SHARE OF c`;
+  await tx.$queryRaw`SELECT 1 AS locked FROM "Organization" o JOIN "Group" g ON g."organizationId" = o."id" JOIN "Match" m ON m."groupId" = g."id" WHERE m."id" = ${matchId} AND m."telegramChatId" IS NOT NULL FOR SHARE OF o`;
 }
 
 export function deadlineNoticeEnabled(env: Record<string, string | undefined> = process.env): boolean {

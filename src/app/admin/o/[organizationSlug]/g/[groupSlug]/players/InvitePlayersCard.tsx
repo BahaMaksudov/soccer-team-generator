@@ -16,7 +16,8 @@ import CanonicalPlayerForm from "../CanonicalPlayerForm";
  * M13A — "Invite players" (OWNER/ADMIN). One invite link per group: copy it and
  * share it however you like (WhatsApp, SMS, email…) — nothing is sent from
  * here. The link is shown ONCE after it's generated (only a hash is stored);
- * generating a new one turns the old one off. Each request is decided by hand:
+ * replacing an active link asks for confirmation first (the previously shared
+ * link stops working; the server refuses without that confirmation too). Each request is decided by hand:
  * link the person to an existing player without an account, or create a new
  * player for them, or reject. Joining never gives organizer access.
  */
@@ -47,6 +48,7 @@ export default function InvitePlayersCard({ organizationSlug, groupSlug, sport }
   const [choice, setChoice] = useState<Record<string, string>>({});
   const [creatingFor, setCreatingFor] = useState<RequestRow | null>(null);
   const [confirmReject, setConfirmReject] = useState<string | null>(null);
+  const [confirmReplace, setConfirmReplace] = useState(false);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<{ ok: boolean; text: string } | null>(null);
 
@@ -85,11 +87,12 @@ export default function InvitePlayersCard({ organizationSlug, groupSlug, sport }
     window.dispatchEvent(new Event("tbp:players-changed"));
   };
 
-  async function generate() {
-    const data = await post(linksApi, { action: "create" });
-    if (!data) return;
+  async function generate(replace: boolean) {
+    setConfirmReplace(false);
+    const data = await post(linksApi, { action: "create", ...(replace ? { replace: true } : {}) });
+    if (!data) return void (await load());
     setFreshUrl(`${window.location.origin}${String(data.path)}`);
-    await changed("Invite link created. Copy it now — for security it's shown only once.");
+    await changed(`${data.replaced ? "New invite link created — the previous link no longer works." : "Invite link created."} Copy it now — for security it's shown only once.`);
   }
   async function revoke(id: string) {
     if (await post(linksApi, { action: "revoke", linkId: id })) {
@@ -142,16 +145,35 @@ export default function InvitePlayersCard({ organizationSlug, groupSlug, sport }
             </div>
           )}
           {active && !freshUrl && <p className="mt-1 text-xs text-muted-foreground">For security the link is shown only when it&apos;s created. Lost it? Generate a new one — the old one stops working.</p>}
-          <div className="mt-3 flex flex-wrap gap-2">
-            <Button type="button" size="sm" disabled={busy} onClick={generate}>
-              {active ? "Generate new link" : "Generate invite link"}
-            </Button>
-            {active && (
-              <Button type="button" size="sm" variant="ghost" disabled={busy} onClick={() => revoke(active.id)}>
-                Turn off link
+          {confirmReplace && active ? (
+            <div role="alertdialog" aria-labelledby="replace-link-h" aria-describedby="replace-link-d" className="mt-3 rounded-tbp-md border border-destructive/40 bg-destructive/5 p-3">
+              <p id="replace-link-h" className="text-sm font-semibold">
+                Replace the invite link?
+              </p>
+              <p id="replace-link-d" className="mt-1 text-sm text-muted-foreground">
+                The link you shared before will stop working — anyone who hasn&apos;t sent a request yet will need the new link. Requests already sent stay in the list below.
+              </p>
+              <div className="mt-3 flex flex-wrap gap-2">
+                <Button type="button" size="sm" variant="destructive" disabled={busy} onClick={() => generate(true)}>
+                  Replace link
+                </Button>
+                <Button type="button" size="sm" variant="ghost" onClick={() => setConfirmReplace(false)}>
+                  Keep current link
+                </Button>
+              </div>
+            </div>
+          ) : (
+            <div className="mt-3 flex flex-wrap gap-2">
+              <Button type="button" size="sm" disabled={busy} onClick={() => (active ? setConfirmReplace(true) : generate(false))}>
+                {active ? "Generate new link" : "Generate invite link"}
               </Button>
-            )}
-          </div>
+              {active && (
+                <Button type="button" size="sm" variant="ghost" disabled={busy} onClick={() => revoke(active.id)}>
+                  Turn off link
+                </Button>
+              )}
+            </div>
+          )}
         </div>
 
         {message && (

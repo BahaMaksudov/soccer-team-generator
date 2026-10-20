@@ -17,8 +17,9 @@ import { insertPlayerInTx } from "@/lib/playerCrud";
  *
  * Join link (GroupJoinLink): 32 random bytes (base64url) in the URL FRAGMENT
  * (/join#<token>) — never in a request URL, so never in access logs or
- * Referer; only its SHA-256 is stored. One active link per Group (generating
- * a new one revokes the previous), default 30-day expiry. Holding a link lets
+ * Referer; only its SHA-256 is stored. One active link per Group (replacing
+ * it needs the organizer's explicit confirmation and revokes the previous one),
+ * default 30-day expiry. Holding a link lets
  * a signed-in user with a VERIFIED email file one request — it reveals the
  * Group's name only (never the roster) and grants no membership, attendance or
  * claim. Revoking a link stops NEW requests; requests already filed through it
@@ -62,18 +63,30 @@ export async function listJoinLinks(context: TenantContext, now: Date = new Date
   return links.map((l) => ({ id: l.id, createdAt: l.createdAt.toISOString(), expiresAt: l.expiresAt.toISOString(), state: linkState(l, now), pendingRequests: l._count.requests }));
 }
 
-/** OWNER/ADMIN: a new join link (the Group's previous active link stops working). The raw token is returned ONCE. */
-export async function createJoinLink(context: TenantContext, days: number = JOIN_LINK_DAYS.default, now: Date = new Date()): Promise<{ id: string; token: string; path: string; expiresAt: Date }> {
+/**
+ * OWNER/ADMIN: a new join link. The raw token is returned ONCE. While the Group has
+ * an ACTIVE (unrevoked, unexpired) link nothing changes unless `replace` is true —
+ * the organizer has confirmed that the previously shared link will stop working
+ * ("ACTIVE_LINK_EXISTS" otherwise). Replacing revokes the old link; requests already
+ * filed through it stay PENDING.
+ */
+export async function createJoinLink(
+  context: TenantContext,
+  opts: { days?: number; replace?: boolean } = {},
+  now: Date = new Date()
+): Promise<{ ok: true; id: string; token: string; path: string; expiresAt: Date; replaced: boolean } | { ok: false; code: "ACTIVE_LINK_EXISTS" }> {
   requireRole(context, [...MANAGERS]);
   const groupId = context.activeGroup.id;
   const token = generateToken();
-  const expiresAt = new Date(now.getTime() + days * DAY_MS);
-  const created = await prisma.$transaction(async (tx) => {
+  const expiresAt = new Date(now.getTime() + (opts.days ?? JOIN_LINK_DAYS.default) * DAY_MS);
+  return prisma.$transaction(async (tx) => {
     await tx.$queryRaw`SELECT 1 AS locked FROM pg_advisory_xact_lock(hashtext(${"join-link:" + groupId}))`;
+    const active = await tx.groupJoinLink.count({ where: { groupId, revokedAt: null, expiresAt: { gt: now } } });
+    if (active > 0 && !opts.replace) return { ok: false as const, code: "ACTIVE_LINK_EXISTS" as const };
     await tx.groupJoinLink.updateMany({ where: { groupId, revokedAt: null }, data: { revokedAt: now } });
-    return tx.groupJoinLink.create({ data: { organizationId: context.organization.id, groupId, tokenHash: hashToken(token), createdByUserId: context.user.id, createdAt: now, expiresAt }, select: { id: true } });
+    const created = await tx.groupJoinLink.create({ data: { organizationId: context.organization.id, groupId, tokenHash: hashToken(token), createdByUserId: context.user.id, createdAt: now, expiresAt }, select: { id: true } });
+    return { ok: true as const, id: created.id, token, path: joinLinkPath(token), expiresAt, replaced: active > 0 };
   });
-  return { id: created.id, token, path: joinLinkPath(token), expiresAt };
 }
 
 /** OWNER/ADMIN: revoke one of the Group's links. False when it isn't this Group's or is already revoked. */

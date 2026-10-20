@@ -12,14 +12,28 @@ Now:
 
 - `setOwnAttendance()` (`src/lib/matches.ts`) and the M12B personal-link answer
   (`answerPersonal()`) decide **inside their write transaction**:
-  1. lock the Match row — `lockMatchForAnswer()` = `SELECT … FOR UPDATE`;
-  2. `attendanceMode(groupId, matchId, tx)` — the one M12B decision, now able to read
-     through the transaction;
+  1. `lockMatchForAnswer()` locks everything `attendanceMode()` depends on, in a fixed
+     order (Match → TelegramChat → Organization);
+  2. `attendanceMode(groupId, matchId, tx)` — the one M12B decision, reading through
+     the transaction (the plan check too: `groupTelegramAllowed(…, tx)`);
   3. only for `web` record the answer.
-- Inserting a `TelegramPoll` for the match takes `FOR KEY SHARE` on the Match row
-  (foreign key) and assigning a Telegram chat updates the row, so a poll posted
-  concurrently either commits first (and the check sees it) or waits until the answer
-  is committed. Proven with real races in `src/integration/m13a.itest.ts`.
+- Every write that can switch a match TO Telegram-managed attendance conflicts with
+  those locks, so it either commits first (and the check sees it) or waits until the
+  answer is committed:
+
+  | Transition | Write | Conflicting lock |
+  | --- | --- | --- |
+  | poll posted for the match | INSERT TelegramPoll (FK → FOR KEY SHARE on Match) | Match FOR UPDATE |
+  | Telegram chat assigned to the match | UPDATE Match | Match FOR UPDATE |
+  | disconnected chat reconnected (bind code) | UPDATE TelegramChat `disconnectedAt = null` | TelegramChat FOR SHARE |
+  | plan upgrade / trial / Stripe Pro / LEGACY or COMP assignment | UPDATE Organization | Organization FOR SHARE (only when the match has a chat) |
+
+  None of those writers touches a Match row, so there is no deadlock cycle. `FOR SHARE`
+  never blocks other answers. A trial **expiring** needs no write and only moves a
+  match from Telegram to web (never towards a competing workflow).
+- Proven with real, uncommitted-write races in `src/integration/m13a.itest.ts` (poll
+  insert, chat reconnect, plan upgrade; /me and personal links). With the chat and
+  organization locks removed, the three new race tests fail.
 - API: `POST /api/account/matches/[matchId]/attendance` → **409**
   `{ code: "TELEGRAM_MATCH", error: "Attendance is managed through the Telegram poll. Please submit or update your response in Telegram." }`.
 - /me: Telegram matches show that sentence (and the current answer, read-only) instead
@@ -28,9 +42,8 @@ Now:
 - Unchanged: organizer overrides, Telegram webhook / sync, poll closing, Game Day
   Update, team publishing, existing attendance rows.
 
-Not serialized (documented limitation): reconnecting a previously disconnected Telegram
-chat or a plan change can turn a match into a Telegram match without touching the Match
-row. Answers recorded before that remain; later Telegram votes still win (newest wins).
+Answers recorded while a match was website-only remain after it becomes a Telegram match;
+later Telegram votes still win (newest wins).
 
 ## 2. Architecture
 
@@ -64,10 +77,13 @@ them in place after an application rollback is harmless.
 
 - 32 random bytes (base64url), only the SHA-256 stored, in the URL **fragment**
   (`/join#<token>`) — never in a request URL, access log or Referer.
-- One active link per group: generating a new one revokes the previous one.
+- One active link per group. Replacing an **active** link needs the organizer's explicit
+  confirmation ("Replace the invite link? The link you shared before will stop
+  working…"); the API refuses with 409 `ACTIVE_LINK_EXISTS` unless `replace: true`.
 - Default expiry 30 days (1–90 accepted by the API).
-- Revoking stops **new** requests only. Requests already filed through it stay PENDING
-  and the organizer decides them (reject them if a link leaked).
+- Revoking (or replacing) stops **new** requests only. Requests already filed through it
+  are neither deleted nor rejected: they stay PENDING and the organizer decides them
+  (reject them if a link leaked).
 - The raw link is shown to the organizer **once**. Lost it → generate a new one.
 
 ## 5. Join request lifecycle

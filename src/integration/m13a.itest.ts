@@ -29,6 +29,7 @@ import * as joinPreviewRoute from "@/app/api/join/route";
 import * as joinRequestRoute from "@/app/api/join/request/route";
 import * as joinCancelRoute from "@/app/api/join/cancel/route";
 import { JOIN_LIMITS, listMyJoinRequests } from "@/lib/groupJoin";
+import { redeemTelegramBindCode } from "@/lib/telegramChannels";
 
 const VERIFIED_AT = new Date("2026-01-01T00:00:00Z");
 const TZ = "America/New_York";
@@ -38,6 +39,8 @@ const originalFetch = global.fetch;
 async function fakeFetch(url: unknown): Promise<Response> {
   if (String(url).startsWith("https://api.telegram.org/bot")) {
     tgCalls++;
+    // Hardening tests reconnect a chat through the real bind flow (admin check only; nothing is sent).
+    if (String(url).endsWith("/getChatAdministrators")) return { ok: true, status: 200, json: async () => ({ ok: true, result: [{ status: "creator", user: { id: 4242 } }] }) } as unknown as Response;
     return { ok: true, status: 200, json: async () => ({ ok: true, result: { message_id: 1 } }) } as unknown as Response;
   }
   otherNetwork++;
@@ -238,10 +241,11 @@ describe("M13A Phase 0 — signed-in website attendance is refused for Telegram 
 const sameOrigin = { Origin: "http://itest.local" };
 const g = (org = "o", group = "g") => ({ params: Promise.resolve({ organizationSlug: org, groupSlug: group }) });
 const gr = (requestId: string, org = "o", group = "g") => ({ params: Promise.resolve({ organizationSlug: org, groupSlug: group, requestId }) });
+/** A new invite link (confirming replacement of any active one, as the organizer's "Replace link" does). */
 async function newLink(org = "o", group = "g", who = "owner") {
   const prev = session;
   signIn(who);
-  const r = await call(joinLinksRoute.POST(json("POST", { action: "create" }), g(org, group)));
+  const r = await call(joinLinksRoute.POST(json("POST", { action: "create", replace: true }), g(org, group)));
   session = prev;
   expect(r.status).toBe(200);
   return { id: r.body.id as string, token: String(r.body.path).split("#")[1] };
@@ -502,5 +506,158 @@ describe("M13A — manual approval (organizer)", () => {
     expect((await own("mt", "PLAYING")).body).toMatchObject({ code: "TELEGRAM_MATCH" });
     expect((await loadMyGames("u-jamie"))[0].upcoming.map((u) => u.attendanceMode)).toEqual(["web", "telegram"]);
     expect(tgCalls).toBe(0);
+  });
+});
+
+// ------------------------------------------------------------------ final hardening
+
+/** Hold a write open (uncommitted) while `during` runs; returns what `during` resolved to. */
+async function whileUncommitted<T>(write: (tx: Parameters<Parameters<typeof prisma.$transaction>[0]>[0]) => Promise<unknown>, during: () => Promise<T>): Promise<{ result: T; waited: boolean }> {
+  let release!: () => void;
+  const gate = new Promise<void>((r) => (release = r));
+  let written!: () => void;
+  const done = new Promise<void>((r) => (written = r));
+  const holder = prisma.$transaction(
+    async (tx) => {
+      await write(tx);
+      written();
+      await gate;
+    },
+    { timeout: 20_000 }
+  );
+  await done;
+  const pending = during();
+  const waited = (await Promise.race([pending.then(() => "finished"), new Promise((r) => setTimeout(() => r("waiting"), 400))])) === "waiting";
+  release();
+  await holder;
+  return { result: await pending, waited };
+}
+
+describe("M13A hardening — every switch to Telegram attendance is serialized with website answers", () => {
+  async function disconnectedChatMatch(id = "mr") {
+    const chat = await prisma.telegramChat.create({ data: { chatId: -700n, title: "Old chat", groupId: "g", disconnectedAt: new Date("2026-01-01") } });
+    await webMatch(id, { telegramChatId: chat.id });
+    return chat.id;
+  }
+
+  it("a disconnected chat is a website-only match: /me answers are accepted", async () => {
+    await disconnectedChatMatch();
+    expect((await own("mr", "MAYBE")).status).toBe(200);
+  });
+
+  it("race: a chat being RECONNECTED (uncommitted) — the /me answer waits for it and is refused", async () => {
+    const chatId = await disconnectedChatMatch();
+    const { result, waited } = await whileUncommitted(
+      (tx) => tx.telegramChat.update({ where: { id: chatId }, data: { disconnectedAt: null } }),
+      () => setOwnAttendance("u-player", "mr", "PLAYING")
+    );
+    expect(waited).toBe(true);
+    expect(result).toBe("telegram");
+    expect(await row("mr", "p1")).toBeNull();
+  });
+
+  it("race: reconnect vs the M12B personal link — same guarantee", async () => {
+    const chatId = await disconnectedChatMatch();
+    const token = generateToken();
+    await prisma.personalAttendanceLink.create({ data: { organizationId: "o", groupId: "g", matchId: "mr", playerId: "p2", tokenHash: hashToken(token) } });
+    const { result, waited } = await whileUncommitted(
+      (tx) => tx.telegramChat.update({ where: { id: chatId }, data: { disconnectedAt: null } }),
+      () => answerPersonal(token, "PLAYING")
+    );
+    expect(waited).toBe(true);
+    expect(result).toEqual({ ok: false, reason: "telegram" });
+    expect(await row("mr", "p2")).toBeNull();
+  });
+
+  it("the real reconnect flow (bind code in the Telegram group) turns the match poll-only; nothing is sent", async () => {
+    await disconnectedChatMatch();
+    expect((await own("mr", "PLAYING")).status).toBe(200);
+    const code = "g_" + "A".repeat(22);
+    await prisma.telegramChatBindCode.create({ data: { groupId: "g", codeHash: hashToken(code), expiresAt: new Date(Date.now() + 600_000) } });
+    expect(await redeemTelegramBindCode({ code, chat: { id: -700, type: "supergroup", title: "Old chat" }, fromId: 4242 })).toMatchObject({ ok: true, state: "reconnected" });
+    expect((await own("mr", "NOT_PLAYING")).body).toMatchObject({ code: "TELEGRAM_MATCH" });
+    expect(await row("mr", "p1")).toMatchObject({ participantStatus: "PLAYING", participantSource: "WEB" }); // the earlier answer is kept
+    expect((await loadMyGames("u-player"))[0].upcoming[0].attendanceMode).toBe("telegram");
+  });
+
+  it("race: a PLAN UPGRADE (Free → Pro, uncommitted) that enables Telegram for a connected chat — the answer waits and is refused", async () => {
+    await prisma.user.create({ data: { id: "u-fp", email: "fp@example.test", emailVerifiedAt: VERIFIED_AT } });
+    await prisma.player.create({ data: { id: "fp1", groupId: "gf", firstName: "Free", lastName: "Player", position: "MIDFIELDER", rating: "GOOD", stamina: 3, userId: "u-fp" } });
+    const chat = await prisma.telegramChat.create({ data: { chatId: -800n, title: "Free chat", groupId: "gf" } });
+    await prisma.match.create({ data: { id: "mf", groupId: "gf", date: new Date("2099-06-03"), telegramChatId: chat.id } });
+    expect((await own("mf", "MAYBE")).status).toBe(404); // u-player has no player in gf
+    expect(await setOwnAttendance("u-fp", "mf", "MAYBE")).toBe("ok"); // Free: no Telegram → website-only
+    const { result, waited } = await whileUncommitted(
+      (tx) => tx.organization.update({ where: { id: "of" }, data: { plan: "PRO" } }),
+      () => setOwnAttendance("u-fp", "mf", "PLAYING")
+    );
+    expect(waited).toBe(true);
+    expect(result).toBe("telegram");
+    expect(await row("mf", "fp1")).toMatchObject({ participantStatus: "MAYBE" });
+  });
+
+  it("the locks never block answers from each other, and a match without a chat takes no organization lock", async () => {
+    await webMatch("mw");
+    const tokens = await Promise.all(
+      ["p2", "p3"].map(async (playerId) => {
+        const t = generateToken();
+        await prisma.personalAttendanceLink.create({ data: { organizationId: "o", groupId: "g", matchId: "mw", playerId, tokenHash: hashToken(t) } });
+        return t;
+      })
+    );
+    const results = await Promise.all([setOwnAttendance("u-player", "mw", "PLAYING"), answerPersonal(tokens[0], "MAYBE"), answerPersonal(tokens[1], "NOT_PLAYING")]);
+    expect(results).toEqual(["ok", expect.objectContaining({ ok: true }), expect.objectContaining({ ok: true })]);
+    // An organization update is not blocked by answers on a chat-less match (no FOR SHARE on Organization).
+    const { waited } = await whileUncommitted(
+      (tx) => tx.organization.update({ where: { id: "o" }, data: { name: "Org renamed" } }),
+      () => setOwnAttendance("u-player", "mw", "MAYBE")
+    );
+    expect(waited).toBe(false);
+  });
+});
+
+describe("M13A hardening — revocation and replacement keep submitted requests", () => {
+  it("revoking: new requests refused; every already-submitted request stays PENDING (not deleted, not rejected) and can be decided", async () => {
+    const link = await newLink();
+    const ids: string[] = [];
+    for (const n of ["ann", "ben", "cat"]) {
+      await applicant(`${n}@example.test`, `u-${n}`);
+      signIn(n);
+      ids.push(((await request(link.token)).body.request as { id: string }).id);
+    }
+    signIn("owner");
+    expect((await call(joinLinksRoute.POST(json("POST", { action: "revoke", linkId: link.id }), g()))).status).toBe(200);
+    const after = await prisma.groupJoinRequest.findMany({ where: { id: { in: ids } }, orderBy: { createdAt: "asc" } });
+    expect(after.map((r) => [r.status, r.decidedAt, r.decidedByUserId, r.joinLinkId])).toEqual(ids.map(() => ["PENDING", null, null, link.id]));
+    expect((await call(joinRequestsRoute.GET(json("GET"), g()))).body.requests).toHaveLength(3);
+    await applicant("dan@example.test", "u-dan");
+    signIn("dan");
+    expect(await request(link.token)).toMatchObject({ status: 410, body: { code: "INVITE_REVOKED" } });
+    signIn("owner");
+    expect((await decide(ids[0], { action: "approve", playerId: "p2" })).status).toBe(200);
+    expect((await decide(ids[1], { action: "reject" })).status).toBe(200);
+    expect((await prisma.groupJoinRequest.findUniqueOrThrow({ where: { id: ids[2] } })).status).toBe("PENDING");
+  });
+
+  it("replacement needs explicit confirmation: without it 409 and the active link keeps working; with it the old link stops, pending requests stay", async () => {
+    const first = await newLink();
+    await applicant("ann@example.test", "u-ann");
+    signIn("ann");
+    const id = ((await request(first.token)).body.request as { id: string }).id;
+    signIn("owner");
+    expect(await call(joinLinksRoute.POST(json("POST", { action: "create" }), g()))).toMatchObject({ status: 409, body: { code: "ACTIVE_LINK_EXISTS" } });
+    expect((await prisma.groupJoinLink.findUniqueOrThrow({ where: { id: first.id } })).revokedAt).toBeNull();
+    expect((await preview(first.token)).body.state).toBe("valid");
+    const second = await call(joinLinksRoute.POST(json("POST", { action: "create", replace: true }), g()));
+    expect(second).toMatchObject({ status: 200, body: { ok: true, replaced: true } });
+    expect((await preview(first.token)).body).toEqual({ state: "revoked" });
+    expect((await prisma.groupJoinRequest.findUniqueOrThrow({ where: { id } })).status).toBe("PENDING");
+  });
+
+  it("no confirmation needed when there is no active link (first link, or the last one expired / was turned off)", async () => {
+    signIn("owner");
+    expect(await call(joinLinksRoute.POST(json("POST", { action: "create" }), g()))).toMatchObject({ status: 200, body: { replaced: false } });
+    await prisma.groupJoinLink.updateMany({ data: { expiresAt: new Date(Date.now() - 1000) } });
+    expect((await call(joinLinksRoute.POST(json("POST", { action: "create" }), g()))).status).toBe(200);
   });
 });
