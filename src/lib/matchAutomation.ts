@@ -8,6 +8,7 @@ import { communityTelegramChat } from "@/lib/communities";
 import { matchAttendanceSnapshot, type AttendanceSnapshot } from "@/lib/attendanceSnapshot";
 import { postAttendancePollFor } from "@/lib/telegramAttendance";
 import { closeMatchAttendancePolls, POLL_CLOSE_MESSAGE } from "@/lib/matchPollClose";
+import { closeMatchAttendance, deadlineNoticeEnabled } from "@/lib/attendanceClosure";
 import { sendAttendanceReadyEmail } from "@/lib/email";
 import { assertCapacity, EntitlementError, organizationPlan, telegramEntitledSince } from "@/lib/entitlements";
 import { schedulesOverLimit } from "@/lib/schedules";
@@ -225,8 +226,8 @@ async function stepPoll(ctx: TenantContext, matchId: string, automationId: strin
 /** Step 3 — close the poll + attendance at the cutoff (idempotent; once). */
 async function stepCutoff(ctx: TenantContext, matchId: string, automationId: string, now: Date): Promise<boolean> {
   const groupId = ctx.activeGroup.id;
-  const poll = await closeMatchAttendancePolls(groupId, matchId);
-  await prisma.match.updateMany({ where: { id: matchId, groupId, attendanceClosedAt: null }, data: { attendanceClosedAt: now } });
+  // M12B — the unified closure (attendance + every poll); the notice only with ATTENDANCE_DEADLINE_NOTICE=on.
+  const poll = await closeMatchAttendancePolls(groupId, matchId, deadlineNoticeEnabled() ? { userId: null } : undefined, now);
   const { count } = await prisma.matchAutomation.updateMany({ where: { id: automationId, cutoffCompletedAt: null }, data: { cutoffCompletedAt: now } });
   if (poll.status === "failed" || poll.status === "uncertain") await recordError(automationId, POLL_CLOSE_MESSAGE[poll.status]!);
   return count === 1;
@@ -239,9 +240,8 @@ async function stepCutoff(ctx: TenantContext, matchId: string, automationId: str
  */
 async function finalizeDeadline(ctx: TenantContext, matchId: string, now: Date): Promise<boolean> {
   const groupId = ctx.activeGroup.id;
-  await closeMatchAttendancePolls(groupId, matchId);
-  const { count } = await prisma.match.updateMany({ where: { id: matchId, groupId, attendanceClosedAt: null }, data: { attendanceClosedAt: now } });
-  return count === 1;
+  const closed = await closeMatchAttendance({ groupId, matchId, userId: null, notify: deadlineNoticeEnabled(), now });
+  return closed?.attendance === "closed_now";
 }
 
 /** Attendance summary over the Match's eligible roster — the one shared calculation (src/lib/attendanceSnapshot.ts). */

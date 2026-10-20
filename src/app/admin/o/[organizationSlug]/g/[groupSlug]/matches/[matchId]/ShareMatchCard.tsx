@@ -20,7 +20,7 @@ type Share =
   | { available: false; reason: "not_configured" | "private"; error: string };
 
 export function shareText(message: { title: string; when: string; venue: string | null }, url: string): string {
-  return [message.title, message.when, message.venue, "", "Let us know if you're playing:", url].filter((l) => l !== null).join("\n");
+  return [message.title, message.when, message.venue, "", "Match details and teams:", url].filter((l) => l !== null).join("\n");
 }
 
 export default function ShareMatchCard({ organizationSlug, groupSlug, matchId }: { organizationSlug: string; groupSlug: string; matchId: string }) {
@@ -78,7 +78,7 @@ export default function ShareMatchCard({ organizationSlug, groupSlug, matchId }:
   }
 
   return (
-    <SectionCard id="share" title="Share Match" icon={<Link2 className="size-5" />} meta="One link for attendance, teams, result and recap. No app or account needed.">
+    <SectionCard id="share" title="Share Match" icon={<Link2 className="size-5" />} meta="One read-only link for match details, teams, result and recap. No app or account needed. (Players answer attendance in the Telegram poll or with their personal link.)">
       {!share && <p className="text-sm text-muted-foreground">Loading…</p>}
       {share && !share.available && <p className="rounded-tbp border border-border bg-secondary px-3 py-2 text-sm">{share.error}</p>}
       {share?.available && (

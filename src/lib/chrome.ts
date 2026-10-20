@@ -21,7 +21,8 @@ export const CHROME_HEADER = "x-tbp-chrome";
 export const REDESIGN_CHROME = "redesign";
 
 /** Public redesigned pages (exact paths / subtrees). */
-export const REDESIGNED_PATHS: readonly string[] = ["/", "/login", "/signup", "/verify-email", "/pricing", "/forgot-password"];
+// M12B — /attend: a player's personal attendance link (never auth-gated).
+export const REDESIGNED_PATHS: readonly string[] = ["/", "/login", "/signup", "/verify-email", "/pricing", "/forgot-password", "/attend"];
 // M9.3 — /share/m/** is the redesigned player Match page (Match Link / share link; never auth-gated).
 // M11.3 — /forgot-password and /reset-password/<token>: the redesigned auth screens (never auth-gated).
 export const REDESIGNED_PREFIXES: readonly string[] = ["/verify-email/", "/share/m/", "/reset-password/"];

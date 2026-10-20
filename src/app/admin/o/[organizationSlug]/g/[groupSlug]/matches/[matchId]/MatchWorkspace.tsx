@@ -8,6 +8,7 @@ import { formatStartTime } from "@/lib/messaging/content";
 import type { PublishedGeneration, TeamsDeliveryState } from "@/lib/closeAndPostUi";
 import TeamsTelegramPost, { type TeamsPostIntent } from "./TeamsTelegramPost";
 import ShareMatchCard from "./ShareMatchCard";
+import PersonalLinksCard from "./PersonalLinksCard";
 import type { SportClientView } from "@/lib/sports";
 import { unpublishedPreviewOnScreen, type TeamsPanelMode } from "@/lib/teamAssignment";
 import { visibleRosterIds } from "@/lib/matchRosterScope";
@@ -46,7 +47,7 @@ import { formatDeadline, localKickoff, timeZoneAbbreviation, toLocalInput } from
 
 type Status = "PLAYING" | "NOT_PLAYING" | "MAYBE";
 type RosterPlayer = Player & {
-  attendance: { status: Status | null; source: "WEB" | "TELEGRAM" | "LINK" | "OVERRIDE" | null; overridden: boolean; late: boolean; participantStatus: Status | null; participantSource: "WEB" | "TELEGRAM" | "LINK" | null };
+  attendance: { status: Status | null; source: "WEB" | "TELEGRAM" | "LINK" | "PERSONAL_LINK" | "OVERRIDE" | null; overridden: boolean; late: boolean; participantStatus: Status | null; participantSource: "WEB" | "TELEGRAM" | "LINK" | "PERSONAL_LINK" | null };
 };
 type MatchView = {
   match: {
@@ -113,7 +114,7 @@ type MatchView = {
 };
 
 const STATUS_LABEL: Record<Status, string> = { PLAYING: "Playing", MAYBE: "Maybe", NOT_PLAYING: "Not playing" };
-const SOURCE_LABEL = { WEB: "web", TELEGRAM: "Telegram", LINK: "via match link", OVERRIDE: "organizer override" } as const;
+const SOURCE_LABEL = { WEB: "web", TELEGRAM: "Telegram", LINK: "via match link", PERSONAL_LINK: "personal link", OVERRIDE: "organizer override" } as const;
 
 export default function MatchWorkspace({
   organizationSlug,
@@ -219,7 +220,8 @@ export default function MatchWorkspace({
     try {
       const res = await fetch(api(path), { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
       const data = await res.json().catch(() => ({}));
-      setMessage(res.ok ? (data.state === "already_posted" ? "Already posted — nothing was sent again." : ok) : data?.error ?? "Something went wrong.");
+      // M12B — closing attendance reports exactly what happened (attendance, Telegram poll, notice).
+      setMessage(res.ok ? (data.state === "already_posted" ? "Already posted — nothing was sent again." : typeof data.message === "string" ? data.message : ok) : data?.error ?? "Something went wrong.");
       await load();
       return { ok: res.ok, data };
     } finally {
@@ -661,6 +663,7 @@ export default function MatchWorkspace({
       </section>
 
       {/* M9.3 — Share Match: the Match Link (organizers; available as soon as the Match exists) */}
+      {view.canManage && <PersonalLinksCard organizationSlug={organizationSlug} groupSlug={groupSlug} matchId={m.id} />}
       {view.canManage && <ShareMatchCard organizationSlug={organizationSlug} groupSlug={groupSlug} matchId={m.id} />}
 
       {/* M9.2 — Match Automation status (organizers) */}
@@ -865,8 +868,8 @@ export default function MatchWorkspace({
           </Dialog>
         )}
         {/* Telegram publishing — "Post teams to Telegram" closes the poll it posts to. If that close failed or wasn't
-            confirmed (or attendance closed while the poll still shows as open), close that ONE poll here — safe to
-            repeat; after the teams were posted it also sends the one-time closure notice. */}
+            confirmed (or attendance closed while the poll still shows as open), close it here — safe to repeat;
+            M12B: it also sends the one-time closure notice if that poll was never announced (once per poll, ever). */}
         {view.canManage && view.telegram.poll && !view.telegram.poll.closed && (view.telegram.closure?.teamsPosted || m.attendanceClosed) && (
           <div className="mt-2 flex flex-wrap items-center gap-2 text-xs" role="status">
             <span className="font-semibold text-destructive">

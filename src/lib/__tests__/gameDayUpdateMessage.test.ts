@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import fs from "node:fs";
 import path from "node:path";
-import { buildGameDayUpdate, TELEGRAM_TEXT_LIMIT, timeLeftText, type GameDayUpdateInput, type GameDayWeather } from "@/lib/messaging/gameDayUpdate";
+import { buildGameDayUpdate, POLL_CLOSED_LINE, POLL_REMINDER, TELEGRAM_TEXT_LIMIT, timeLeftText, type GameDayUpdateInput, type GameDayWeather } from "@/lib/messaging/gameDayUpdate";
 import { WEATHER_ATTRIBUTION, WEATHER_DISCLAIMER } from "@/lib/weatherLegal";
 
 /** Phase 4B step 5 — the pure Game Day Update message builder (no DB, no network, no clock). */
@@ -21,7 +21,7 @@ const base = (over: Partial<GameDayUpdateInput> = {}): GameDayUpdateInput => ({
   match: { date: "2026-10-19", startTime: "21:00", venueName: "ForeKicks", isIndoor: false },
   deadline: new Date("2026-10-19T21:00:00Z"),
   attendance: { playing: 14, notPlaying: 2, maybe: 3, noResponse: 8 },
-  link: null,
+  poll: "open",
   weather: W({ temperatureC: 14.4, condition: "Cloudy", rainChancePercent: 25 }),
   units: "imperial",
   now: new Date("2026-10-19T17:00:00Z"),
@@ -49,9 +49,10 @@ describe("the message", () => {
         "",
         ...SUMMARY,
         "",
-        "⏰ Attendance closes in 4 hours (5:00 PM EDT).",
+        // M12B — an absolute deadline (no countdown that goes stale) and the Telegram poll reminder (no website link).
+        "⏰ Attendance closes today at 5:00 PM EDT.",
         "",
-        "Please confirm or update your attendance before the deadline.",
+        "📊 Haven't voted yet? Please update your attendance directly in the Telegram poll before the deadline.",
       ].join("\n")
     );
   });
@@ -122,33 +123,33 @@ describe("weather (input only — never generated): compact, outside conditions,
   });
 });
 
-describe("time: the group's timezone, the actual time left, DST", () => {
-  it("a late cron run states the real remaining time, not the configured offset", () => {
-    expect(html({ now: new Date("2026-10-19T20:35:00Z") })).toContain("⏰ Attendance closes in 25 minutes (5:00 PM EDT).");
-    expect(html({ now: new Date("2026-10-19T17:40:00Z") })).toContain("closes in 3 hours 20 minutes (5:00 PM EDT)");
-    expect(html({ now: new Date("2026-10-19T20:59:30Z") })).toContain("closes in 1 minute");
+describe("time: the group's timezone, an absolute deadline, DST", () => {
+  it("M12B — the deadline is an absolute time (a relative countdown would go stale in the chat), whatever the cron delay", () => {
+    for (const now of ["2026-10-19T20:35:00Z", "2026-10-19T17:40:00Z", "2026-10-19T20:59:30Z"]) {
+      const h = html({ now: new Date(now) });
+      expect(h).toContain("⏰ Attendance closes today at 5:00 PM EDT.");
+      expect(h).not.toMatch(/closes in \d/);
+    }
   });
-  it("same local day → time only; another local day → the day is named", () => {
+  it("same local day → 'today at'; another local day → the day is named", () => {
     // 4:00 PM EDT Sunday → deadline 8:00 PM EDT the same Sunday (UTC already says Monday).
-    expect(html({ now: new Date("2026-10-18T20:00:00Z"), deadline: new Date("2026-10-19T00:00:00Z"), match: { date: "2026-10-19", startTime: "21:00" } })).toContain("closes in 4 hours (8:00 PM EDT)");
-    expect(html({ now: new Date("2026-10-19T02:00:00Z") })).toContain("closes in 19 hours (Monday, October 19 at 5:00 PM EDT)");
+    expect(html({ now: new Date("2026-10-18T20:00:00Z"), deadline: new Date("2026-10-19T00:00:00Z"), match: { date: "2026-10-19", startTime: "21:00" } })).toContain("⏰ Attendance closes today at 8:00 PM EDT.");
+    expect(html({ now: new Date("2026-10-19T02:00:00Z") })).toContain("⏰ Attendance closes on Monday, October 19 at 5:00 PM EDT.");
   });
-  it("DST fall-back: elapsed time is real (2 h 30 min to the SECOND 1:30 AM, shown as EST); kickoff after the change in EST", () => {
+  it("DST fall-back: the SECOND 1:30 AM is shown as EST; kickoff after the change in EST", () => {
     const h = html({
       match: { date: "2026-11-01", startTime: "10:00" },
       now: new Date("2026-11-01T04:00:00Z"), // 00:00 EDT
       deadline: new Date("2026-11-01T06:30:00Z"), // 01:30 EST
     });
     expect(h).toContain("📅 Sunday, November 1 · 10:00 AM EST");
-    expect(h).toContain("closes in 2 hours 30 minutes (1:30 AM EST)");
+    expect(h).toContain("closes today at 1:30 AM EST.");
   });
-  it("DST spring-forward: 1 hour of real time across the gap", () => {
-    expect(html({ match: { date: "2027-03-14", startTime: "12:00" }, now: new Date("2027-03-14T06:30:00Z"), deadline: new Date("2027-03-14T07:30:00Z") })).toContain(
-      "closes in 1 hour (3:30 AM EDT)"
-    );
+  it("DST spring-forward: across the gap the deadline is in EDT", () => {
+    expect(html({ match: { date: "2027-03-14", startTime: "12:00" }, now: new Date("2027-03-14T06:30:00Z"), deadline: new Date("2027-03-14T07:30:00Z") })).toContain("closes today at 3:30 AM EDT.");
   });
   it("another timezone", () => {
-    expect(html({ timezone: "Europe/London", now: new Date("2026-10-19T12:00:00Z"), deadline: new Date("2026-10-19T16:00:00Z") })).toMatch(/closes in 4 hours \(5:00 PM (BST|GMT\+1)\)/);
+    expect(html({ timezone: "Europe/London", now: new Date("2026-10-19T12:00:00Z"), deadline: new Date("2026-10-19T16:00:00Z") })).toMatch(/closes today at 5:00 PM (BST|GMT\+1)\./);
   });
   it("a deadline that has passed (or is now) yields no message", () => {
     expect(buildGameDayUpdate(base({ now: new Date("2026-10-19T21:00:00Z") }))).toEqual({ ok: false, reason: "DEADLINE_PASSED" });
@@ -192,13 +193,13 @@ describe("safety: escaping, Unicode, links, length", () => {
     expect(h).toContain("— Fútbol ⚽🇧🇷 فريق Ångström</b>");
     expect(h).toContain("📍 Ünïcödé Arena 🏟️");
   });
-  it("links: only a caller-supplied absolute https URL (escaped); missing / private (null) / unsafe ones are omitted", () => {
-    expect(html({ link: "https://teambalancepro.com/share/m/abc#t=1&x=\"y\"" })).toContain('<a href="https://teambalancepro.com/share/m/abc#t=1&amp;x=%22y%22">Confirm or update your attendance</a>');
-    for (const link of [null, undefined, "", "http://example.com/x", "javascript:alert(1)", "/share/m/abc", "not a url"]) {
-      expect(html({ link, weather: null }), String(link)).not.toContain("<a "); // (weather: null — its attribution is a link)
-    }
-    const src = fs.readFileSync(path.join(process.cwd(), "src/lib/messaging/gameDayUpdate.ts"), "utf8");
-    expect(src).not.toMatch(/matchLink|matchShare|process\.env|prisma|fetch\(/); // never builds links, reads the DB or the network
+  it("M12B — no website attendance link ever; the poll line follows the poll: open → reminder, closed → 'voting is closed', none → nothing", () => {
+    expect(html({ poll: "open" }).endsWith(`\n\n${POLL_REMINDER}`)).toBe(true);
+    expect(html({ poll: "closed" }).endsWith(`\n\n${POLL_CLOSED_LINE}`)).toBe(true);
+    const none = html({ poll: "none" });
+    expect(none.endsWith("⏰ Attendance closes today at 5:00 PM EDT.")).toBe(true);
+    expect(none).not.toMatch(/poll/i);
+    for (const p of ["open", "closed", "none"] as const) expect(html({ poll: p })).not.toMatch(/<a href="https:\/\/(?!www\.weatherapi\.com)|Confirm or update|\/share\/m\/|\/attend/);
   });
   it("length: long fields are capped (code-point safe, marked truncated); the message stays far below Telegram's limit", () => {
     const r = buildGameDayUpdate(base({ groupName: "Ⓐ".repeat(5000), match: { date: "2026-10-19", startTime: "21:00", venueName: "🏟️".repeat(3000) }, weather: W({ condition: "x".repeat(9000), attribution: "y".repeat(9000), temperatureC: 1 }) }));

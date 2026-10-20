@@ -287,7 +287,7 @@ describe("Matches", () => {
 
 // =================================================================== attendance
 describe("Attendance", () => {
-  it("override is authoritative over later Telegram answers until cleared; UI-4B: answers while closed don't change attendance; nothing sent", async () => {
+  it("override is authoritative over later Telegram answers until cleared; UI-4B: answers while closed don't change attendance; only the one closure notice is sent", async () => {
     await signInAs("owner@example.test");
     const id = (await createMatch()).data.match.id;
     await postPoll(id);
@@ -321,7 +321,9 @@ describe("Attendance", () => {
     expect((await syncRoute.POST(json("POST", {}), gm(A, id))).status).toBe(200);
     v = await view(id);
     expect(v.roster.find((p: { id: string }) => p.id === "ga-p2").attendance).toMatchObject({ status: "PLAYING", source: "TELEGRAM" });
-    expect(sends("sendMessage")).toEqual([]);
+    // M12B — "Close attendance" also stops the poll and posts the one-time closure notice; reopening and the
+    // explicit sync send nothing more.
+    expect(sends("sendMessage").map((c) => String(c.body.text))).toEqual([expect.stringMatching(/^✅ Poll is closed for /)]);
   });
 
   it("claimed player sets only their own attendance from /me; others refused", async () => {

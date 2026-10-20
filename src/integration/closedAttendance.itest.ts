@@ -217,9 +217,10 @@ describe("Telegram paths", () => {
   });
 
   it("explicit Telegram sync is rejected while CLOSED and works after reopening", async () => {
-    await prisma.telegramPollAnswer.create({ data: { pollId: "poll-1", userId: 7002n, optionIdsJson: "[2]", groupId: "ga" } });
     await signIn("admin@example.test");
     await setClosed(true);
+    // M12B — closing replays answers given BEFORE the close (final sync); this one arrives after it.
+    await prisma.telegramPollAnswer.create({ data: { pollId: "poll-1", userId: 7002n, optionIdsJson: "[2]", groupId: "ga" } });
     const res = await syncRoute.POST(req({}), gm("m1"));
     expect(res.status).toBe(409);
     expect(await res.json()).toEqual(CLOSED);

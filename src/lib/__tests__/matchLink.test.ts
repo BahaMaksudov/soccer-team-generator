@@ -12,12 +12,9 @@ vi.mock("@/lib/rateLimit", () => ({
   checkRateLimit: async (bucket: string) => ({ allowed: !(bucket === "match-link-read" ? rateLimited.read : rateLimited.write) }),
   clientKey: () => "test",
 }));
-const answerThroughMatchLink = vi.fn();
 const matchLinkView = vi.fn();
 vi.mock("@/lib/matchLink", () => ({
-  answerThroughMatchLink: (...a: unknown[]) => answerThroughMatchLink(...a),
   matchLinkView: (...a: unknown[]) => matchLinkView(...a),
-  matchLinkResponse: vi.fn(async () => null),
 }));
 vi.mock("@/lib/matchPage", () => ({ resolveShareMatchView: vi.fn(async () => null) }));
 
@@ -119,31 +116,22 @@ describe("anonymous endpoints: guards before any work", () => {
   beforeEach(() => {
     rateLimited.read = false;
     rateLimited.write = false;
-    answerThroughMatchLink.mockReset();
     matchLinkView.mockReset();
   });
   afterEach(() => vi.clearAllMocks());
-  const post = (body: unknown, headers: Record<string, string> = { "Content-Type": "application/json", origin: "http://localhost" }) =>
-    new Request("http://localhost/api/share/match/attendance", { method: "POST", headers, body: typeof body === "string" ? body : JSON.stringify(body) });
-  const valid = { token: "t".repeat(43), matchId: "m1", playerRef: "r".repeat(22), status: "PLAYING" };
-
-  it("answer: JSON only (415), same origin only (403), rate limited (429), allowed values only (400)", async () => {
-    expect((await answerRoute.POST(post("status=PLAYING", { "Content-Type": "application/x-www-form-urlencoded", origin: "http://localhost" }))).status).toBe(415);
-    expect((await answerRoute.POST(post(valid, { "Content-Type": "application/json", origin: "https://evil.example" }))).status).toBe(403);
-    rateLimited.write = true;
-    expect((await answerRoute.POST(post(valid))).status).toBe(429);
-    rateLimited.write = false;
-    expect((await answerRoute.POST(post({ ...valid, status: "ATTENDING" }))).status).toBe(400);
-    expect(answerThroughMatchLink).not.toHaveBeenCalled();
-  });
-
-  it("answer: invalid link / reference → the generic 404; closed / canceled → 409", async () => {
-    answerThroughMatchLink.mockResolvedValueOnce({ ok: false, reason: "not_found" });
-    expect(await (await answerRoute.POST(post(valid))).json()).toEqual({ error: "This link is not valid." });
-    answerThroughMatchLink.mockResolvedValueOnce({ ok: false, reason: "closed" });
-    expect((await answerRoute.POST(post(valid))).status).toBe(409);
-    answerThroughMatchLink.mockResolvedValueOnce({ ok: false, reason: "canceled" });
-    expect((await answerRoute.POST(post(valid))).status).toBe(409);
+  it("M12B — answering through the SHARED match link is refused for every request (410), before any work; never cached or indexed", async () => {
+    // The handler takes no request at all: whatever is sent (valid JSON, a form, a foreign origin) gets the same refusal.
+    for (let i = 0; i < 2; i++) {
+      const res = await answerRoute.POST();
+      expect(res.status).toBe(410);
+      expect(await res.json()).toMatchObject({ code: "MATCH_LINK_READ_ONLY" });
+      expect(res.headers.get("cache-control")).toBe("no-store");
+      expect(res.headers.get("x-robots-tag")).toBe("noindex, nofollow");
+    }
+    // The route reads nothing and writes nothing: no attendance code is even imported.
+    const src = read("src/app/api/share/match/attendance/route.ts");
+    expect(src).not.toMatch(/prisma|recordParticipantResponse|matchLink|attendance"/);
+    expect(read("src/lib/matchLink.ts")).not.toMatch(/recordParticipantResponse|answerThroughMatchLink|resolvePlayerRef/);
   });
 
   it("view: rate limited (429), never cached or indexed", async () => {
@@ -163,7 +151,7 @@ describe("search indexing", () => {
     const r = robots();
     const rule = (Array.isArray(r.rules) ? r.rules[0] : r.rules)!;
     expect(rule.allow).toBe("/");
-    for (const p of ["/share", "/g/", "/api/", "/admin", "/me", "/claim"]) expect(rule.disallow).toContain(p);
+    for (const p of ["/share", "/g/", "/api/", "/admin", "/me", "/claim", "/attend"]) expect(rule.disallow).toContain(p);
     expect(PRIVATE_PREFIXES).not.toContain("/");
     expect(PRIVATE_PREFIXES).not.toContain("/login");
   });
@@ -172,9 +160,9 @@ describe("search indexing", () => {
     const cfg = (await import(path.join(process.cwd(), "next.config.js"))) as { default?: { headers: () => Promise<Array<{ source: string; headers: Array<{ key: string; value: string }> }>> }; headers?: () => Promise<Array<{ source: string; headers: Array<{ key: string; value: string }> }>> };
     const headers = await (cfg.default ?? cfg).headers!();
     const sources = headers.map((h) => h.source);
-    for (const s of ["/share", "/share/:path*", "/g/:path*", "/me/:path*", "/claim"]) expect(sources).toContain(s);
+    for (const s of ["/share", "/share/:path*", "/g/:path*", "/me/:path*", "/claim", "/attend"]) expect(sources).toContain(s);
     for (const h of headers) expect(h.headers).toEqual([{ key: "X-Robots-Tag", value: "noindex, nofollow" }]);
     expect(read("src/app/g/[organizationSlug]/[groupSlug]/layout.tsx")).toContain("robots: { index: false, follow: false }");
-    for (const f of ["src/app/share/page.tsx", "src/app/share/m/[matchId]/page.tsx", "src/app/g/[organizationSlug]/[groupSlug]/m/[matchId]/page.tsx"]) expect(read(f), f).toContain("robots: { index: false, follow: false }");
+    for (const f of ["src/app/share/page.tsx", "src/app/share/m/[matchId]/page.tsx", "src/app/g/[organizationSlug]/[groupSlug]/m/[matchId]/page.tsx", "src/app/attend/page.tsx"]) expect(read(f), f).toContain("robots: { index: false, follow: false }");
   });
 });

@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { closeMatchAttendance, closeSummary } from "@/lib/attendanceClosure";
 import type { AttendanceStatus, MatchStatus } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { CUTOFF_CATCH_UP_MS } from "@/lib/scheduleTime";
@@ -568,14 +569,18 @@ export async function setAttendanceClosed(context: TenantContext, matchId: strin
       requested = at.at;
     }
   }
+  if (closed) {
+    // M12B — the ONE closure: attendance + the Match's Telegram poll(s) + the one-time
+    // closure notice (when the plan allows Telegram messages). Idempotent; no transaction
+    // is held during Telegram calls (src/lib/attendanceClosure.ts).
+    const r = await closeMatchAttendance({ groupId, matchId, userId: context.user.id, notify: true });
+    if (!r) return NOT_FOUND();
+    return NextResponse.json({ ok: true, attendanceClosed: true, pollStatus: r.status, notices: r.polls.map((p) => p.notice), message: closeSummary(r) });
+  }
   const outcome = await prisma.$transaction(async (tx) => {
     await lockMatchAttendance(tx, matchId);
     const m = await tx.match.findFirst({ where: { id: matchId, groupId }, select: { date: true, startTime: true, attendanceDeadlineAt: true } });
     if (!m) return { kind: "not_found" as const };
-    if (closed) {
-      await tx.match.updateMany({ where: { id: matchId, groupId }, data: { attendanceClosedAt: new Date() } });
-      return { kind: "ok" as const };
-    }
     // Phase 4B — reopening never leaves a passed deadline in force (it would close again at once):
     // the organizer sets a new future deadline or removes it; a future deadline may simply stay.
     const now = new Date();

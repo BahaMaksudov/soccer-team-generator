@@ -20,6 +20,8 @@ import * as shareRoute from "@/app/api/admin/o/[organizationSlug]/g/[groupSlug]/
 import * as shareResetRoute from "@/app/api/admin/o/[organizationSlug]/g/[groupSlug]/matches/[matchId]/share/reset/route";
 import * as linkViewRoute from "@/app/api/share/match/route";
 import * as linkAnswerRoute from "@/app/api/share/match/attendance/route";
+import * as personalLinksRoute from "@/app/api/admin/o/[organizationSlug]/g/[groupSlug]/matches/[matchId]/personal-links/route";
+import * as attendAnswerRoute from "@/app/api/attend/answer/route";
 import * as matchRoute from "@/app/api/admin/o/[organizationSlug]/g/[groupSlug]/matches/[matchId]/route";
 import * as overrideRoute from "@/app/api/admin/o/[organizationSlug]/g/[groupSlug]/matches/[matchId]/attendance/route";
 import * as generateRoute from "@/app/api/admin/o/[organizationSlug]/g/[groupSlug]/generate/route";
@@ -71,8 +73,8 @@ const signIn = async (who: string | null) => {
 
 // Anonymous Match Link calls (no session).
 const view = (token: unknown, matchId: unknown, playerRef?: string) => call(linkViewRoute.POST(json("POST", { token, matchId, ...(playerRef ? { playerRef } : {}) }, `${ORIGIN}/api/share/match`)));
-const answer = (body: Record<string, unknown>, origin: string | null = ORIGIN) =>
-  call(linkAnswerRoute.POST(json("POST", body, `${ORIGIN}/api/share/match/attendance`, origin ? { origin } : {})));
+// M12B — the shared-link answer route ignores the request entirely (always 410); the body is kept for readability.
+const answer = (body: Record<string, unknown>, origin: string | null = ORIGIN) => (void body, void origin, call(linkAnswerRoute.POST()));
 
 const PLAYERS = [
   ["john", "John", "Smith"],
@@ -87,7 +89,7 @@ const MONDAY = ["john", "jane", "mike", "mia", "ann", "old"];
 
 async function seed() {
   await prisma.$executeRawUnsafe(
-    `TRUNCATE "MatchAutomationEmail","MatchAutomation","MatchSchedule","Venue","MessageDelivery","MatchRecap","MatchMvpVote","MatchMvp","MatchResult","AttendanceResponse","TeamGeneration","Match","CommunityPlayer","Community","TelegramChatPlayer","TelegramChatBindCode","TelegramConnectCode","PlayerClaim","EmailVerificationToken","OrganizationInvitation","TelegramPollAnswer","TelegramPoll","TelegramUserLink","TelegramChat","GroupShareLink","GroupSetting","Player","Group","OrganizationMembership","Organization","User","AppSetting" RESTART IDENTITY CASCADE`
+    `TRUNCATE "PersonalAttendanceLink","MatchAutomationEmail","MatchAutomation","MatchSchedule","Venue","MessageDelivery","MatchRecap","MatchMvpVote","MatchMvp","MatchResult","AttendanceResponse","TeamGeneration","Match","CommunityPlayer","Community","TelegramChatPlayer","TelegramChatBindCode","TelegramConnectCode","PlayerClaim","EmailVerificationToken","OrganizationInvitation","TelegramPollAnswer","TelegramPoll","TelegramUserLink","TelegramChat","GroupShareLink","GroupSetting","Player","Group","OrganizationMembership","Organization","User","AppSetting" RESTART IDENTITY CASCADE`
   );
   await prisma.user.createMany({ data: ["owner", "admin", "member", "other", "claimed"].map((n) => ({ id: `u-${n}`, email: `${n}@example.test`, name: n, passwordHash: null, emailVerifiedAt: VERIFIED })) });
   await prisma.organization.createMany({ data: [{ id: "org-a", name: "Boston Soccer Club", slug: "org-a", plan: "LEGACY" }, { id: "org-b", name: "B", slug: "org-b", plan: "LEGACY" }] });
@@ -186,16 +188,15 @@ describe("M9.3 — organizer Share Match", () => {
     expect((await prisma.match.findUniqueOrThrow({ where: { id: "m1" } })).shareVersion).toBe(1);
   });
 
-  it("Reset Link invalidates the previous link immediately; the new link works; answers are kept", async () => {
+  it("Reset Link invalidates the previous link immediately; the new link works; attendance is untouched", async () => {
     const oldToken = await tokenOf("m1");
-    expect((await answer({ token: oldToken, matchId: "m1", playerRef: await refOf("m1", "jane"), status: "PLAYING" })).status).toBe(200);
+    await prisma.attendanceResponse.create({ data: { matchId: "m1", groupId: "ga", playerId: "jane", participantStatus: "PLAYING", participantSource: "TELEGRAM", participantRespondedAt: new Date() } });
     const reset = await call(shareResetRoute.POST(json("POST"), gm("m1")));
     expect(reset.body).toMatchObject({ ok: true, available: true });
     const newToken = await tokenOf("m1");
     expect(newToken).not.toBe(oldToken);
     expect(reset.body.path).toBe(`/share/m/m1#${newToken}`);
     expect((await view(oldToken, "m1")).status).toBe(404);
-    expect((await answer({ token: oldToken, matchId: "m1", playerRef: await refOf("m1", "jane"), status: "MAYBE" })).status).toBe(404);
     expect((await view(newToken, "m1")).status).toBe(200);
     expect((await row("m1", "jane"))!.participantStatus).toBe("PLAYING");
   });
@@ -234,19 +235,18 @@ describe("M9.3 — anonymous Match Link view", () => {
     }
   });
 
-  it("roster = active members of the Match's Community as 'First L.' with opaque refs; nothing private leaks", async () => {
-    const r = await view(await tokenOf("m1"), "m1");
+  it("M12B — VIEW-ONLY: no roster, no player references, no 'me'; says how players answer; nothing private leaks", async () => {
+    const r = await view(await tokenOf("m1"), "m1", "anything");
     expect(r.status).toBe(200);
-    const link = r.body.link as { communityName: string; state: string; roster: Array<{ ref: string; name: string }> };
-    expect(link.communityName).toBe("Monday Night Players");
-    expect(link.state).toBe("open");
-    // First name + last initial (the Browns stay "Michael B." / "Mia B."); Ann has no last name; inactive Olga and the Weekend Community are absent.
-    expect(link.roster.map((p) => p.name).sort()).toEqual(["Ann", "Jane S.", "John S.", "Mia B.", "Michael B."]);
-    for (const p of link.roster) expect(p.ref).toMatch(/^[A-Za-z0-9_-]{22}$/);
+    expect(r.body.link).toEqual({ communityName: "Monday Night Players", state: "open", mode: "web" });
+    expect(r.body).not.toHaveProperty("me");
     const text = JSON.stringify(r.body);
     for (const id of ["john", "jane", "mike", "mia", "ann", "old", "weekend", "u-claimed", "c-mon", "ga", "org-a"]) expect(text).not.toContain(`"${id}"`);
-    expect(text).not.toMatch(/rating|stamina|skill|weight|email|userId|telegram|automation|shareVersion|Smith|Smythe|Brown|GOOD|lastError|cutoff/i);
-    expect(r.body.me).toBeNull(); // no remembered player asked for
+    expect(text).not.toMatch(/roster|ref"|Jane|Michael|rating|stamina|skill|weight|email|userId|telegram|automation|shareVersion|Smith|Smythe|Brown|GOOD|lastError|cutoff/i);
+    // A connected Telegram group (Pro-capable org) makes it a Telegram match: the page says "vote in the poll".
+    const chat = await prisma.telegramChat.create({ data: { chatId: -9301n, title: "Mon chat", groupId: "ga", communityId: "c-mon" } });
+    await prisma.match.update({ where: { id: "m1" }, data: { telegramChatId: chat.id } });
+    expect(((await view(await tokenOf("m1"), "m1")).body.link as { mode: string }).mode).toBe("telegram");
   });
 
   it("only PUBLISHED post-game content is visible; drafts never appear", async () => {
@@ -264,103 +264,31 @@ describe("M9.3 — anonymous Match Link view", () => {
     const r = await view(token, "m1");
     expect(r.status).toBe(200);
     expect(r.body).not.toHaveProperty("link");
-    const ref = await refOf("m1", "jane");
-    expect((await answer({ token, matchId: "m1", playerRef: ref, status: "PLAYING" })).status).toBe(404); // GroupShareLink is never a write capability
+    expect((await answer({ token, matchId: "m1", playerRef: await refOf("m1", "jane"), status: "PLAYING" })).status).toBe(410); // never a write capability
   });
 });
 
-// ============================================================ ANONYMOUS ATTENDANCE
-describe("M9.3 — anonymous attendance through the Match Link", () => {
-  it("Playing / Maybe / Not playing, repeat-safe updates, source LINK, Not Responded counts; never a new Player", async () => {
+// ============================================================ M12B: the shared link is view-only
+describe("M12B — nobody can answer through the shared Match Link", () => {
+  it("every answer is refused (410) — valid link + real player reference, any status, any origin — and nothing is written", async () => {
     const t = await tokenOf("m1");
-    const players = await prisma.player.count();
-    const before = await organizerView("m1");
-    expect(before.counts).toMatchObject({ PLAYING: 0, MAYBE: 0, NOT_PLAYING: 0, NO_RESPONSE: 5 });
-    for (const [pid, status] of [["jane", "PLAYING"], ["mike", "MAYBE"], ["mia", "NOT_PLAYING"]] as const) {
-      const r = await answer({ token: t, matchId: "m1", playerRef: await refOf("m1", pid), status });
-      expect(r.status).toBe(200);
-      expect(r.body).toMatchObject({ ok: true, status, setByOrganizer: false });
-      expect(await row("m1", pid)).toMatchObject({ participantStatus: status, participantSource: "LINK" });
+    for (const playerId of ["jane", "john", "ann"]) {
+      for (const status of ["PLAYING", "MAYBE", "NOT_PLAYING"]) {
+        const r = await answer({ token: t, matchId: "m1", playerRef: await refOf("m1", playerId), status });
+        expect(r).toMatchObject({ status: 410, body: { code: "MATCH_LINK_READ_ONLY" } });
+      }
     }
-    expect((await answer({ token: t, matchId: "m1", playerRef: await refOf("m1", "jane"), status: "PLAYING" })).status).toBe(200); // repeat
-    expect((await answer({ token: t, matchId: "m1", playerRef: await refOf("m1", "mike"), status: "PLAYING" })).status).toBe(200); // change
-    const after = await organizerView("m1");
-    expect(after.counts).toEqual({ PLAYING: 2, MAYBE: 0, NOT_PLAYING: 1, NO_RESPONSE: 2 });
-    expect(after.roster.find((p) => p.id === "jane")!.attendance.source).toBe("LINK");
-    expect(await prisma.attendanceResponse.count({ where: { matchId: "m1" } })).toBe(3);
-    expect(await prisma.player.count()).toBe(players);
-    // The remembered player's current answer comes back with the view.
-    const v = await view(t, "m1", await refOf("m1", "mike"));
-    expect(v.body.me).toEqual({ name: "Michael B.", status: "PLAYING", setByOrganizer: false });
-    expect(tgCalls).toHaveLength(0);
-  });
-
-  it("Community-only: another Community's or another Match's or an inactive player's reference is the same 404", async () => {
-    const t = await tokenOf("m1");
-    for (const ref of [await refOf("m1", "weekend"), await refOf("m1", "old"), await refOf("m2", "jane"), await refOf("m1", "b1"), "x".repeat(22), "short"]) {
-      expect((await answer({ token: t, matchId: "m1", playerRef: ref, status: "PLAYING" })).status, ref).toBe(404);
-    }
+    expect((await answer({ token: t, matchId: "m1", playerRef: await refOf("m1", "jane"), status: "PLAYING" }, "https://evil.example")).status).toBe(410);
     expect(await prisma.attendanceResponse.count()).toBe(0);
   });
 
-  it("validates input: JSON only, same origin only, allowed values only", async () => {
-    const t = await tokenOf("m1");
-    const ref = await refOf("m1", "jane");
-    expect((await answer({ token: t, matchId: "m1", playerRef: ref, status: "YES" })).status).toBe(400);
-    expect((await answer({ token: t, matchId: "m1", playerRef: ref, status: "PLAYING" }, "https://evil.example")).status).toBe(403);
-    expect((await answer({ token: t, matchId: "m1", playerRef: ref, status: "PLAYING" }, null)).status).toBe(403);
-    const form = await linkAnswerRoute.POST(new Request(`${ORIGIN}/api/share/match/attendance`, { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded", origin: ORIGIN }, body: "status=PLAYING" }));
-    expect(form.status).toBe(415);
-    expect(await prisma.attendanceResponse.count()).toBe(0);
-  });
-
-  it("closed attendance, a passed attendance deadline and a canceled match refuse answers (the view says so)", async () => {
-    const t = await tokenOf("m1");
-    const ref = await refOf("m1", "jane");
-    await prisma.match.update({ where: { id: "m1" }, data: { attendanceClosedAt: new Date() } });
-    expect(await answer({ token: t, matchId: "m1", playerRef: ref, status: "PLAYING" })).toMatchObject({ status: 409, body: { code: "CLOSED" } });
-    expect(((await view(t, "m1")).body.link as { state: string; roster: unknown[] })).toEqual({ communityName: "Monday Night Players", state: "closed", roster: [] });
-    await prisma.match.update({ where: { id: "m1" }, data: { attendanceClosedAt: null } });
-    // Phase 4B — a recurring Match carries its cutoff as Match.attendanceDeadlineAt (the one shared rule);
-    // a stale MatchAutomation.cutoffDueAt alone no longer closes anything.
-    await prisma.matchAutomation.create({ data: { matchId: "m1", groupId: "ga", pollDueAt: new Date(Date.now() - 7200_000), cutoffDueAt: new Date(Date.now() - 60_000) } });
-    expect((await view(t, "m1")).body.link).toMatchObject({ state: "open" }); // deadline NULL (e.g. reopened) → open
-    await prisma.match.update({ where: { id: "m1" }, data: { attendanceDeadlineAt: new Date(Date.now() - 60_000) } });
-    expect(await answer({ token: t, matchId: "m1", playerRef: ref, status: "PLAYING" })).toMatchObject({ status: 409, body: { code: "CLOSED" } });
-    await prisma.matchAutomation.deleteMany({});
-    await prisma.match.update({ where: { id: "m1" }, data: { attendanceDeadlineAt: null } });
-    await prisma.match.update({ where: { id: "m1" }, data: { status: "CANCELED" } });
-    expect(await answer({ token: t, matchId: "m1", playerRef: ref, status: "PLAYING" })).toMatchObject({ status: 409, body: { code: "CANCELED" } });
-    expect((await view(t, "m1")).body).toMatchObject({ match: { status: "CANCELED" }, link: { state: "canceled" } });
-    expect(await prisma.attendanceResponse.count()).toBe(0);
-  });
-
-  it("the organizer override stays authoritative; LINK / TELEGRAM / WEB coexist by newest answer", async () => {
-    const t = await tokenOf("m1");
-    const ref = await refOf("m1", "jane");
-    await call(overrideRoute.POST(json("POST", { playerId: "jane", status: "PLAYING" }), gm("m1")));
-    const r = await answer({ token: t, matchId: "m1", playerRef: ref, status: "NOT_PLAYING" });
-    expect(r.body).toMatchObject({ ok: true, setByOrganizer: true });
-    expect((await organizerView("m1")).roster.find((p) => p.id === "jane")!.attendance).toMatchObject({ status: "PLAYING", source: "OVERRIDE" });
-    expect((await view(t, "m1", ref)).body.me).toEqual({ name: "Jane S.", status: "PLAYING", setByOrganizer: true });
-
-    // john: claimed (WEB) → link → Telegram, newest wins each time.
-    expect(await setOwnAttendance("u-claimed", "m1", "MAYBE")).toBe("ok");
-    expect(await row("m1", "john")).toMatchObject({ participantStatus: "MAYBE", participantSource: "WEB" });
-    await answer({ token: t, matchId: "m1", playerRef: await refOf("m1", "john"), status: "PLAYING" });
-    expect(await row("m1", "john")).toMatchObject({ participantStatus: "PLAYING", participantSource: "LINK" });
-    await prisma.telegramUserLink.create({ data: { groupId: "ga", userId: 77n, playerId: "john" } });
-    await prisma.$transaction((tx) => applyTelegramAttendanceAnswer(tx, { matchId: "m1", groupId: "ga", telegramUserId: 77n, optionIds: [1], at: new Date(Date.now() + 1000) }));
-    expect(await row("m1", "john")).toMatchObject({ participantStatus: "NOT_PLAYING", participantSource: "TELEGRAM" });
-    // An older (delayed) Telegram answer never overwrites a newer link answer.
-    await answer({ token: t, matchId: "m1", playerRef: await refOf("m1", "mike"), status: "PLAYING" });
-    await prisma.telegramUserLink.create({ data: { groupId: "ga", userId: 78n, playerId: "mike" } });
-    await prisma.$transaction((tx) => applyTelegramAttendanceAnswer(tx, { matchId: "m1", groupId: "ga", telegramUserId: 78n, optionIds: [1], at: new Date(Date.now() - 3600_000) }));
-    expect(await row("m1", "mike")).toMatchObject({ participantStatus: "PLAYING", participantSource: "LINK" });
+  it("a Telegram answer can never be overwritten through the shared link", async () => {
+    await prisma.attendanceResponse.create({ data: { matchId: "m1", groupId: "ga", playerId: "jane", participantStatus: "PLAYING", participantSource: "TELEGRAM", participantRespondedAt: new Date() } });
+    expect((await answer({ token: await tokenOf("m1"), matchId: "m1", playerRef: await refOf("m1", "jane"), status: "NOT_PLAYING" })).status).toBe(410);
+    expect(await row("m1", "jane")).toMatchObject({ participantStatus: "PLAYING", participantSource: "TELEGRAM" });
   });
 });
 
-// ============================================================ WEB-ONLY END TO END (zero Telegram)
 describe("M9.3 — a web-only Community end to end (no Telegram, no player accounts)", () => {
   // The poll step checks "is attendance closed?" against the REAL clock while these scenarios run at fixed
   // instants (Oct 11–13, 2026): pin the clock to the scenario's poll evening so the test doesn't depend on today's date.
@@ -374,7 +302,7 @@ describe("M9.3 — a web-only Community end to end (no Telegram, no player accou
   const afterPoll = new Date("2026-10-12T00:05:00Z");
   const afterCutoff = new Date("2026-10-13T00:05:00Z");
 
-  it("schedule → Match → Match Link → answers → cutoff → email with link → generate → publish → result → POTM → recap → the link shows it all", async () => {
+  it("schedule → Match → personal links → answers → cutoff → email with link → generate → publish → result → POTM → recap → the link shows it all", async () => {
     expect((await call(schedulesRoute.POST(json("POST", SCHED), g()))).status).toBe(201);
 
     // Poll time: the Match is created; with no Telegram the step completes healthily (no error, no call).
@@ -386,17 +314,20 @@ describe("M9.3 — a web-only Community end to end (no Telegram, no player accou
     expect(((await organizerView(m.id)) as unknown as { automation: { channel: string; lastError: string | null } }).automation).toMatchObject({ channel: "link", lastError: null });
     expect(await runMatchAutomation(new Date(afterPoll.getTime() + 15 * 60_000))).toMatchObject({ created: 0, errors: [] });
 
-    // The organizer copies the Match Link; players answer without accounts.
+    // The organizer copies the (view-only) Match Link and — M12B — creates personal attendance links;
+    // each player answers for themselves without an account.
     const share = await call(shareRoute.GET(json("GET"), gm(m.id)));
     const token = String(share.body.path).split("#")[1];
     vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(new Date(afterPoll.getTime() + 3600_000));
+    const personal: Record<string, string> = {};
     try {
-      const v = await view(token, m.id);
-      const roster = (v.body.link as { roster: Array<{ ref: string; name: string }> }).roster;
-      const ref = (name: string) => roster.find((p) => p.name === name)!.ref;
-      for (const [name, status] of [["Jane S.", "PLAYING"], ["Michael B.", "PLAYING"], ["Mia B.", "PLAYING"], ["Ann", "PLAYING"], ["John S.", "NOT_PLAYING"]] as const) {
-        expect((await answer({ token, matchId: m.id, playerRef: ref(name), status })).status, name).toBe(200);
+      const issued = await call(personalLinksRoute.POST(json("POST", { action: "issue" }), gm(m.id)));
+      expect(issued.status).toBe(200);
+      for (const l of issued.body.links as Array<{ playerId: string; path: string }>) personal[l.playerId] = l.path.split("#")[1];
+      expect(Object.keys(personal).sort()).toEqual(["ann", "jane", "john", "mia", "mike"]);
+      for (const [playerId, status] of [["jane", "PLAYING"], ["mike", "PLAYING"], ["mia", "PLAYING"], ["ann", "PLAYING"], ["john", "NOT_PLAYING"]] as const) {
+        expect((await call(attendAnswerRoute.POST(json("POST", { token: personal[playerId], status }, `${ORIGIN}/api/attend/answer`, { origin: ORIGIN })))).status, playerId).toBe(200);
       }
     } finally {
       vi.useRealTimers();
@@ -410,7 +341,7 @@ describe("M9.3 — a web-only Community end to end (no Telegram, no player accou
     expect(mail).toMatch(/Playing: 4 · Maybe: 0 · Not playing: 1 · Not responded: 0 \(roster 5\)/);
     expect(mail).toContain(`${ORIGIN}/share/m/${m.id}#${token}`);
     expect(mail).not.toMatch(/Telegram/);
-    expect((await answer({ token, matchId: m.id, playerRef: await refOf(m.id, "jane"), status: "MAYBE" })).status).toBe(409);
+    expect((await call(attendAnswerRoute.POST(json("POST", { token: personal.jane, status: "MAYBE" }, `${ORIGIN}/api/attend/answer`, { origin: ORIGIN })))).status).toBe(409); // closed
 
     // The organizer generates and publishes (no Telegram call).
     const date = m.date.toISOString().slice(0, 10);

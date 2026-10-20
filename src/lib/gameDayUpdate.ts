@@ -5,8 +5,6 @@ import { organizationPlan, telegramEntitledSince } from "@/lib/entitlements";
 import { readGameDayUpdateSettings } from "@/lib/gameDayUpdateSettings";
 import { contentHashOf, STALE_SENDING_MS } from "@/lib/messaging/deliveryState";
 import { callTelegram, TelegramApiRejectionError } from "@/lib/telegramApi";
-import { currentMatchLinkPath } from "@/lib/matchLink";
-import { getAppBaseUrl } from "@/lib/email/config";
 import { GAME_DAY_STATUS_TEXT, gameDayUpdateDecision, manualGameDayDecision, type GameDayBlock, type GameDayDecision, type GameDayFacts } from "@/lib/gameDayUpdateSchedule";
 import { kickoffAt } from "@/lib/attendanceDeadline";
 import { FORECAST_DAYS, weatherProvider } from "@/lib/weather";
@@ -106,18 +104,6 @@ async function loadFacts(groupId: string, organizationId: string, matchId: strin
   return { m, settings, poll, delivery, facts, chatTitle: pollChat?.title ?? null };
 }
 
-/** The Match Link, only where the existing rules allow it (not PRIVATE, share secret + https base URL configured). */
-function authorizedMatchLink(visibility: string, matchId: string, shareVersion: number): string | null {
-  if (visibility === "PRIVATE") return null;
-  const path = currentMatchLinkPath(matchId, shareVersion);
-  if (!path) return null;
-  try {
-    return `${getAppBaseUrl()}${path}`;
-  } catch {
-    return null;
-  }
-}
-
 export type GameDayResult = "sent" | "failed" | "uncertain" | "not_due";
 
 /**
@@ -179,7 +165,8 @@ function buildMessage(loaded: Loaded, teamName: string | null, counts: Attendanc
     match: { date: m.date.toISOString().slice(0, 10), startTime: m.startTime, venueName: m.venue?.name ?? m.locationName, isIndoor: m.venue?.isIndoor ?? false },
     deadline: m.attendanceDeadlineAt,
     attendance: { playing: counts.PLAYING, notPlaying: counts.NOT_PLAYING, maybe: counts.MAYBE, noResponse: counts.NO_RESPONSE },
-    link: authorizedMatchLink(m.group.visibility, m.id, m.shareVersion),
+    // M12B — Telegram matches are answered in the poll: remind players to vote there (never a website link).
+    poll: loaded.poll ? "open" : m.attendanceClosedAt ? "closed" : "none",
     weather: loaded.settings.includeWeather ? weather : null, // re-checked: turned off meanwhile → none
     units: loaded.settings.units,
     now,

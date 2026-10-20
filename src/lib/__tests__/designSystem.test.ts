@@ -173,8 +173,7 @@ describe("UI primitives are presentation-only", () => {
         "src/app/admin/o/[organizationSlug]/g/[groupSlug]/matches/[matchId]/TeamsTelegramPost.tsx",
         // M9.3 — Share Match (organizer).
         "src/app/admin/o/[organizationSlug]/g/[groupSlug]/matches/[matchId]/ShareMatchCard.tsx",
-        // M9.3 — the redesigned player Match page (Match Link).
-        "src/components/match-link/MatchLinkPage.tsx",
+        // (M9.3's Match Link page uses only the shared MatchView since M12B — view-only.)
         // Telegram publishing — the shared player Match view (Match Link page + public Match page).
         "src/components/match-link/MatchView.tsx",
         "src/components/game-day/MatchList.tsx",
@@ -192,6 +191,9 @@ describe("UI primitives are presentation-only", () => {
         "src/components/billing/PlanComparison.tsx",
         // M11.3 — password reset landing page.
         "src/app/reset-password/[token]/page.tsx",
+        // M12B — personal attendance (player page; organizer card).
+        "src/app/attend/PersonalAttendancePage.tsx",
+        "src/app/admin/o/[organizationSlug]/g/[groupSlug]/matches/[matchId]/PersonalLinksCard.tsx",
         "src/app/account/security/page.tsx",
         "src/app/me/page.tsx",
       ].sort()

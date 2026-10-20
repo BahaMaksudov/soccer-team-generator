@@ -54,10 +54,15 @@ describe("canonical Close Poll & Post Teams wiring", () => {
     const close = core.indexOf("await closePollAndNotify(");
     expect(close).toBeGreaterThan(-1);
     expect(close).toBeLessThan(core.indexOf('callTelegram("sendMessage"')); // notice BEFORE the teams (the original order)
-    expect(core).toContain("isVerifiedClose(closeStatus)");
+    // M12B — the poll concern is the unified closure (closeMatchAttendance / closePollOnce), which sends the notice
+    // ONCE per poll after a verified close — also when the poll was closed earlier and never announced.
+    expect(core).toMatch(/closeMatchAttendance\(\{ groupId: activeGroupId, matchId: poll\.matchId, userId, notify: true \}\)/);
+    expect(core).toContain("closePollOnce(activeGroupId,");
+    const unified = stripComments(read(path.join(root, "src/lib/attendanceClosure.ts")));
+    expect(unified).toContain('const NOTICE_ELIGIBLE: readonly StopOutcome[] = ["closed_now", "already_closed_on_telegram", "already_closed_locally"];');
     const closure = stripComments(read(path.join(root, "src/lib/pollClosure.ts")));
     expect(closure).toContain("`✅ Poll is closed for ${displayDate}`");
-    expect(closure).not.toMatch(/Poll is already closed/); // a poll already closed gets no notice
+    expect(closure).not.toMatch(/Poll is already closed/);
   });
 
   it("action is labelled distinctly from Publish", () => {

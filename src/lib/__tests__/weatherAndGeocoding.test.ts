@@ -94,6 +94,7 @@ describe("weather attribution + disclaimer in the message", () => {
     match: { date: "2026-10-19", startTime: "21:00", venueName: "ForeKicks" },
     deadline: new Date("2026-10-19T21:00:00Z"),
     attendance: { playing: 14, notPlaying: 0, maybe: 3, noResponse: 10 },
+    poll: "open" as const,
     units: "imperial" as const,
     now: NOW,
   };

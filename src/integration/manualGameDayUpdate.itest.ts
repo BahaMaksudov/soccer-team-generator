@@ -174,7 +174,7 @@ describe("preview and confirmed send", () => {
       weather: { reason: "INCLUDED", includedInMessage: true, forecast: { temperatureC: 20, condition: "Partly cloudy" } },
       expiresInSeconds: 120,
     });
-    expect(p.message!.html).toContain("⏰ Attendance closes in 3 hours (5:00 PM EDT).");
+    expect(p.message!.html).toContain("⏰ Attendance closes today at 5:00 PM EDT."); // M12B — absolute time
     expect(p.message!.html).toContain("👥 Attendance Summary (3 players)\n✅ Playing: 1\n❌ Not Playing: 0\n🤔 Maybe: 0\n⏳ Not Responded: 2");
     expect(p.message!.html).toContain("68°F");
     expect(p.message!.html).not.toContain("Secret"); // counts only, never names

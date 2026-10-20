@@ -52,7 +52,9 @@ describe("M9-C — page wiring", () => {
     const client = read("src/components/match-link/MatchLinkPage.tsx");
     expect(client).toContain(`window.location.hash`);
     expect(client).toContain(`body: JSON.stringify({ token: t, matchId`);
-    expect(client).toContain(`body: JSON.stringify({ token, matchId, playerRef: ref, status })`);
+    // M12B — the shared link is view-only: the page never posts an answer.
+    expect(client).not.toContain("/api/share/match/attendance");
+    expect(client).not.toMatch(/playerRef|<select/);
     expect(client).not.toMatch(/console\.|searchParams|\?token=|localStorage\.setItem\([^)]*token/);
   });
   it("Telegram identity is never browser authentication: the Match page code reads no Telegram data", () => {

@@ -453,19 +453,21 @@ describe("Telegram publishing — Publish never touches the poll; \"Post teams t
     expect(await prisma.attendanceResponse.findFirst({ where: { matchId: id, playerId: "u5" }, select: { participantStatus: true } })).toEqual({ participantStatus: "PLAYING" });
     expect(await noticeRows()).toEqual([expect.objectContaining({ status: "SENT", matchId: id, destination: "-9200" })]);
     tgCalls = [];
-    expect((await postTeams(id)).body).toMatchObject({ status: "already_posted", closeStatus: "already_closed_locally", noticeStatus: null });
+    // M12B — the notice already exists for this poll: reported, never re-sent.
+    expect((await postTeams(id)).body).toMatchObject({ status: "already_posted", closeStatus: "already_closed_locally", noticeStatus: "exists" });
     expect(tgCalls).toEqual([]);
   });
 
-  it("a poll already closed (attendance deadline / an earlier action) → no stopPoll and NO notice; the teams are still posted", async () => {
+  it("M12B — a poll closed at the deadline (notice OFF by default) is announced ONCE when teams are posted: no stopPoll, notice → teams", async () => {
     const id = await matchWithOpenPoll();
     await publish(id);
     await closeMatchAttendancePolls("ga", id); // the deadline / automation step (no notice)
     expect(notices()).toHaveLength(0);
     tgCalls = [];
-    expect((await postTeams(id)).body).toMatchObject({ status: "posted", closeStatus: "already_closed_locally", noticeStatus: null });
-    expect(tgCalls.map((c) => c.method)).toEqual(["sendMessage"]);
-    expect(await noticeRows()).toEqual([]);
+    expect((await postTeams(id)).body).toMatchObject({ status: "posted", closeStatus: "already_closed_locally", noticeStatus: "sent" });
+    expect(tgCalls.map((c) => c.method)).toEqual(["sendMessage", "sendMessage"]);
+    expect(isNoticeText(tgCalls[0].body)).toBe(true); // the notice BEFORE the teams (the original order)
+    expect(await noticeRows()).toEqual([expect.objectContaining({ status: "SENT" })]);
   });
 
   it("close REFUSED → teams posted, no notice, poll left open; \"Close Telegram poll\" closes it and sends the notice ONCE", async () => {
@@ -480,7 +482,7 @@ describe("Telegram publishing — Publish never touches the poll; \"Post teams t
     stopPollMode = "ok";
     expect((await closeAgain(id)).body).toMatchObject({ ok: true, status: "closed", notices: ["sent"] });
     expect(notices()).toHaveLength(1);
-    expect((await closeAgain(id)).body).toMatchObject({ ok: true, status: "already_closed", notices: [] });
+    expect((await closeAgain(id)).body).toMatchObject({ ok: true, status: "already_closed", notices: ["exists"] });
     expect(notices()).toHaveLength(1);
   });
 
@@ -504,7 +506,7 @@ describe("Telegram publishing — Publish never touches the poll; \"Post teams t
     expect(await postTeams(id)).toMatchObject({ status: 502, body: { status: "telegram_rejected", closeStatus: "closed_now", noticeStatus: "sent" } });
     expect((await pollRow()).isClosed).toBe(true);
     teamsMode = "ok";
-    expect((await postTeams(id)).body).toMatchObject({ status: "posted", closeStatus: "already_closed_locally", noticeStatus: null });
+    expect((await postTeams(id)).body).toMatchObject({ status: "posted", closeStatus: "already_closed_locally", noticeStatus: "exists" });
     expect(notices()).toHaveLength(1);
     expect(teamsSends()).toHaveLength(2); // the refused attempt + the successful retry
   });
@@ -527,7 +529,7 @@ describe("Telegram publishing — Publish never touches the poll; \"Post teams t
     expect((await postTeams(id)).body).toMatchObject({ status: "posted", noticeStatus: "uncertain" });
     const [row] = await noticeRows();
     expect(row.status).toBe("UNCERTAIN");
-    expect((await closeAgain(id)).body).toMatchObject({ status: "already_closed", notices: [] }); // no resend
+    expect((await closeAgain(id)).body).toMatchObject({ status: "already_closed", notices: ["exists"] }); // no resend
     expect((await notice(id, { action: "retry", deliveryId: row.id })).status).toBe(409); // only a REFUSED one can be retried
     expect((await notice(id, { action: "mark_sent", deliveryId: row.id })).body).toMatchObject({ ok: true, result: "marked_sent" });
     expect(await noticeRows()).toEqual([expect.objectContaining({ status: "SENT", resolution: "MARKED_SENT" })]);
@@ -570,10 +572,15 @@ describe("Telegram publishing — Publish never touches the poll; \"Post teams t
     expect(await noticeRows()).toHaveLength(1);
   });
 
-  it("before the teams were posted, \"Close Telegram poll\" closes without a notice", async () => {
+  it("M12B — before any teams, \"Close Telegram poll\" closes attendance + the poll and sends the notice ONCE (independent of teams); posting teams later adds none", async () => {
     const id = await matchWithOpenPoll();
-    expect((await closeAgain(id)).body).toMatchObject({ ok: true, status: "closed", notices: [] });
-    expect(notices()).toHaveLength(0);
+    expect((await closeAgain(id)).body).toMatchObject({ ok: true, status: "closed", notices: ["sent"] });
+    expect(notices()).toHaveLength(1);
+    expect((await prisma.match.findUniqueOrThrow({ where: { id } })).attendanceClosedAt).not.toBeNull();
+    await publish(id);
+    expect((await postTeams(id)).body).toMatchObject({ status: "posted", closeStatus: "already_closed_locally", noticeStatus: "exists" });
+    expect(notices()).toHaveLength(1);
+    expect(teamsSends()).toHaveLength(1);
   });
 
   it("only the match's own poll in the posted chat; MEMBER and other tenants: 404 on close, notice and post (no Telegram call)", async () => {
@@ -709,12 +716,13 @@ describe("M9.2-5 — reusable Venues, match location and the Telegram maps link"
     expect(tgCalls.filter((c) => c.method === "sendMessage")).toHaveLength(0); // publishing never posts
     const posted = await call(closePostRoute.POST(json("POST", { pollId: "att-v", teamGenerationId: pub.body.id, intent: "post" }), g()));
     expect(posted.body).toMatchObject({ ok: true, status: "posted" });
-    const text = String(tgCalls.find((c) => c.method === "sendMessage")!.body.text);
+    // (M12B: the never-announced closed poll gets its one-time notice first; the teams message is the other send.)
+    const text = String(tgCalls.find((c) => c.method === "sendMessage" && !isNoticeText(c.body))!.body.text);
     expect(text).toContain("📍 ForeKicks");
     expect(text).toContain('Location: <a href="https://www.google.com/maps/search/?api=1&amp;query=10%20Pine%20Street%2C%20Norfolk%2C%20MA">10 Pine Street, Norfolk, MA</a>');
     // Re-posting the same teams is "already posted" even though the stored hash never included the venue.
     expect((await call(closePostRoute.POST(json("POST", { pollId: "att-v", teamGenerationId: pub.body.id, intent: "post" }), g()))).body).toMatchObject({ status: "already_posted" });
-    expect(tgCalls.filter((c) => c.method === "sendMessage")).toHaveLength(1);
+    expect(tgCalls.filter((c) => c.method === "sendMessage")).toHaveLength(2); // the notice + the teams; nothing re-sent
   });
 });
 

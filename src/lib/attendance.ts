@@ -82,11 +82,16 @@ export function attendanceFromTelegramOptions(optionIds: unknown): AttendanceSta
  * (e.g. a Telegram answer replayed by explicit sync after a newer web
  * answer) never overwrites a newer one. The organizer override is never
  * touched here. `status: null` records a retraction.
+ *
+ * M12B — serialized per (Match, Player) with a transaction-scoped advisory lock,
+ * so concurrent writers (Telegram webhook, sync replay, personal link, My games)
+ * can't both read the old timestamp and let the OLDER answer commit last.
  */
 export async function recordParticipantResponse(
   tx: Prisma.TransactionClient,
   input: { matchId: string; groupId: string; playerId: string; status: AttendanceStatus | null; source: AttendanceSource; at: Date }
 ): Promise<"recorded" | "stale"> {
+  await tx.$queryRaw`SELECT 1 AS locked FROM pg_advisory_xact_lock(hashtext(${"attendance:" + input.matchId + ":" + input.playerId}))`;
   const existing = await tx.attendanceResponse.findUnique({
     where: { matchId_playerId: { matchId: input.matchId, playerId: input.playerId } },
     select: { participantRespondedAt: true },
