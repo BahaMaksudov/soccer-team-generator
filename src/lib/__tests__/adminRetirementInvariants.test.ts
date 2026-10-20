@@ -103,6 +103,7 @@ describe("flat operational Admin APIs are deleted", () => {
         canonical("matches/[matchId]/game-day-update/mark-sent"), // manual Game Day Update — uncertain → marked sent
         canonical("matches/[matchId]/share"), // M9.3 — Match Link (organizer)
         canonical("matches/[matchId]/share/reset"), // M9.3
+        canonical("matches/[matchId]/personal-links"), // M12B — personal attendance links (organizer)
         canonical("venues/[venueId]"), // M9.2
         canonical("venues/[venueId]/weather-location"), // Phase 4B — confirm / remove a venue weather location
         canonical("venues/[venueId]/weather-location/search"), // Phase 4B — provider-backed location search (rate-limited)

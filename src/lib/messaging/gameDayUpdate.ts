@@ -59,8 +59,12 @@ export type GameDayUpdateInput = {
   deadline: Date;
   /** Effective attendance over the eligible roster (organizer overrides included) — counts only. */
   attendance: { playing: number; notPlaying: number; maybe: number; noResponse: number };
-  /** An attendance / match link the CALLER is authorized to share (absolute https URL), or null. Never built here. */
-  link?: string | null;
+  /**
+   * M12B — the match's Telegram attendance poll: "open" → remind players to vote in it;
+   * "closed" → say voting is closed; "none" → no poll claim. No website attendance
+   * link is ever included (Telegram matches are answered in the poll only).
+   */
+  poll: "open" | "closed" | "none";
   weather?: GameDayWeather | null;
   units: "imperial" | "metric";
   now: Date;
@@ -116,11 +120,20 @@ export function timeLeftText(ms: number): string {
   return rest ? `${plural(hours, "hour")} ${plural(rest, "minute")}` : plural(hours, "hour");
 }
 
-/** "(5:00 PM EDT)" today, else "(Sunday, October 18 at 5:00 PM EDT)". */
+/** "today at 5:00 PM EDT", else "on Sunday, October 18 at 5:00 PM EDT" (the group's timezone, DST-aware). */
 function deadlineText(deadline: Date, now: Date, tz: string): string {
-  if (localYmd(deadline, tz) === localYmd(now, tz)) return clock(deadline, tz);
+  if (localYmd(deadline, tz) === localYmd(now, tz)) return `today at ${clock(deadline, tz)}`;
   const g = fmt(deadline, tz, { weekday: "long", month: "long", day: "numeric" });
-  return `${g("weekday")}, ${g("month")} ${g("day")} at ${clock(deadline, tz)}`;
+  return `on ${g("weekday")}, ${g("month")} ${g("day")} at ${clock(deadline, tz)}`;
+}
+
+/** M12B — what players do next, by the state of the match's Telegram attendance poll. */
+export const POLL_REMINDER = "📊 Haven't voted yet? Please update your attendance directly in the Telegram poll before the deadline.";
+export const POLL_CLOSED_LINE = "🔒 Attendance voting is closed.";
+function pollLines(poll: "open" | "closed" | "none"): string[] {
+  if (poll === "open") return ["", POLL_REMINDER];
+  if (poll === "closed") return ["", POLL_CLOSED_LINE];
+  return [];
 }
 
 function weatherLines(w: GameDayWeather | null | undefined, units: "imperial" | "metric", indoor: boolean, track: (t: boolean) => void): string[] {
@@ -205,7 +218,6 @@ export function buildGameDayUpdate(input: GameDayUpdateInput): GameDayUpdateMess
   track(name.truncated);
   const venue = clean(match.venueName, CAP.venue);
   track(venue.truncated);
-  const link = safeLink(input.link);
 
   const lines = [
     `<b>⚽ Game Day Update — ${escapeHtml(name.text || "Your group")}</b>`,
@@ -216,10 +228,9 @@ export function buildGameDayUpdate(input: GameDayUpdateInput): GameDayUpdateMess
     "",
     ...attendanceLines(input.attendance),
     "",
-    `⏰ Attendance closes in ${timeLeftText(left)} (${deadlineText(deadline, now, tz)}).`,
-    "",
-    "Please confirm or update your attendance before the deadline.",
-    ...(link ? [`<a href="${escapeHtml(link).replaceAll('"', "&quot;")}">Confirm or update your attendance</a>`] : []),
+    // M12B — an absolute time (a relative "closes in 4 hours" goes stale in the chat).
+    `⏰ Attendance closes ${deadlineText(deadline, now, tz)}.`,
+    ...pollLines(input.poll),
   ];
   const html = lines.join("\n");
   // Every field is capped, so this can't happen — but never hand Telegram an over-long message.

@@ -16,6 +16,7 @@ import * as matchRoute from "@/app/api/admin/o/[organizationSlug]/g/[groupSlug]/
 import * as automationRoute from "@/app/api/admin/o/[organizationSlug]/g/[groupSlug]/matches/[matchId]/automation/route";
 import { runMatchAutomation } from "@/lib/matchAutomation";
 import { gameDayUpdateStatus } from "@/lib/gameDayUpdate";
+import { POLL_REMINDER } from "@/lib/messaging/gameDayUpdate";
 import { addDaysYmd, weekdayOfYmd, zonedToUtc } from "@/lib/scheduleTime";
 
 const TZ = "America/New_York";
@@ -126,7 +127,10 @@ describe("timing: deadline − offset, the 60-minute poll settle, the 30-minute 
     const body = sends()[0].body;
     expect(body).toMatchObject({ chat_id: CHAT.toString(), parse_mode: "HTML", disable_web_page_preview: true, reply_parameters: { message_id: 77, allow_sending_without_reply: false } });
     const minutesLeft = h * 60 - 1;
-    expect(String(body.text)).toContain(`closes in ${h - 1 ? `${h - 1} hour${h - 1 === 1 ? "" : "s"} 59 minutes` : "59 minutes"}`);
+    // M12B — an absolute deadline (never a countdown that goes stale) and the Telegram poll reminder.
+    expect(String(body.text)).toContain("⏰ Attendance closes today at 5:00 PM EDT.");
+    expect(String(body.text)).toContain(POLL_REMINDER);
+    expect(String(body.text)).not.toMatch(/closes in \d/);
     expect(minutesLeft).toBeGreaterThan(0);
     expect(await deliveries("m")).toEqual([expect.objectContaining({ status: "SENT", destination: CHAT.toString(), telegramPollId: "poll-m", providerMessageId: expect.any(String) })]);
   });
@@ -134,7 +138,7 @@ describe("timing: deadline − offset, the 60-minute poll settle, the 30-minute 
   it("a late cron run still sends while ≥ 30 minutes remain — stating the real time left", async () => {
     await manualMatch("o-g", CHAT, "m");
     expect((await runMatchAutomation(at(-H))).gameDayUpdates).toBe(1);
-    expect(String(sends()[0].body.text)).toContain("⏰ Attendance closes in 1 hour (5:00 PM EDT).");
+    expect(String(sends()[0].body.text)).toContain("⏰ Attendance closes today at 5:00 PM EDT.");
   });
 
   it("missed: under 30 minutes left → never sent ('too close'); after the deadline → never", async () => {
@@ -363,15 +367,18 @@ describe("content: escaping, attendance overrides, links", () => {
     expect(text).not.toMatch(/Secret|rating|GOOD/);
   });
 
-  it("Match Link only when allowed (LINK / PUBLIC group with the share secret); PRIVATE → no link", async () => {
+  it("M12B — never a website attendance link (LINK and PRIVATE groups alike): players are reminded to vote in the Telegram poll", async () => {
     await manualMatch("o-g", CHAT, "m");
     await runMatchAutomation(at(-3 * H));
-    expect(String(sends()[0].body.text)).toMatch(/<a href="https:\/\/tbp\.itest\/share\/m\/m#[^"]+">Confirm or update your attendance<\/a>/);
+    const text = String(sends()[0].body.text);
+    expect(text.endsWith(`\n\n${POLL_REMINDER}`)).toBe(true);
+    expect(text).not.toMatch(/share\/m\/|\/attend|Confirm or update/);
     calls = [];
     const privChat = await org("priv", { plan: "LEGACY" }, { visibility: "PRIVATE" });
     await manualMatch("priv-g", privChat, "pm");
     await runMatchAutomation(at(-3 * H));
-    expect(String(sends()[0].body.text)).not.toContain("<a ");
+    expect(String(sends()[0].body.text)).toContain(POLL_REMINDER);
+    expect(String(sends()[0].body.text)).not.toMatch(/share\/m\/|\/attend/);
   });
 });
 

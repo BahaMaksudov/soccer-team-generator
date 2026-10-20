@@ -1,13 +1,11 @@
-import { prisma } from "@/lib/prisma";
-import { isVerifiedClose, sendPollClosedNotice, stopAttendancePoll, teamsPostedToPoll, type NoticeResult } from "@/lib/pollClosure";
-import { resolvePollDisplayDate } from "@/lib/telegramFormat";
-import { syncMatchAttendanceAnswers } from "@/lib/telegramAttendance";
+import type { NoticeResult } from "@/lib/pollClosure";
+import { closeMatchAttendance } from "@/lib/attendanceClosure";
 
 /**
- * M9.2 — close a Match's open Telegram ATTENDANCE poll(s): used at the
- * attendance deadline / automation cutoff and by the organizer's "Close
- * Telegram poll" action. (Website Publish no longer closes polls — "Post teams
- * to Telegram" closes the poll it posts to.)
+ * M9.2 — close a Match's open Telegram ATTENDANCE poll(s). M12B: every close path
+ * (Close attendance, Close Telegram poll, the deadline, Post teams to Telegram)
+ * runs the ONE closure in src/lib/attendanceClosure.ts; this module keeps the
+ * result shape and messages. (Website Publish does not close anything.)
  *
  * Order: (1) if Team Balance Pro attendance is still open, replay the stored
  * answers (final sync, same mapping as the webhook); (2) stopPoll each open
@@ -28,38 +26,18 @@ export type PollCloseStatus = "no_poll" | "already_closed" | "closed" | "failed"
 export type PollCloseResult = { status: PollCloseStatus; closed: number; open: number; notices?: NoticeResult[] };
 
 /**
- * `notify` (organizer "Close Telegram poll" recovery only): after a VERIFIED
- * close of a poll whose teams were already posted to Telegram, send its
- * one-time "Poll is closed" notice (never for the deadline step, never after an
- * unclear close, never twice — see src/lib/pollClosure.ts).
+ * M12B — compatibility wrapper over the unified closure (src/lib/attendanceClosure.ts):
+ * closing a Match's Telegram poll now ALSO closes its attendance (one workflow), and
+ * `notify` sends the one-time notice for every verifiably closed poll, whether or
+ * not teams were posted (once per poll, ever).
  */
-export async function closeMatchAttendancePolls(groupId: string, matchId: string, notify?: { userId: string }): Promise<PollCloseResult> {
-  const match = await prisma.match.findFirst({ where: { id: matchId, groupId }, select: { attendanceClosedAt: true } });
-  if (!match) return { status: "no_poll", closed: 0, open: 0 };
-  const polls = await prisma.telegramPoll.findMany({
-    where: { matchId, groupId, kind: "ATTENDANCE" },
-    select: { pollId: true, chatId: true, messageId: true, isClosed: true, question: true, pollDate: true },
-  });
-  if (polls.length === 0) return { status: "no_poll", closed: 0, open: 0 };
-  const open = polls.filter((p) => !p.isClosed);
-  if (open.length === 0) return { status: "already_closed", closed: 0, open: 0 };
-
-  if (!match.attendanceClosedAt) await syncMatchAttendanceAnswers(groupId, matchId);
-
-  let closed = 0;
-  let worst: PollCloseStatus = "closed";
-  const notices: NoticeResult[] = [];
-  for (const poll of open) {
-    const outcome = await stopAttendancePoll(groupId, poll);
-    if (outcome === "close_uncertain") worst = "uncertain";
-    else if ((outcome === "close_failed" || outcome === "missing_message_id") && worst !== "uncertain") worst = "failed";
-    if (!isVerifiedClose(outcome)) continue;
-    closed++;
-    if (notify && (await teamsPostedToPoll(groupId, poll.pollId))) {
-      notices.push(await sendPollClosedNotice({ groupId, matchId, poll, displayDate: resolvePollDisplayDate(poll), userId: notify.userId }));
-    }
-  }
-  return { status: worst, closed, open: open.length - closed, ...(notify ? { notices } : {}) };
+export async function closeMatchAttendancePolls(groupId: string, matchId: string, notify?: { userId: string | null }, now?: Date): Promise<PollCloseResult> {
+  const r = await closeMatchAttendance({ groupId, matchId, userId: notify?.userId ?? null, notify: Boolean(notify), now });
+  if (!r) return { status: "no_poll", closed: 0, open: 0 };
+  const closed = r.polls.filter((p) => p.close === "closed_now" || p.close === "already_closed_on_telegram").length;
+  const open = r.polls.filter((p) => p.close === "close_failed" || p.close === "close_uncertain" || p.close === "missing_message_id").length;
+  const notices = r.polls.map((p) => p.notice).filter((n): n is NoticeResult => n !== "not_requested" && n !== "not_closed");
+  return { status: r.status, closed, open, ...(notify ? { notices } : {}) };
 }
 
 export const POLL_CLOSE_MESSAGE: Record<PollCloseStatus, string | null> = {

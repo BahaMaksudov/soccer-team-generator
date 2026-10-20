@@ -21,13 +21,20 @@ import * as pollRoute from "@/app/api/admin/o/[organizationSlug]/g/[groupSlug]/m
 import * as pollCloseRoute from "@/app/api/admin/o/[organizationSlug]/g/[groupSlug]/matches/[matchId]/poll/close/route";
 import { runMatchAutomation } from "@/lib/matchAutomation";
 import { setOwnAttendance } from "@/lib/matches";
-import { answerThroughMatchLink } from "@/lib/matchLink";
-import { matchPlayerRef, matchShareToken } from "@/lib/matchShare";
+import { answerPersonal } from "@/lib/personalAttendance";
+import { generateToken, hashToken } from "@/lib/secureToken";
 import { applyTelegramAttendanceAnswer } from "@/lib/telegramAttendance";
 import { addDaysYmd, weekdayOfYmd, zonedToUtc } from "@/lib/scheduleTime";
 import { testOutbox } from "@/lib/email/transport";
 
 const TZ = "America/New_York";
+/** M12B — a personal attendance link for one player of a match (the player-answer path that replaced name-pick). */
+async function personalLink(matchId: string, playerId: string): Promise<string> {
+  const token = generateToken();
+  const m = await prisma.match.findUniqueOrThrow({ where: { id: matchId }, select: { groupId: true, group: { select: { organizationId: true } } } });
+  await prisma.personalAttendanceLink.create({ data: { organizationId: m.group.organizationId, groupId: m.groupId, matchId, playerId, tokenHash: hashToken(token) } });
+  return token;
+}
 const VERIFIED = new Date("2026-01-01T00:00:00Z");
 const H = 3600_000;
 let tgCalls: string[] = [];
@@ -70,7 +77,7 @@ const AFTER_POLL = new Date(POLL_AT.getTime() + 5 * 60_000);
 const AFTER_CUTOFF = new Date(CUTOFF.getTime() + 5 * 60_000);
 
 async function seed() {
-  await prisma.$executeRawUnsafe(`TRUNCATE "Organization","User","AppSetting" RESTART IDENTITY CASCADE`);
+  await prisma.$executeRawUnsafe(`TRUNCATE "PersonalAttendanceLink","Organization","User","AppSetting" RESTART IDENTITY CASCADE`);
   await prisma.user.createMany({ data: ["owner", "member", "other", "player"].map((n) => ({ id: `u-${n}`, email: `${n}@example.test`, name: n, passwordHash: null, emailVerifiedAt: VERIFIED })) });
   await prisma.organization.create({ data: { id: "o", name: "Org", slug: "o", plan: "LEGACY" } });
   await prisma.organization.create({ data: { id: "o2", name: "Other", slug: "o2", plan: "LEGACY" } });
@@ -170,9 +177,8 @@ describe("Phase 4B — one rule on every path (deadline passed, cron not run yet
     await manual("mx", { attendanceDeadlineAt: new Date(Date.now() - 60_000) });
     const match = await m("mx");
     expect(match.attendanceClosedAt).toBeNull(); // nothing finalized it
-    const token = matchShareToken("mx", match.shareVersion)!;
-    const ref = matchPlayerRef("mx", match.shareVersion, "p1")!;
-    expect(await answerThroughMatchLink(token, "mx", ref, "PLAYING")).toEqual({ ok: false, reason: "closed" });
+    void match;
+    expect(await answerPersonal(await personalLink("mx", "p1"), "PLAYING")).toEqual({ ok: false, reason: "closed" });
     expect(await setOwnAttendance("u-player", "mx", "PLAYING")).toBe("closed");
     expect(await prisma.$transaction((tx) => applyTelegramAttendanceAnswer(tx, { matchId: "mx", groupId: "g", telegramUserId: 111n, optionIds: [0], at: new Date() }))).toBe("closed");
     expect(await call(overrideRoute.POST(json("POST", { playerId: "p1", status: "PLAYING" }), gm("mx")))).toMatchObject({ status: 409, body: { code: "ATTENDANCE_CLOSED" } });
@@ -185,7 +191,8 @@ describe("Phase 4B — one rule on every path (deadline passed, cron not run yet
   it("before the deadline every path accepts; a match closed by hand refuses even with a future deadline", async () => {
     await manual("my", { attendanceDeadlineAt: new Date(Date.now() + H) });
     const match = await m("my");
-    expect(await answerThroughMatchLink(matchShareToken("my", match.shareVersion)!, "my", matchPlayerRef("my", match.shareVersion, "p1")!, "MAYBE")).toMatchObject({ ok: true });
+    void match;
+    expect(await answerPersonal(await personalLink("my", "p1"), "MAYBE")).toMatchObject({ ok: true });
     expect(await setOwnAttendance("u-player", "my", "PLAYING")).toBe("ok");
     expect((await call(overrideRoute.POST(json("POST", { playerId: "p1", status: "NOT_PLAYING" }), gm("my")))).status).toBe(200);
     await close("my", { closed: true });
@@ -321,7 +328,8 @@ describe("Phase 4B — recurring matches: one deadline, synchronized, reopening 
     expect((await view("r-old")).match.attendanceClosed).toBe(false);
     expect(await setOwnAttendance("u-player", "r-old", "PLAYING")).toBe("ok");
     const match = await m("r-old");
-    expect(await answerThroughMatchLink(matchShareToken("r-old", match.shareVersion)!, "r-old", matchPlayerRef("r-old", match.shareVersion, "p1")!, "MAYBE")).toMatchObject({ ok: true });
+    void match;
+    expect(await answerPersonal(await personalLink("r-old", "p1"), "MAYBE")).toMatchObject({ ok: true });
     expect(await runMatchAutomation(new Date())).toMatchObject({ cutoffs: 0, deadlinesClosed: 0 });
     expect((await m("r-old")).attendanceClosedAt).toBeNull();
   });

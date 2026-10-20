@@ -1,39 +1,34 @@
-import type { AttendanceStatus } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { buildPlayerMatchView, type PlayerMatchView } from "@/lib/matchPage";
-import { effectiveAttendance, recordParticipantResponse, type AttendanceRow } from "@/lib/attendance";
-import { communityRosterIds } from "@/lib/communities";
-import { attendanceIsClosed, effectiveClosedAt } from "@/lib/attendanceDeadline";
-import { MATCH_LINK_NOT_CONFIGURED, matchLinkPath, matchPlayerRef, matchShareToken, resolvePlayerRef, verifyMatchShareToken } from "@/lib/matchShare";
+import { attendanceIsClosed } from "@/lib/attendanceDeadline";
+import { attendanceMode, type AttendanceMode } from "@/lib/attendanceClosure";
+import { MATCH_LINK_NOT_CONFIGURED, matchLinkPath, matchShareToken, verifyMatchShareToken } from "@/lib/matchShare";
 import { formatStartTime } from "@/lib/messaging/content";
 
 /**
  * M9.3 — the Match Link: one durable, per-Match capability for players
  * without Telegram or an account (/share/m/<matchId>#<token>).
  *
- * The token (src/lib/matchShare.ts) authorizes exactly ONE Match:
- *  - READ: the existing allow-listed player view (date/time/venue/map,
- *    PUBLISHED teams/result/POTM/recap) + the Match's eligible roster as
- *    display names ("John S.") with opaque, link-bound player references;
- *  - WRITE: a participant answer (Playing / Maybe / Not playing) for a Player
- *    of that roster, source LINK, while the Match accepts answers.
- * It never unlocks another Match, the Group's history or any organizer data,
- * and GroupShareLink stays read-only. Valid only while the Group is active and
- * LINK or PUBLIC (PRIVATE disables it). A wrong / stale (reset) / foreign
- * token, unknown Match or bad reference is the same generic "not found".
+ * The token (src/lib/matchShare.ts) authorizes exactly ONE Match — READ ONLY:
+ * the allow-listed player view (date/time/venue/map, PUBLISHED teams/result/
+ * POTM/recap) and whether attendance is open. It never unlocks another Match,
+ * the Group's history or any organizer data. Valid only while the Group is
+ * active and LINK or PUBLIC (PRIVATE disables it). A wrong / stale (reset) /
+ * foreign token or unknown Match is the same generic "not found".
  *
- * Name-pick is NOT authentication: anyone holding the link can answer for any
- * roster Player (like any shared group-chat link). Damage is bounded to this
- * Match's attendance, the organizer override always wins, and answers are
- * labeled "via match link". POTM voting is never offered through it.
+ * M12B — the link no longer carries a roster or accepts answers (anyone holding
+ * it could answer for anyone). Players answer in the Match's Telegram poll
+ * (Telegram matches) or through their own personal attendance link
+ * (website-only matches, src/lib/personalAttendance.ts). Historical LINK
+ * answers stay as they were.
  */
 
-export type LinkRosterEntry = { ref: string; name: string };
 export type LinkParticipation = {
   communityName: string | null;
-  /** open = answers accepted; otherwise why not. */
+  /** open = answers accepted (elsewhere); otherwise why not. */
   state: "open" | "closed" | "canceled";
-  roster: LinkRosterEntry[];
+  /** How players answer this Match: the Telegram poll, or personal links. */
+  mode: AttendanceMode;
 };
 export type MatchLinkView = PlayerMatchView & { link: LinkParticipation };
 
@@ -89,16 +84,6 @@ export function linkState(m: Pick<LinkedMatch, "status" | "attendanceClosedAt" |
   return "open";
 }
 
-/** The Match's eligible roster: active Community members, or the Group's active Players for a Community-less Match. */
-async function rosterPlayers(m: LinkedMatch) {
-  const ids = m.communityId ? await communityRosterIds(m.groupId, m.communityId) : null;
-  return prisma.player.findMany({
-    where: { groupId: m.groupId, isActive: true, ...(ids ? { id: { in: ids } } : {}) },
-    orderBy: [{ firstName: "asc" }, { lastName: "asc" }, { id: "asc" }],
-    select: { id: true, firstName: true, lastName: true },
-  });
-}
-
 /** "John S." — the shortest last-name prefix that keeps names apart, then a number as a last resort. */
 export function displayNames(players: Array<{ id: string; firstName: string; lastName: string }>): Map<string, string> {
   const out = new Map<string, string>();
@@ -123,48 +108,14 @@ export function displayNames(players: Array<{ id: string; firstName: string; las
   return out;
 }
 
-/** The player view for a valid Match Link (no Player ids; roster as display names + opaque refs). */
+/** The read-only player view for a valid Match Link (no Player ids, no roster, no answering). */
 export async function matchLinkView(token: unknown, matchId: unknown): Promise<MatchLinkView | null> {
   const m = await resolveLinkedMatch(token, matchId);
   if (!m) return null;
   const view = await buildPlayerMatchView(m.group, m.id);
   if (!view) return null;
-  const state = linkState(m);
-  const players = state === "open" ? await rosterPlayers(m) : [];
-  const names = displayNames(players);
-  const roster = players.map((p) => ({ ref: matchPlayerRef(m.id, m.shareVersion, p.id)!, name: names.get(p.id)! }));
-  return { ...view, link: { communityName: m.communityName, state, roster } };
-}
-
-/** The remembered Player's current answer on this link (effective status; organizer override wins). */
-export async function matchLinkResponse(token: unknown, matchId: unknown, ref: unknown): Promise<{ name: string; status: AttendanceStatus | null; setByOrganizer: boolean } | null> {
-  const m = await resolveLinkedMatch(token, matchId);
-  if (!m) return null;
-  const players = await rosterPlayers(m);
-  const playerId = resolvePlayerRef(m.id, m.shareVersion, ref, players.map((p) => p.id));
-  if (!playerId) return null;
-  const row = (await prisma.attendanceResponse.findUnique({
-    where: { matchId_playerId: { matchId: m.id, playerId } },
-    select: { playerId: true, participantStatus: true, participantSource: true, participantRespondedAt: true, overrideStatus: true, overrideAt: true },
-  })) as AttendanceRow | null;
-  const eff = effectiveAttendance(row, effectiveClosedAt(m));
-  return { name: displayNames(players).get(playerId)!, status: eff.status, setByOrganizer: eff.overridden };
-}
-
-export type LinkAnswerResult = { ok: true; name: string; status: AttendanceStatus; setByOrganizer: boolean } | { ok: false; reason: "not_found" | "closed" | "canceled" };
-
-/** Record an answer through the Match Link (source LINK). Never creates a Player; organizer override keeps precedence. */
-export async function answerThroughMatchLink(token: unknown, matchId: unknown, ref: unknown, status: AttendanceStatus, now = new Date()): Promise<LinkAnswerResult> {
-  const m = await resolveLinkedMatch(token, matchId);
-  if (!m) return { ok: false, reason: "not_found" };
-  const players = await rosterPlayers(m);
-  const playerId = resolvePlayerRef(m.id, m.shareVersion, ref, players.map((p) => p.id));
-  if (!playerId) return { ok: false, reason: "not_found" };
-  const state = linkState(m, now);
-  if (state !== "open") return { ok: false, reason: state };
-  await prisma.$transaction((tx) => recordParticipantResponse(tx, { matchId: m.id, groupId: m.groupId, playerId, status, source: "LINK", at: now }));
-  const row = await prisma.attendanceResponse.findUniqueOrThrow({ where: { matchId_playerId: { matchId: m.id, playerId } }, select: { overrideStatus: true } });
-  return { ok: true, name: displayNames(players).get(playerId)!, status, setByOrganizer: row.overrideStatus !== null };
+  const mode = (await attendanceMode(m.groupId, m.id)) ?? "web";
+  return { ...view, link: { communityName: m.communityName, state: linkState(m), mode } };
 }
 
 /** Organizer: the CURRENT link of a Match of the caller's Group (null when match links are not configured). */

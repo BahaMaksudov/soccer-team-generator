@@ -133,7 +133,10 @@ enum AttendanceSource {
   WEB
   TELEGRAM
   // M9.3 — an anonymous answer through the Match Link (name-pick; not authenticated).
+  // M12B: no longer written (shared links are view-only); kept for history.
   LINK
+  // M12B — the player's own personal attendance link (website-only matches).
+  PERSONAL_LINK
 }
 
 // M9-A — what a Telegram poll is for. Legacy polls read as ATTENDANCE; MVP
@@ -419,6 +422,35 @@ enum LoginAttemptOutcome {
   BLOCKED
 }
 
+// M12B — a personal attendance link: authorizes exactly ONE Player to answer for
+// exactly ONE Match (website-only matches; never for a Telegram-poll match).
+// Only the SHA-256 hash of the token is stored; the raw token travels in the URL
+// fragment (/attend#<token>), so it never reaches server logs or Referer headers.
+// Revoking / regenerating sets revokedAt; the link also stops working when
+// attendance closes, the match is canceled or the player leaves the roster.
+// windowStartedAt / windowCount: the per-link answer rate limit (database-backed).
+model PersonalAttendanceLink {
+  id              String    @id @default(cuid())
+  organizationId  String
+  groupId         String
+  matchId         String
+  playerId        String
+  tokenHash       String    @unique
+  createdAt       DateTime  @default(now())
+  createdByUserId String?
+  revokedAt       DateTime?
+  lastUsedAt      DateTime?
+  windowStartedAt DateTime?
+  windowCount     Int       @default(0)
+
+  group  Group  @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  match  Match  @relation(fields: [matchId], references: [id], onDelete: Cascade)
+  player Player @relation(fields: [playerId], references: [id], onDelete: Cascade)
+
+  @@index([matchId, playerId])
+  @@index([groupId])
+}
+
 // M11.3 — password reset: only the SHA-256 hash of the emailed token is stored.
 // Valid for 60 minutes, usable once; issuing a new one deletes the User's
 // older unused tokens. Consumed only by an explicit POST (never by GET).
@@ -536,33 +568,34 @@ model Group {
 
   organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
 
-  players               Player[]
-  teamGenerations       TeamGeneration[]
-  settings              GroupSetting[]
-  telegramChats         TelegramChat[]
-  telegramPolls         TelegramPoll[]
-  telegramLinks         TelegramUserLink[]
-  shareLinks            GroupShareLink[]
-  deliveries            MessageDelivery[]
-  playerClaims          PlayerClaim[]
-  telegramConnectCodes  TelegramConnectCode[]
+  players                 Player[]
+  teamGenerations         TeamGeneration[]
+  settings                GroupSetting[]
+  telegramChats           TelegramChat[]
+  telegramPolls           TelegramPoll[]
+  telegramLinks           TelegramUserLink[]
+  shareLinks              GroupShareLink[]
+  deliveries              MessageDelivery[]
+  playerClaims            PlayerClaim[]
+  telegramConnectCodes    TelegramConnectCode[]
   // M9-A
-  matches               Match[]
-  attendanceResponses   AttendanceResponse[]
-  telegramChatBindCodes TelegramChatBindCode[]
+  matches                 Match[]
+  attendanceResponses     AttendanceResponse[]
+  personalAttendanceLinks PersonalAttendanceLink[]
+  telegramChatBindCodes   TelegramChatBindCode[]
   // M9-B
-  telegramChatPlayers   TelegramChatPlayer[]
+  telegramChatPlayers     TelegramChatPlayer[]
   // M9-D
-  matchResults          MatchResult[]
-  matchMvps             MatchMvp[]
-  matchMvpVotes         MatchMvpVote[]
-  matchRecaps           MatchRecap[]
-  communities           Community[]
-  communityPlayers      CommunityPlayer[]
-  matchSchedules        MatchSchedule[]
-  matchAutomations      MatchAutomation[]
+  matchResults            MatchResult[]
+  matchMvps               MatchMvp[]
+  matchMvpVotes           MatchMvpVote[]
+  matchRecaps             MatchRecap[]
+  communities             Community[]
+  communityPlayers        CommunityPlayer[]
+  matchSchedules          MatchSchedule[]
+  matchAutomations        MatchAutomation[]
   // Phase 2
-  matchScheduleSkips    MatchScheduleSkip[]
+  matchScheduleSkips      MatchScheduleSkip[]
 
   @@unique([organizationId, slug])
 }
@@ -734,13 +767,14 @@ model Player {
   userId String?
   user   User?   @relation(fields: [userId], references: [id], onDelete: SetNull)
 
-  claims               PlayerClaim[]
-  telegramConnectCodes TelegramConnectCode[]
-  attendanceResponses  AttendanceResponse[]
-  telegramChatPlayers  TelegramChatPlayer[]
-  communityPlayers     CommunityPlayer[]
-  mvpVotesCast         MatchMvpVote[]        @relation("MvpVoter")
-  mvpVotesReceived     MatchMvpVote[]        @relation("MvpCandidate")
+  claims                  PlayerClaim[]
+  telegramConnectCodes    TelegramConnectCode[]
+  attendanceResponses     AttendanceResponse[]
+  personalAttendanceLinks PersonalAttendanceLink[]
+  telegramChatPlayers     TelegramChatPlayer[]
+  communityPlayers        CommunityPlayer[]
+  mvpVotesCast            MatchMvpVote[]           @relation("MvpVoter")
+  mvpVotesReceived        MatchMvpVote[]           @relation("MvpCandidate")
 
   @@unique([groupId, userId])
   // Composite target for TelegramChatPlayer's (playerId, groupId) FK.
@@ -1025,22 +1059,23 @@ model Match {
   createdAt            DateTime    @default(now())
   updatedAt            DateTime    @updatedAt
 
-  group         Group                @relation(fields: [groupId], references: [id], onDelete: Restrict)
-  createdBy     User?                @relation("MatchCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
-  telegramChat  TelegramChat?        @relation(fields: [telegramChatId], references: [id], onDelete: SetNull)
-  community     Community?           @relation(fields: [communityId, groupId], references: [id, groupId], onDelete: Restrict)
-  venue         Venue?               @relation(fields: [venueId], references: [id], onDelete: SetNull)
-  schedule      MatchSchedule?       @relation(fields: [scheduleId], references: [id], onDelete: SetNull)
-  automation    MatchAutomation?
-  attendance    AttendanceResponse[]
-  generation    TeamGeneration?
-  telegramPolls TelegramPoll[]
-  deliveries    MessageDelivery[]
+  group                   Group                    @relation(fields: [groupId], references: [id], onDelete: Restrict)
+  createdBy               User?                    @relation("MatchCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
+  telegramChat            TelegramChat?            @relation(fields: [telegramChatId], references: [id], onDelete: SetNull)
+  community               Community?               @relation(fields: [communityId, groupId], references: [id, groupId], onDelete: Restrict)
+  venue                   Venue?                   @relation(fields: [venueId], references: [id], onDelete: SetNull)
+  schedule                MatchSchedule?           @relation(fields: [scheduleId], references: [id], onDelete: SetNull)
+  automation              MatchAutomation?
+  attendance              AttendanceResponse[]
+  personalAttendanceLinks PersonalAttendanceLink[]
+  generation              TeamGeneration?
+  telegramPolls           TelegramPoll[]
+  deliveries              MessageDelivery[]
   // M9-D — post-game (each Match-keyed, at most one; never Telegram-owned).
-  result        MatchResult?
-  mvp           MatchMvp?
-  mvpVotes      MatchMvpVote[]
-  recap         MatchRecap?
+  result                  MatchResult?
+  mvp                     MatchMvp?
+  mvpVotes                MatchMvpVote[]
+  recap                   MatchRecap?
 
   @@unique([scheduleId, date])
   @@index([groupId])

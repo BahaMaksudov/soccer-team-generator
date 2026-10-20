@@ -372,6 +372,7 @@ describe("Phase 2D.7 — PostgreSQL enforces groupId NOT NULL on every tenant-ow
       GroupShareLink_groupId_fkey: "c/c",
       // M6-B: delivery history is tenant data — protected like the M4 tables.
       MessageDelivery_groupId_fkey: "r/c",
+      PersonalAttendanceLink_groupId_fkey: "c/c", // M12B — a link is meaningless without its Group
       // M6-C: claim links / connect codes are access artifacts that go with their Group.
       PlayerClaim_groupId_fkey: "c/c",
       TelegramConnectCode_groupId_fkey: "c/c",

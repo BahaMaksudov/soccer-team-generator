@@ -26,8 +26,8 @@ import {
 } from "@/lib/messaging/deliveryState";
 import { hashToken, isWellFormedToken } from "@/lib/secureToken";
 import { mapsUrl } from "@/lib/venues";
-import { isVerifiedClose, sendPollClosedNotice, stopAttendancePoll, type NoticeResult, type StopOutcome } from "@/lib/pollClosure";
-import { syncMatchAttendanceAnswers } from "@/lib/telegramAttendance";
+import { stopAttendancePoll, type NoticeResult, type StopOutcome } from "@/lib/pollClosure";
+import { closeMatchAttendance, closePollOnce } from "@/lib/attendanceClosure";
 
 /**
  * Canonical Close Poll + Post Teams (Phase 2D.6D.5D), on durable
@@ -153,27 +153,24 @@ async function loadDeliveriesInTx(tx: Prisma.TransactionClient, activeGroupId: s
 }
 
 /**
- * Telegram-poll concern: final answer sync (attendance still open), then close the poll
- * (verified only); after a verified close, the one-time "✅ Poll is closed for M/D/YY"
- * notice — BEFORE the teams message (the original order). Never blocks posting.
+ * Telegram-poll concern (M12B — the unified closure, src/lib/attendanceClosure.ts):
+ * a Match poll closes the Match's attendance and every attendance poll of it; a
+ * poll that belongs to no Match is closed on its own. Either way the one-time
+ * "✅ Poll is closed" notice goes out once per poll after a verified close —
+ * also when the poll was closed earlier and never announced — BEFORE the teams
+ * message (the original order), and never twice. Never blocks posting.
  */
 async function closePollAndNotify(
   poll: PollRow,
   activeGroupId: string,
-  displayDate: string,
   userId: string
 ): Promise<{ closeStatus: CloseStatus; noticeStatus: NoticeResult | null }> {
-  if (!poll.isClosed && poll.matchId) {
-    const match = await prisma.match.findFirst({ where: { id: poll.matchId, groupId: activeGroupId }, select: { attendanceClosedAt: true } });
-    if (match && !match.attendanceClosedAt) await syncMatchAttendanceAnswers(activeGroupId, poll.matchId).catch(() => {});
-  }
-  const closeStatus = await stopAttendancePoll(activeGroupId, poll);
-  // A notice only after THIS action verifiably closed the poll — never for a poll already closed
-  // locally (deadline / an earlier action), never after an unclear or refused close, never twice.
-  const noticeStatus = isVerifiedClose(closeStatus)
-    ? await sendPollClosedNotice({ groupId: activeGroupId, matchId: poll.matchId ?? null, poll, displayDate, userId }).catch(() => "uncertain" as const)
-    : null;
-  return { closeStatus, noticeStatus };
+  const one = poll.matchId
+    ? (await closeMatchAttendance({ groupId: activeGroupId, matchId: poll.matchId, userId, notify: true }))?.polls.find((p) => p.pollId === poll.pollId)
+    : await closePollOnce(activeGroupId, { ...poll, matchId: null }, { userId });
+  if (!one) return { closeStatus: await stopAttendancePoll(activeGroupId, poll), noticeStatus: null };
+  const noticeStatus = one.notice === "not_requested" || one.notice === "not_closed" ? null : one.notice;
+  return { closeStatus: one.close, noticeStatus };
 }
 
 type Validated = {
@@ -423,7 +420,7 @@ export async function closePollAndPostTeamsForContext(context: TenantContext, re
   if (decision.kind === "reject") return stateResponse(decision.state, null, teamGenerationId);
 
   // --- 1. Telegram poll concern ---
-  const { closeStatus, noticeStatus } = await closePollAndNotify(poll, activeGroupId, displayDate, context.user.id);
+  const { closeStatus, noticeStatus } = await closePollAndNotify(poll, activeGroupId, context.user.id);
   if (decision.kind === "already_posted") return stateResponse(decision.state, closeStatus, teamGenerationId, noticeStatus);
 
   // --- 2. TEAMS_PUBLISHED delivery (exactly one send per reservation) ---
