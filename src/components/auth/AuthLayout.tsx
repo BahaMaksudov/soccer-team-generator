@@ -63,6 +63,14 @@ export default function AuthLayout({ headline, body, children }: { headline: str
         <main id="main" className="flex flex-1 items-start justify-center px-4 py-10 sm:px-6 lg:items-center">
           <div className="w-full max-w-md">{children}</div>
         </main>
+        <footer className="flex flex-wrap justify-center gap-x-5 gap-y-1 px-4 pb-6 text-xs text-muted-foreground">
+          <Link href="/privacy" className={cn("inline-flex min-h-11 items-center hover:text-foreground hover:underline", linkFocus)}>
+            Privacy Policy
+          </Link>
+          <Link href="/terms" className={cn("inline-flex min-h-11 items-center hover:text-foreground hover:underline", linkFocus)}>
+            Terms of Service
+          </Link>
+        </footer>
       </div>
     </div>
   );

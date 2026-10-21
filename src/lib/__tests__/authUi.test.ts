@@ -115,9 +115,12 @@ describe("Sign In screen", () => {
     expect(html).toMatch(/autoComplete="current-password"|autocomplete="current-password"/i);
   });
 
-  it("no fake controls: no Keep me signed in, no Terms/Privacy, no role picker", () => {
+  it("no fake controls: no Keep me signed in, no role picker; Terms/Privacy only as REAL links (the public legal pages)", () => {
     const t = text(renderLogin()).toLowerCase();
-    for (const s of ["keep me signed in", "terms", "privacy", "role", "owner", "organizer account"]) expect(t, s).not.toContain(s);
+    for (const s of ["keep me signed in", "role", "owner", "organizer account"]) expect(t, s).not.toContain(s);
+    const l = links(renderLogin());
+    expect(l.find((x) => x.text === "Privacy Policy")?.href).toBe("/privacy");
+    expect(l.find((x) => x.text === "Terms of Service")?.href).toBe("/terms");
   });
 
   it("M11.3 — 'Forgot password?' links to the real reset flow (page + API exist)", () => {
@@ -165,10 +168,12 @@ describe("Create Account screen", () => {
     expect(links(html).find((x) => x.text === "Sign in")?.href).toBe("/login");
   });
 
-  it("no role picker, no Terms/Privacy dead links", async () => {
+  it("no role picker; Terms/Privacy are real links (sign-up note + footer), never dead ones", async () => {
     const html = await renderSignup();
     const t = text(html).toLowerCase();
-    for (const s of ["role", "owner", "admin", "member", "terms", "privacy"]) expect(t, s).not.toContain(s);
+    for (const s of ["role", "owner", "admin", "member"]) expect(t, s).not.toContain(s);
+    expect(links(html).filter((l) => l.href === "/terms").length).toBeGreaterThanOrEqual(2);
+    expect(links(html).filter((l) => l.href === "/privacy").length).toBeGreaterThanOrEqual(2);
     expect(html).not.toMatch(/<select|type="radio"/);
     expect(links(html).every((l) => l.href.startsWith("/") || l.href.startsWith("#"))).toBe(true);
     expect(links(html).some((l) => l.href === "#" || l.href === "")).toBe(false);

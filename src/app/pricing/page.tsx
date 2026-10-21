@@ -42,6 +42,15 @@ export default function PricingPage() {
         </header>
         <PlanComparison />
         <p className="text-center text-xs text-muted-foreground">Prices in USD, per organization. Pro renews automatically until canceled and can be canceled any time; it stays active until the end of the paid period. Reaching a Free limit never removes data.</p>
+        <p className="text-center text-xs text-muted-foreground">
+          <Link href="/terms" className="underline-offset-2 hover:underline">
+            Terms of Service
+          </Link>
+          {" · "}
+          <Link href="/privacy" className="underline-offset-2 hover:underline">
+            Privacy Policy
+          </Link>
+        </p>
       </main>
     </div>
   );

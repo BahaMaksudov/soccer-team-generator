@@ -460,6 +460,12 @@ function Footer() {
           <Link href="/login" className={cn("opacity-85 hover:opacity-100", linkFocus)}>
             Sign In
           </Link>
+          <Link href="/privacy" className={cn("opacity-85 hover:opacity-100", linkFocus)}>
+            Privacy Policy
+          </Link>
+          <Link href="/terms" className={cn("opacity-85 hover:opacity-100", linkFocus)}>
+            Terms of Service
+          </Link>
         </nav>
         <div className="space-y-1 text-sm">
           {/* M12-A — support contact only when SUPPORT_EMAIL is configured (never invented). */}

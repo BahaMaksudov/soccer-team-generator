@@ -40,6 +40,14 @@ export function MatchPageShell({ children, footer }: { children: React.ReactNode
       </main>
       <footer className="space-y-1 px-4 pb-8 text-center text-xs text-muted-foreground">
         <p>Team Balance Pro · balanced teams for pickup sports</p>
+        <p className="space-x-4">
+          <a href="/privacy" className={cn("inline-flex min-h-11 items-center hover:text-foreground hover:underline", focusRing)}>
+            Privacy Policy
+          </a>
+          <a href="/terms" className={cn("inline-flex min-h-11 items-center hover:text-foreground hover:underline", focusRing)}>
+            Terms of Service
+          </a>
+        </p>
         {footer}
       </footer>
     </div>

@@ -72,9 +72,11 @@ describe("/ renders the marketing homepage", () => {
     expect(hrefsFor(html, "How It Works")).toContain("#how");
     expect(hrefsFor(html, "Features")).toContain("#features");
     expect(hrefsFor(html, "Sports")).toContain("#sports");
-    // Every link stays on the marketing page or goes to an existing public auth route.
+    // Every link stays on the marketing page or goes to an existing public route (auth, legal pages).
     const all = [...html.matchAll(/href="([^"]+)"/g)].map((m) => m[1]);
-    expect(all.every((h) => ["/", "/login", "/signup"].includes(h) || h.startsWith("#"))).toBe(true);
+    expect(all.every((h) => ["/", "/login", "/signup", "/privacy", "/terms"].includes(h) || h.startsWith("#"))).toBe(true);
+    expect(hrefsFor(html, "Privacy Policy")).toEqual(["/privacy"]);
+    expect(hrefsFor(html, "Terms of Service")).toEqual(["/terms"]);
   });
 
   it("sports come from the production registry (user-facing labels, never internal keys)", () => {
