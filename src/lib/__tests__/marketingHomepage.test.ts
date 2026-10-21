@@ -5,7 +5,7 @@ import { createElement, type ReactNode } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 
 /**
- * UI-1 — `/` is the Team Balance Pro marketing homepage (no longer a redirect
+ * UI-1 — `/` is the TeamBalance Pro marketing homepage (no longer a redirect
  * to the default public Group). Presentation-only: no tenant, session or
  * production data; CTAs go to the existing /login and /signup; every other
  * route keeps the old global chrome exactly.
@@ -17,7 +17,7 @@ vi.mock("next/image", () => ({ default: (p: { alt: string; className?: string })
 const hdr = vi.hoisted(() => ({ chrome: null as string | null }));
 vi.mock("next/headers", () => ({ headers: async () => new Headers(hdr.chrome === null ? {} : { "x-tbp-chrome": hdr.chrome }) }));
 vi.mock("next/font/local", () => ({ default: (o: { variable: string }) => ({ variable: o.variable }) }));
-const settings = vi.hoisted(() => ({ getTeamName: vi.fn(async () => "Team Balance Pro") }));
+const settings = vi.hoisted(() => ({ getTeamName: vi.fn(async () => "TeamBalance Pro") }));
 vi.mock("@/lib/settings", () => settings);
 vi.mock("next/link", () => ({
   default: ({ href, children, ...rest }: { href: string; children: ReactNode }) => createElement("a", { href, ...rest }, children),
@@ -48,7 +48,7 @@ describe("/ renders the marketing homepage", () => {
     expect(nav.redirect).not.toHaveBeenCalled();
     expect(html).toContain("Better teams.");
     expect(read("src/app/page.tsx")).not.toMatch(/redirect\(|getDefaultPublicGroupSlugs|defaultPublicGroup|DEFAULT_PUBLIC/);
-    expect(metadata.title).toBe("Team Balance Pro — Fair teams for pickup sports");
+    expect(metadata.title).toBe("TeamBalance Pro — Fair teams for pickup sports");
   });
 
   it("approved hero copy, exactly one H1, sections with anchors", () => {
@@ -148,7 +148,7 @@ describe("chrome isolation: decided on the server; every other route keeps the o
     expect(html).toContain('<main class="max-w-6xl mx-auto px-4 py-6"><p>PAGE</p></main>');
     expect(html).toContain('<div class="fixed inset-0 -z-10 bg-white/70"></div>');
     expect(html).toContain("<header");
-    expect(html).toMatch(/<footer class="border-t bg-white\/80 mt-12 print:hidden">[\s\S]*Team Balance Pro/);
+    expect(html).toMatch(/<footer class="border-t bg-white\/80 mt-12 print:hidden">[\s\S]*TeamBalance Pro/);
   };
 
   it("the marketing tag (set by middleware for / only) renders the page without the old background, header or footer", async () => {

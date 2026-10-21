@@ -19,7 +19,7 @@ import { gameDayUpdateView } from "@/lib/gameDayUpdateSettings";
  */
 type Params = Promise<{ organizationSlug: string; groupSlug: string }>;
 
-export const metadata = { title: "Group settings — Team Balance Pro" };
+export const metadata = { title: "Group settings — TeamBalance Pro" };
 
 export default async function GroupSettingsPage({ params }: { params: Params }) {
   const context = await loadCanonicalAdminContext(await params);

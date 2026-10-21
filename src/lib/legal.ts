@@ -14,7 +14,7 @@ export const LEGAL_PATHS = { privacy: "/privacy", terms: "/terms" } as const;
 /** Public product name and operating brand (owner-confirmed). No legal-entity claim. */
 export const PRODUCT_NAME = "TeamBalance Pro";
 export const OPERATING_BRAND = "AYBIA Labs";
-/** Privacy, legal and support contact shown on the legal pages (owner-confirmed address). */
+/** Privacy, legal and support contact shown on the legal pages (owner-confirmed, operational: forwarded via ImprovMX to the owner's inbox). */
 export const LEGAL_CONTACT_EMAIL = "support@teambalancepro.com";
 /** Governing law (owner-confirmed). No venue, arbitration or class-action clauses. */
 export const GOVERNING_LAW = "the Commonwealth of Massachusetts, United States";
@@ -30,8 +30,9 @@ export const LEGAL_EFFECTIVE_DATE: string | null = null;
 
 /** Owner decisions already applied to the text (audit trail; not rendered). */
 export const CONFIRMED_DECISIONS = [
-  "Operated under the AYBIA Labs brand; the operator is an individual (sole proprietor). No LLC or other entity is claimed.",
-  "Contact for privacy, legal and support requests: support@teambalancepro.com.",
+  "Public product name: TeamBalance Pro.",
+  "Operated under the AYBIA Labs brand — a planned business name, not a registered LLC — by an individual. No LLC or other entity is claimed.",
+  "Contact for privacy, legal and support requests: support@teambalancepro.com — confirmed operational (forwarded through ImprovMX to the owner's inbox).",
   "Accounts are for adults aged 18 or older; organizers may keep player profiles for minors when they have appropriate authority. No age or parental-consent verification exists.",
   "Retention is manual: data is kept as needed to run the service; only the listed security records and tokens expire automatically.",
   "Deletion and correction requests are handled manually by email; identity and authority may be verified; no fixed deadline.",
@@ -42,7 +43,6 @@ export const CONFIRMED_DECISIONS = [
 export type OwnerItem = { id: string; label: string };
 export const OWNER_ITEMS: readonly OwnerItem[] = [
   { id: "operator-identity", label: "How the individual operator is legally identified in these documents (name and form of public identification)." },
-  { id: "mailbox", label: "Confirm that support@teambalancepro.com receives and is monitored for email." },
   { id: "mailing-address", label: "Whether a public mailing address must be published, and which one." },
   { id: "hosting-disclosure", label: "Verify the hosting and data-processing locations (including the Vercel function region) and any cross-border wording you require." },
   { id: "effective-date", label: "Set at publication: the date these documents are published." },

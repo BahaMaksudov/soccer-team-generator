@@ -14,7 +14,7 @@ type Visibility = "PUBLIC" | "LINK" | "PRIVATE";
 const OPTIONS: Array<{ value: Visibility; label: string; help: string }> = [
   { value: "PUBLIC", label: "Public", help: "Anyone with the Group URL can view." },
   { value: "LINK", label: "Link", help: "Only people with the share link can view; no account required." },
-  { value: "PRIVATE", label: "Private", help: "Only authorized Team Balance Pro users can view." },
+  { value: "PRIVATE", label: "Private", help: "Only authorized TeamBalance Pro users can view." },
 ];
 
 export default function CanonicalVisibilitySection({ organizationSlug, groupSlug }: { organizationSlug: string; groupSlug: string }) {

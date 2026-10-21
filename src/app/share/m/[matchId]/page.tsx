@@ -6,7 +6,7 @@ import ShareMatchView from "./ShareMatchView";
  * /api/share/match. No account needed. Never indexed; no Referer.
  */
 export const metadata = {
-  title: "Team Balance Pro — Match",
+  title: "TeamBalance Pro — Match",
   robots: { index: false, follow: false },
   referrer: "no-referrer" as const,
 };

@@ -85,7 +85,7 @@ export default function ConnectTelegram({ playerId, connected }: { playerId: str
       {err && <div className="text-sm text-red-600">{err}</div>}
       {result && (
         <div className="text-sm space-y-1">
-          <div>Send this message to the Team Balance Pro bot in Telegram (expires in 15 minutes, works once):</div>
+          <div>Send this message to the TeamBalance Pro bot in Telegram (expires in 15 minutes, works once):</div>
           <code className="block break-all bg-gray-50 border rounded p-2">{result.command}</code>
           {result.deepLink && (
             <a className="underline" href={result.deepLink} target="_blank" rel="noreferrer">Open in Telegram</a>

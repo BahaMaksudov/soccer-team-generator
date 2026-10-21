@@ -16,7 +16,7 @@ import ResendVerification from "./ResendVerification";
  */
 type SearchParams = Promise<{ next?: string | string[]; sent?: string | string[] }>;
 
-export const metadata = { title: "Verify your email — Team Balance Pro" };
+export const metadata = { title: "Verify your email — TeamBalance Pro" };
 
 const HEADLINE = "One quick step before game day.";
 const BODY = "Verify your email address to start organizing your groups and matches.";

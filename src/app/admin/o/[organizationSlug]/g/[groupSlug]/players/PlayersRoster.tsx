@@ -502,7 +502,7 @@ export default function PlayersRoster({
           {detail && (
             <div className="space-y-4 text-sm">
               <section>
-                <h3 className="mb-1 font-semibold">Team Balance Pro account</h3>
+                <h3 className="mb-1 font-semibold">TeamBalance Pro account</h3>
                 <PlayerAccountCell
                   organizationSlug={organizationSlug}
                   groupSlug={groupSlug}

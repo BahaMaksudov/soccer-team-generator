@@ -441,7 +441,7 @@ describe("Telegram attendance poll", () => {
 
   it("/poll creates nothing; legacy two-option polls still import", async () => {
     await groupMessage("/poll", 900, { id: -1001, type: "supergroup", title: "Group A chat" });
-    expect(lastReply()).toBe("Create attendance polls from Team Balance Pro.");
+    expect(lastReply()).toBe("Create attendance polls from TeamBalance Pro.");
     expect([await prisma.telegramPoll.count(), await prisma.match.count(), await prisma.attendanceResponse.count()]).toEqual([0, 0, 0]);
     await prisma.telegramPoll.create({ data: { pollId: "legacy-2", chatId: -1001n, question: "Q", optionsJson: '["✅ Playing","❌ Not playing"]', groupId: "ga" } });
     await vote("legacy-2", 111, [0]);
@@ -497,7 +497,7 @@ describe("Self-service Telegram group connection", () => {
     await signInAs("owner-b@example.test");
     const b = await (await channelsRoute.POST(json("POST", {}), g(B))).json();
     await groupMessage(`/connectgroup ${b.code}`, 900, { id: -1001, type: "supergroup", title: "Group A chat" });
-    expect(lastReply()).toBe("❌ This Telegram group is already connected to another Team Balance Pro group. Disconnect it there before connecting it here.");
+    expect(lastReply()).toBe("❌ This Telegram group is already connected to another TeamBalance Pro group. Disconnect it there before connecting it here.");
     expect(lastReply()).not.toMatch(/Group A|org-a/);
     expect((await prisma.telegramChat.findFirstOrThrow({ where: { chatId: -1001n } })).groupId).toBe("ga");
     expect((await prisma.telegramChatBindCode.findFirstOrThrow({ where: { groupId: "gb" } })).usedAt).toBeNull();
@@ -993,7 +993,7 @@ describe("M9-B — disconnect / reconnect / bot removal / bind codes", () => {
     await signInAs("owner-b@example.test");
     const b = await (await channelsRoute.POST(json("POST", {}), g(B))).json();
     await groupMessage(`/connectgroup ${b.code}`, 900, { id: -1001, type: "supergroup", title: "x" });
-    expect(lastReply()).toContain("already connected to another Team Balance Pro group");
+    expect(lastReply()).toContain("already connected to another TeamBalance Pro group");
     expect(await prisma.telegramChat.findUniqueOrThrow({ where: { id: chatA } })).toMatchObject({ groupId: "ga", disconnectedAt: null, title: "Group A chat" });
 
     await signInAs("owner@example.test");
@@ -1008,7 +1008,7 @@ describe("M9-B — disconnect / reconnect / bot removal / bind codes", () => {
     await signInAs("owner@example.test");
     const a = await issueA();
     await groupMessage(`/connectgroup ${a.code}`, 900, { id: -1001, type: "supergroup", title: "Back to A?" });
-    expect(lastReply()).toContain("already connected to another Team Balance Pro group");
+    expect(lastReply()).toContain("already connected to another TeamBalance Pro group");
     expect(await prisma.telegramChat.findUniqueOrThrow({ where: { id: chatA } })).toMatchObject({ disconnectedAt: expect.any(Date) });
   });
 

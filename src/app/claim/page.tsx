@@ -7,7 +7,7 @@ import ClaimView from "./ClaimView";
  * previews it read-only and accepts it only on an explicit POST.
  */
 export const metadata = {
-  title: "Team Balance Pro — Claim your player profile",
+  title: "TeamBalance Pro — Claim your player profile",
   robots: { index: false, follow: false },
   referrer: "no-referrer" as const,
 };

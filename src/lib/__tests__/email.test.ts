@@ -45,8 +45,8 @@ describe("APP_BASE_URL / EMAIL_FROM configuration", () => {
   });
 
   it("EMAIL_FROM must be set and single-line", () => {
-    expect(getEmailFrom({ EMAIL_FROM: "Team Balance Pro <no-reply@mail.teambalancepro.com>" })).toBe(
-      "Team Balance Pro <no-reply@mail.teambalancepro.com>"
+    expect(getEmailFrom({ EMAIL_FROM: "TeamBalance Pro <no-reply@mail.teambalancepro.com>" })).toBe(
+      "TeamBalance Pro <no-reply@mail.teambalancepro.com>"
     );
     expect(() => getEmailFrom({})).toThrow(EmailConfigError);
     expect(() => getEmailFrom({ EMAIL_FROM: "a@b.com\r\nBcc: x@y.com" })).toThrow(EmailConfigError);
@@ -54,7 +54,7 @@ describe("APP_BASE_URL / EMAIL_FROM configuration", () => {
 });
 
 describe("Resend transport (fetch, no SDK)", () => {
-  const message = { from: "Team Balance Pro <no-reply@mail.teambalancepro.com>", to: "a@example.com", subject: "S", text: `T ${TOKEN}`, html: `<p>${TOKEN}</p>` };
+  const message = { from: "TeamBalance Pro <no-reply@mail.teambalancepro.com>", to: "a@example.com", subject: "S", text: `T ${TOKEN}`, html: `<p>${TOKEN}</p>` };
 
   it("POSTs to the Resend API with the bearer key and the message", async () => {
     const fetchImpl = vi.fn(async () => new Response(JSON.stringify({ id: "msg_123" }), { status: 200 }));
@@ -119,20 +119,20 @@ describe("transport selection — tests can never reach the network", () => {
 describe("email content", () => {
   const exp = new Date("2026-10-01T12:00:00Z");
 
-  it("verification: Team Balance Pro, purpose, expiry, link; escapes HTML", () => {
+  it("verification: TeamBalance Pro, purpose, expiry, link; escapes HTML", () => {
     const m = buildVerificationEmail({ to: "a@example.com", name: "<b>Ann</b>", url: `https://teambalancepro.com/verify-email/${TOKEN}`, expiresAt: exp });
-    expect(m.subject).toBe("Verify your email for Team Balance Pro");
+    expect(m.subject).toBe("Verify your email for TeamBalance Pro");
     expect(m.text).toContain(`https://teambalancepro.com/verify-email/${TOKEN}`);
     expect(m.text).toMatch(/expires on October 1, 2026/);
-    expect(m.html).toContain("Team Balance Pro");
+    expect(m.html).toContain("TeamBalance Pro");
     expect(m.html).not.toContain("<b>Ann</b>");
     expect(m.html).toContain("&lt;b&gt;Ann&lt;/b&gt;");
   });
 
   it("invitation: organization, inviter, role, expiry, link", () => {
     const m = buildInvitationEmail({ to: "b@example.com", organizationName: "New England Eagles", inviterName: "Bahrom", role: "ADMIN", url: `https://teambalancepro.com/invite/${TOKEN}`, expiresAt: exp });
-    expect(m.subject).toBe("You're invited to join New England Eagles on Team Balance Pro");
-    expect(m.text).toContain("Bahrom invited you to join New England Eagles on Team Balance Pro as ADMIN");
+    expect(m.subject).toBe("You're invited to join New England Eagles on TeamBalance Pro");
+    expect(m.text).toContain("Bahrom invited you to join New England Eagles on TeamBalance Pro as ADMIN");
     expect(m.text).toContain(`https://teambalancepro.com/invite/${TOKEN}`);
     expect(m.text).toMatch(/expires on October 1, 2026/);
   });
@@ -141,12 +141,12 @@ describe("email content", () => {
 describe("sendVerificationEmail / sendInvitationEmail", () => {
   it("build links on APP_BASE_URL with EMAIL_FROM, through the in-memory outbox", async () => {
     vi.stubEnv("APP_BASE_URL", "https://teambalancepro.com");
-    vi.stubEnv("EMAIL_FROM", "Team Balance Pro <no-reply@mail.teambalancepro.com>");
+    vi.stubEnv("EMAIL_FROM", "TeamBalance Pro <no-reply@mail.teambalancepro.com>");
     await sendVerificationEmail({ to: "a@example.com", name: null, token: TOKEN, expiresAt: new Date(), next: `/invite/${"B".repeat(43)}` });
     await sendInvitationEmail({ to: "b@example.com", organizationName: "Org", inviterName: null, role: "MEMBER", token: TOKEN, expiresAt: new Date() });
     expect(testOutbox.sent.map((m) => m.from)).toEqual([
-      "Team Balance Pro <no-reply@mail.teambalancepro.com>",
-      "Team Balance Pro <no-reply@mail.teambalancepro.com>",
+      "TeamBalance Pro <no-reply@mail.teambalancepro.com>",
+      "TeamBalance Pro <no-reply@mail.teambalancepro.com>",
     ]);
     expect(testOutbox.sent[0].text).toContain(
       `https://teambalancepro.com/verify-email/${TOKEN}?next=${encodeURIComponent(`/invite/${"B".repeat(43)}`)}`

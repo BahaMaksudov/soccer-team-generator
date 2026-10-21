@@ -7,7 +7,7 @@ import JoinGroupPage from "./JoinGroupPage";
  * no Referer.
  */
 export const metadata = {
-  title: "Team Balance Pro — Join a group",
+  title: "TeamBalance Pro — Join a group",
   robots: { index: false, follow: false },
   referrer: "no-referrer" as const,
 };

@@ -44,6 +44,10 @@ describe("legal pages — public and linked", () => {
 });
 
 describe("legal pages — no invented facts", () => {
+  it("exactly the owner items still unresolved remain open (the support mailbox is confirmed)", () => {
+    expect(OWNER_ITEMS.map((i) => i.id)).toEqual(["operator-identity", "mailing-address", "hosting-disclosure", "effective-date", "attorney-children", "attorney-liability", "billing-terms"]);
+    expect(`${privacy}${terms}`).not.toContain('id="mailbox"');
+  });
   it("every open owner decision is a known item and is shown on a page; nothing is silently dropped", () => {
     const ids = OWNER_ITEMS.map((i) => i.id);
     for (const u of used) expect(ids).toContain(u);

@@ -106,7 +106,7 @@ export default function PlayerMatchCard({ view, signInHref }: { view: PlayerMatc
 
       {signInHref && (
         <div className="text-xs text-gray-500">
-          Have a Team Balance Pro account? <a className="underline" href={signInHref}>Sign in</a> to see your matches.
+          Have a TeamBalance Pro account? <a className="underline" href={signInHref}>Sign in</a> to see your matches.
         </div>
       )}
     </div>

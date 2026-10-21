@@ -28,7 +28,7 @@ export default function PrivacyPage() {
             Effective date: <EffectiveDate />
           </p>
           <p className="mt-2">
-            Contact: <ContactEmail /> <OwnerTodo id="mailbox" />
+            Contact: <ContactEmail />
           </p>
         </>
       }

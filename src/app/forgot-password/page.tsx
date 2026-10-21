@@ -3,7 +3,7 @@ import { FormHead } from "@/components/auth/parts";
 import ForgotPasswordForm from "./ForgotPasswordForm";
 
 /** M11.3 — "Forgot password" (public). The answer never reveals whether an account exists. */
-export const metadata = { title: "Reset your password — Team Balance Pro" };
+export const metadata = { title: "Reset your password — TeamBalance Pro" };
 
 export default function ForgotPasswordPage() {
   return (

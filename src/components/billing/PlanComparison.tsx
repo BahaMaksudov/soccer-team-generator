@@ -25,7 +25,8 @@ function Cell({ v }: { v: string | boolean }) {
   return <span className="font-semibold tabular-nums">{v}</span>;
 }
 
-export default function PlanComparison({ className }: { className?: string }) {
+/** `planned`: paid billing is not active — the Pro price is shown as planned (nobody can be charged). */
+export default function PlanComparison({ className, planned = false }: { className?: string; planned?: boolean }) {
   return (
     <div className={cn("overflow-x-auto rounded-tbp-2xl border border-border bg-card shadow-card", className)}>
       <table className="w-full min-w-[17.5rem] text-sm">
@@ -42,6 +43,7 @@ export default function PlanComparison({ className }: { className?: string }) {
             <th scope="col" className="p-2 sm:p-3 text-center">
               <span className="block font-display text-base font-extrabold text-primary">Pro</span>
               <span className="text-xs font-normal text-muted-foreground">
+                {planned ? "Planned: " : ""}
                 {PRO_PRICES_USD.month}/month or {PRO_PRICES_USD.year}/year
               </span>
             </th>

@@ -4,18 +4,26 @@ import PlanComparison from "@/components/billing/PlanComparison";
 import { Button } from "@/components/ui/button";
 import { TRIAL_DAYS } from "@/lib/entitlements";
 import { cn } from "@/lib/cn";
+import { BILLING_NOT_ACTIVE_NOTE, billingConfig, PRO_PRICES_USD } from "@/lib/billing/config";
 
 /**
  * M11.2A — public pricing (indexable marketing page). The comparison is
  * generated from the enforced plan catalog. No purchase happens here: owners
  * subscribe from their organization's Billing page.
  */
-export const metadata = {
-  title: "Pricing — Team Balance Pro",
-  description: "Free forever for one group, or Pro for $9.99/month ($99/year) per organization. No card needed to start.",
-};
+export function generateMetadata() {
+  const live = billingConfig().enabled;
+  return {
+    title: "Pricing — TeamBalance Pro",
+    description: live
+      ? `Free forever for one group, or Pro for ${PRO_PRICES_USD.month}/month (${PRO_PRICES_USD.year}/year) per organization. No card needed to start.`
+      : `Free forever for one group, with a ${TRIAL_DAYS}-day Pro trial for your first organization. No card needed. Paid Pro plans are planned (${PRO_PRICES_USD.month}/month or ${PRO_PRICES_USD.year}/year per organization).`,
+  };
+}
 
 export default function PricingPage() {
+  // Read-only: whether paid billing is switched on (billing logic itself is unchanged).
+  const live = billingConfig().enabled;
   return (
     <div
       className={cn(
@@ -40,8 +48,12 @@ export default function PricingPage() {
             </Button>
           </div>
         </header>
-        <PlanComparison />
-        <p className="text-center text-xs text-muted-foreground">Prices in USD, per organization. Pro renews automatically until canceled and can be canceled any time; it stays active until the end of the paid period. Reaching a Free limit never removes data.</p>
+        <PlanComparison planned={!live} />
+        <p className="text-center text-xs text-muted-foreground">
+          {live
+            ? "Prices in USD, per organization. Pro renews automatically until canceled and can be canceled any time; it stays active until the end of the paid period. Reaching a Free limit never removes data."
+            : BILLING_NOT_ACTIVE_NOTE}
+        </p>
         <p className="text-center text-xs text-muted-foreground">
           <Link href="/terms" className="underline-offset-2 hover:underline">
             Terms of Service

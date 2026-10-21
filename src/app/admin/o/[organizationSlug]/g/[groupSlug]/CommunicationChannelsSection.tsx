@@ -93,7 +93,7 @@ export default function CommunicationChannelsSection({ organizationSlug, groupSl
 
         {bind && (
           <div className="border rounded-lg p-3 bg-gray-50 space-y-1">
-            <div>1. Add the Team Balance Pro bot to your Telegram group{bind.deepLink ? ":" : "."}</div>
+            <div>1. Add the TeamBalance Pro bot to your Telegram group{bind.deepLink ? ":" : "."}</div>
             {bind.deepLink && (
               <a className="underline" href={bind.deepLink} target="_blank" rel="noreferrer">
                 Add bot to a Telegram group

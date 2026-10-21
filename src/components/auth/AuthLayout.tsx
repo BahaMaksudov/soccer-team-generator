@@ -42,7 +42,7 @@ export default function AuthLayout({ headline, body, children }: { headline: str
             </div>
           </div>
         </div>
-        <p className="text-sm opacity-60">© {new Date().getFullYear()} Team Balance Pro</p>
+        <p className="text-sm opacity-60">© {new Date().getFullYear()} TeamBalance Pro</p>
       </aside>
 
       <div className="flex min-w-0 flex-col">

@@ -244,7 +244,7 @@ export default function SiteHeader({ teamName }: { teamName: string }) {
           />
           <div className="leading-tight">
             <div className="text-lg font-semibold">{displayTeamName}</div>
-            <div className="text-xs text-white/70">Team Balance Pro</div>
+            <div className="text-xs text-white/70">TeamBalance Pro</div>
           </div>
         </Link>
 

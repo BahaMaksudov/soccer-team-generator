@@ -105,7 +105,7 @@ describe("Sign In screen", () => {
   it("approved layout and copy; Sign In, Create an account and Back to home routes", () => {
     const html = renderLogin();
     const t = text(html);
-    for (const s of ["Welcome back to game day.", "Sign in", "Email address", "Password", "Sign In", "New to Team Balance Pro?", "Just here for your game?", "Back to home"])
+    for (const s of ["Welcome back to game day.", "Sign in", "Email address", "Password", "Sign In", "New to TeamBalance Pro?", "Just here for your game?", "Back to home"])
       expect(t).toContain(s);
     expect((html.match(/<h1/g) ?? []).length).toBe(1);
     const l = links(html);

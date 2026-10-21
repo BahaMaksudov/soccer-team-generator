@@ -67,7 +67,7 @@ export default function ClaimView({ signedIn, emailVerified, email }: { signedIn
           <p className="text-sm">
             Link <span className="font-semibold">{preview.playerName}</span> in{" "}
             <span className="font-semibold">{preview.groupName}</span> ({preview.organizationName}, {findSport(preview.sportKey)?.label ?? preview.sportKey}) to
-            your Team Balance Pro account?
+            your TeamBalance Pro account?
           </p>
           <p className="text-xs text-gray-500">
             This is optional — you can keep taking part through Telegram either way. It does not give you organizer access.

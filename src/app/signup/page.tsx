@@ -17,12 +17,12 @@ import { safeCallbackPath } from "@/lib/safeRedirect";
 type SearchParams = Promise<{ invite?: string | string[]; next?: string | string[] }>;
 
 export const metadata = {
-  title: "Create Account — Team Balance Pro",
-  description: "Create your Team Balance Pro account and set up your first sports group.",
+  title: "Create Account — TeamBalance Pro",
+  description: "Create your TeamBalance Pro account and set up your first sports group.",
 };
 
 const HEADLINE = "Organize better games from day one.";
-const BODY = "Create your Team Balance Pro account and set up your first sports group in minutes.";
+const BODY = "Create your TeamBalance Pro account and set up your first sports group in minutes.";
 
 export default async function SignupPage({ searchParams }: { searchParams: SearchParams }) {
   const sp = await searchParams;

@@ -115,7 +115,7 @@ describe("Phase 3 — My Organizations (/admin, where sign-in lands)", () => {
     expect(await redirectOf(() => AdminEntryPage())).toBeNull();
     const html = await myOrgs();
     expect(html).toContain("My Organizations");
-    expect(html).toContain("Welcome to Team Balance Pro!");
+    expect(html).toContain("Welcome to TeamBalance Pro!");
     expect(html).toContain('href="/onboarding"');
     expect(html).toContain("Create your first organization");
   });
