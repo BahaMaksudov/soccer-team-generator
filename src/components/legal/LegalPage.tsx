@@ -2,7 +2,7 @@ import Link from "next/link";
 import MarketingHeader from "@/components/marketing/MarketingHeader";
 import { linkFocus } from "@/components/marketing/parts";
 import { cn } from "@/lib/cn";
-import { LEGAL_PATHS, OWNER_ITEMS, legalIsDraft } from "@/lib/legal";
+import { formatEffectiveDate, LEGAL_CONTACT_EMAIL, LEGAL_EFFECTIVE_DATE, LEGAL_PATHS, OWNER_ITEMS, isIsoDate, legalIsDraft } from "@/lib/legal";
 
 /**
  * Layout of the public legal pages: marketing header, a readable single column,
@@ -16,6 +16,20 @@ export function OwnerTodo({ id, children }: { id: string; children?: React.React
       [Owner to confirm: {children ?? item?.label ?? id}]
     </mark>
   );
+}
+
+/** The privacy / legal / support contact (owner-confirmed address). */
+export function ContactEmail() {
+  return (
+    <a href={`mailto:${LEGAL_CONTACT_EMAIL}`} className="break-all font-semibold underline">
+      {LEGAL_CONTACT_EMAIL}
+    </a>
+  );
+}
+
+/** The configured publication date — or a visible pending marker until the approved release sets it. */
+export function EffectiveDate() {
+  return LEGAL_EFFECTIVE_DATE && isIsoDate(LEGAL_EFFECTIVE_DATE) ? <>{formatEffectiveDate(LEGAL_EFFECTIVE_DATE)}</> : <OwnerTodo id="effective-date" />;
 }
 
 export function LegalSection({ id, title, children }: { id: string; title: string; children: React.ReactNode }) {

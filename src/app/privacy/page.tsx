@@ -1,25 +1,19 @@
 import Link from "next/link";
-import LegalPage, { LegalSection, OwnerTodo } from "@/components/legal/LegalPage";
-import { LEGAL_PATHS, legalCanonical, legalIsDraft } from "@/lib/legal";
-import { supportEmail } from "@/lib/support";
+import LegalPage, { ContactEmail, EffectiveDate, LegalSection, OwnerTodo } from "@/components/legal/LegalPage";
+import { ACCOUNT_MIN_AGE, LEGAL_PATHS, OPERATING_BRAND, PRODUCT_NAME, legalCanonical, legalIsDraft } from "@/lib/legal";
 import { TRIAL_DAYS } from "@/lib/entitlements";
 
 /**
  * Public Privacy Policy. Every statement describes what the application does
- * today (verified in code and Production configuration); open business / legal
- * facts are OwnerTodo markers (src/lib/legal.ts). Noindex while a draft.
+ * today (verified in code and Production configuration); pending owner / attorney
+ * items are OwnerTodo markers (src/lib/legal.ts). Noindex while a draft.
  */
 export const metadata = {
-  title: "Privacy Policy — Team Balance Pro",
-  description: "How Team Balance Pro collects, uses and protects information about organizers and players.",
+  title: `Privacy Policy — ${PRODUCT_NAME}`,
+  description: `How ${PRODUCT_NAME} collects, uses and protects information about organizers and players.`,
   alternates: { canonical: legalCanonical(LEGAL_PATHS.privacy) },
   ...(legalIsDraft() ? { robots: { index: false, follow: true } } : {}),
 };
-
-function Contact() {
-  const email = supportEmail();
-  return email ? <a href={`mailto:${email}`} className="font-semibold underline">{email}</a> : <OwnerTodo id="contact" />;
-}
 
 export default function PrivacyPage() {
   return (
@@ -28,32 +22,46 @@ export default function PrivacyPage() {
       intro={
         <>
           <p>
-            Team Balance Pro (&quot;we&quot;, &quot;us&quot;) is a web app that helps organizers of pickup and recreational sports groups manage players, attendance and balanced teams. It is operated by <OwnerTodo id="operator">operator&apos;s legal name</OwnerTodo>. This policy explains what information the service handles, why, and the choices you have.
+            {PRODUCT_NAME} (&quot;we&quot;, &quot;us&quot;) is a web app that helps organizers of pickup and recreational sports groups manage players, attendance and balanced teams. {PRODUCT_NAME} is operated under the {OPERATING_BRAND} brand by an individual. <OwnerTodo id="operator-identity" /> This policy explains what information the service handles, why, who can see it, and the choices you have.
           </p>
           <p className="mt-2">
-            Effective date: <OwnerTodo id="effective-date">date</OwnerTodo>
+            Effective date: <EffectiveDate />
+          </p>
+          <p className="mt-2">
+            Contact: <ContactEmail /> <OwnerTodo id="mailbox" />
           </p>
         </>
       }
     >
-      <LegalSection id="who" title="1. Organizers, players and who decides">
+      <LegalSection id="who" title="1. Account holders, organizers and players">
+        <ul>
+          <li>
+            <strong>Account holders</strong> sign in to {PRODUCT_NAME}. Accounts are only for adults aged {ACCOUNT_MIN_AGE} or older (see section 13).
+          </li>
+          <li>
+            <strong>Organizers</strong> are account holders who create an organization and groups and manage their players.
+          </li>
+          <li>
+            <strong>Players</strong> take part in a group. A player may have a {PRODUCT_NAME} account linked to their player profile, or no account at all — in that case the player profile exists only because an organizer created it. Player profiles can belong to minors when the organizer has appropriate authority (section 13).
+          </li>
+        </ul>
         <p>
-          <strong>Organizers</strong> create an organization and groups, and enter information about their players. <strong>Players</strong> take part in those groups — with or without their own Team Balance Pro account. Much of the player information in the service (for example names and attendance) is entered and managed by the organizer of the group, who decides what to record. If you are a player and want information about you corrected or removed, you can ask your organizer or contact us (section 12).
+          Much of the player information in the service (for example names, ratings and attendance) is entered and managed by the group&apos;s organizer, who decides what to record and who can see the group. If you are a player and want information about you corrected or removed, you can ask your organizer or contact us (section 12).
         </p>
       </LegalSection>
 
       <LegalSection id="collect" title="2. Information we collect">
-        <p className="font-semibold">Account information (organizers and players who create an account)</p>
+        <p className="font-semibold">Account information</p>
         <ul>
           <li>Your name and email address.</li>
-          <li>If you sign up with email and password: your password, stored only as a one-way bcrypt hash. We never store or see your password itself.</li>
+          <li>If you sign up with email and password: your password, stored only as a one-way bcrypt hash. We never store your password itself.</li>
           <li>Whether and when your email address was verified.</li>
           <li>If you use Google Sign-In: see section 3.</li>
-          <li>Your organizations, groups and role (owner, admin or member), and invitations you send or accept.</li>
+          <li>Your organizations, groups and role (owner, admin or member), invitations you send or accept, and group join requests you make.</li>
         </ul>
         <p className="font-semibold">Information organizers enter about players</p>
         <ul>
-          <li>First and last name, playing position, a skill rating, a stamina value and whether the player is active, plus the communities (rosters) the player belongs to. Skill ratings and stamina are used only to balance teams and are shown to organizers only — never to players.</li>
+          <li>First and last name, playing position, a skill rating, a stamina value and whether the player is active, plus the communities (rosters) the player belongs to.</li>
           <li>Attendance for matches (playing, maybe, not playing), whether the answer came from the player or was set by the organizer, and when.</li>
           <li>Matches (date, time, venue, attendance deadline), generated and published teams, results, Player of the Match and match recaps.</li>
           <li>Venue names and addresses, and a map location for a venue when the organizer confirms one.</li>
@@ -61,7 +69,7 @@ export default function PrivacyPage() {
         <p className="font-semibold">Information from players</p>
         <ul>
           <li>Attendance answers given through a personal attendance link, the signed-in &quot;My Games&quot; page, or a Telegram poll.</li>
-          <li>Group join requests: the first and last name you enter, your account email and the date. The group&apos;s organizers see this information so they can approve or reject the request.</li>
+          <li>Group join requests: the first and last name you enter, your account email and the date.</li>
         </ul>
         <p className="font-semibold">Telegram information (only for groups that connect Telegram)</p>
         <ul>
@@ -73,32 +81,37 @@ export default function PrivacyPage() {
         <p className="font-semibold">Security and technical information</p>
         <ul>
           <li>To protect sign-in and password reset against abuse, we keep keyed one-way digests (HMAC-SHA256) of the email address and the client network address of sign-in and password-reset attempts — not the email or address itself.</li>
-          <li>Short-lived, single-use tokens for email verification, password reset, invitations and links (stored only as hashes).</li>
+          <li>Short-lived, single-use tokens for email verification, password reset, invitations and links, stored only as hashes.</li>
           <li>Our hosting provider processes standard technical request data, such as IP addresses and request logs, to operate and secure the service.</li>
         </ul>
       </LegalSection>
 
       <LegalSection id="google" title="3. Google Sign-In">
-        <p>If you choose &quot;Continue with Google&quot;, Google asks you to share your basic profile with Team Balance Pro. We request only the standard sign-in permissions: <code>openid</code>, <code>email</code> and <code>profile</code>. We do not request access to your Gmail, contacts, calendar, Drive or any other Google data.</p>
+        <p>
+          If you choose &quot;Continue with Google&quot;, Google asks you to share your basic profile with {PRODUCT_NAME}. We request only the standard sign-in permissions: <code>openid</code>, <code>email</code> and <code>profile</code>. We do not request access to your Gmail, contacts, calendar, Drive or any other Google data.
+        </p>
         <ul>
           <li>
-            <strong>What we receive:</strong> your Google account identifier, your email address and whether Google has verified it, and your name. Google may also include a profile picture link; we do not store or use it.
+            <strong>What Google provides:</strong> your Google account identifier, your email address and whether Google has verified it, your name, and possibly a profile picture link.
           </li>
           <li>
-            <strong>How we use it:</strong> only to sign you in — to create your Team Balance Pro account (with your verified email and your name) or to recognize the account it is already linked to. We store the Google account identifier, the email address at the time of linking, and when the link was created and last used. We never store Google passwords or Google access tokens for later use.
+            <strong>What we keep:</strong> your Google account identifier, the email address at the time your Google account was linked, and when the link was created and last used. A new account created with Google uses your verified Google email and your name. We do not store your profile picture, and we do not store Google access or refresh tokens.
           </li>
           <li>
-            <strong>No automatic merging:</strong> a Google account is never connected to an existing password account just because the email matches; you connect it yourself from your account settings after confirming your password. You can disconnect Google there too.
+            <strong>How we use it:</strong> only to sign you in — to create your account or to recognize the account your Google account is linked to.
           </li>
           <li>
-            <strong>Sharing:</strong> we do not sell Google user data, use it for advertising, or share it with anyone except the service providers that run the app (section 8). Our use of information received from Google follows the{" "}
+            <strong>No automatic merging:</strong> a Google account is never connected to an existing password account just because the email address matches; you connect it yourself from your account settings after confirming your password. You can disconnect Google there too.
+          </li>
+          <li>
+            <strong>Sharing:</strong> we do not sell Google user data, use it for advertising, or share it except with the service providers that run the app (section 8). Our use of information received from Google follows the{" "}
             <a href="https://developers.google.com/terms/api-services-user-data-policy" className="underline" rel="noopener noreferrer">
               Google API Services User Data Policy
             </a>
             , including its Limited Use requirements.
           </li>
           <li>
-            <strong>Deletion:</strong> see section 11.
+            <strong>Deletion:</strong> you can ask us to delete your account and the Google information we keep (section 11).
           </li>
         </ul>
       </LegalSection>
@@ -108,25 +121,46 @@ export default function PrivacyPage() {
           <li>To provide the service: accounts and sign-in, groups and rosters, attendance, balanced team generation, publishing teams, results and recaps.</li>
           <li>To send the emails described in section 7.</li>
           <li>To post to a connected Telegram group when an organizer asks (for example an attendance poll or the published teams), and to read the answers to those polls.</li>
-          <li>To keep the service secure (sign-in limits, abuse prevention) and to enforce plan limits.</li>
+          <li>To keep the service secure (sign-in limits, abuse prevention) and to apply plan limits.</li>
           <li>We do not sell personal information and do not use it for advertising.</li>
         </ul>
       </LegalSection>
 
-      <LegalSection id="visibility" title="5. What other people can see">
+      <LegalSection id="visibility" title="5. Who can see player information">
         <ul>
-          <li>Organizers (owners and admins) of a group see its players, attendance, join requests (including the requester&apos;s account email) and the information described above.</li>
           <li>
-            Each group has a visibility setting chosen by its organizer. With <em>Public</em> or <em>Link</em> visibility, published teams, results, Player of the Match and recaps — including player names — can be seen by anyone who has the group&apos;s or match&apos;s link (Public pages are also reachable without a link). These pages are marked so search engines do not index them. <em>Private</em> groups are visible only to their organizers and linked players.
+            <strong>Organizers</strong> (owners and admins) of a group see its players — including skill ratings and stamina — attendance, join requests (including the requester&apos;s account email) and match information. Organization members with the &quot;member&quot; role can view the roster without skill ratings or stamina.
           </li>
-          <li>Players who are linked to an account see their own attendance, their group&apos;s upcoming matches and published teams. Players never see skill ratings or stamina.</li>
-          <li>A personal attendance link shows only that player&apos;s own name and answer. In a Telegram group, poll votes are visible to the group as Telegram shows them.</li>
+          <li>
+            <strong>Players</strong> never see skill ratings or stamina. A player with a linked account sees their own attendance and their group&apos;s upcoming matches and published teams. A personal attendance link shows only that player&apos;s own name and answer, plus the match details.
+          </li>
+          <li>
+            <strong>Group visibility</strong> is chosen by the organizer:
+            <ul className="mt-1">
+              <li>
+                <em>Public</em> — the group&apos;s page can be opened by anyone with its address and shows the roster (first and last names, positions and whether each player is active), published teams, results, Player of the Match and published recaps.
+              </li>
+              <li>
+                <em>Link</em> — anyone the organizer gives the group&apos;s share link to can see recent published teams (names and positions); anyone with a match link can see that match&apos;s details, published teams, result, Player of the Match and recap.
+              </li>
+              <li>
+                <em>Private</em> — none of this is shown through links; only organizers and players linked to the group can see it.
+              </li>
+            </ul>
+            These pages ask search engines not to index them, but anyone who has a link can open it and pass it on. Other players&apos; attendance is not shown on these pages.
+          </li>
+          <li>
+            <strong>Telegram:</strong> in a connected Telegram group, attendance and Player of the Match polls are not anonymous — members of the Telegram group can see who voted and how — and the published teams posted there include player names.
+          </li>
+          <li>
+            <strong>AI recaps:</strong> a published recap can mention team names, scores and Player of the Match names, and is visible wherever the match&apos;s published information is visible.
+          </li>
         </ul>
       </LegalSection>
 
       <LegalSection id="ai" title="6. Match recaps written with AI">
         <p>
-          If an organizer asks for an AI-written match recap, we send OpenAI only the facts needed to write it: sport, date, venue name, team names, scores, the Player of the Match names and the number of participants — no email addresses, ratings, stamina or Telegram identities. The request asks OpenAI not to store it. The organizer reviews the text before anything is published.
+          If an organizer asks for an AI-written match recap, we send OpenAI only the facts needed to write it: sport, date, venue name, team names, scores, the Player of the Match names and the number of participants — no email addresses, ratings, stamina or Telegram identities. The request asks OpenAI not to store it. The organizer reviews and edits the text before anything is published.
         </p>
       </LegalSection>
 
@@ -134,7 +168,7 @@ export default function PrivacyPage() {
         <ul>
           <li>Account emails: email verification, password reset and organization invitations.</li>
           <li>Organizer notifications, for example when attendance for a scheduled match is ready.</li>
-          <li>If enabled, reminders about the end of an organization&apos;s {TRIAL_DAYS}-day Pro trial to its owners.</li>
+          <li>When enabled, reminders to organization owners about the end of the {TRIAL_DAYS}-day Pro trial.</li>
         </ul>
         <p>We do not send marketing emails. Emails are delivered by our email provider (section 8).</p>
       </LegalSection>
@@ -150,9 +184,9 @@ export default function PrivacyPage() {
           <li><strong>OpenAI</strong> — AI-written match recaps, when an organizer requests one (section 6).</li>
           <li><strong>WeatherAPI.com</strong> — the weather forecast for a match, using the venue&apos;s map coordinates.</li>
           <li><strong>Geoapify</strong> — finding a venue&apos;s map location from the address an organizer types.</li>
-          <li><strong>Stripe</strong> — payment processing for paid plans, once paid billing is available (it is not active today). Card details would be entered on Stripe&apos;s pages and never reach our servers.</li>
+          <li><strong>Stripe</strong> — planned payment processor for paid subscriptions. Paid billing is not active, and no payment information is collected today.</li>
         </ul>
-        <p>We may also disclose information if required by law. Links to maps open Google Maps or OpenStreetMap only when you choose to follow them.</p>
+        <p>We may disclose information when required by law. Map links open Google Maps or OpenStreetMap only when you choose to follow them.</p>
       </LegalSection>
 
       <LegalSection id="cookies" title="9. Cookies and browser storage">
@@ -166,39 +200,60 @@ export default function PrivacyPage() {
 
       <LegalSection id="security" title="10. Security">
         <p>
-          Connections use HTTPS. Passwords are stored only as bcrypt hashes; sign-in, invitation, claim and attendance links use random tokens of which only a hash is stored; access to every organization and group is checked on each request; and sign-in and password reset are rate-limited. No system is perfectly secure, but we work to protect your information.
+          Connections use HTTPS. Passwords are stored only as bcrypt hashes; sign-in, invitation, claim and attendance links use random tokens of which only a hash is stored; access to every organization and group is checked on each request; and sign-in and password reset are rate-limited. No system is perfectly secure, and we cannot guarantee absolute security.
         </p>
       </LegalSection>
 
       <LegalSection id="retention" title="11. Retention and deletion">
+        <p className="font-semibold">Retention</p>
         <ul>
-          <li>Security digests of sign-in attempts are deleted after 1 day (successful sign-ins after 30 days); password-reset request records after 1 day.</li>
+          <li>We keep information for as long as it is needed to operate the service.</li>
+          <li>Some records expire automatically: security digests of sign-in attempts after 1 day (successful sign-ins after 30 days) and password-reset request records after 1 day.</li>
           <li>Single-use tokens expire: email verification after 24 hours, password reset after 1 hour, organization invitations and player claim links after 7 days, group invite links after the period the organizer chose (30 days by default), and personal attendance links when attendance for the match closes.</li>
-          <li>Organizers can edit or delete players they manage. Players can disconnect Telegram from their profile.</li>
+          <li>Other account, organization, roster, match and attendance information is not deleted automatically; it remains until it is deleted by an organizer or by us on request.</li>
+          <li>We may keep certain information where it is reasonably needed for security, legal or operational purposes, such as resolving disputes or preventing abuse.</li>
+        </ul>
+        <p className="font-semibold">Deletion and correction</p>
+        <ul>
+          <li>Organizers can edit or delete the player profiles they manage. Players can disconnect Telegram from their linked profile.</li>
           <li>
-            Other account, organization and group information is kept while the account or organization exists. <OwnerTodo id="retention" />
+            There is no self-service account deletion. To ask for your account or information to be deleted or corrected — including information we received through Google Sign-In — email <ContactEmail />. Requests are handled manually.
           </li>
-          <li>
-            To ask us to delete your account or data (including data received through Google Sign-In), contact us (section 12). <OwnerTodo id="deletion" />
-          </li>
+          <li>We may need to verify your identity, and your authority to act for someone else, before acting on a request.</li>
+          <li>Player information in a group is managed by that group&apos;s organizer; a request about it may require coordination with the organizer, and organizers and players may have different rights over it.</li>
+          <li>Some information may be retained where required by law or otherwise justified (see above). Deleted information may remain in backups or logs for a period before it is overwritten.</li>
         </ul>
       </LegalSection>
 
       <LegalSection id="rights" title="12. Your choices and how to contact us">
         <p>
-          From your account settings you can change your password and connect or disconnect Google. Changing your name or email address is not self-service today. To access, correct, export or delete your information, or for any privacy question, contact us at <Contact />. If information about you was entered by an organizer, you can also ask that organizer. Depending on where you live, you may have additional rights under local law.
+          From your account settings you can change your password and connect or disconnect Google. Changing your name or email address is not self-service today. To access, correct, export or delete your information, or for any privacy question, email <ContactEmail />. If information about you was entered by an organizer, you can also ask that organizer. Depending on where you live, you may have additional rights under applicable law. <OwnerTodo id="mailing-address" />
         </p>
       </LegalSection>
 
-      <LegalSection id="children" title="13. Children">
+      <LegalSection id="children" title="13. Adults-only accounts and youth player profiles">
+        <ul>
+          <li>
+            {PRODUCT_NAME} accounts are only for adults aged {ACCOUNT_MIN_AGE} or older. The service does not verify ages.
+          </li>
+          <li>
+            Organizers may create and manage player profiles for minors — for example on youth teams — only when they have appropriate authority, such as permission from a parent or guardian. Minors should not create accounts or use the service directly; the service does not verify parental consent.
+          </li>
+          <li>
+            Information about youth players is handled like any other player information: organizers see it, and the group&apos;s visibility setting, shared links and a connected Telegram group decide who else can see names, teams, results and Player of the Match (section 5). Organizers of youth groups should consider using <em>Private</em> visibility.
+          </li>
+          <li>
+            If you believe a minor created an account, or that information about a minor was entered without appropriate authority, contact us at <ContactEmail /> and we will review it.
+          </li>
+        </ul>
         <p>
-          <OwnerTodo id="age" />
+          <OwnerTodo id="attorney-children" />
         </p>
       </LegalSection>
 
       <LegalSection id="transfers" title="14. Where information is processed">
         <p>
-          Our database is hosted in the United States (Amazon Web Services, US East). The website is served by Vercel, and our other providers (section 8) may process information in the United States or other countries. <OwnerTodo id="operator">Confirm the Vercel function region and any cross-border transfer wording you require</OwnerTodo>
+          Our database is hosted in the United States (Amazon Web Services, US East). The website is served by Vercel, and our other providers (section 8) may process information in the United States or other countries. <OwnerTodo id="hosting-disclosure" />
         </p>
       </LegalSection>
 
