@@ -44,21 +44,28 @@ describe("legal pages — public and linked", () => {
 });
 
 describe("legal pages — no invented facts", () => {
-  it("exactly the owner items still unresolved remain open (the support mailbox is confirmed)", () => {
-    expect(OWNER_ITEMS.map((i) => i.id)).toEqual(["operator-identity", "mailing-address", "hosting-disclosure", "effective-date", "attorney-children", "attorney-liability", "billing-terms"]);
-    expect(`${privacy}${terms}`).not.toContain('id="mailbox"');
+  it("open items, by category (mailbox confirmed; hosting locations verified)", () => {
+    const by = (c: string) => OWNER_ITEMS.filter((i) => i.category === c).map((i) => i.id);
+    expect(by("publication")).toEqual(["operator-identity", "mailing-address", "effective-date"]);
+    expect(by("legal-review")).toEqual(["attorney-children", "attorney-liability", "international-transfers"]);
+    expect(by("billing-launch")).toEqual(["billing-terms"]);
+    expect(`${privacy}${terms}`).not.toMatch(/id="(mailbox|hosting-disclosure)"/);
   });
-  it("every open owner decision is a known item and is shown on a page; nothing is silently dropped", () => {
-    const ids = OWNER_ITEMS.map((i) => i.id);
-    for (const u of used) expect(ids).toContain(u);
-    for (const id of ids) expect(used, id).toContain(id);
+  it("every publication / legal-review item is shown on a page; billing-launch items are not rendered as markers", () => {
+    const shown = OWNER_ITEMS.filter((i) => i.category !== "billing-launch").map((i) => i.id);
+    for (const u of used) expect(shown).toContain(u);
+    for (const id of shown) expect(used, id).toContain(id);
+    expect(used).not.toContain("billing-terms");
   });
   it("while any item is open OR the publication date is unset: draft banner + noindex (never presented as a final policy)", () => {
     expect(legalIsDraft()).toBe(true);
     expect(LEGAL_EFFECTIVE_DATE).toBeNull(); // set only during the approved release — never the commit / build date
     expect(legalIsDraft([], null)).toBe(true);
     expect(legalIsDraft([], "2026-13-40")).toBe(true);
-    expect(legalIsDraft([{ id: "x", label: "x" }], "2026-12-01")).toBe(true);
+    expect(legalIsDraft([{ id: "x", label: "x", category: "publication" }], "2026-12-01")).toBe(true);
+    expect(legalIsDraft([{ id: "x", label: "x", category: "legal-review" }], "2026-12-01")).toBe(true);
+    // Billing-launch items don't block publishing the legal pages (they gate paid billing).
+    expect(legalIsDraft([{ id: "x", label: "x", category: "billing-launch" }], "2026-12-01")).toBe(false);
     expect(legalIsDraft([], "2026-12-01")).toBe(false);
     expect(isIsoDate("2026-12-01")).toBe(true);
     expect(formatEffectiveDate("2026-12-01")).toBe("December 1, 2026");
@@ -128,6 +135,11 @@ describe("legal pages — rendered content (owner decisions applied, no false cl
   it("governing law is Massachusetts; no venue, arbitration or class-action provisions", () => {
     expect(pages.terms).toContain("governed by the laws of the Commonwealth of Massachusetts, United States");
     expect(pages.terms).not.toMatch(/arbitration|class action|class-action|exclusive (jurisdiction|venue)|jury trial/i);
+  });
+  it("verified hosting locations are stated; other providers described generically", () => {
+    expect(pages.privacy).toContain("the application runs on Vercel in its iad1 (Washington, D.C., United States) region");
+    expect(pages.privacy).toContain("Neon on Amazon Web Services, US East (N. Virginia, us-east-1)");
+    expect(pages.privacy).toContain("may process information in the United States or other countries");
   });
   it("youth exposure is disclosed: roster on Public pages, link holders, non-anonymous Telegram polls", () => {
     expect(pages.privacy).toContain("shows the roster (first and last names, positions and whether each player is active)");

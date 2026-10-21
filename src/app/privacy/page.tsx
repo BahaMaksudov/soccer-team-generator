@@ -1,6 +1,6 @@
 import Link from "next/link";
 import LegalPage, { ContactEmail, EffectiveDate, LegalSection, OwnerTodo } from "@/components/legal/LegalPage";
-import { ACCOUNT_MIN_AGE, LEGAL_PATHS, OPERATING_BRAND, PRODUCT_NAME, legalCanonical, legalIsDraft } from "@/lib/legal";
+import { ACCOUNT_MIN_AGE, HOSTING, LEGAL_PATHS, OPERATING_BRAND, PRODUCT_NAME, legalCanonical, legalIsDraft } from "@/lib/legal";
 import { TRIAL_DAYS } from "@/lib/entitlements";
 
 /**
@@ -177,7 +177,7 @@ export default function PrivacyPage() {
         <p>We share information only with providers that run parts of the service for us, and only what each needs:</p>
         <ul>
           <li><strong>Vercel</strong> — hosting and delivery of the website and application.</li>
-          <li><strong>Neon</strong> — database hosting (Amazon Web Services, United States).</li>
+          <li><strong>Neon</strong> — database hosting (Amazon Web Services, US East).</li>
           <li><strong>Resend</strong> — sending the emails in section 7.</li>
           <li><strong>Google</strong> — Google Sign-In, when you choose it.</li>
           <li><strong>Telegram</strong> — posting to and reading polls in Telegram groups that organizers connect.</li>
@@ -253,7 +253,7 @@ export default function PrivacyPage() {
 
       <LegalSection id="transfers" title="14. Where information is processed">
         <p>
-          Our database is hosted in the United States (Amazon Web Services, US East). The website is served by Vercel, and our other providers (section 8) may process information in the United States or other countries. <OwnerTodo id="hosting-disclosure" />
+          {PRODUCT_NAME} runs in the United States: the application runs on Vercel in its {HOSTING.appRegion.replace("Vercel region ", "")} region, and our database is hosted by {HOSTING.databaseRegion}. Vercel may deliver pages to you through its global network. Our other service providers (section 8) may process information in the United States or other countries. If you use the service from outside the United States, your information is processed in the United States. <OwnerTodo id="international-transfers" />
         </p>
       </LegalSection>
 

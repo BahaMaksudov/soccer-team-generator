@@ -38,24 +38,45 @@ export const CONFIRMED_DECISIONS = [
   "Deletion and correction requests are handled manually by email; identity and authority may be verified; no fixed deadline.",
   "Governing law: Massachusetts, United States (no venue, arbitration or class-action provisions).",
   "Paid billing is not active; Pro subscriptions are planned.",
+  "Hosting verified: application functions run in Vercel region iad1 (x-vercel-id on Production responses); database on Neon / AWS us-east-1 (database host). Other providers' processing locations are not verified and are described generically.",
 ] as const;
 
-export type OwnerItem = { id: string; label: string };
+/**
+ * Open items, by when they must be resolved:
+ *   publication    — owner decisions required before the pages are published;
+ *   legal-review   — need review by an attorney (none has been done); they keep
+ *                    the pages a draft unless the owner explicitly decides otherwise;
+ *   billing-launch — required only before paid billing is switched on. They do
+ *                    NOT block publishing these pages and are not rendered as
+ *                    markers (the Terms already say paid terms will be published
+ *                    before paid subscriptions are offered).
+ */
+export type OwnerItemCategory = "publication" | "legal-review" | "billing-launch";
+export type OwnerItem = { id: string; label: string; category: OwnerItemCategory };
 export const OWNER_ITEMS: readonly OwnerItem[] = [
-  { id: "operator-identity", label: "How the individual operator is legally identified in these documents (name and form of public identification)." },
-  { id: "mailing-address", label: "Whether a public mailing address must be published, and which one." },
-  { id: "hosting-disclosure", label: "Verify the hosting and data-processing locations (including the Vercel function region) and any cross-border wording you require." },
-  { id: "effective-date", label: "Set at publication: the date these documents are published." },
-  { id: "attorney-children", label: "Attorney review: information about minors entered by organizers (including COPPA and state-law questions, and visibility of minors' names on Public or link-shared pages)." },
-  { id: "attorney-liability", label: "Attorney review: disclaimers, limitation of liability and governing-law wording (including whether a venue clause is needed)." },
-  { id: "billing-terms", label: "Before paid subscriptions are enabled: billing, renewal, cancellation and refund terms." },
+  { id: "operator-identity", category: "publication", label: "How the individual operator is identified in these documents (for example, whether the individual's legal name is published)." },
+  { id: "mailing-address", category: "publication", label: "Whether a public mailing address must be published, and which one." },
+  { id: "effective-date", category: "publication", label: "Set at publication: the date these documents are published." },
+  { id: "attorney-children", category: "legal-review", label: "Attorney review: information about minors entered by organizers (including COPPA and state-law questions, and visibility of minors' names on Public or link-shared pages)." },
+  { id: "attorney-liability", category: "legal-review", label: "Attorney review: disclaimers, limitation of liability and governing-law wording (including whether a venue clause is needed)." },
+  { id: "international-transfers", category: "legal-review", label: "Attorney review: whether additional international-transfer or region-specific privacy wording is needed for users outside the United States." },
+  { id: "billing-terms", category: "billing-launch", label: "Before paid subscriptions are enabled: billing, renewal, cancellation and refund terms." },
 ];
+
+/** Items that keep the legal pages a draft (everything except billing-launch items). */
+export const publicationBlockers = (items: readonly OwnerItem[] = OWNER_ITEMS) => items.filter((i) => i.category !== "billing-launch");
 
 export const isIsoDate = (v: string) => /^\d{4}-\d{2}-\d{2}$/.test(v) && !Number.isNaN(Date.parse(`${v}T00:00:00Z`));
 
-/** Draft while any owner item is pending or the effective date is not a valid publication date. */
+/** Draft while any publication / legal-review item is pending or the effective date is not a valid publication date. */
 export const legalIsDraft = (items: readonly OwnerItem[] = OWNER_ITEMS, effectiveDate: string | null = LEGAL_EFFECTIVE_DATE) =>
-  items.length > 0 || effectiveDate === null || !isIsoDate(effectiveDate);
+  publicationBlockers(items).length > 0 || effectiveDate === null || !isIsoDate(effectiveDate);
+
+/** Verified hosting facts (live x-vercel-id function region; Neon host), recorded 2026-10-21. */
+export const HOSTING = {
+  appRegion: "Vercel region iad1 (Washington, D.C., United States)",
+  databaseRegion: "Neon on Amazon Web Services, US East (N. Virginia, us-east-1)",
+} as const;
 
 /** "November 25, 2026" for a YYYY-MM-DD effective date. */
 export const formatEffectiveDate = (v: string) => new Date(`${v}T12:00:00Z`).toLocaleDateString("en-US", { timeZone: "UTC", year: "numeric", month: "long", day: "numeric" });

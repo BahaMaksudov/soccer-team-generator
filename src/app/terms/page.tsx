@@ -111,7 +111,7 @@ export default function TermsPage() {
             <strong>Pro trial:</strong> the first organization you create includes a {TRIAL_DAYS}-day Pro trial — one trial per account, no payment details required. When it ends, nothing is charged and the organization moves to the Free plan.
           </li>
           <li>
-            <strong>Paid plans:</strong> paid Pro subscriptions are planned but <strong>not available yet</strong>, and no one is charged today. Our website may show planned prices (currently {PRO_PRICES_USD.month} per month or {PRO_PRICES_USD.year} per year per organization, in USD). Terms for paid subscriptions — including billing, renewal, cancellation and refunds — will be published before paid subscriptions are offered. <OwnerTodo id="billing-terms" />
+            <strong>Paid plans:</strong> paid Pro subscriptions are planned but <strong>not available yet</strong>, and no one is charged today. Our website may show planned prices (currently {PRO_PRICES_USD.month} per month or {PRO_PRICES_USD.year} per year per organization, in USD). Terms for paid subscriptions — including billing, renewal, cancellation and refunds — will be published before paid subscriptions are offered.
           </li>
           <li>We may change plans, limits or planned prices.</li>
         </ul>
