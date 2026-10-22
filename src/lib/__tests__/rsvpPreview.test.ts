@@ -30,9 +30,9 @@ describe("UTC allowance windows", () => {
 });
 
 describe("owner-approved RSVP allowances in the plan catalog", () => {
-  it("Free 100 / 20; Pro, trial, complimentary and LEGACY 500 / 50", () => {
-    expect([PLAN_LIMITS.FREE.rsvpEmailsPerMonth, PLAN_LIMITS.FREE.rsvpEmailsPerDay]).toEqual([100, 20]);
-    for (const p of ["PRO", "TRIAL", "COMP", "LEGACY"] as const) expect([PLAN_LIMITS[p].rsvpEmailsPerMonth, PLAN_LIMITS[p].rsvpEmailsPerDay], p).toEqual([500, 50]);
+  it("Free and Trial 100 / 20; Pro, complimentary and LEGACY 500 / 50", () => {
+    for (const p of ["FREE", "TRIAL"] as const) expect([PLAN_LIMITS[p].rsvpEmailsPerMonth, PLAN_LIMITS[p].rsvpEmailsPerDay], p).toEqual([100, 20]);
+    for (const p of ["PRO", "COMP", "LEGACY"] as const) expect([PLAN_LIMITS[p].rsvpEmailsPerMonth, PLAN_LIMITS[p].rsvpEmailsPerDay], p).toEqual([500, 50]);
   });
 });
 

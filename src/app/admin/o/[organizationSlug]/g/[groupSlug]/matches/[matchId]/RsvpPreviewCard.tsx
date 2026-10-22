@@ -31,7 +31,7 @@ export const STATUS_LABEL: Record<Status, string> = {
   ORGANIZER_OVERRIDE: "Status set by organizer",
   NOT_ON_ROSTER: "Not on this match's roster",
   SUPPRESSED: "Unsubscribed",
-  OVER_LIMIT: "Over the email allowance",
+  OVER_LIMIT: "Beyond plan ceiling (provisional)",
 };
 const SOURCE_LABEL = { PLAYER: "Player", GUARDIAN: "Parent / Guardian", ACCOUNT: "Linked account (verified)" } as const;
 
@@ -72,11 +72,11 @@ export default function RsvpPreviewCard({ organizationSlug, groupSlug, matchId }
                 <dd className="text-lg font-extrabold tabular-nums">{preview.counts.excluded}</dd>
               </div>
               <div className="rounded-tbp-md border border-border p-2">
-                <dt className="text-xs text-muted-foreground">Daily allowance</dt>
+                <dt className="text-xs text-muted-foreground">Daily plan ceiling</dt>
                 <dd className="text-lg font-extrabold tabular-nums">{preview.allowance.day.limit}</dd>
               </div>
               <div className="rounded-tbp-md border border-border p-2">
-                <dt className="text-xs text-muted-foreground">Monthly allowance</dt>
+                <dt className="text-xs text-muted-foreground">Monthly plan ceiling</dt>
                 <dd className="text-lg font-extrabold tabular-nums">{preview.allowance.month.limit}</dd>
               </div>
             </dl>
@@ -86,7 +86,8 @@ export default function RsvpPreviewCard({ organizationSlug, groupSlug, matchId }
                 <li key={r.playerId} className="flex flex-wrap items-start justify-between gap-x-3 gap-y-1 py-2">
                   <span className="min-w-0">
                     <span className="block break-words font-semibold">{r.name}</span>
-                    <span className="block break-all text-xs text-muted-foreground">{r.maskedEmail ? `${r.maskedEmail} · ${SOURCE_LABEL[r.source!]}` : "—"}</span>
+                    <span className="block break-all text-xs text-muted-foreground">{r.maskedEmail ?? "—"}</span>
+                    {r.source && <span className="block text-xs text-muted-foreground">{SOURCE_LABEL[r.source]}</span>}
                   </span>
                   <span className={cn("rounded-full border px-2 py-0.5 text-xs font-semibold", r.status === "WILL_SEND" ? "border-primary/30 bg-primary/10 text-primary" : "border-border bg-muted text-muted-foreground")}>{STATUS_LABEL[r.status]}</span>
                 </li>

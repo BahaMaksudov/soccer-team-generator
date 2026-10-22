@@ -30,7 +30,8 @@ describe("plan catalog (approved launch limits)", () => {
   it("Free / Pro / trial / complimentary / legacy", () => {
     expect(PLAN_LIMITS.FREE).toEqual({ activeGroups: 1, activePlayers: 30, monthlyMatches: 4, activeSchedules: 1, monthlyAiRecaps: 2, telegram: false, rsvpEmailsPerMonth: 100, rsvpEmailsPerDay: 20 });
     expect(PLAN_LIMITS.PRO).toEqual({ activeGroups: 3, activePlayers: 150, monthlyMatches: null, activeSchedules: null, monthlyAiRecaps: 30, telegram: true, rsvpEmailsPerMonth: 500, rsvpEmailsPerDay: 50 });
-    expect(PLAN_LIMITS.TRIAL).toEqual(PLAN_LIMITS.PRO);
+    // The trial keeps every Pro entitlement except the RSVP email allowance (Free's, M13B).
+    expect(PLAN_LIMITS.TRIAL).toEqual({ ...PLAN_LIMITS.PRO, rsvpEmailsPerMonth: 100, rsvpEmailsPerDay: 20 });
     expect(PLAN_LIMITS.COMP).toEqual(PLAN_LIMITS.PRO);
     expect(PLAN_LIMITS.LEGACY).toEqual({ activeGroups: null, activePlayers: null, monthlyMatches: null, activeSchedules: null, monthlyAiRecaps: null, telegram: true, rsvpEmailsPerMonth: 500, rsvpEmailsPerDay: 50 });
     expect(TRIAL_DAYS).toBe(90);

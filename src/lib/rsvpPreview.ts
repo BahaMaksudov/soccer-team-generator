@@ -19,7 +19,9 @@ import { organizationPlan, utcDay, utcMonth, type EffectivePlan } from "@/lib/en
  *   INVALID_CONTACT     — the stored organizer contact no longer validates (no fallback)
  *   NO_EMAIL            — no contact and no verified linked-account email
  *   SUPPRESSED          — reserved for P3 (no suppression list exists yet; never assigned)
- *   OVER_LIMIT          — sendable, but beyond today's / this month's allowance
+ *   OVER_LIMIT          — PROVISIONAL: sendable, but beyond the plan's daily / monthly
+ *                         ceiling for this one send (not a final send decision — actual
+ *                         remaining allowance needs the sending ledger, P4)
  *   WILL_SEND           — sendable
  * Group players who are NOT on this match's roster are listed separately
  * (names only, NOT_ON_ROSTER) and never counted as recipients.
@@ -38,21 +40,23 @@ export type PreviewRow = {
 
 export type RsvpAllowance = {
   plan: EffectivePlan;
+  /** PLAN CEILINGS (the most a plan allows per UTC day / month) — not the remaining allowance. */
+  kind: "PLAN_CEILING";
   day: { limit: number; period: string; resetsAt: string };
   month: { limit: number; period: string; resetsAt: string };
   /**
-   * Actual usage needs the sending ledger (P4). Until then usage is UNKNOWN —
-   * never reported as zero — and the preview's OVER_LIMIT marks only recipients
-   * beyond the allowance itself (provisional).
+   * Actual usage needs the sending ledger (P4). Until then usage and the remaining
+   * allowance are UNKNOWN (null) — never reported as zero.
    */
   usage: { available: false; note: string };
+  remaining: null;
 };
 
 export type RsvpPreview = {
   match: { id: string; date: string; startTime: string | null };
   recipients: PreviewRow[];
   notOnRoster: Array<{ playerId: string; name: string; status: "NOT_ON_ROSTER" }>;
-  counts: { willSend: number; excluded: number; byStatus: Record<PreviewStatus, number> };
+  counts: { willSend: number; excluded: number; byStatus: Record<PreviewStatus, number>; overLimitIsProvisional: true };
   allowance: RsvpAllowance;
   suppression: { available: false };
   sending: { available: false };
@@ -77,9 +81,14 @@ export async function rsvpAllowance(organizationId: string, now: Date = new Date
   const month = utcMonth(now);
   return {
     plan,
+    kind: "PLAN_CEILING",
     day: { limit: limits.rsvpEmailsPerDay, period: day.period, resetsAt: day.next.toISOString() },
     month: { limit: limits.rsvpEmailsPerMonth, period: month.period, resetsAt: month.next.toISOString() },
-    usage: { available: false, note: "Emails already sent today / this month aren't tracked until sending exists, so the remaining allowance is provisional." },
+    usage: {
+      available: false,
+      note: "These are your plan's ceilings, not what's left. Email sending isn't available yet, so no sends are tracked; the actual remaining allowance will be calculated when sending becomes available.",
+    },
+    remaining: null,
   };
 }
 
@@ -137,7 +146,7 @@ export async function previewRsvpRecipients(context: TenantContext, matchId: str
       match: { id: match.id, date: match.date.toISOString().slice(0, 10), startTime: match.startTime },
       recipients: rows,
       notOnRoster,
-      counts: { willSend: byStatus.WILL_SEND, excluded: rows.length - byStatus.WILL_SEND, byStatus },
+      counts: { willSend: byStatus.WILL_SEND, excluded: rows.length - byStatus.WILL_SEND, byStatus, overLimitIsProvisional: true },
       allowance,
       suppression: { available: false },
       sending: { available: false },

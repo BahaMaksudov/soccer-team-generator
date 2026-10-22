@@ -208,7 +208,7 @@ export default function PlayersRoster({
         </button>
         <button type="button" onClick={() => setDetailId(p.id)} className={cn("inline-flex min-h-9 items-center gap-1 rounded-tbp-sm px-2 text-sm font-semibold hover:bg-muted", focusRing)}>
           <UserRound className="size-4" aria-hidden="true" />
-          Account<span className="sr-only"> and Telegram for {fullName(p)}</span>
+          Contact &amp; account<span className="sr-only">, contact email and Telegram for {fullName(p)}</span>
         </button>
       </div>
     );

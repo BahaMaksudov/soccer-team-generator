@@ -35,8 +35,8 @@ export type Limits = {
   telegram: boolean;
   /**
    * M13B — RSVP invitation recipient emails per organization, per UTC calendar
-   * month / day (owner-approved: Free 100 / 20; paid and LEGACY 500 / 50). Shown
-   * in the P2 preview; enforced when sending exists (P4).
+   * month / day (owner-approved: Free and Trial 100 / 20; Pro, complimentary and
+   * LEGACY 500 / 50). Shown in the P2 preview; enforced when sending exists (P4).
    */
   rsvpEmailsPerMonth: number;
   rsvpEmailsPerDay: number;
@@ -48,7 +48,10 @@ const PRO: Limits = { activeGroups: 3, activePlayers: 150, monthlyMatches: null,
 // LEGACY keeps "no limits" for existing features; RSVP email is new and gets the paid allowance (owner decision).
 const UNLIMITED: Limits = { activeGroups: null, activePlayers: null, monthlyMatches: null, activeSchedules: null, monthlyAiRecaps: null, telegram: true, rsvpEmailsPerMonth: 500, rsvpEmailsPerDay: 50 };
 
-export const PLAN_LIMITS: Record<EffectivePlan, Limits> = { FREE, TRIAL: PRO, PRO, COMP: PRO, LEGACY: UNLIMITED };
+// The trial keeps every Pro entitlement EXCEPT the RSVP email allowance, which stays at Free's (owner decision, M13B).
+const TRIAL: Limits = { ...PRO, rsvpEmailsPerMonth: FREE.rsvpEmailsPerMonth, rsvpEmailsPerDay: FREE.rsvpEmailsPerDay };
+
+export const PLAN_LIMITS: Record<EffectivePlan, Limits> = { FREE, TRIAL, PRO, COMP: PRO, LEGACY: UNLIMITED };
 export const PLAN_LABEL: Record<EffectivePlan, string> = { FREE: "Free", TRIAL: "Pro trial", PRO: "Pro", COMP: "Pro (complimentary)", LEGACY: "Early access" };
 
 export function effectivePlan(org: { plan: OrganizationPlan; trialEndsAt: Date | null }, now: Date = new Date()): EffectivePlan {
