@@ -116,6 +116,7 @@ describe("flat operational Admin APIs are deleted", () => {
         canonical("players/[id]"),
         canonical("players/[id]/claim"), // M6-C
         canonical("players/[id]/account"), // M6-C
+        canonical("players/[id]/contact"), // M13B P1 — organizer-only player contact email
         canonical("players/[id]/telegram"), // M6.1
         canonical("publish"),
         canonical("settings/balance-weights"),

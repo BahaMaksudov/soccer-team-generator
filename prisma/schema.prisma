@@ -166,6 +166,12 @@ enum MessageDeliveryStatus {
   UNCERTAIN
 }
 
+// M13B P1 — whose inbox a Player's organizer-entered contact email reaches.
+enum PlayerContactType {
+  PLAYER
+  GUARDIAN
+}
+
 enum OrgRole {
   OWNER
   ADMIN
@@ -831,6 +837,16 @@ model Player {
   // claim at most one Player per Group, and Players in many Groups.
   userId String?
   user   User?   @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  // M13B P1 — an OPTIONAL contact address entered by an organizer (OWNER/ADMIN) for
+  // future RSVP emails. Never the linked account's email (that stays on User and is
+  // never copied here). contactEmailType says whose inbox it is: the player's own,
+  // or a parent / guardian (youth players). Email and type are set and cleared
+  // together (CHECK constraint in the migration). Organizer-only: never public,
+  // player-facing, Telegram or AI data.
+  contactEmail          String?
+  contactEmailType      PlayerContactType?
+  contactEmailUpdatedAt DateTime?
 
   claims                  PlayerClaim[]
   telegramConnectCodes    TelegramConnectCode[]

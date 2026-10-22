@@ -16,6 +16,7 @@ import CanonicalPlayerForm from "../CanonicalPlayerForm";
 import { adminGroupSettingsPath } from "@/lib/matchPaths";
 import PlayerAccountCell from "../PlayerAccountCell";
 import PlayerTelegramCell from "../PlayerTelegramCell";
+import PlayerContactCell from "../PlayerContactCell";
 import type { Player } from "../CanonicalAdminWorkspace";
 
 /**
@@ -498,7 +499,7 @@ export default function PlayersRoster({
       )}
 
       {canManage && (
-        <Dialog open={detail !== null} title={detail ? fullName(detail) : ""} description="Optional account and Telegram connection for this player." onClose={() => setDetailId(null)}>
+        <Dialog open={detail !== null} title={detail ? fullName(detail) : ""} description="Optional account, contact email and Telegram connection for this player." onClose={() => setDetailId(null)}>
           {detail && (
             <div className="space-y-4 text-sm">
               <section>
@@ -513,6 +514,11 @@ export default function PlayersRoster({
                   onChanged={load}
                   onMessage={setMessage}
                 />
+              </section>
+              <section>
+                {/* M13B P1 — organizer-only contact email (player or parent / guardian), loaded on open. */}
+                <h3 className="mb-1 font-semibold">Contact email</h3>
+                <PlayerContactCell key={detail.id} organizationSlug={organizationSlug} groupSlug={groupSlug} playerId={detail.id} onMessage={setMessage} />
               </section>
               <section>
                 <h3 className="mb-1 font-semibold">Telegram</h3>
