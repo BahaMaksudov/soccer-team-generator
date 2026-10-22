@@ -126,7 +126,7 @@ describe("M13B P2 — classification", () => {
     expect(r.body.notOnRoster).toEqual([{ playerId: "p8", name: "Hal Test", status: "NOT_ON_ROSTER" }]);
     expect(r.body.counts).toMatchObject({ willSend: 3, excluded: 5, byStatus: { NOT_ON_ROSTER: 1, SUPPRESSED: 0, OVER_LIMIT: 0 } });
     expect(r.body).toMatchObject({ suppression: { available: true }, sending: { available: false } });
-    expect(r.body.allowance).toMatchObject({ plan: "LEGACY", kind: "PLAN_CEILING", day: { limit: 50 }, month: { limit: 500 }, usage: { available: false }, remaining: null });
+    expect(r.body.allowance).toMatchObject({ plan: "LEGACY", day: { limit: 50, used: 0, reserved: 0, remaining: 50 }, month: { limit: 500, used: 0, reserved: 0, remaining: 500 } });
     expect(r.body.counts).toMatchObject({ overLimitIsProvisional: true });
     const text = JSON.stringify(r.body);
     for (const secret of ["guardian.of.ava", "ben.own", "linked@", "unverified@", "fay@", "gus@", "hal@", "xi@", "contactEmail"]) expect(text, secret).not.toContain(secret);
@@ -148,7 +148,7 @@ describe("M13B P2 — classification", () => {
     await prisma.match.create({ data: { id: "mf", groupId: "gf", date: new Date("2099-06-03") } });
     signIn("free");
     const r = await preview("mf", "of", "gf");
-    expect(r.body.allowance).toMatchObject({ plan: "FREE", day: { limit: 20 }, month: { limit: 100 }, usage: { available: false } });
+    expect(r.body.allowance).toMatchObject({ plan: "FREE", day: { limit: 20, used: 0, remaining: 20 }, month: { limit: 100, used: 0, remaining: 100 } });
     expect(r.body.counts).toMatchObject({ willSend: 20, byStatus: { OVER_LIMIT: 2 } });
     expect((r.body.recipients as Row[]).filter((x) => x.status === "OVER_LIMIT").map((x) => x.playerId)).toEqual(["f20", "f21"]); // deterministic: name order
     // A running trial keeps Pro features but Free's RSVP email ceilings.

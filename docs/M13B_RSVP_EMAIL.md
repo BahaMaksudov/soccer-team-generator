@@ -198,6 +198,118 @@ never consulted.
 confirmation email to the address. Clicking its link removes that organization's opt-out. Global
 suppressions are removed only manually after the address is shown to be deliverable again.
 
+## P4 — sending engine (implemented; test outbox only)
+
+`src/lib/rsvpSend.ts`. There is no HTTP route, page or server action for it, and the preview's Send button
+stays disabled.
+
+### Delivery lock (server-side)
+
+`rsvpTransport()` is the only transport the engine uses. It returns the in-memory test outbox (or a fake
+transport injected by a test) and only when `NODE_ENV=test`; anywhere else it throws
+`RsvpDeliveryDisabledError`. `createRsvpSend` and `retryFailedInvitations` check it first and return
+`DELIVERY_DISABLED`. `processRsvpQueue` throws before it recovers or claims anything. The module never
+imports the Resend transport, `getEmailTransport`, or `fetch`, whatever `EMAIL_TRANSPORT` /
+`RESEND_API_KEY` say. A unit test guards the source, and another checks that nothing under `src/app`
+imports the engine.
+
+### Data (migration `20261210120000_m13b_p4_rsvp_sending`, additive)
+
+- `PersonalAttendanceLink.channel` (`MANUAL` default / `EMAIL`). Every existing link becomes `MANUAL`.
+- `RsvpSend`: one organizer action for one match.
+  - `kind` is `INITIAL` or `RESEND`, and `round` counts 1, 2, … per match (`@@unique([matchId, round])`).
+  - `requestKey` is unique; it is the client's idempotency key (8–100 characters of `[A-Za-z0-9_-]`).
+  - `createdByUserId` is set to null if the user is deleted.
+- `RsvpInvitation`: one row per roster player per round (`@@unique([matchId, playerId, round])`).
+  - Fields: status, `skipReason`, `email` (only for rows that will be sent), `recipientType`, `attempts`,
+    `reservedAt` / `claimedAt` / `sentAt` / `failedAt`, `providerMessageId`, `lastError` (a sanitized
+    category), `idempotencyKey`, `linkId`, `unsubscribeTokenId`.
+  - `playerId`, `linkId` and `unsubscribeTokenId` are set to null when the row they point to is deleted.
+- Organization, group and match foreign keys cascade on delete.
+
+Rollback: drop the two tables, the three enums and the `channel` column. Existing data is unaffected.
+
+### Flow
+
+1. `createRsvpSend(context, matchId, { kind, requestKey })`, OWNER/ADMIN. One transaction:
+   1. Lock the match row (`lockMatchForAnswer`: Match `FOR UPDATE`; chat / organization `FOR SHARE`).
+   2. Take the organization's quota lock (`pg_advisory_xact_lock(hashtext('rsvp-quota:<org>'))`). The order
+      is always match first, then organization, so there is no lock cycle.
+   3. Re-check the `requestKey`, the match (Telegram, canceled, completed, closed or past deadline) and, for
+      `INITIAL`, that no earlier send exists (`ALREADY_SENT`). A `RESEND` needs an earlier send.
+   4. Re-classify the roster the same way the preview does: answered, override, no email, invalid contact,
+      suppressed.
+   5. Reserve up to the remaining day and month allowance. Rows that will be sent become `QUEUED` with
+      `reservedAt`; every other roster player gets a `SKIPPED` row with a reason (`LIMIT` for rows over the
+      allowance).
+   6. If nothing can be sent, refuse with `PLAN_LIMIT` / `NOTHING_TO_SEND` / `NOTHING_TO_RESEND`, and
+      create nothing.
+
+   The same `requestKey` returns the existing send (`duplicate: true`), including under concurrency. The
+   unique constraint is a backstop; the same key on another match or organization returns
+   `REQUEST_KEY_CONFLICT`. Queuing sends nothing and creates no links or tokens.
+2. `processRsvpQueue({ limit = 25, sendId?, now })`: the worker / scheduler continuation, bounded per call.
+   1. Recover stale claims: rows in `SENDING` for more than 10 minutes become `UNCERTAIN` (`STALE_CLAIM`).
+   2. Claim one `QUEUED` row at a time:
+      `UPDATE … WHERE id = (SELECT … FOR UPDATE SKIP LOCKED LIMIT 1) RETURNING`. It sets status to `SENDING`,
+      increments `attempts` and stamps `claimedAt`, so concurrent workers never claim the same row.
+   3. Re-check the claimed row. A deleted player, a refused match, a suppressed address, or an answer or
+      override made meanwhile makes it `SKIPPED` (which releases its reservation).
+   4. In one transaction, create a new `EMAIL`-channel personal link and an unsubscribe token (both
+      hash-only), and record `linkId`, `unsubscribeTokenId` and `idempotencyKey = rsvp:<invitationId>:<attempt>`.
+   5. Build and send the email with the RFC 8058 headers (`List-Unsubscribe`, `List-Unsubscribe-Post`) and
+      the provider idempotency key.
+   6. Record the outcome as below.
+3. `retryFailedInvitations(context, sendId)`, OWNER/ADMIN, explicit. Under the same two locks it re-checks
+   the match and eligibility, then re-queues `FAILED` rows with fewer than 3 attempts, up to the remaining
+   allowance. A retry is a new attempt, so it gets a new idempotency key. `UNCERTAIN` rows are never retried.
+
+### Outcomes and the quota ledger
+
+| Status | Meaning | Counts against the allowance |
+| --- | --- | --- |
+| `QUEUED`, `SENDING` | reserved | yes |
+| `SENT` | provider accepted | yes |
+| `UNCERTAIN` | timeout, network, 5xx, 409, stale claim — may have been delivered | yes (never released, never auto-retried) |
+| `FAILED` | definite 4xx or configuration error before hand-off — not delivered | no (released) |
+| `SKIPPED` | not sent (reason recorded) | no |
+
+- The allowance is counted by `reservedAt` in the UTC calendar day `[00:00Z, next 00:00Z)` and the UTC
+  calendar month.
+- Free and Trial get 100 per month / 20 per day. Pro, complimentary and LEGACY get 500 per month / 50 per day.
+- Reservations are made only under the organization's advisory lock, after the counts are read
+  (READ COMMITTED). Concurrent sends for different matches therefore serialize and can't exceed either
+  limit.
+- A release (`FAILED` / `SKIPPED`) only lowers usage, so it needs no lock.
+- The preview (P2 card) now shows the actual remaining / limit for today and this month, plus how many
+  are used and queued.
+
+### Personal link lifecycle
+
+Raw tokens are stored nowhere, so an existing link can't be reused in an email. The two channels are
+therefore kept apart:
+
+- **MANUAL links** (copied by the organizer) are never touched by sending.
+  - "Regenerate" (`issuePersonalLinks`) now replaces only MANUAL links, so an emailed link keeps working.
+  - "Revoke" (`revokePersonalLink`) is an explicit organizer action and still revokes every channel.
+- **EMAIL links:** each delivery attempt gets a new one.
+  - When the email is **accepted** (`SENT`), the player's older EMAIL links for that match are revoked, so
+    only the newest emailed link works.
+  - When it is **FAILED**, its own unsent link is revoked and the earlier emailed link stays valid.
+  - When it is **UNCERTAIN**, the link is kept, because the email may have arrived.
+- A player can therefore hold at most one active MANUAL link and one active EMAIL link. Both answer as the
+  same player (`PERSONAL_LINK` source), and attendance semantics are unchanged.
+
+### Logging and privacy
+
+- The engine logs nothing.
+- Stored errors are categories only (`HTTP_422`, `TIMEOUT`, `NETWORK`, `CONFIG`, `STALE_CLAIM`,
+  `UNEXPECTED`).
+- Addresses are stored only on invitations that will be sent, and only for the organization that owns them.
+- **Known exposure:** the one-click URL carries the unsubscribe token in its query string, as RFC 8058
+  requires. Request logs (for example Vercel's) may record it. The token can only opt that one address out
+  of that one organization's RSVP emails, and it is stored hash-only on our side.
+
 ## Open issues / risks
 
 - Consent: organizers enter addresses (including guardians') without the recipient confirming. Unsubscribe
@@ -208,3 +320,7 @@ suppressions are removed only manually after the address is shown to be delivera
   destination (for example `p•••@example.com`) if approved.
 - DMARC is not configured for `mail.teambalancepro.com` / `teambalancepro.com`. It is required before P4 goes
   live.
+- P4: deleting a match cascades its RSVP invitations, which also removes them from the quota ledger.
+  Consider blocking that, or keeping a ledger row, before sending goes live (P5).
+- P4: no scheduler calls `processRsvpQueue` yet, and no HTTP route exists. Wiring the cron / queue
+  continuation and the real transport is P5+, behind explicit approval.

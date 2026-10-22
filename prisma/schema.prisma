@@ -212,6 +212,8 @@ model User {
   playerClaimsAccepted    PlayerClaim[]            @relation("ClaimAcceptedBy")
   playerClaimsUnlinked    PlayerClaim[]            @relation("ClaimUnlinkedBy")
   telegramConnectCodes    TelegramConnectCode[]
+  // M13B P4 — RSVP email sends started (audit).
+  rsvpSendsCreated        RsvpSend[]               @relation("RsvpSendCreatedBy")
   // M13A — group join links created; join requests made / decided.
   groupJoinLinksCreated   GroupJoinLink[]          @relation("JoinLinkCreatedBy")
   groupJoinRequests       GroupJoinRequest[]       @relation("JoinRequestUser")
@@ -295,6 +297,9 @@ model Organization {
   // M13B P3 — RSVP email opt-outs and unsubscribe tokens of this Organization.
   emailOptOuts            OrganizationEmailOptOut[]
   emailUnsubscribeTokens  EmailUnsubscribeToken[]
+  // M13B P4 — RSVP email sends (the quota ledger).
+  rsvpSends               RsvpSend[]
+  rsvpInvitations         RsvpInvitation[]
 }
 
 // M11.1 — one AI recap generation attempt and its credit (UTC calendar-month `period`, "YYYY-MM").
@@ -443,25 +448,34 @@ enum LoginAttemptOutcome {
 // attendance closes, the match is canceled or the player leaves the roster.
 // windowStartedAt / windowCount: the per-link answer rate limit (database-backed).
 model PersonalAttendanceLink {
-  id              String    @id @default(cuid())
+  id              String              @id @default(cuid())
   organizationId  String
   groupId         String
   matchId         String
   playerId        String
-  tokenHash       String    @unique
-  createdAt       DateTime  @default(now())
+  tokenHash       String              @unique
+  createdAt       DateTime            @default(now())
   createdByUserId String?
   revokedAt       DateTime?
   lastUsedAt      DateTime?
   windowStartedAt DateTime?
-  windowCount     Int       @default(0)
+  windowCount     Int                 @default(0)
+  // M13B P4 — how the link reached the player. Organizer "Regenerate" replaces MANUAL
+  // links only; an emailed link (EMAIL) never invalidates a manually shared one.
+  channel         PersonalLinkChannel @default(MANUAL)
 
-  group  Group  @relation(fields: [groupId], references: [id], onDelete: Cascade)
-  match  Match  @relation(fields: [matchId], references: [id], onDelete: Cascade)
-  player Player @relation(fields: [playerId], references: [id], onDelete: Cascade)
+  group           Group            @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  match           Match            @relation(fields: [matchId], references: [id], onDelete: Cascade)
+  player          Player           @relation(fields: [playerId], references: [id], onDelete: Cascade)
+  rsvpInvitations RsvpInvitation[]
 
   @@index([matchId, playerId])
   @@index([groupId])
+}
+
+enum PersonalLinkChannel {
+  MANUAL
+  EMAIL
 }
 
 // M11.3 — password reset: only the SHA-256 hash of the emailed token is stored.
@@ -653,6 +667,8 @@ model Group {
   matches                 Match[]
   attendanceResponses     AttendanceResponse[]
   personalAttendanceLinks PersonalAttendanceLink[]
+  rsvpSends               RsvpSend[]
+  rsvpInvitations         RsvpInvitation[]
   telegramChatBindCodes   TelegramChatBindCode[]
   // M9-B
   telegramChatPlayers     TelegramChatPlayer[]
@@ -855,6 +871,7 @@ model Player {
   telegramConnectCodes    TelegramConnectCode[]
   attendanceResponses     AttendanceResponse[]
   personalAttendanceLinks PersonalAttendanceLink[]
+  rsvpInvitations         RsvpInvitation[]
   joinRequests            GroupJoinRequest[]
   telegramChatPlayers     TelegramChatPlayer[]
   communityPlayers        CommunityPlayer[]
@@ -1153,6 +1170,8 @@ model Match {
   automation              MatchAutomation?
   attendance              AttendanceResponse[]
   personalAttendanceLinks PersonalAttendanceLink[]
+  rsvpSends               RsvpSend[]
+  rsvpInvitations         RsvpInvitation[]
   generation              TeamGeneration?
   telegramPolls           TelegramPoll[]
   deliveries              MessageDelivery[]
@@ -1631,7 +1650,99 @@ model EmailUnsubscribeToken {
   expiresAt      DateTime
   usedAt         DateTime?
 
-  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  organization    Organization     @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  rsvpInvitations RsvpInvitation[]
 
   @@index([organizationId, email])
+}
+
+// ---------------------------------------------------------------------------
+// M13B P4 — RSVP email sending (test outbox only in P4; see src/lib/rsvpSend.ts).
+
+enum RsvpSendKind {
+  INITIAL
+  RESEND
+}
+
+enum RsvpDeliveryStatus {
+  QUEUED
+  SENDING
+  SENT
+  FAILED
+  UNCERTAIN
+  SKIPPED
+}
+
+enum RsvpRecipientType {
+  PLAYER
+  GUARDIAN
+  ACCOUNT
+}
+
+// One organizer action ("Send invitations" / "Resend to unanswered") for one match.
+// requestKey makes a double click / retry return the same send (no new reservations).
+model RsvpSend {
+  id              String       @id @default(cuid())
+  organizationId  String
+  groupId         String
+  matchId         String
+  kind            RsvpSendKind
+  round           Int
+  requestKey      String       @unique
+  createdByUserId String?
+  createdAt       DateTime     @default(now())
+
+  organization Organization     @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  group        Group            @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  match        Match            @relation(fields: [matchId], references: [id], onDelete: Cascade)
+  createdBy    User?            @relation("RsvpSendCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
+  invitations  RsvpInvitation[]
+
+  @@unique([matchId, round])
+  @@index([organizationId, createdAt])
+}
+
+// One recipient of one send — and the quota LEDGER: QUEUED / SENDING (reserved),
+// SENT / UNCERTAIN (consumed) count against the organization's UTC day / month
+// allowance by reservedAt; FAILED and SKIPPED do not. playerId is SET NULL on
+// player deletion so deleting players can't erase consumed allowance.
+model RsvpInvitation {
+  id                 String             @id @default(cuid())
+  sendId             String
+  organizationId     String
+  groupId            String
+  matchId            String
+  playerId           String?
+  round              Int
+  // Snapshot of the destination at send time (null when skipped for having none).
+  email              String?
+  recipientType      RsvpRecipientType?
+  status             RsvpDeliveryStatus
+  skipReason         String?
+  attempts           Int                @default(0)
+  reservedAt         DateTime?
+  claimedAt          DateTime?
+  sentAt             DateTime?
+  failedAt           DateTime?
+  providerMessageId  String?
+  // Sanitized category only (e.g. HTTP_422, TIMEOUT) — never provider text or addresses.
+  lastError          String?
+  idempotencyKey     String?
+  linkId             String?
+  unsubscribeTokenId String?
+  createdAt          DateTime           @default(now())
+  updatedAt          DateTime           @updatedAt
+
+  send             RsvpSend                @relation(fields: [sendId], references: [id], onDelete: Cascade)
+  organization     Organization            @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  group            Group                   @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  match            Match                   @relation(fields: [matchId], references: [id], onDelete: Cascade)
+  player           Player?                 @relation(fields: [playerId], references: [id], onDelete: SetNull)
+  link             PersonalAttendanceLink? @relation(fields: [linkId], references: [id], onDelete: SetNull)
+  unsubscribeToken EmailUnsubscribeToken?  @relation(fields: [unsubscribeTokenId], references: [id], onDelete: SetNull)
+
+  @@unique([matchId, playerId, round])
+  @@index([organizationId, status, reservedAt])
+  @@index([status, claimedAt])
+  @@index([sendId])
 }

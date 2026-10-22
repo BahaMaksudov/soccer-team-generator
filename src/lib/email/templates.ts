@@ -164,3 +164,46 @@ export function buildGoogleOnlyResetEmail(params: { to: string; name: string | n
     html: layout("Sign in with Google", lines, { label: "Go to sign in", url: params.url }, footer),
   };
 }
+
+/** Single-line text for headers like Subject: control characters (CR/LF included) become spaces. */
+// eslint-disable-next-line no-control-regex
+export const headerSafe = (s: string) => s.replace(/[\u0000-\u001f\u007f]+/g, " ").replace(/\s+/g, " ").trim().slice(0, 200);
+
+/**
+ * M13B P4 — the RSVP invitation for ONE player of ONE match. Sent to the player's own
+ * address, a parent / guardian contact, or the verified linked account. Contains only
+ * this player's name, the match details, their personal answer link and the unsubscribe
+ * link — never other players' data. Opening the answer link never answers by itself.
+ */
+export function buildRsvpInvitationEmail(params: {
+  to: string;
+  recipientType: "PLAYER" | "GUARDIAN" | "ACCOUNT";
+  playerName: string;
+  organizationName: string;
+  title: string; // community or group name
+  when: string; // e.g. "Wednesday, June 3 · 9:00 PM EDT"
+  venue: string | null;
+  deadline: string | null; // e.g. "Wednesday, June 3 at 6:00 PM EDT"
+  answerUrl: string;
+  unsubscribeUrl: string;
+}): OutgoingEmail {
+  const guardian = params.recipientType === "GUARDIAN";
+  const lines = [
+    guardian ? `You're receiving this as the parent / guardian contact for ${params.playerName}.` : `Hi ${params.playerName},`,
+    `${params.title} has a match ${params.when}${params.venue ? ` at ${params.venue}` : ""}. ${guardian ? `Is ${params.playerName} playing?` : "Are you playing?"}`,
+    ...(params.deadline ? [`Please answer by ${params.deadline}. You can change the answer until then.`] : ["You can change the answer until attendance closes."]),
+    "Choose Playing, Maybe or Not playing on the page that opens — nothing is answered until you choose.",
+  ];
+  const footer = `You receive this because ${params.organizationName} uses ${BRAND} to organize this game and added this address for ${guardian ? `${params.playerName}'s` : "your"} match invitations. Don't forward this email — its link answers for ${params.playerName}.`;
+  const unsubscribeText = `Stop match invitation emails from ${params.organizationName}: ${params.unsubscribeUrl}`;
+  const html = layout(guardian ? `Is ${params.playerName} playing?` : "Are you playing?", lines, { label: "Answer now", url: params.answerUrl }, footer).replace(
+    /<\/div>$/,
+    `<p style="margin:12px 0 0;font-size:12px;color:#777"><a href="${escapeHtml(params.unsubscribeUrl)}" style="color:#777">Unsubscribe from ${escapeHtml(params.organizationName)} match invitations</a></p></div>`
+  );
+  return {
+    to: params.to,
+    subject: headerSafe(`${guardian ? `Is ${params.playerName} playing?` : "Are you playing?"} ${params.title} — ${params.when}`),
+    text: [...lines, "", `Answer: ${params.answerUrl}`, "", footer, unsubscribeText].join("\n"),
+    html,
+  };
+}

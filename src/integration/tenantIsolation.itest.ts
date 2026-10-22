@@ -362,6 +362,9 @@ describe("Phase 2D.7 — PostgreSQL enforces groupId NOT NULL on every tenant-ow
       // Phase 2 — skipped-occurrence warnings go with their Group (MatchSchedule RESTRICT protects it).
       MatchScheduleSkip_groupId_fkey: "c/c",
       Player_groupId_fkey: "r/c",
+      // M13B P4 — RSVP email sends / invitations are owned by the group (removed with it).
+      RsvpInvitation_groupId_fkey: "c/c",
+      RsvpSend_groupId_fkey: "c/c",
       TeamGeneration_groupId_fkey: "r/c",
       TelegramChat_groupId_fkey: "r/c",
       TelegramPoll_groupId_fkey: "r/c",

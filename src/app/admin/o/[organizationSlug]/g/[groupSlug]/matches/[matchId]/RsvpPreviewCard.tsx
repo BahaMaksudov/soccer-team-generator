@@ -10,17 +10,19 @@ import { cn } from "@/lib/cn";
 /**
  * M13B P2 — email invitation RECIPIENT PREVIEW (OWNER/ADMIN; website-only matches).
  * Read-only: shows who would receive an RSVP email, masked destinations and why
- * others are excluded, plus the organization's allowance. Email sending is not
+ * others are excluded, plus the organization's actual allowance (P4: used / reserved /
+ * remaining today and this month, UTC). Email sending is not
  * available yet — the Send button is disabled and does nothing.
  * Hidden for Telegram matches (they are answered in the poll).
  */
 type Status = "WILL_SEND" | "NO_EMAIL" | "INVALID_CONTACT" | "ALREADY_ANSWERED" | "ORGANIZER_OVERRIDE" | "NOT_ON_ROSTER" | "SUPPRESSED" | "OVER_LIMIT";
 type Row = { playerId: string; name: string; status: Status; source: "PLAYER" | "GUARDIAN" | "ACCOUNT" | null; maskedEmail: string | null };
+type Window = { limit: number; used: number; reserved: number; remaining: number; resetsAt: string };
 type Preview = {
   recipients: Row[];
   notOnRoster: Array<{ playerId: string; name: string }>;
   counts: { willSend: number; excluded: number };
-  allowance: { plan: string; day: { limit: number }; month: { limit: number }; usage: { available: false; note: string } };
+  allowance: { plan: string; day: Window; month: Window; note: string };
 };
 
 export const STATUS_LABEL: Record<Status, string> = {
@@ -31,7 +33,7 @@ export const STATUS_LABEL: Record<Status, string> = {
   ORGANIZER_OVERRIDE: "Status set by organizer",
   NOT_ON_ROSTER: "Not on this match's roster",
   SUPPRESSED: "Not receiving invitation emails",
-  OVER_LIMIT: "Beyond plan ceiling (provisional)",
+  OVER_LIMIT: "Beyond remaining allowance",
 };
 const SOURCE_LABEL = { PLAYER: "Player", GUARDIAN: "Parent / Guardian", ACCOUNT: "Linked account (verified)" } as const;
 
@@ -71,16 +73,12 @@ export default function RsvpPreviewCard({ organizationSlug, groupSlug, matchId }
                 <dt className="text-xs text-muted-foreground">Excluded</dt>
                 <dd className="text-lg font-extrabold tabular-nums">{preview.counts.excluded}</dd>
               </div>
-              <div className="rounded-tbp-md border border-border p-2">
-                <dt className="text-xs text-muted-foreground">Daily plan ceiling</dt>
-                <dd className="text-lg font-extrabold tabular-nums">{preview.allowance.day.limit}</dd>
-              </div>
-              <div className="rounded-tbp-md border border-border p-2">
-                <dt className="text-xs text-muted-foreground">Monthly plan ceiling</dt>
-                <dd className="text-lg font-extrabold tabular-nums">{preview.allowance.month.limit}</dd>
-              </div>
+              <AllowanceCell label="Remaining today (UTC)" w={preview.allowance.day} />
+              <AllowanceCell label="Remaining this month (UTC)" w={preview.allowance.month} />
             </dl>
-            <p className="text-xs text-muted-foreground">{preview.allowance.usage.note}</p>
+            <p className="text-xs text-muted-foreground">
+              {preview.allowance.note} Who is invited is provisional until sending: answers, contact changes and unsubscribes are re-checked then.
+            </p>
             <ul className="divide-y divide-border">
               {preview.recipients.map((r) => (
                 <li key={r.playerId} className="flex flex-wrap items-start justify-between gap-x-3 gap-y-1 py-2">
@@ -108,5 +106,20 @@ export default function RsvpPreviewCard({ organizationSlug, groupSlug, matchId }
         )
       )}
     </SectionCard>
+  );
+}
+
+function AllowanceCell({ label, w }: { label: string; w: Window }) {
+  return (
+    <div className="rounded-tbp-md border border-border p-2">
+      <dt className="text-xs text-muted-foreground">{label}</dt>
+      <dd className="text-lg font-extrabold tabular-nums">
+        {w.remaining}
+        <span className="text-xs font-normal text-muted-foreground"> / {w.limit}</span>
+      </dd>
+      <dd className="text-xs text-muted-foreground">
+        {w.used} used{w.reserved > 0 ? ` (${w.reserved} queued)` : ""}
+      </dd>
+    </div>
   );
 }

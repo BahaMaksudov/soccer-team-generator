@@ -102,7 +102,8 @@ export async function issuePersonalLinks(params: { organizationId: string; group
   const now = new Date();
   const issued = players.map((p) => ({ player: p, token: generateToken() }));
   await prisma.$transaction(async (tx) => {
-    await tx.personalAttendanceLink.updateMany({ where: { matchId, groupId, playerId: { in: players.map((p) => p.id) }, revokedAt: null }, data: { revokedAt: now } });
+    // M13B P4 — regenerating replaces only MANUAL links: a link delivered by email keeps working.
+    await tx.personalAttendanceLink.updateMany({ where: { matchId, groupId, playerId: { in: players.map((p) => p.id) }, revokedAt: null, channel: "MANUAL" }, data: { revokedAt: now } });
     await tx.personalAttendanceLink.createMany({
       data: issued.map(({ player, token }) => ({ organizationId, groupId, matchId, playerId: player.id, tokenHash: hashToken(token), createdByUserId: userId, createdAt: now })),
     });
@@ -110,7 +111,7 @@ export async function issuePersonalLinks(params: { organizationId: string; group
   return { ok: true, links: issued.map(({ player, token }) => ({ playerId: player.id, name: fullName(player), path: personalLinkPath(token) })) };
 }
 
-/** Revoke a Player's active link for this Match. True when one was revoked. */
+/** Revoke a Player's active links for this Match (every channel — an explicit organizer action). True when one was revoked. */
 export async function revokePersonalLink(groupId: string, matchId: string, playerId: string): Promise<boolean> {
   const { count } = await prisma.personalAttendanceLink.updateMany({ where: { groupId, matchId, playerId, revokedAt: null }, data: { revokedAt: new Date() } });
   return count > 0;
