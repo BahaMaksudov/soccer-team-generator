@@ -33,12 +33,20 @@ export type Limits = {
   activeSchedules: number | null;
   monthlyAiRecaps: number | null;
   telegram: boolean;
+  /**
+   * M13B — RSVP invitation recipient emails per organization, per UTC calendar
+   * month / day (owner-approved: Free 100 / 20; paid and LEGACY 500 / 50). Shown
+   * in the P2 preview; enforced when sending exists (P4).
+   */
+  rsvpEmailsPerMonth: number;
+  rsvpEmailsPerDay: number;
 };
 export type CapacityMetric = "activeGroups" | "activePlayers" | "monthlyMatches" | "activeSchedules";
 
-const FREE: Limits = { activeGroups: 1, activePlayers: 30, monthlyMatches: 4, activeSchedules: 1, monthlyAiRecaps: 2, telegram: false };
-const PRO: Limits = { activeGroups: 3, activePlayers: 150, monthlyMatches: null, activeSchedules: null, monthlyAiRecaps: 30, telegram: true };
-const UNLIMITED: Limits = { activeGroups: null, activePlayers: null, monthlyMatches: null, activeSchedules: null, monthlyAiRecaps: null, telegram: true };
+const FREE: Limits = { activeGroups: 1, activePlayers: 30, monthlyMatches: 4, activeSchedules: 1, monthlyAiRecaps: 2, telegram: false, rsvpEmailsPerMonth: 100, rsvpEmailsPerDay: 20 };
+const PRO: Limits = { activeGroups: 3, activePlayers: 150, monthlyMatches: null, activeSchedules: null, monthlyAiRecaps: 30, telegram: true, rsvpEmailsPerMonth: 500, rsvpEmailsPerDay: 50 };
+// LEGACY keeps "no limits" for existing features; RSVP email is new and gets the paid allowance (owner decision).
+const UNLIMITED: Limits = { activeGroups: null, activePlayers: null, monthlyMatches: null, activeSchedules: null, monthlyAiRecaps: null, telegram: true, rsvpEmailsPerMonth: 500, rsvpEmailsPerDay: 50 };
 
 export const PLAN_LIMITS: Record<EffectivePlan, Limits> = { FREE, TRIAL: PRO, PRO, COMP: PRO, LEGACY: UNLIMITED };
 export const PLAN_LABEL: Record<EffectivePlan, string> = { FREE: "Free", TRIAL: "Pro trial", PRO: "Pro", COMP: "Pro (complimentary)", LEGACY: "Early access" };
@@ -53,6 +61,13 @@ export function utcMonth(now: Date = new Date()) {
   const start = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
   const next = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1));
   return { period: start.toISOString().slice(0, 7), start, next };
+}
+
+/** M13B — the UTC calendar day containing `now` (RSVP daily allowance window). */
+export function utcDay(now: Date = new Date()) {
+  const start = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+  const next = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1));
+  return { period: start.toISOString().slice(0, 10), start, next };
 }
 
 export function trialDaysLeft(trialEndsAt: Date | null, now: Date = new Date()): number | null {

@@ -199,6 +199,8 @@ describe("UI primitives are presentation-only", () => {
         "src/app/admin/o/[organizationSlug]/g/[groupSlug]/players/InvitePlayersCard.tsx",
         // M13B P1 — organizer-only player contact email (player details dialog).
         "src/app/admin/o/[organizationSlug]/g/[groupSlug]/PlayerContactCell.tsx",
+        // M13B P2 — read-only RSVP recipient preview card.
+        "src/app/admin/o/[organizationSlug]/g/[groupSlug]/matches/[matchId]/RsvpPreviewCard.tsx",
         // Public legal pages (/privacy, /terms) — shared layout.
         "src/components/legal/LegalPage.tsx",
         "src/app/account/security/page.tsx",

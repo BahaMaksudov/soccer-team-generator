@@ -9,6 +9,7 @@ import type { PublishedGeneration, TeamsDeliveryState } from "@/lib/closeAndPost
 import TeamsTelegramPost, { type TeamsPostIntent } from "./TeamsTelegramPost";
 import ShareMatchCard from "./ShareMatchCard";
 import PersonalLinksCard from "./PersonalLinksCard";
+import RsvpPreviewCard from "./RsvpPreviewCard";
 import type { SportClientView } from "@/lib/sports";
 import { unpublishedPreviewOnScreen, type TeamsPanelMode } from "@/lib/teamAssignment";
 import { visibleRosterIds } from "@/lib/matchRosterScope";
@@ -664,6 +665,8 @@ export default function MatchWorkspace({
 
       {/* M9.3 — Share Match: the Match Link (organizers; available as soon as the Match exists) */}
       {view.canManage && <PersonalLinksCard organizationSlug={organizationSlug} groupSlug={groupSlug} matchId={m.id} />}
+      {/* M13B P2 — read-only email invitation preview (website-only matches; hidden for Telegram). */}
+      {view.canManage && <RsvpPreviewCard organizationSlug={organizationSlug} groupSlug={groupSlug} matchId={m.id} />}
       {view.canManage && <ShareMatchCard organizationSlug={organizationSlug} groupSlug={groupSlug} matchId={m.id} />}
 
       {/* M9.2 — Match Automation status (organizers) */}

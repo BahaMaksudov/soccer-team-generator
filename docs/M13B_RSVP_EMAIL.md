@@ -1,6 +1,6 @@
 # M13B — Bulk RSVP email invitations
 
-Status: **P1 implemented locally** (`feature/m13b-p1-player-emails`). Nothing sends email.
+Status: **P1 and P2 implemented locally** (`feature/m13b-p1-player-emails`). Nothing sends email.
 Later phases are designed below and need approval one by one.
 
 ## Approved product decisions (final for M13B)
@@ -82,6 +82,66 @@ deletes its contact data with the row.
 **Before real sending (not P1):** update the live Privacy Policy. It currently lists only account and
 organizer emails and says no marketing emails are sent. It must cover player and guardian contact emails,
 RSVP invitations, unsubscribe and suppression, and correction or deletion of contact addresses.
+
+## P2 — recipient preview (implemented; read-only)
+
+`GET /api/admin/o/[org]/g/[group]/matches/[matchId]/rsvp-preview` (`src/lib/rsvpPreview.ts`):
+OWNER/ADMIN only (MEMBER, foreign or unknown → the same 404; signed out → 401). `no-store, private`.
+Returns explicit response objects with masked destinations only (`p•••@example.com`; the domain is kept so
+organizers can sanity-check it).
+
+The preview creates nothing (no email, no invitation or send records, no RSVP links or tokens, no usage) and
+changes no attendance. A test compares the row counts of every table before and after.
+
+**Refusals (409):**
+- `TELEGRAM_MATCH` — poll, or a connected chat with Telegram in the plan (the existing `attendanceMode`);
+- `MATCH_CANCELED`;
+- `MATCH_COMPLETED`;
+- `ATTENDANCE_CLOSED`;
+- `DEADLINE_PASSED`.
+
+**Classification** (the match's eligible roster — the same roster as personal attendance links —
+in this order):
+
+| Status | Meaning |
+| --- | --- |
+| `ORGANIZER_OVERRIDE` | An organizer set the player's status |
+| `ALREADY_ANSWERED` | The player answered through any channel |
+| `INVALID_CONTACT` | The stored organizer contact no longer validates (no fallback) |
+| `NO_EMAIL` | No contact and no verified account email |
+| `SUPPRESSED` | Reserved for P3 (`suppression.available: false`; never assigned yet) |
+| `OVER_LIMIT` | Sendable, but beyond the allowance |
+| `WILL_SEND` | Will be invited |
+
+Group players who are **not** on the match's roster (inactive players; members of other communities for a
+community match) are listed separately in `notOnRoster` with names only. They are never counted as
+recipients and their destinations are not shown.
+
+**Allowance:**
+- In the plan catalog: Free 100 / month and 20 / day; Pro, trial, complimentary and LEGACY 500 / 50.
+- UTC calendar day / month, per organization.
+- Previewing never counts.
+- The sending ledger doesn't exist yet, so actual usage is reported as **unavailable** (not zero).
+  `OVER_LIMIT` marks only recipients beyond the allowance itself (provisional).
+
+**P4 quota enforcement (designed):** inside the send transaction, under a per-organization advisory lock,
+against the `RsvpInvitation` ledger for the current UTC day and month.
+
+| Delivery state | Counts toward usage? |
+| --- | --- |
+| QUEUED / SENDING | Yes (reserved) |
+| SENT | Yes |
+| UNCERTAIN | Yes (may have been delivered) |
+| FAILED (definite rejection) | No |
+| SKIPPED (never attempted) | No |
+
+Interface: `reserveRsvpQuota(tx, organizationId, requested, now) → { granted, remaining }`. Recipients beyond
+the remainder are marked SKIPPED / LIMIT, and the request returns 402 `PLAN_LIMIT` when nothing fits.
+
+**UI:** match page → **Email invitations (preview)** (hidden for Telegram matches). It shows would-be-invited
+and excluded counts, daily and monthly allowance, the provisional-usage note, masked destinations with their
+source (Player / Parent-Guardian / linked account) and status, the not-on-roster list, and a **disabled**
+"Send invitations — coming soon" button with no handler.
 
 ## Open issues / risks
 

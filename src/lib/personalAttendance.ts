@@ -32,6 +32,10 @@ export const personalLinkPath = (token: string) => `${PERSONAL_ATTENDANCE_PATH}#
 type MatchRow = { id: string; groupId: string; communityId: string | null; status: "SCHEDULED" | "COMPLETED" | "CANCELED"; attendanceClosedAt: Date | null; attendanceDeadlineAt: Date | null };
 
 /** The Match's eligible roster (active Community members, or the Group's active Players). */
+export async function matchRosterIds(m: Pick<MatchRow, "groupId" | "communityId">): Promise<Set<string>> {
+  return rosterIds(m);
+}
+
 async function rosterIds(m: Pick<MatchRow, "groupId" | "communityId">): Promise<Set<string>> {
   if (m.communityId) return new Set(await communityRosterIds(m.groupId, m.communityId));
   return new Set((await prisma.player.findMany({ where: { groupId: m.groupId, isActive: true }, select: { id: true } })).map((p) => p.id));
