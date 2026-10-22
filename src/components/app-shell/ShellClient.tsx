@@ -303,7 +303,7 @@ export function MobileContext({ data }: { data: ShellData }) {
       </p>
     );
   }
-  return <span className="min-w-0 truncate px-2 font-display font-extrabold tracking-tight">Team Balance Pro</span>;
+  return <span className="min-w-0 truncate px-2 font-display font-extrabold tracking-tight">TeamBalance Pro</span>;
 }
 
 // --- group switcher (navigation only)

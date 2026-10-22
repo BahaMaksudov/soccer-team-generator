@@ -6,7 +6,7 @@ import ShareView from "./ShareView";
  * Referer); ShareView posts it to /api/share/view. No account needed.
  */
 export const metadata = {
-  title: "Team Balance Pro — Teams",
+  title: "TeamBalance Pro — Teams",
   robots: { index: false, follow: false },
   referrer: "no-referrer" as const,
 };

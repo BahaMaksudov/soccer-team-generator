@@ -20,6 +20,8 @@
 export const LIVE_MODE_SUPPORTED = false;
 
 export type BillingInterval = "month" | "year";
+/** Public copy while paid billing is not active (BILLING_ENABLED unset — Production today): prices are planned, nobody is charged. */
+export const BILLING_NOT_ACTIVE_NOTE = "Paid Pro subscriptions aren't available yet, and nobody is charged. Pro prices shown are planned prices (USD, per organization). Reaching a Free limit never removes data.";
 export const PRO_PRICES_USD: Record<BillingInterval, string> = { month: "$9.99", year: "$99" };
 
 type Env = Record<string, string | undefined>;

@@ -40,7 +40,7 @@ export function matchShareConfigured(env: Env = process.env): boolean {
 }
 
 /** Organizer-facing message when the server has no (strong) MATCH_SHARE_SECRET. */
-export const MATCH_LINK_NOT_CONFIGURED = "Match links aren't set up on this server yet. Please contact Team Balance Pro support.";
+export const MATCH_LINK_NOT_CONFIGURED = "Match links aren't set up on this server yet. Please contact TeamBalance Pro support.";
 
 function mac(secret: string, label: string, parts: Array<string | number>): Buffer {
   const h = createHmac("sha256", secret);

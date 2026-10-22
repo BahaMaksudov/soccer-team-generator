@@ -42,7 +42,7 @@ export default async function AdminEntryPage() {
         <p className="eyebrow">Welcome</p>
         <h1 className="text-3xl font-extrabold">My Organizations</h1>
         <p className="text-muted-foreground">
-          Welcome to Team Balance Pro! An organization holds your groups — each group has its own players, matches and sport. If someone invited you, accept the invitation from your email to join their organization.
+          Welcome to TeamBalance Pro! An organization holds your groups — each group has its own players, matches and sport. If someone invited you, accept the invitation from your email to join their organization.
         </p>
         {allowance.canCreate ? (
           <Button asChild size="lg">

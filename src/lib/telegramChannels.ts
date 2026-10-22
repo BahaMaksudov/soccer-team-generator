@@ -210,7 +210,7 @@ export async function migrateTelegramChat(oldChatId: number | string, newChatId:
 export function bindReplyText(result: BindResult): string {
   if (result.ok) {
     return result.state !== "already_connected"
-      ? `✅ This Telegram group is now connected to ${result.groupName} in Team Balance Pro.`
+      ? `✅ This Telegram group is now connected to ${result.groupName} in TeamBalance Pro.`
       : `✅ This Telegram group is already connected to ${result.groupName}.`;
   }
   switch (result.code) {
@@ -221,12 +221,12 @@ export function bindReplyText(result: BindResult): string {
     case "NOT_ADMIN":
       return "❌ Only an administrator of this Telegram group can connect it.";
     case "ALREADY_BOUND_ELSEWHERE":
-      return "❌ This Telegram group is already connected to another Team Balance Pro group. Disconnect it there before connecting it here.";
+      return "❌ This Telegram group is already connected to another TeamBalance Pro group. Disconnect it there before connecting it here.";
     case "ADMIN_CHECK_FAILED":
       return "❌ Couldn't verify administrators right now. Please try again in a moment.";
     case "NOT_IN_PLAN":
-      return "❌ Telegram integration is part of Pro, and this Team Balance Pro organization is on the Free plan. Nothing was connected.";
+      return "❌ Telegram integration is part of Pro, and this TeamBalance Pro organization is on the Free plan. Nothing was connected.";
     default:
-      return "❌ That connect code is invalid or has expired. Create a new one in Team Balance Pro → Communication Channels.";
+      return "❌ That connect code is invalid or has expired. Create a new one in TeamBalance Pro → Communication Channels.";
   }
 }

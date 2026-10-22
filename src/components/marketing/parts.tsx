@@ -23,12 +23,12 @@ export const linkFocus = "rounded-sm focus-visible:outline-none focus-visible:ri
 
 export function Logo({ onDark = false }: { onDark?: boolean }) {
   return (
-    <Link href="/" className={cn("flex items-center gap-2", linkFocus)} aria-label="Team Balance Pro home">
+    <Link href="/" className={cn("flex items-center gap-2", linkFocus)} aria-label="TeamBalance Pro home">
       <span className="grid size-8 place-items-center rounded-tbp-sm bg-primary text-primary-foreground" aria-hidden="true">
         <Scale className="size-4" />
       </span>
       <span className={cn("font-display text-lg font-extrabold tracking-tight", onDark ? "text-pitch-foreground" : "text-foreground")} aria-hidden="true">
-        Team Balance <span className="text-accent">Pro</span>
+        TeamBalance <span className="text-accent">Pro</span>
       </span>
     </Link>
   );

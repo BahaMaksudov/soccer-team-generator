@@ -236,7 +236,7 @@ export default function JoinGroupPage() {
           {group.organizationName} · {group.sportLabel}
         </p>
         <h1 className="mt-1 text-2xl font-extrabold sm:text-3xl">Join {group.name}</h1>
-        <p className="mt-2 text-sm text-muted-foreground">You&apos;ve been invited to join this group on Team Balance Pro. The organizer approves every request.</p>
+        <p className="mt-2 text-sm text-muted-foreground">You&apos;ve been invited to join this group on TeamBalance Pro. The organizer approves every request.</p>
       </header>
       {body}
       {error && (

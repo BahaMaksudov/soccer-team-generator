@@ -83,7 +83,7 @@ describe("webhook /poll command — retired in M9-A (creates nothing)", () => {
       expect(global.fetch).toHaveBeenCalledTimes(1);
       const [url, init] = (global.fetch as ReturnType<typeof vi.fn>).mock.calls[0];
       expect(String(url)).toMatch(/\/sendMessage$/);
-      expect(JSON.parse(init.body).text).toBe("Create attendance polls from Team Balance Pro.");
+      expect(JSON.parse(init.body).text).toBe("Create attendance polls from TeamBalance Pro.");
     });
   }
 });

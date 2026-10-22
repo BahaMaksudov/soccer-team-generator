@@ -20,7 +20,7 @@ import ChangePasswordForm from "./ChangePasswordForm";
  * yes/no). Never ids, hashes, tokens or Telegram identities. Change Password
  * is unchanged (password accounts only).
  */
-export const metadata = { title: "Account — Team Balance Pro" };
+export const metadata = { title: "Account — TeamBalance Pro" };
 
 const focusRing = "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2";
 

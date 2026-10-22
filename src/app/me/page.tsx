@@ -19,7 +19,7 @@ import { cn } from "@/lib/cn";
  */
 const focusRing = "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2";
 
-export const metadata = { title: "My Games — Team Balance Pro" };
+export const metadata = { title: "My Games — TeamBalance Pro" };
 
 export default async function MyGamesPage() {
   let account;

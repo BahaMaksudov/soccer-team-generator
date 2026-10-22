@@ -6,7 +6,7 @@ import PersonalAttendancePage from "./PersonalAttendancePage";
  * /api/attend. No account needed. Never indexed; no Referer.
  */
 export const metadata = {
-  title: "Team Balance Pro — Your attendance",
+  title: "TeamBalance Pro — Your attendance",
   robots: { index: false, follow: false },
   referrer: "no-referrer" as const,
 };

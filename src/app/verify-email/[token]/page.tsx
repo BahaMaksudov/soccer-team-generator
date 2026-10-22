@@ -15,7 +15,7 @@ import VerifyEmailButton from "./VerifyEmailButton";
 type Params = Promise<{ token: string }>;
 type SearchParams = Promise<{ next?: string | string[] }>;
 
-export const metadata = { title: "Verify your email — Team Balance Pro" };
+export const metadata = { title: "Verify your email — TeamBalance Pro" };
 
 export default async function VerifyEmailTokenPage({ params, searchParams }: { params: Params; searchParams: SearchParams }) {
   const { token } = await params;

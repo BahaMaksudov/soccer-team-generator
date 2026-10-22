@@ -540,8 +540,8 @@ describe("M11.3 — password recovery", () => {
     const c = await forgot("nobody@example.test");
     for (const r of [a, b, c]) expect(r).toEqual({ status: 200, body: { ok: true, message: FORGOT_PASSWORD_MESSAGE } });
     expect(testOutbox.sent.map((m) => ({ to: m.to, subject: m.subject }))).toEqual([
-      { to: "owner@example.test", subject: "Reset your Team Balance Pro password" },
-      { to: "google@example.test", subject: "Signing in to Team Balance Pro" },
+      { to: "owner@example.test", subject: "Reset your TeamBalance Pro password" },
+      { to: "google@example.test", subject: "Signing in to TeamBalance Pro" },
     ]);
     expect(testOutbox.sent[1].text).not.toMatch(/reset-password/); // Google-only: no token, no password is set
     expect(await prisma.passwordResetToken.count()).toBe(1);

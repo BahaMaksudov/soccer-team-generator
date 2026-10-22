@@ -197,6 +197,8 @@ describe("UI primitives are presentation-only", () => {
         // M13A — group invitation page; "Invite players" card; /me group requests
         "src/app/join/JoinGroupPage.tsx",
         "src/app/admin/o/[organizationSlug]/g/[groupSlug]/players/InvitePlayersCard.tsx",
+        // Public legal pages (/privacy, /terms) — shared layout.
+        "src/components/legal/LegalPage.tsx",
         "src/app/account/security/page.tsx",
         "src/app/me/page.tsx",
       ].sort()

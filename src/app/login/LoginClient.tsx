@@ -99,7 +99,7 @@ export default function LoginClient({ googleEnabled }: { googleEnabled: boolean 
         </SubmitButton>
       </form>
       <p className="mt-6 text-center text-sm text-muted-foreground">
-        New to Team Balance Pro? <TextLink href="/signup">Create an account</TextLink>
+        New to TeamBalance Pro? <TextLink href="/signup">Create an account</TextLink>
       </p>
     </>
   );

@@ -86,7 +86,7 @@ export const revalidate = 0;
 
 // M7 — product branding is sport-neutral (Group pages carry their own sport wording).
 export const metadata = {
-  title: "Team Balance Pro",
+  title: "TeamBalance Pro",
   description: "Balanced teams for pickup sports",
 };
 

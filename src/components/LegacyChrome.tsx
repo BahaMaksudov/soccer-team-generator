@@ -26,7 +26,7 @@ export default function LegacyChrome({ teamName, children }: { teamName: string;
 
       <footer className="border-t bg-white/80 mt-12 print:hidden">
         <div className="max-w-6xl mx-auto px-4 py-6 text-sm text-slate-600">
-          © {new Date().getFullYear()} Team Balance Pro
+          © {new Date().getFullYear()} TeamBalance Pro
         </div>
       </footer>
     </>

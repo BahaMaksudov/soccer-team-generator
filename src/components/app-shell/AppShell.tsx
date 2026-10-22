@@ -16,13 +16,13 @@ function Brand({ className }: { className?: string }) {
     <Link
       href="/admin"
       className={cn("flex items-center gap-2 rounded-tbp-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent", className)}
-      aria-label="Team Balance Pro — My Organizations"
+      aria-label="TeamBalance Pro — My Organizations"
     >
       <span className="grid size-8 shrink-0 place-items-center rounded-tbp-sm bg-primary text-primary-foreground" aria-hidden="true">
         <Scale className="size-4" />
       </span>
       <span className="font-display font-extrabold tracking-tight" aria-hidden="true">
-        Team Balance <span className="text-accent">Pro</span>
+        TeamBalance <span className="text-accent">Pro</span>
       </span>
     </Link>
   );

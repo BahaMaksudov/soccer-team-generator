@@ -123,6 +123,9 @@ export default function SignupClient({ invite, next = null, googleEnabled = fals
           Create Account
         </SubmitButton>
       </form>
+      <p className="mt-4 text-center text-xs text-muted-foreground">
+        By creating an account, you agree to our <TextLink href="/terms">Terms of Service</TextLink> and acknowledge our <TextLink href="/privacy">Privacy Policy</TextLink>.
+      </p>
       <p className="mt-6 text-center text-sm text-muted-foreground">
         Already have an account?{" "}
         <TextLink href={invite ? `/login?callbackUrl=${encodeURIComponent(`/invite/${invite.token}`)}` : "/login"}>Sign in</TextLink>

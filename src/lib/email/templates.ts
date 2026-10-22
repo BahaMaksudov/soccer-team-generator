@@ -5,7 +5,7 @@ import type { OutgoingEmail } from "./transport";
  * dynamic values HTML-escaped. Contains no internal ids, passwords or
  * hashes — only the recipient-facing link.
  */
-export const BRAND = "Team Balance Pro";
+export const BRAND = "TeamBalance Pro";
 
 const escapeHtml = (s: string) =>
   s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");

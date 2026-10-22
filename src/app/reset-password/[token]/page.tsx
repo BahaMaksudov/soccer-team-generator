@@ -12,7 +12,7 @@ import ResetPasswordForm from "./ResetPasswordForm";
  */
 type Params = Promise<{ token: string }>;
 
-export const metadata = { title: "Choose a new password — Team Balance Pro" };
+export const metadata = { title: "Choose a new password — TeamBalance Pro" };
 
 export default async function ResetPasswordPage({ params }: { params: Params }) {
   const { token } = await params;

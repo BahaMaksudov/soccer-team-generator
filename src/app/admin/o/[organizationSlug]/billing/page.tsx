@@ -5,6 +5,7 @@ import { requireOrganizationContextForSlug, TenantContextError, type Organizatio
 import { billingView, CHECKOUT_CHARGE_NOTICE, confirmCheckoutReturn } from "@/lib/billing/checkout";
 import PlanUsageCard from "../PlanUsageCard";
 import PlanComparison from "@/components/billing/PlanComparison";
+import { BILLING_NOT_ACTIVE_NOTE } from "@/lib/billing/config";
 import BillingActions from "./BillingActions";
 
 /**
@@ -110,8 +111,12 @@ export default async function BillingPage({ params, searchParams }: { params: Pa
         <h2 id="billing-compare" className="text-lg font-extrabold">
           Free vs Pro
         </h2>
-        <PlanComparison />
-        <p className="text-xs text-muted-foreground">Prices in USD. Pro renews automatically until canceled; cancel any time in Manage billing (Pro stays until the end of the paid period). Reaching a limit never removes data.</p>
+        <PlanComparison planned={!view.billingEnabled} />
+        <p className="text-xs text-muted-foreground">
+          {view.billingEnabled
+            ? "Prices in USD. Pro renews automatically until canceled; cancel any time in Manage billing (Pro stays until the end of the paid period). Reaching a limit never removes data."
+            : BILLING_NOT_ACTIVE_NOTE}
+        </p>
       </section>
     </div>
   );

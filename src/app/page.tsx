@@ -37,10 +37,10 @@ import pickupGame from "../../public/marketing/pickup-game.jpg";
  */
 
 export const metadata = {
-  title: "Team Balance Pro — Fair teams for pickup sports",
+  title: "TeamBalance Pro — Fair teams for pickup sports",
   description: "Create fair, balanced teams for pickup games, leagues, and recreational sports in seconds.",
   openGraph: {
-    title: "Team Balance Pro — Fair teams for pickup sports",
+    title: "TeamBalance Pro — Fair teams for pickup sports",
     description: "Create fair, balanced teams for pickup games, leagues, and recreational sports in seconds.",
     type: "website",
   },
@@ -143,7 +143,7 @@ function ValueStrip() {
   return (
     <section aria-labelledby="values-title" className="border-y border-border bg-card">
       <h2 id="values-title" className="sr-only">
-        Why Team Balance Pro
+        Why TeamBalance Pro
       </h2>
       <div className="mx-auto grid max-w-6xl gap-8 px-4 py-10 sm:grid-cols-2 sm:px-6 lg:grid-cols-4">
         {VALUES.map(({ icon: I, t, d }) => (
@@ -293,7 +293,7 @@ function BalanceSection() {
           id="balance-title"
           eyebrow="Balance engine"
           title="Balanced, not just random."
-          body="Shuffling names into two lists rarely makes a good game. Team Balance Pro weighs what actually matters."
+          body="Shuffling names into two lists rarely makes a good game. TeamBalance Pro weighs what actually matters."
         />
         <ul className="mt-8 space-y-3">
           {FACTORS.map(({ icon: I, t }) => (
@@ -460,6 +460,12 @@ function Footer() {
           <Link href="/login" className={cn("opacity-85 hover:opacity-100", linkFocus)}>
             Sign In
           </Link>
+          <Link href="/privacy" className={cn("opacity-85 hover:opacity-100", linkFocus)}>
+            Privacy Policy
+          </Link>
+          <Link href="/terms" className={cn("opacity-85 hover:opacity-100", linkFocus)}>
+            Terms of Service
+          </Link>
         </nav>
         <div className="space-y-1 text-sm">
           {/* M12-A — support contact only when SUPPORT_EMAIL is configured (never invented). */}
@@ -468,7 +474,7 @@ function Footer() {
               Support: <a href={`mailto:${supportEmail()}`} className={cn("underline-offset-2 hover:underline", linkFocus)}>{supportEmail()}</a>
             </p>
           )}
-          <p className="opacity-75">© {new Date().getFullYear()} Team Balance Pro</p>
+          <p className="opacity-75">© {new Date().getFullYear()} TeamBalance Pro</p>
         </div>
       </div>
     </footer>

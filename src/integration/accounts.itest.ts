@@ -174,7 +174,7 @@ describe("M5 sign-up, verification and login (real DB)", () => {
     expect(await prisma.organizationMembership.count({ where: { userId: user.id } })).toBe(0);
 
     const email = lastEmailTo("new.user@example.com")!;
-    expect(email.subject).toBe("Verify your email for Team Balance Pro");
+    expect(email.subject).toBe("Verify your email for TeamBalance Pro");
     expect(email.from).toBe("Team Balance Pro <no-reply@mail.teambalancepro.test>");
     const token = verificationTokenFrom("new.user@example.com");
     expect(token).toMatch(new RegExp(`^${TOKEN_RE}$`));
@@ -463,8 +463,8 @@ describe("M5 invitations with email delivery (real DB)", () => {
     expect(data.invitation).toMatchObject({ email: "bob@example.com", role: "ADMIN" });
 
     const email = lastEmailTo("bob@example.com")!;
-    expect(email.subject).toBe("You're invited to join New England Eagles on Team Balance Pro");
-    expect(email.text).toContain("Bahrom Maksudov invited you to join New England Eagles on Team Balance Pro as ADMIN");
+    expect(email.subject).toBe("You're invited to join New England Eagles on TeamBalance Pro");
+    expect(email.text).toContain("Bahrom Maksudov invited you to join New England Eagles on TeamBalance Pro as ADMIN");
     expect(email.text).toContain(`${BASE}/invite/${token}`);
     expect(email.text).not.toContain("org-nee");
 

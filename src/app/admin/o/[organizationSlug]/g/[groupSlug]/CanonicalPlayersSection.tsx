@@ -216,7 +216,7 @@ export default function CanonicalPlayersSection({
               {canManage && <th>Skill</th>}
               {canManage && <th>Stamina</th>}
               <th>Status</th>
-              <th title="Optional Team Balance Pro account (players never need one)">Account</th>
+              <th title="Optional TeamBalance Pro account (players never need one)">Account</th>
               <th title="Telegram connection used to match poll votes in this group">Telegram</th>
               {canManage && <th></th>}
             </tr>

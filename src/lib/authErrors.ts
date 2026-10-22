@@ -14,8 +14,8 @@ const MESSAGES: Record<string, string> = {
   // M12-A — explicit account linking (an email match alone never links accounts).
   GoogleLinkRequired:
     "An account with this email already exists. Sign in with your password, then connect Google under Account → Sign-in methods.",
-  GoogleEmailMismatch: "That Google account uses a different email address than your Team Balance Pro account, so it wasn't connected.",
-  GoogleAlreadyLinked: "That Google account is already connected to another Team Balance Pro account, or a different Google account is already connected to this one.",
+  GoogleEmailMismatch: "That Google account uses a different email address than your TeamBalance Pro account, so it wasn't connected.",
+  GoogleAlreadyLinked: "That Google account is already connected to another TeamBalance Pro account, or a different Google account is already connected to this one.",
   GoogleLinkExpired: "The Google connection request expired. Start again from Account → Sign-in methods.",
   GoogleAccountMissing: "Google didn't return an account identifier. Please try again.",
   // NextAuth OAuth outcomes (cancelled consent, provider errors).

@@ -309,7 +309,7 @@ async function handleMessage(message: any) {
   if (cmd === "/chatid") {
     await telegram("sendMessage", {
       chat_id: chatId.toString(),
-      text: "To connect this group, open Team Balance Pro → your group → Communication Channels → Connect Telegram Group.",
+      text: "To connect this group, open TeamBalance Pro → your group → Communication Channels → Connect Telegram Group.",
     });
     return;
   }
@@ -330,7 +330,7 @@ async function handleMessage(message: any) {
   // polls are created only by OWNER/ADMIN in Team Balance Pro (a Match →
   // "Post poll to Telegram"). Creates nothing here.
   if (cmd === "/poll") {
-    await telegram("sendMessage", { chat_id: chatId.toString(), text: "Create attendance polls from Team Balance Pro." });
+    await telegram("sendMessage", { chat_id: chatId.toString(), text: "Create attendance polls from TeamBalance Pro." });
     return;
   }
   
@@ -397,7 +397,7 @@ async function handleMessage(message: any) {
       ? `✅ Connected your Telegram account to ${result.playerName} (${result.groupName}).`
       : result.code === "TELEGRAM_LINKED_TO_OTHER_PLAYER"
         ? "❌ This Telegram account is already linked to another player in that group. Ask the organizer."
-        : "❌ That code is invalid or has expired. Create a new one in Team Balance Pro (My teams).";
+        : "❌ That code is invalid or has expired. Create a new one in TeamBalance Pro (My teams).";
     await telegram("sendMessage", { chat_id: chatId.toString(), text: reply });
     return;
   }
@@ -407,7 +407,7 @@ async function handleMessage(message: any) {
   if (cmd === "/link") {
     await telegram("sendMessage", {
       chat_id: chatId.toString(),
-      text: "This command is no longer supported. To connect Telegram, open Team Balance Pro → My teams → Connect Telegram, or ask your organizer.",
+      text: "This command is no longer supported. To connect Telegram, open TeamBalance Pro → My teams → Connect Telegram, or ask your organizer.",
     });
     return;
   }

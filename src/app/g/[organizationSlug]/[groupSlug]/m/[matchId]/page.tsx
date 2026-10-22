@@ -20,7 +20,7 @@ import { MatchPageShell, MatchView } from "@/components/match-link/MatchView";
  */
 export const dynamic = "force-dynamic";
 export const metadata = {
-  title: "Team Balance Pro — Match",
+  title: "TeamBalance Pro — Match",
   robots: { index: false, follow: false },
   referrer: "no-referrer" as const,
 };
