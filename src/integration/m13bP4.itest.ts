@@ -39,7 +39,7 @@ const failing = (make: () => Error): EmailTransport => ({ name: "failing", send:
 
 async function seed() {
   await prisma.$executeRawUnsafe(
-    `TRUNCATE "RsvpInvitation","RsvpSend","EmailUnsubscribeToken","OrganizationEmailOptOut","GlobalEmailSuppression","PersonalAttendanceLink","AttendanceResponse","TelegramPoll","TelegramChat","Match","CommunityPlayer","Community","Player","Group","OrganizationMembership","Organization","User","AppSetting" RESTART IDENTITY CASCADE`
+    `TRUNCATE "RsvpEmailUsage","RsvpInvitation","RsvpSend","EmailUnsubscribeToken","OrganizationEmailOptOut","GlobalEmailSuppression","PersonalAttendanceLink","AttendanceResponse","TelegramPoll","TelegramChat","Match","CommunityPlayer","Community","Player","Group","OrganizationMembership","Organization","User","AppSetting" RESTART IDENTITY CASCADE`
   );
   await prisma.user.createMany({ data: ["owner", "admin", "member", "other", "free", "linked"].map((n) => ({ id: `u-${n}`, email: `${n}@example.test`, name: n, passwordHash: null, emailVerifiedAt: VERIFIED })) });
   await prisma.organization.createMany({
@@ -103,6 +103,16 @@ async function fillLedger(n: number, status: "SENT" | "UNCERTAIN" | "FAILED" | "
   await prisma.match.create({ data: { id: matchId, groupId: "gf", date: new Date("2099-01-01") } });
   const s = await prisma.rsvpSend.create({ data: { organizationId: "of", groupId: "gf", matchId, kind: "INITIAL", round: 1, requestKey: `fill-${matchId}` } });
   await prisma.rsvpInvitation.createMany({ data: Array.from({ length: n }, () => ({ sendId: s.id, organizationId: "of", groupId: "gf", matchId, round: 1, status, reservedAt })) });
+  // The engine moves SENT / UNCERTAIN rows to the durable ledger; mirror that here.
+  if (status === "SENT" || status === "UNCERTAIN")
+    await prisma.$executeRaw`INSERT INTO "RsvpEmailUsage" ("organizationId", "day", "consumed") VALUES ('of', ${reservedAt.toISOString().slice(0, 10)}::date, ${n})
+      ON CONFLICT ("organizationId", "day") DO UPDATE SET "consumed" = "RsvpEmailUsage"."consumed" + ${n}`;
+}
+
+/** The ledger never double-counts: consumed == SENT + UNCERTAIN invitations (when none were deleted). */
+async function ledgerMatchesInvitations(organizationId: string) {
+  const [{ consumed }] = await prisma.$queryRaw<Array<{ consumed: bigint }>>`SELECT COALESCE(SUM("consumed"), 0)::bigint AS consumed FROM "RsvpEmailUsage" WHERE "organizationId" = ${organizationId}`;
+  expect(Number(consumed)).toBe(await prisma.rsvpInvitation.count({ where: { organizationId, status: { in: ["SENT", "UNCERTAIN"] } } }));
 }
 
 /** Every text value in every table, to prove a raw token is stored nowhere. */
@@ -322,6 +332,68 @@ describe("M13B P4 — quota (UTC day / month)", () => {
   });
 });
 
+describe("M13B P4 hardening — durable quota history", () => {
+  it("deleting a match after sending keeps the consumed allowance (no bypass by delete-and-resend)", async () => {
+    expect(await send(FREE(), "mf", "key-del-match-01")).toMatchObject({ ok: true, counts: { queued: 20 } });
+    await processRsvpQueue({ now: NOW });
+    await ledgerMatchesInvitations("of");
+    await prisma.match.delete({ where: { id: "mf" } });
+    expect(await prisma.rsvpInvitation.count({ where: { organizationId: "of" } })).toBe(0); // invitation rows (with addresses) are gone
+    expect((await rsvpAllowance("of", NOW)).day).toMatchObject({ used: 20, reserved: 0, remaining: 0 });
+    expect((await rsvpAllowance("of", NOW)).month).toMatchObject({ used: 20, remaining: 80 });
+    expect(await send(FREE(), "mf2", "key-del-match-02")).toEqual({ ok: false, code: "PLAN_LIMIT" });
+    // The ledger holds no recipient data.
+    const cols = await prisma.$queryRaw<Array<{ c: string }>>`SELECT column_name AS c FROM information_schema.columns WHERE table_name = 'RsvpEmailUsage' ORDER BY 1`;
+    expect(cols.map((x) => x.c)).toEqual(["consumed", "day", "organizationId"]);
+  });
+
+  it("deleting a match with only QUEUED (never sent) invitations releases them", async () => {
+    await send(FREE(), "mf", "key-del-queued-1");
+    expect((await rsvpAllowance("of", NOW)).day.used).toBe(20);
+    await prisma.match.delete({ where: { id: "mf" } });
+    expect((await rsvpAllowance("of", NOW)).day).toMatchObject({ used: 0, remaining: 20 });
+  });
+
+  it("deleting a player keeps their consumed email counted", async () => {
+    await send(FREE(), "mf", "key-del-player-1");
+    await processRsvpQueue({ now: NOW });
+    await prisma.player.deleteMany({ where: { id: { in: ["f00", "f01", "f02"] } } });
+    expect((await rsvpAllowance("of", NOW)).day.used).toBe(20);
+    await ledgerMatchesInvitations("of");
+  });
+
+  it("a match deleted while its email is being handed off is still counted", async () => {
+    await send(FREE(), "mf", "key-del-midsend1");
+    let first = true;
+    setRsvpTransportForTests({
+      name: "deleting",
+      send: async () => {
+        if (first) {
+          first = false;
+          await prisma.match.delete({ where: { id: "mf" } });
+        }
+        return { providerMessageId: "x" };
+      },
+    });
+    expect(await processRsvpQueue({ now: NOW })).toMatchObject({ sent: 1, errors: 0 });
+    expect((await rsvpAllowance("of", NOW)).day).toMatchObject({ used: 1, reserved: 0 });
+  });
+
+  it("consumption counts on the UTC day of the reservation, even when sent after midnight; FAILED and SKIPPED never consume", async () => {
+    const late = new Date("2026-10-21T23:59:59Z");
+    const after = new Date("2026-10-22T00:00:30Z");
+    await send(FREE(), "mf", "key-rollover-001", "INITIAL", late);
+    let n = 0;
+    setRsvpTransportForTests({ name: "mixed", send: async () => (++n % 4 === 0 ? Promise.reject(new EmailDeliveryError("http", 422)) : { providerMessageId: `m${n}` }) });
+    await prisma.attendanceResponse.create({ data: { matchId: "mf", groupId: "gf", playerId: "f19", participantStatus: "PLAYING", participantSource: "PERSONAL_LINK", participantRespondedAt: late } });
+    expect(await processRsvpQueue({ now: after })).toMatchObject({ sent: 15, failed: 4, skipped: 1 });
+    expect((await rsvpAllowance("of", late)).day).toMatchObject({ used: 15, reserved: 0, remaining: 5 });
+    expect((await rsvpAllowance("of", after)).day).toMatchObject({ used: 0, remaining: 20 });
+    expect((await rsvpAllowance("of", after)).month.used).toBe(15);
+    await ledgerMatchesInvitations("of");
+  });
+});
+
 describe("M13B P4 — failures, uncertainty and stale claims", () => {
   it("FAILED (definite 4xx) releases the reservation and revokes the unsent link; an explicit retry re-reserves with a new idempotency key", async () => {
     const r = await send(OWNER(), "m", "key-fail-000001");
@@ -394,6 +466,8 @@ describe("M13B P4 — failures, uncertainty and stale claims", () => {
     expect(await prisma.rsvpInvitation.findUnique({ where: { id: b.id } })).toMatchObject({ status: "SENDING", attempts: 1 });
     expect(testOutbox.sent).toHaveLength(1);
     expect((await rsvpAllowance("o", NOW)).day.used).toBe(3);
+    // Raw-SQL timestamps are UTC regardless of the session TimeZone (the local test database runs America/New_York).
+    expect((await invitations({ sendId: r.sendId, status: "SENT" }))[0].claimedAt).toEqual(NOW);
   });
 });
 

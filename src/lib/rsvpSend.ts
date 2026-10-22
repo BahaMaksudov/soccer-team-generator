@@ -39,11 +39,14 @@ import { formatDeadline } from "@/lib/deadlineFormat";
  *   retryFailedInvitations — OWNER/ADMIN: FAILED rows (definitely not accepted) of a send
  *                     go back to QUEUED, re-reserved under the same locks; never UNCERTAIN.
  *
- * Quota ledger: QUEUED + SENDING (reserved) and SENT + UNCERTAIN (consumed) count by
- * reservedAt in the UTC day / month; FAILED and SKIPPED don't. Every reservation runs
- * under the organization's advisory lock (READ COMMITTED; counts are read after taking
- * the lock, so concurrent sends serialize and can't exceed either limit). Releasing
- * (→ FAILED / SKIPPED) only lowers usage and needs no lock. UNCERTAIN is never released.
+ * Quota: QUEUED + SENDING (reserved, counted live from invitations) and SENT + UNCERTAIN
+ * (consumed, in the durable RsvpEmailUsage ledger — survives match / player deletion)
+ * count by the UTC day / month of the reservation; FAILED and SKIPPED don't. A row moves
+ * from reserved to consumed in one transaction. Every reservation runs under the
+ * organization's advisory lock (READ COMMITTED; usage is read in one statement after
+ * taking the lock, so concurrent sends serialize and can't exceed either limit).
+ * Releasing (→ FAILED / SKIPPED) only lowers usage and needs no lock. UNCERTAIN is never
+ * released.
  * Addresses and tokens are never logged; stored errors are sanitized categories.
  */
 export const RSVP_STALE_SENDING_MS = 10 * 60_000;
@@ -76,6 +79,9 @@ export type SendRefusal = PreviewRefusal | "DELIVERY_DISABLED" | "INVALID_REQUES
 export type SendCounts = { queued: number; skipped: number; byReason: Record<string, number> };
 export type CreateSendResult = { ok: true; sendId: string; round: number; duplicate: boolean; counts: SendCounts } | { ok: false; code: SendRefusal };
 
+// Raw SQL timestamps are passed as UTC ISO text cast to "timestamp" (the columns are
+// timestamp(3) without time zone, holding UTC), never as Date parameters — those would be
+// shifted by the session's TimeZone setting.
 const quotaLock = (tx: Prisma.TransactionClient, organizationId: string) => tx.$queryRaw`SELECT 1 AS locked FROM pg_advisory_xact_lock(hashtext(${"rsvp-quota:" + organizationId}))`;
 const isUnique = (e: unknown) => e instanceof Prisma.PrismaClientKnownRequestError && e.code === "P2002";
 
@@ -174,33 +180,73 @@ export function sanitizeSendError(e: unknown): string {
   return "UNEXPECTED";
 }
 
-/** Rows stuck in SENDING (crash / timeout mid-send) become UNCERTAIN — never retried automatically. */
+/**
+ * Rows stuck in SENDING (crash / timeout mid-send) become UNCERTAIN — never retried
+ * automatically — and are moved to the consumed ledger in the SAME statement.
+ */
 export async function recoverStaleSending(now: Date = new Date()): Promise<number> {
-  const { count } = await prisma.rsvpInvitation.updateMany({
-    where: { status: "SENDING", claimedAt: { lt: new Date(now.getTime() - RSVP_STALE_SENDING_MS) } },
-    data: { status: "UNCERTAIN", lastError: "STALE_CLAIM" },
+  const cutoff = new Date(now.getTime() - RSVP_STALE_SENDING_MS);
+  const rows = await prisma.$queryRaw<Array<{ n: bigint }>>`
+    WITH moved AS (
+      UPDATE "RsvpInvitation" SET "status" = 'UNCERTAIN', "lastError" = 'STALE_CLAIM', "updatedAt" = ${now.toISOString()}::timestamp
+      WHERE "status" = 'SENDING' AND "claimedAt" < ${cutoff.toISOString()}::timestamp
+      RETURNING "organizationId", "reservedAt"
+    ), counted AS (
+      INSERT INTO "RsvpEmailUsage" ("organizationId", "day", "consumed")
+      SELECT "organizationId", "reservedAt"::date, count(*)::int FROM moved WHERE "reservedAt" IS NOT NULL GROUP BY 1, 2
+      ON CONFLICT ("organizationId", "day") DO UPDATE SET "consumed" = "RsvpEmailUsage"."consumed" + EXCLUDED."consumed"
+      RETURNING 1
+    )
+    SELECT count(*)::bigint AS n FROM moved`;
+  return Number(rows[0]?.n ?? 0);
+}
+
+/** One more consumed email for the organization on the UTC day of its reservation. */
+const consume = (tx: Prisma.TransactionClient, organizationId: string, reservedAt: Date) =>
+  tx.$executeRaw`INSERT INTO "RsvpEmailUsage" ("organizationId", "day", "consumed") VALUES (${organizationId}, ${reservedAt.toISOString().slice(0, 10)}::date, 1)
+    ON CONFLICT ("organizationId", "day") DO UPDATE SET "consumed" = "RsvpEmailUsage"."consumed" + 1`;
+
+/**
+ * Record a delivery outcome for a claimed row, under its row lock. SENT / UNCERTAIN move
+ * the reservation to the consumed ledger in the same transaction. If the row is gone
+ * (its match was deleted mid-send) a hand-off that may have reached the provider is still
+ * counted. A row already recovered as UNCERTAIN (stale) is not counted again.
+ */
+async function settle(id: string, organizationId: string, reservedAt: Date | null, outcome: "SENT" | "UNCERTAIN" | "FAILED", data: Prisma.RsvpInvitationUpdateManyMutationInput): Promise<void> {
+  await prisma.$transaction(async (tx) => {
+    const [row] = await tx.$queryRaw<Array<{ status: string }>>`SELECT "status" FROM "RsvpInvitation" WHERE "id" = ${id} FOR UPDATE`;
+    const counts = outcome !== "FAILED" && reservedAt;
+    if (!row) {
+      if (counts) await consume(tx, organizationId, reservedAt);
+      return;
+    }
+    if (row.status === "SENDING") {
+      await tx.rsvpInvitation.updateMany({ where: { id }, data: { status: outcome, ...data } });
+      if (counts) await consume(tx, organizationId, reservedAt);
+    } else if (row.status === "UNCERTAIN" && outcome === "SENT") {
+      await tx.rsvpInvitation.updateMany({ where: { id }, data: { status: "SENT", ...data } }); // already counted
+    }
   });
-  return count;
 }
 
 type Claimed = { id: string; attempts: number };
 
 async function claimNext(now: Date, sendId: string | null): Promise<Claimed | null> {
   const rows = sendId
-    ? await prisma.$queryRaw<Claimed[]>`UPDATE "RsvpInvitation" SET "status" = 'SENDING', "attempts" = "attempts" + 1, "claimedAt" = ${now}, "updatedAt" = ${now}
+    ? await prisma.$queryRaw<Claimed[]>`UPDATE "RsvpInvitation" SET "status" = 'SENDING', "attempts" = "attempts" + 1, "claimedAt" = ${now.toISOString()}::timestamp, "updatedAt" = ${now.toISOString()}::timestamp
         WHERE "id" = (SELECT "id" FROM "RsvpInvitation" WHERE "status" = 'QUEUED' AND "sendId" = ${sendId} ORDER BY "createdAt", "id" FOR UPDATE SKIP LOCKED LIMIT 1)
         RETURNING "id", "attempts"`
-    : await prisma.$queryRaw<Claimed[]>`UPDATE "RsvpInvitation" SET "status" = 'SENDING', "attempts" = "attempts" + 1, "claimedAt" = ${now}, "updatedAt" = ${now}
+    : await prisma.$queryRaw<Claimed[]>`UPDATE "RsvpInvitation" SET "status" = 'SENDING', "attempts" = "attempts" + 1, "claimedAt" = ${now.toISOString()}::timestamp, "updatedAt" = ${now.toISOString()}::timestamp
         WHERE "id" = (SELECT "id" FROM "RsvpInvitation" WHERE "status" = 'QUEUED' ORDER BY "createdAt", "id" FOR UPDATE SKIP LOCKED LIMIT 1)
         RETURNING "id", "attempts"`;
   return rows[0] ?? null;
 }
 
-const skip = (id: string, reason: string) => prisma.rsvpInvitation.update({ where: { id }, data: { status: "SKIPPED", skipReason: reason, claimedAt: null } });
+const skip = (id: string, reason: string) => prisma.rsvpInvitation.updateMany({ where: { id, status: "SENDING" }, data: { status: "SKIPPED", skipReason: reason, claimedAt: null } });
 
 /** Deliver ONE claimed (SENDING) invitation. */
 async function deliverOne(c: Claimed, transport: EmailTransport, now: Date): Promise<"SENT" | "FAILED" | "UNCERTAIN" | "SKIPPED"> {
-  const inv = await prisma.rsvpInvitation.findUniqueOrThrow({
+  const inv = await prisma.rsvpInvitation.findUnique({
     where: { id: c.id },
     select: {
       id: true,
@@ -210,12 +256,14 @@ async function deliverOne(c: Claimed, transport: EmailTransport, now: Date): Pro
       playerId: true,
       email: true,
       recipientType: true,
+      reservedAt: true,
       organization: { select: { name: true } },
       group: { select: { name: true, timezone: true } },
       player: { select: { firstName: true, lastName: true } },
       match: { select: { ...MATCH_SELECT, locationName: true, venue: { select: { name: true } }, community: { select: { name: true } } } },
     },
   });
+  if (!inv) return "SKIPPED"; // removed with its match after the claim
   if (!inv.playerId || !inv.player || !inv.email || !inv.recipientType) {
     await skip(inv.id, "PLAYER_REMOVED");
     return "SKIPPED";
@@ -276,7 +324,7 @@ async function deliverOne(c: Claimed, transport: EmailTransport, now: Date): Pro
     });
 
     const result = await transport.send({ ...message, from: getEmailFrom(), idempotencyKey, headers: oneClickUnsubscribeHeaders(links.oneClick) });
-    await prisma.rsvpInvitation.update({ where: { id: inv.id }, data: { status: "SENT", sentAt: new Date(), providerMessageId: result.providerMessageId, lastError: null } });
+    await settle(inv.id, inv.organizationId, inv.reservedAt, "SENT", { sentAt: new Date(), providerMessageId: result.providerMessageId, lastError: null });
     await prisma.personalAttendanceLink.updateMany({
       where: { matchId: inv.matchId, playerId: inv.playerId, channel: "EMAIL", revokedAt: null, id: { not: prepared.linkId } },
       data: { revokedAt: new Date() },
@@ -287,31 +335,46 @@ async function deliverOne(c: Claimed, transport: EmailTransport, now: Date): Pro
     const lastError = sanitizeSendError(e);
     if (outcome === "FAILED") {
       // Definitely not accepted: release the reservation; the unsent link is revoked.
-      await prisma.rsvpInvitation.update({ where: { id: inv.id }, data: { status: "FAILED", failedAt: new Date(), lastError } });
+      await settle(inv.id, inv.organizationId, inv.reservedAt, "FAILED", { failedAt: new Date(), lastError });
       await prisma.personalAttendanceLink.updateMany({ where: { id: prepared.linkId, revokedAt: null }, data: { revokedAt: new Date() } });
       return "FAILED";
     }
     // Maybe delivered: keep it counted and keep its link working; never retried automatically.
-    await prisma.rsvpInvitation.update({ where: { id: inv.id }, data: { status: "UNCERTAIN", lastError } });
+    await settle(inv.id, inv.organizationId, inv.reservedAt, "UNCERTAIN", { lastError });
     return "UNCERTAIN";
   }
 }
 
-export type QueueRun = { recovered: number; sent: number; failed: number; uncertain: number; skipped: number; remaining: number };
+export type QueueRun = { recovered: number; sent: number; failed: number; uncertain: number; skipped: number; errors: number; remaining: number; stoppedForTime: boolean };
 
-/** Worker / scheduler continuation: recover stale rows, then deliver up to `limit` QUEUED invitations. */
-export async function processRsvpQueue(opts: { limit?: number; sendId?: string; now?: Date } = {}): Promise<QueueRun> {
+/**
+ * Worker / scheduler continuation: recover stale rows, then deliver QUEUED invitations
+ * one claim at a time until `limit` rows or the `budgetMs` time budget is used (a new
+ * claim is never started after the budget). An unexpected error on one row is counted
+ * and the loop continues; that row stays SENDING and is later recovered as UNCERTAIN
+ * (counted, never resent) — the conservative outcome.
+ */
+export async function processRsvpQueue(opts: { limit?: number; sendId?: string; now?: Date; budgetMs?: number } = {}): Promise<QueueRun> {
   const transport = rsvpTransport(); // throws (before claiming anything) outside the test environment
   const now = opts.now ?? new Date();
-  const run: QueueRun = { recovered: await recoverStaleSending(now), sent: 0, failed: 0, uncertain: 0, skipped: 0, remaining: 0 };
+  const started = Date.now();
+  const run: QueueRun = { recovered: await recoverStaleSending(now), sent: 0, failed: 0, uncertain: 0, skipped: 0, errors: 0, remaining: 0, stoppedForTime: false };
   for (let i = 0; i < (opts.limit ?? RSVP_BATCH_LIMIT); i++) {
+    if (opts.budgetMs !== undefined && Date.now() - started >= opts.budgetMs) {
+      run.stoppedForTime = true;
+      break;
+    }
     const claimed = await claimNext(now, opts.sendId ?? null);
     if (!claimed) break;
-    const outcome = await deliverOne(claimed, transport, now);
-    if (outcome === "SENT") run.sent++;
-    else if (outcome === "FAILED") run.failed++;
-    else if (outcome === "UNCERTAIN") run.uncertain++;
-    else run.skipped++;
+    try {
+      const outcome = await deliverOne(claimed, transport, now);
+      if (outcome === "SENT") run.sent++;
+      else if (outcome === "FAILED") run.failed++;
+      else if (outcome === "UNCERTAIN") run.uncertain++;
+      else run.skipped++;
+    } catch {
+      run.errors++;
+    }
   }
   run.remaining = await prisma.rsvpInvitation.count({ where: { status: "QUEUED", ...(opts.sendId ? { sendId: opts.sendId } : {}) } });
   return run;

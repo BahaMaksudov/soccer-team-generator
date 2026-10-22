@@ -269,13 +269,32 @@ Rollback: drop the two tables, the three enums and the `channel` column. Existin
 | Status | Meaning | Counts against the allowance |
 | --- | --- | --- |
 | `QUEUED`, `SENDING` | reserved | yes |
-| `SENT` | provider accepted | yes |
+| `SENT` | **accepted** by the provider (or, in P4/P5, the test outbox) — *not* proof of inbox delivery | yes |
 | `UNCERTAIN` | timeout, network, 5xx, 409, stale claim — may have been delivered | yes (never released, never auto-retried) |
 | `FAILED` | definite 4xx or configuration error before hand-off — not delivered | no (released) |
 | `SKIPPED` | not sent (reason recorded) | no |
 
-- The allowance is counted by `reservedAt` in the UTC calendar day `[00:00Z, next 00:00Z)` and the UTC
-  calendar month.
+- **Durable ledger (P4 hardening, migration `20261212120000_m13b_p4_quota_ledger`).** Usage =
+  *consumed* + *reserved*:
+  - *Consumed* (`SENT`, `UNCERTAIN`) lives in `RsvpEmailUsage(organizationId, day, consumed)`: one counter
+    per organization per UTC day. It holds no address, player or match reference, so deleting a match or
+    player never gives allowance back. Deleting the organization removes it.
+  - *Reserved* (`QUEUED`, `SENDING`) is counted live from `RsvpInvitation`. A queued row of a deleted match
+    was never sent, so its release is correct.
+  - A row moves from reserved to consumed in **one transaction**, under its row lock (`settle`). Stale
+    recovery does the same in one SQL statement. Both parts of the usage are read in **one statement**
+    (one snapshot), so a moving row is never counted twice or missed.
+  - A hand-off whose invitation row disappeared mid-send (match deleted) is still counted. A row already
+    recovered as `UNCERTAIN` is not counted again if the late send reports `SENT`.
+  - Raw SQL passes timestamps as UTC ISO text cast to `timestamp`, never as `Date` parameters. A `Date`
+    would be shifted by the session `TimeZone` (the local test database runs `America/New_York`; this was a
+    real P4 bug in `claimedAt` and stale recovery, now fixed and tested).
+  - Tradeoff: per-day counters instead of per-email rows. That is the smallest PII-free record, but
+    per-recipient history disappears with the match. The `RsvpInvitation` rows remain the audit record
+    while the match exists.
+- Allowance is attributed to the UTC calendar day `[00:00Z, next 00:00Z)` and UTC calendar month **of the
+  reservation**. An email reserved at 23:59Z and sent at 00:01Z counts on the earlier day, so it never
+  moves between days.
 - Free and Trial get 100 per month / 20 per day. Pro, complimentary and LEGACY get 500 per month / 50 per day.
 - Reservations are made only under the organization's advisory lock, after the counts are read
   (READ COMMITTED). Concurrent sends for different matches therefore serialize and can't exceed either
@@ -297,6 +316,12 @@ therefore kept apart:
     only the newest emailed link works.
   - When it is **FAILED**, its own unsent link is revoked and the earlier emailed link stays valid.
   - When it is **UNCERTAIN**, the link is kept, because the email may have arrived.
+- An **older emailed link** used after a newer email was accepted is revoked. The page says the link was
+  replaced by a newer email (state `replaced`, P5) and records nothing. The newest email's link, and any
+  manual link, still work.
+- Neither a FAILED nor an UNCERTAIN delivery can touch a MANUAL link: revocation after delivery is limited
+  to `channel = EMAIL`, and to the attempt's own link on failure. Tests cover regenerate, a failed resend
+  and an accepted resend.
 - A player can therefore hold at most one active MANUAL link and one active EMAIL link. Both answer as the
   same player (`PERSONAL_LINK` source), and attendance semantics are unchanged.
 
@@ -320,7 +345,5 @@ therefore kept apart:
   destination (for example `p•••@example.com`) if approved.
 - DMARC is not configured for `mail.teambalancepro.com` / `teambalancepro.com`. It is required before P4 goes
   live.
-- P4: deleting a match cascades its RSVP invitations, which also removes them from the quota ledger.
-  Consider blocking that, or keeping a ledger row, before sending goes live (P5).
 - P4: no scheduler calls `processRsvpQueue` yet, and no HTTP route exists. Wiring the cron / queue
   continuation and the real transport is P5+, behind explicit approval.

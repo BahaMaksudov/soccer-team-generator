@@ -300,6 +300,7 @@ model Organization {
   // M13B P4 — RSVP email sends (the quota ledger).
   rsvpSends               RsvpSend[]
   rsvpInvitations         RsvpInvitation[]
+  rsvpEmailUsage          RsvpEmailUsage[]
 }
 
 // M11.1 — one AI recap generation attempt and its credit (UTC calendar-month `period`, "YYYY-MM").
@@ -1677,6 +1678,22 @@ enum RsvpRecipientType {
   PLAYER
   GUARDIAN
   ACCOUNT
+}
+
+// M13B P4 hardening — CONSUMED RSVP email allowance per organization per UTC day.
+// Counts invitations that became SENT (accepted by the provider / test outbox) or
+// UNCERTAIN (may have been delivered), attributed to the UTC day of their reservation.
+// Holds no recipient data and no match / player references, so deleting a match or a
+// player never gives consumed allowance back. Active reservations (QUEUED / SENDING)
+// are NOT here — they are counted live from RsvpInvitation, so nothing is counted twice.
+model RsvpEmailUsage {
+  organizationId String
+  day            DateTime @db.Date
+  consumed       Int      @default(0)
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@id([organizationId, day])
 }
 
 // One organizer action ("Send invitations" / "Resend to unanswered") for one match.

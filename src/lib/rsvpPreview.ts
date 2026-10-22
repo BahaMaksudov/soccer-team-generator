@@ -33,16 +33,15 @@ export type DestinationSource = "PLAYER" | "GUARDIAN" | "ACCOUNT";
 
 export type PreviewRow = { playerId: string; name: string; status: PreviewStatus; source: DestinationSource | null; maskedEmail: string | null };
 
-/** The ledger statuses that count against the allowance (by reservedAt). */
+/** The statuses that count against the allowance: reserved (QUEUED / SENDING) and consumed (SENT / UNCERTAIN). */
 export const COUNTED_STATUSES = ["QUEUED", "SENDING", "SENT", "UNCERTAIN"] as const;
-const RESERVED_STATUSES = ["QUEUED", "SENDING"] as const;
 
 export type RsvpUsage = { used: number; reserved: number };
 export type RsvpAllowance = {
   plan: EffectivePlan;
   day: { limit: number; period: string; resetsAt: string } & RsvpUsage & { remaining: number };
   month: { limit: number; period: string; resetsAt: string } & RsvpUsage & { remaining: number };
-  /** "used" includes sent, uncertain (may have been delivered) and reserved (queued / sending) emails. */
+  /** "used" = consumed (accepted by the provider, or uncertain — may have been delivered) + reserved (queued / sending). */
   note: string;
 };
 
@@ -64,21 +63,25 @@ type Db = Prisma.TransactionClient | typeof prisma;
 
 export { maskEmail } from "@/lib/emailAddress";
 
-/** Ledger usage in a window: every counted invitation reserved in [start, end). */
+/**
+ * Usage in a UTC window [start, end): CONSUMED (SENT / UNCERTAIN, from the durable
+ * RsvpEmailUsage ledger — survives match / player deletion) + RESERVED (QUEUED / SENDING
+ * invitations, counted live). An invitation moves from reserved to consumed in ONE
+ * transaction, and both parts are read in ONE statement (one snapshot), so a row is
+ * never counted twice or missed while it moves.
+ */
 async function usageIn(db: Db, organizationId: string, start: Date, end: Date): Promise<RsvpUsage> {
-  const rows = await db.rsvpInvitation.groupBy({
-    by: ["status"],
-    where: { organizationId, status: { in: [...COUNTED_STATUSES] }, reservedAt: { gte: start, lt: end } },
-    _count: { _all: true },
-  });
-  let used = 0;
-  let reserved = 0;
-  for (const r of rows) {
-    used += r._count._all;
-    if ((RESERVED_STATUSES as readonly string[]).includes(r.status)) reserved += r._count._all;
-  }
-  return { used, reserved };
+  const [row] = await db.$queryRaw<Array<{ consumed: bigint; reserved: bigint }>>`
+    SELECT
+      (SELECT COALESCE(SUM("consumed"), 0) FROM "RsvpEmailUsage"
+        WHERE "organizationId" = ${organizationId} AND "day" >= ${isoDay(start)}::date AND "day" < ${isoDay(end)}::date)::bigint AS consumed,
+      (SELECT count(*) FROM "RsvpInvitation"
+        WHERE "organizationId" = ${organizationId} AND "status" IN ('QUEUED', 'SENDING')
+          AND "reservedAt" >= ${start.toISOString()}::timestamp AND "reservedAt" < ${end.toISOString()}::timestamp)::bigint AS reserved`;
+  const reserved = Number(row.reserved);
+  return { used: Number(row.consumed) + reserved, reserved };
 }
+const isoDay = (d: Date) => d.toISOString().slice(0, 10);
 
 /** The organization's RSVP allowance with ACTUAL ledger usage (UTC calendar day / month). */
 export async function rsvpAllowance(organizationId: string, now: Date = new Date(), db: Db = prisma): Promise<RsvpAllowance> {
@@ -90,7 +93,7 @@ export async function rsvpAllowance(organizationId: string, now: Date = new Date
     plan,
     day: { limit: limits.rsvpEmailsPerDay, period: day.period, resetsAt: day.next.toISOString(), ...d, remaining: Math.max(0, limits.rsvpEmailsPerDay - d.used) },
     month: { limit: limits.rsvpEmailsPerMonth, period: month.period, resetsAt: month.next.toISOString(), ...m, remaining: Math.max(0, limits.rsvpEmailsPerMonth - m.used) },
-    note: "Used includes sent emails, emails whose delivery is uncertain, and emails queued to send. Sending re-checks everything, so the final count can differ.",
+    note: "Used counts emails accepted for delivery, emails whose delivery is uncertain, and emails queued to send. Sending re-checks everything, so the final count can differ.",
   };
 }
 
