@@ -1,5 +1,5 @@
 import Link from "next/link";
-import LegalPage, { ContactEmail, EffectiveDate, LegalSection, OwnerTodo } from "@/components/legal/LegalPage";
+import LegalPage, { ContactEmail, EffectiveDate, LegalSection } from "@/components/legal/LegalPage";
 import { ACCOUNT_MIN_AGE, GOVERNING_LAW, LEGAL_PATHS, OPERATING_BRAND, PRODUCT_NAME, legalCanonical, legalIsDraft } from "@/lib/legal";
 import { PLAN_LIMITS, TRIAL_DAYS } from "@/lib/entitlements";
 import { PRO_PRICES_USD } from "@/lib/billing/config";
@@ -138,7 +138,7 @@ export default function TermsPage() {
 
       <LegalSection id="liability" title="12. Limitation of liability">
         <p>
-          To the extent permitted by law, we are not liable for indirect, incidental, special or consequential damages, or for losses arising from games or other activities organized using the service, from missed or delayed messages, or from inaccurate attendance, forecasts or teams. Nothing in these terms limits liability that cannot be limited by law, or any rights you have as a consumer under applicable law. <OwnerTodo id="attorney-liability" />
+          To the extent permitted by law, we are not liable for indirect, incidental, special or consequential damages, or for losses arising from games or other activities organized using the service, from missed or delayed messages, or from inaccurate attendance, forecasts or teams. Nothing in these terms limits liability that cannot be limited by law, or any rights you have as a consumer under applicable law.
         </p>
       </LegalSection>
 

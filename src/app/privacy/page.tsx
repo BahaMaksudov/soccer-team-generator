@@ -1,5 +1,5 @@
 import Link from "next/link";
-import LegalPage, { ContactEmail, EffectiveDate, LegalSection, OwnerTodo } from "@/components/legal/LegalPage";
+import LegalPage, { ContactEmail, EffectiveDate, LegalSection } from "@/components/legal/LegalPage";
 import { ACCOUNT_MIN_AGE, HOSTING, LEGAL_PATHS, OPERATING_BRAND, PRODUCT_NAME, legalCanonical, legalIsDraft } from "@/lib/legal";
 import { TRIAL_DAYS } from "@/lib/entitlements";
 
@@ -246,14 +246,11 @@ export default function PrivacyPage() {
             If you believe a minor created an account, or that information about a minor was entered without appropriate authority, contact us at <ContactEmail /> and we will review it.
           </li>
         </ul>
-        <p>
-          <OwnerTodo id="attorney-children" />
-        </p>
       </LegalSection>
 
       <LegalSection id="transfers" title="14. Where information is processed">
         <p>
-          {PRODUCT_NAME} runs in the United States: the application runs on Vercel in its {HOSTING.appRegion.replace("Vercel region ", "")} region, and our database is hosted by {HOSTING.databaseRegion}. Vercel may deliver pages to you through its global network. Our other service providers (section 8) may process information in the United States or other countries. If you use the service from outside the United States, your information is processed in the United States. <OwnerTodo id="international-transfers" />
+          {PRODUCT_NAME} runs in the United States: the application runs on Vercel in its {HOSTING.appRegion.replace("Vercel region ", "")} region, and our database is hosted by {HOSTING.databaseRegion}. Vercel may deliver pages to you through its global network. Our other service providers (section 8) may process information in the United States or other countries. If you use the service from outside the United States, your information is processed in the United States.
         </p>
       </LegalSection>
 

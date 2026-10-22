@@ -26,7 +26,7 @@ export const ACCOUNT_MIN_AGE = 18;
  * set explicitly during the approved release — never the commit or build date.
  * null = not published yet (the pages show it as pending and stay a draft).
  */
-export const LEGAL_EFFECTIVE_DATE: string | null = null;
+export const LEGAL_EFFECTIVE_DATE: string | null = "2026-10-21";
 
 /** Owner decisions already applied to the text (audit trail; not rendered). */
 export const CONFIRMED_DECISIONS = [
@@ -35,6 +35,7 @@ export const CONFIRMED_DECISIONS = [
   "Contact for privacy, legal and support requests: support@teambalancepro.com — confirmed operational (forwarded through ImprovMX to the owner's inbox).",
   "Operator identification: 'operated by an individual under the AYBIA Labs brand; AYBIA Labs is a brand name, not a registered company'. The owner's personal legal name is not published.",
   "No mailing address (personal or home) is published; public contact is by email only.",
+  "2026-10-21: the owner elected to publish both documents WITHOUT attorney review, accepting the documented unresolved risks: information about minors (COPPA / state law; youth names visible on Public, link-shared and Telegram), international-transfer wording for users outside the US, and disclaimers / limitation of liability / governing law and venue. The documents must never be described as attorney-reviewed.",
   "Accounts are for adults aged 18 or older; organizers may keep player profiles for minors when they have appropriate authority. No age or parental-consent verification exists.",
   "Retention is manual: data is kept as needed to run the service; only the listed security records and tokens expire automatically.",
   "Deletion and correction requests are handled manually by email; identity and authority may be verified; no fixed deadline.",
@@ -56,10 +57,6 @@ export const CONFIRMED_DECISIONS = [
 export type OwnerItemCategory = "publication" | "legal-review" | "billing-launch";
 export type OwnerItem = { id: string; label: string; category: OwnerItemCategory };
 export const OWNER_ITEMS: readonly OwnerItem[] = [
-  { id: "effective-date", category: "publication", label: "Set at publication: the date these documents are published." },
-  { id: "attorney-children", category: "legal-review", label: "Attorney review: information about minors entered by organizers (including COPPA and state-law questions, and visibility of minors' names on Public or link-shared pages)." },
-  { id: "attorney-liability", category: "legal-review", label: "Attorney review: disclaimers, limitation of liability and governing-law wording (including whether a venue clause is needed)." },
-  { id: "international-transfers", category: "legal-review", label: "Attorney review: whether additional international-transfer or region-specific privacy wording is needed for users outside the United States." },
   { id: "billing-terms", category: "billing-launch", label: "Before paid subscriptions are enabled: billing, renewal, cancellation and refund terms." },
 ];
 

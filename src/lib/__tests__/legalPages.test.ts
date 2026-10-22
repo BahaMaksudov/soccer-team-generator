@@ -20,8 +20,8 @@ import { PRIVATE_PREFIXES } from "@/app/robots";
 const read = (p: string) => fs.readFileSync(path.join(process.cwd(), p), "utf8");
 const privacy = read("src/app/privacy/page.tsx");
 const terms = read("src/app/terms/page.tsx");
-const layout = read("src/components/legal/LegalPage.tsx");
-const used = [...`${privacy}${terms}${layout}`.matchAll(/<OwnerTodo id="([a-z-]+)"/g)].map((m) => m[1]);
+// Markers placed in the pages (the layout's effective-date marker is only a fallback for an unset date).
+const used = [...`${privacy}${terms}`.matchAll(/<OwnerTodo id="([a-z-]+)"/g)].map((m) => m[1]);
 
 describe("legal pages — public and linked", () => {
   it("/privacy and /terms are never auth-gated, tagged as redesigned pages and not disallowed for crawlers", () => {
@@ -46,8 +46,8 @@ describe("legal pages — public and linked", () => {
 describe("legal pages — no invented facts", () => {
   it("open items, by category (mailbox confirmed; hosting locations verified)", () => {
     const by = (c: string) => OWNER_ITEMS.filter((i) => i.category === c).map((i) => i.id);
-    expect(by("publication")).toEqual(["effective-date"]);
-    expect(by("legal-review")).toEqual(["attorney-children", "attorney-liability", "international-transfers"]);
+    expect(by("publication")).toEqual([]);
+    expect(by("legal-review")).toEqual([]);
     expect(by("billing-launch")).toEqual(["billing-terms"]);
     expect(`${privacy}${terms}`).not.toMatch(/id="(mailbox|hosting-disclosure|operator-identity|mailing-address)"/);
   });
@@ -58,8 +58,9 @@ describe("legal pages — no invented facts", () => {
     expect(used).not.toContain("billing-terms");
   });
   it("while any item is open OR the publication date is unset: draft banner + noindex (never presented as a final policy)", () => {
-    expect(legalIsDraft()).toBe(true);
-    expect(LEGAL_EFFECTIVE_DATE).toBeNull(); // set only during the approved release — never the commit / build date
+    // Published 2026-10-21 (owner-approved release): no publication or legal-review item open, explicit date set.
+    expect(legalIsDraft()).toBe(false);
+    expect(LEGAL_EFFECTIVE_DATE).toBe("2026-10-21");
     expect(legalIsDraft([], null)).toBe(true);
     expect(legalIsDraft([], "2026-13-40")).toBe(true);
     expect(legalIsDraft([{ id: "x", label: "x", category: "publication" }], "2026-12-01")).toBe(true);
@@ -112,8 +113,9 @@ describe("legal pages — rendered content (owner decisions applied, no false cl
       expect(t, name).toContain(LEGAL_CONTACT_EMAIL);
       expect(t, name).not.toMatch(/\bLLC\b|\bInc\.?\b|\bCorp(oration)?\b|\bLtd\b|incorporated|registered trademark/i);
       expect(t, name).not.toMatch(/\d+\s+\w+\s+(Street|St\.|Avenue|Ave\.|Road|Rd\.|Suite|Blvd)|P\.?O\.? Box/i);
-      expect(t, name).toContain("Draft for owner review");
-      expect(t, name).toContain("[Owner to confirm: Set at publication");
+      expect(t, name).not.toContain("Draft for owner review");
+      expect(t, name).not.toContain("Owner to confirm");
+      expect(t, name).toContain("Effective date: October 21, 2026");
     }
   });
   it("adult-only accounts vs organizer-managed youth profiles; no claimed age or consent verification", () => {
