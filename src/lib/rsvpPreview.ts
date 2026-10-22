@@ -5,6 +5,8 @@ import { attendanceMode } from "@/lib/attendanceClosure";
 import { matchRosterIds } from "@/lib/personalAttendance";
 import { loadRecipients, type Recipient } from "@/lib/playerContact";
 import { organizationPlan, utcDay, utcMonth, type EffectivePlan } from "@/lib/entitlements";
+import { maskEmail } from "@/lib/emailAddress";
+import { suppressedFor } from "@/lib/emailSuppression";
 
 /**
  * M13B P2 — RSVP invitation RECIPIENT PREVIEW (OWNER/ADMIN). Strictly read-only:
@@ -18,7 +20,8 @@ import { organizationPlan, utcDay, utcMonth, type EffectivePlan } from "@/lib/en
  *   ALREADY_ANSWERED    — the player answered (any channel)
  *   INVALID_CONTACT     — the stored organizer contact no longer validates (no fallback)
  *   NO_EMAIL            — no contact and no verified linked-account email
- *   SUPPRESSED          — reserved for P3 (no suppression list exists yet; never assigned)
+ *   SUPPRESSED          — the address is globally suppressed (hard bounce / spam complaint)
+ *                         or opted out of THIS organization's RSVP emails (reason never shown)
  *   OVER_LIMIT          — PROVISIONAL: sendable, but beyond the plan's daily / monthly
  *                         ceiling for this one send (not a final send decision — actual
  *                         remaining allowance needs the sending ledger, P4)
@@ -58,7 +61,7 @@ export type RsvpPreview = {
   notOnRoster: Array<{ playerId: string; name: string; status: "NOT_ON_ROSTER" }>;
   counts: { willSend: number; excluded: number; byStatus: Record<PreviewStatus, number>; overLimitIsProvisional: true };
   allowance: RsvpAllowance;
-  suppression: { available: false };
+  suppression: { available: true };
   sending: { available: false };
 };
 
@@ -67,12 +70,7 @@ export type PreviewRefusal = "NOT_FOUND" | "TELEGRAM_MATCH" | "MATCH_CANCELED" |
 const MANAGERS = ["OWNER", "ADMIN"] as const;
 const fullName = (p: { firstName: string; lastName: string }) => `${p.firstName} ${p.lastName}`.trim();
 
-/** "pat.smith@example.com" → "p•••@example.com" (domain kept so organizers can sanity-check it). */
-export function maskEmail(email: string): string {
-  const at = email.lastIndexOf("@");
-  if (at < 1) return "•••";
-  return `${email[0]}•••@${email.slice(at + 1)}`;
-}
+export { maskEmail } from "@/lib/emailAddress";
 
 /** The organization's RSVP allowance windows (UTC calendar day / month). Usage unknown until P4. */
 export async function rsvpAllowance(organizationId: string, now: Date = new Date()): Promise<RsvpAllowance> {
@@ -118,6 +116,8 @@ export async function previewRsvpRecipients(context: TenantContext, matchId: str
   const onRoster = players.filter((p) => roster.has(p.id));
   const recipients = await loadRecipients(groupId, onRoster.map((p) => p.id));
   const answers = new Map(attendance.map((a) => [a.playerId, a]));
+  const addresses = [...recipients.values()].flatMap((r) => (r.kind === "CONTACT" || r.kind === "ACCOUNT" ? [r.email] : []));
+  const suppressed = await suppressedFor(context.organization.id, addresses);
   // Provisional: actual usage is unknown until P4, so only the allowance itself can be exceeded here.
   const capacity = Math.min(allowance.day.limit, allowance.month.limit);
   let sendable = 0;
@@ -131,6 +131,7 @@ export async function previewRsvpRecipients(context: TenantContext, matchId: str
     else if (a?.participantStatus) status = "ALREADY_ANSWERED";
     else if (r.kind === "INVALID_CONTACT") status = "INVALID_CONTACT";
     else if (r.kind === "NO_EMAIL") status = "NO_EMAIL";
+    else if (suppressed.has(r.email)) status = "SUPPRESSED";
     else status = ++sendable > capacity ? "OVER_LIMIT" : "WILL_SEND";
     return { playerId: p.id, name: fullName(p), status, ...dest };
   });
@@ -148,7 +149,7 @@ export async function previewRsvpRecipients(context: TenantContext, matchId: str
       notOnRoster,
       counts: { willSend: byStatus.WILL_SEND, excluded: rows.length - byStatus.WILL_SEND, byStatus, overLimitIsProvisional: true },
       allowance,
-      suppression: { available: false },
+      suppression: { available: true },
       sending: { available: false },
     },
   };

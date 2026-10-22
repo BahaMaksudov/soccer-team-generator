@@ -40,3 +40,10 @@ export function parseContactEmail(raw: unknown): ContactEmailParse {
   if (!z.string().email().safeParse(trimmed).success) return { ok: false, error: "Enter a valid email address." };
   return { ok: true, email: normalizeEmail(trimmed) };
 }
+
+/** "pat.smith@example.com" → "p•••@example.com" (domain kept so organizers / recipients can sanity-check it). */
+export function maskEmail(email: string): string {
+  const at = email.lastIndexOf("@");
+  if (at < 1) return "•••";
+  return `${email[0]}•••@${email.slice(at + 1)}`;
+}

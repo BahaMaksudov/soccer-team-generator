@@ -1,14 +1,14 @@
 # M13B — Bulk RSVP email invitations
 
-Status: **P1 and P2 implemented locally** (`feature/m13b-p1-player-emails`). Nothing sends email.
+Status: **P1, P2 and P3 implemented locally** (`feature/m13b-p1-player-emails`). Nothing sends email.
 Later phases are designed below and need approval one by one.
 
 ## Approved product decisions (final for M13B)
 
 | Topic | Decision |
 | --- | --- |
-| Free allowance | 100 RSVP recipient emails per calendar month and 20 per calendar day, per organization |
-| Paid / LEGACY allowance | 500 per month and 50 per day, per organization |
+| Free and Trial allowance | 100 RSVP recipient emails per calendar month and 20 per calendar day, per organization (Trial keeps every other Pro entitlement) |
+| Pro / complimentary / LEGACY allowance | 500 per month and 50 per day, per organization |
 | Accounting window | UTC calendar day / month (the app's existing convention for monthly limits) — enforced from P2/P4, not in P1 |
 | Recipient source | Organizer-entered contact email; otherwise the verified email of a linked player account |
 | Answers | Yes / Maybe / No; opening a link never submits — the recipient confirms on the page |
@@ -109,7 +109,7 @@ in this order):
 | `ALREADY_ANSWERED` | The player answered through any channel |
 | `INVALID_CONTACT` | The stored organizer contact no longer validates (no fallback) |
 | `NO_EMAIL` | No contact and no verified account email |
-| `SUPPRESSED` | Reserved for P3 (`suppression.available: false`; never assigned yet) |
+| `SUPPRESSED` | Globally suppressed (hard bounce / spam complaint) or opted out of this organization (P3; the reason is never shown) |
 | `OVER_LIMIT` | Sendable, but beyond the allowance |
 | `WILL_SEND` | Will be invited |
 
@@ -118,7 +118,8 @@ community match) are listed separately in `notOnRoster` with names only. They ar
 recipients and their destinations are not shown.
 
 **Allowance:**
-- In the plan catalog: Free 100 / month and 20 / day; Pro, trial, complimentary and LEGACY 500 / 50.
+- In the plan catalog: Free and Trial 100 / month and 20 / day; Pro, complimentary and LEGACY 500 / 50.
+- The preview shows **plan ceilings** (`kind: PLAN_CEILING`, `remaining: null`), not the remaining allowance; `OVER_LIMIT` is a provisional classification (`overLimitIsProvisional: true`).
 - UTC calendar day / month, per organization.
 - Previewing never counts.
 - The sending ledger doesn't exist yet, so actual usage is reported as **unavailable** (not zero).
@@ -142,6 +143,60 @@ the remainder are marked SKIPPED / LIMIT, and the request returns 402 `PLAN_LIMI
 and excluded counts, daily and monthly allowance, the provisional-usage note, masked destinations with their
 source (Player / Parent-Guardian / linked account) and status, the not-on-roster list, and a **disabled**
 "Send invitations — coming soon" button with no handler.
+
+## P3 — suppression and unsubscribe (implemented; nothing sends)
+
+**Data** (migration `20261205120000_m13b_p3_email_suppression`, additive):
+
+| Table | Holds |
+| --- | --- |
+| `GlobalEmailSuppression` | Unique email; reason `HARD_BOUNCE` / `SPAM_COMPLAINT`; source |
+| `OrganizationEmailOptOut` | Unique (organization, email); source `LINK` / `ONE_CLICK` |
+| `EmailUnsubscribeToken` | Organization, email, purpose `RSVP_INVITATION`, unique SHA-256 hash, `expiresAt`, `usedAt` |
+
+All addresses are in the canonical form. The global suppression never depends on a nullable organization
+id. Opt-outs and tokens are removed if their organization is deleted. Account, password-reset and security
+emails never consult these tables (tested).
+
+**Token lifecycle** (`src/lib/emailSuppression.ts`):
+
+- 32 random bytes; only the hash is stored.
+- Bound to one organization, address and purpose.
+- Issued per email by the sending engine (P4). It doesn't depend on invitation rows.
+- Valid for 365 days, so old emails keep working.
+- Using it is idempotent: the opt-out is one unique row. The first use is recorded and replays change
+  nothing. An expired token is refused (410) and points the recipient to a newer email or
+  support@teambalancepro.com.
+
+**Two distinct flows:**
+
+1. **Website** — the email's "Unsubscribe" link is `/unsubscribe#<token>`, with the token in the fragment
+   so it never appears in a request URL.
+   - The page is noindex and sends no Referer. It shows the organization and the masked address and
+     changes **nothing** on load (read-only `POST /api/email/unsubscribe/preview`).
+   - Only pressing **Unsubscribe** sends the same-origin JSON `POST /api/email/unsubscribe`.
+2. **RFC 8058 one-click** — the email carries `List-Unsubscribe: <…/api/email/unsubscribe/one-click?t=…>`
+   and `List-Unsubscribe-Post: List-Unsubscribe=One-Click`; DKIM signs the message.
+   - The mail provider POSTs exactly `List-Unsubscribe=One-Click` (form encoding). No page, no cookies, no
+     same-origin check.
+   - Any other body → 400. There is no GET handler (405): a link scanner can't unsubscribe anyone.
+   - The token is in the URL here (RFC 8058 requires it), so it can appear in hosting request logs. It only
+     unsubscribes one address from one organization's RSVP emails.
+
+**Transport:** `OutgoingEmail.headers`, allow-listed to `List-Unsubscribe` and `List-Unsubscribe-Post`.
+Values are single-line and checked before any network call; the memory transport enforces the same rules.
+
+**Preview:** `SUPPRESSED` now applies. Precedence: `ORGANIZER_OVERRIDE` > `ALREADY_ANSWERED` >
+`INVALID_CONTACT` > `NO_EMAIL` > `SUPPRESSED` > `OVER_LIMIT` (provisional) > `WILL_SEND`. Suppressed
+recipients never use plan capacity. The reason is never shown, and other organizations' opt-outs are
+never consulted.
+
+**Organizers** see "Not receiving invitation emails" and can't bypass it. P4's send path re-checks
+`suppressedFor` at send time, and there is no organizer-facing reversal.
+
+**Resubscribe (future, recipient-initiated only):** a "receive invitations again" action that sends a
+confirmation email to the address. Clicking its link removes that organization's opt-out. Global
+suppressions are removed only manually after the address is shown to be deliverable again.
 
 ## Open issues / risks
 

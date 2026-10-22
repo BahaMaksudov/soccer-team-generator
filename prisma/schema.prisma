@@ -292,6 +292,9 @@ model Organization {
   // M11.2A — Stripe (test mode) billing.
   billingSubscriptions    BillingSubscription[]
   billingCheckoutSessions BillingCheckoutSession[]
+  // M13B P3 — RSVP email opt-outs and unsubscribe tokens of this Organization.
+  emailOptOuts            OrganizationEmailOptOut[]
+  emailUnsubscribeTokens  EmailUnsubscribeToken[]
 }
 
 // M11.1 — one AI recap generation attempt and its credit (UTC calendar-month `period`, "YYYY-MM").
@@ -1566,4 +1569,69 @@ model BillingCheckoutSession {
   organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
 
   @@index([organizationId, status])
+}
+
+// ---------------------------------------------------------------------------
+// M13B P3 — email suppression and unsubscribe (RSVP invitation emails only;
+// account, password-reset and security emails never consult these tables).
+// Addresses are stored in the app's canonical form (normalizeEmail).
+
+enum GlobalSuppressionReason {
+  HARD_BOUNCE
+  SPAM_COMPLAINT
+}
+
+// A global suppression: never send RSVP email to this address again (any organization).
+// One row per address (unique email — no nullable organization id involved).
+model GlobalEmailSuppression {
+  id        String                  @id @default(cuid())
+  email     String                  @unique
+  reason    GlobalSuppressionReason
+  // Where it came from, e.g. "resend-webhook" (P7) or "manual". Never shown to organizers.
+  source    String
+  createdAt DateTime                @default(now())
+  updatedAt DateTime                @updatedAt
+}
+
+enum EmailOptOutSource {
+  // The recipient confirmed on the /unsubscribe page.
+  LINK
+  // RFC 8058 one-click (List-Unsubscribe-Post) from the recipient's mail provider.
+  ONE_CLICK
+}
+
+// The recipient opted out of RSVP invitation emails from ONE organization.
+model OrganizationEmailOptOut {
+  id             String            @id @default(cuid())
+  organizationId String
+  email          String
+  source         EmailOptOutSource
+  optedOutAt     DateTime          @default(now())
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@unique([organizationId, email])
+}
+
+enum EmailPurpose {
+  RSVP_INVITATION
+}
+
+// An unsubscribe capability for one (organization, address, purpose). The raw token
+// exists only in the email's links; only its SHA-256 is stored. Long-lived (see
+// src/lib/emailSuppression.ts) so old emails keep working; using it is idempotent.
+// Independent of invitation records (P4 issues one per email it sends).
+model EmailUnsubscribeToken {
+  id             String       @id @default(cuid())
+  organizationId String
+  email          String
+  purpose        EmailPurpose @default(RSVP_INVITATION)
+  tokenHash      String       @unique
+  createdAt      DateTime     @default(now())
+  expiresAt      DateTime
+  usedAt         DateTime?
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId, email])
 }

@@ -24,7 +24,7 @@ export const REDESIGN_CHROME = "redesign";
 // M12B — /attend: a player's personal attendance link (never auth-gated).
 // M13A — /join: a group invitation (never auth-gated; the page asks to sign in itself).
 // Legal pages — /privacy and /terms (public; Google must reach them without signing in).
-export const REDESIGNED_PATHS: readonly string[] = ["/", "/login", "/signup", "/verify-email", "/pricing", "/forgot-password", "/attend", "/join", "/privacy", "/terms"];
+export const REDESIGNED_PATHS: readonly string[] = ["/", "/login", "/signup", "/verify-email", "/pricing", "/forgot-password", "/attend", "/join", "/privacy", "/terms", "/unsubscribe"];
 // M9.3 — /share/m/** is the redesigned player Match page (Match Link / share link; never auth-gated).
 // M11.3 — /forgot-password and /reset-password/<token>: the redesigned auth screens (never auth-gated).
 export const REDESIGNED_PREFIXES: readonly string[] = ["/verify-email/", "/share/m/", "/reset-password/"];

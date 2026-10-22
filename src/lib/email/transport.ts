@@ -22,7 +22,25 @@ export type OutgoingEmail = {
   html: string;
   /** M11.3 — sent as Resend's Idempotency-Key header: a retry with the same key is never delivered twice (provider window: 24 h). */
   idempotencyKey?: string;
+  /**
+   * M13B P3 — extra MESSAGE headers (RFC 8058 one-click unsubscribe for RSVP emails).
+   * Only the allow-listed names below; values must be single-line (checked before sending).
+   */
+  headers?: Record<string, string>;
 };
+
+/** M13B P3 — the only extra email headers the app may set. */
+export const ALLOWED_MESSAGE_HEADERS = ["List-Unsubscribe", "List-Unsubscribe-Post"] as const;
+
+/** Throws (before any network call) on a non-allow-listed name or a value with CR/LF or other control characters. */
+export function assertSafeMessageHeaders(headers: Record<string, string> | undefined): void {
+  if (!headers) return;
+  for (const [name, value] of Object.entries(headers)) {
+    if (!(ALLOWED_MESSAGE_HEADERS as readonly string[]).includes(name)) throw new Error(`Email header not allowed: ${name}`);
+    // eslint-disable-next-line no-control-regex
+    if (typeof value !== "string" || value.length === 0 || value.length > 2000 || /[\u0000-\u001f\u007f]/.test(value)) throw new Error(`Email header value invalid: ${name}`);
+  }
+}
 export type SendResult = { providerMessageId: string | null };
 
 export interface EmailTransport {
@@ -55,6 +73,7 @@ export function createResendTransport(options: {
   return {
     name: "resend",
     async send(message) {
+      assertSafeMessageHeaders(message.headers);
       let res: Response;
       try {
         res = await doFetch(RESEND_ENDPOINT, {
@@ -70,6 +89,7 @@ export function createResendTransport(options: {
             subject: message.subject,
             text: message.text,
             html: message.html,
+            ...(message.headers ? { headers: message.headers } : {}),
           }),
           signal: AbortSignal.timeout(timeoutMs),
         });
@@ -108,6 +128,7 @@ export function createMemoryTransport(): EmailTransport & { sent: CapturedEmail[
       t.failNext = 0;
     },
     async send(message: CapturedEmail): Promise<SendResult> {
+      assertSafeMessageHeaders(message.headers); // same contract as the real provider path
       if (t.failNext > 0) {
         t.failNext--;
         throw new EmailDeliveryError("http", 503);

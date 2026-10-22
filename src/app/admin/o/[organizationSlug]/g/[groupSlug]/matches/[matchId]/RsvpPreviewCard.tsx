@@ -30,7 +30,7 @@ export const STATUS_LABEL: Record<Status, string> = {
   ALREADY_ANSWERED: "Already answered",
   ORGANIZER_OVERRIDE: "Status set by organizer",
   NOT_ON_ROSTER: "Not on this match's roster",
-  SUPPRESSED: "Unsubscribed",
+  SUPPRESSED: "Not receiving invitation emails",
   OVER_LIMIT: "Beyond plan ceiling (provisional)",
 };
 const SOURCE_LABEL = { PLAYER: "Player", GUARDIAN: "Parent / Guardian", ACCOUNT: "Linked account (verified)" } as const;

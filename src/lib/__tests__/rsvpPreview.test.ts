@@ -49,6 +49,7 @@ describe("P2 has no sending path", () => {
     expect(route).toContain("export async function GET");
     expect(route).not.toMatch(/export async function (POST|PUT|PATCH|DELETE)/);
     const lib = fs.readFileSync(path.join(process.cwd(), "src/lib/rsvpPreview.ts"), "utf8");
-    expect(lib).not.toMatch(/@\/lib\/email|telegram\(|callTelegram|generateToken|\.create\(|\.update\(|\.upsert\(|\.delete/);
+    // No email-sending module (@/lib/email or @/lib/email/*), no Telegram, no tokens, no writes.
+    expect(lib).not.toMatch(/@\/lib\/email["/]|telegram\(|callTelegram|generateToken|issueUnsubscribeToken|confirmUnsubscribe|\.create\(|\.createMany\(|\.update\(|\.updateMany\(|\.upsert\(|\.delete/);
   });
 });

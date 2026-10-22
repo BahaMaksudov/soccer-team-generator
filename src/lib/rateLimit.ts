@@ -82,6 +82,8 @@ const BUCKETS = {
   // M13A — group join links (optional first layer; per-user / per-group limits are database-backed).
   "join-read": { limit: 60, window: "10 m" },
   "join-write": { limit: 20, window: "10 m" },
+  // M13B P3 — unsubscribe page preview / confirmation (optional first layer).
+  unsubscribe: { limit: 60, window: "10 m" },
 } as const;
 export type RateLimitBucket = keyof typeof BUCKETS;
 const bucketLimiters = new Map<RateLimitBucket, Ratelimit>();
