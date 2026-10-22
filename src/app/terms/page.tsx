@@ -59,7 +59,7 @@ export default function TermsPage() {
             <strong>Organizers</strong> (organization owners and admins) manage groups, players, matches, attendance and published teams. Organizers are responsible for the information they enter about players: having appropriate authority or permission to record it, keeping it accurate, and choosing who can see their group through its visibility setting, shared links and any connected Telegram group.
           </li>
           <li>
-            <strong>Youth players:</strong> organizers may keep player profiles for minors only with appropriate authority, such as permission from a parent or guardian. Minors may not hold accounts. We do not verify ages or parental permission; organizers are responsible for obtaining any permission required.
+            <strong>Youth players:</strong> organizers may keep player profiles for minors only with appropriate authority, such as permission from a parent or guardian. Minors may not hold accounts. We do not verify ages or parental permission; organizers are responsible for obtaining any permission required, including for showing youth players&apos; names through Public or link-shared group pages and connected Telegram groups.
           </li>
           <li>
             <strong>Players</strong> may take part without an account (for example through a personal attendance link or a Telegram poll) or with an adult account linked to their player profile. Joining a group or linking a profile never gives a player organizer access.

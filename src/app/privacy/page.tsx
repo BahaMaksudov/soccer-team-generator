@@ -240,7 +240,7 @@ export default function PrivacyPage() {
             Organizers may create and manage player profiles for minors — for example on youth teams — only when they have appropriate authority, such as permission from a parent or guardian. Minors should not create accounts or use the service directly; the service does not verify parental consent.
           </li>
           <li>
-            Information about youth players is handled like any other player information: organizers see it, and the group&apos;s visibility setting, shared links and a connected Telegram group decide who else can see names, teams, results and Player of the Match (section 5). Organizers of youth groups should consider using <em>Private</em> visibility.
+            Youth player profiles are handled exactly like other player profiles — there are no separate youth protections. In particular: in a <em>Public</em> group, anyone with the group&apos;s address can see the roster with each youth player&apos;s first and last name and position; in a <em>Link</em> group, anyone holding a group share link or match link can see their names in published teams, results, Player of the Match and recaps; and in a connected Telegram group, members can see names in posted teams and who voted how in the non-anonymous polls (section 5). Organizers decide these settings; organizers of youth groups should consider <em>Private</em> visibility and not connecting a Telegram group.
           </li>
           <li>
             If you believe a minor created an account, or that information about a minor was entered without appropriate authority, contact us at <ContactEmail /> and we will review it.

@@ -141,7 +141,12 @@ describe("legal pages — rendered content (owner decisions applied, no false cl
     expect(pages.privacy).toContain("Neon on Amazon Web Services, US East (N. Virginia, us-east-1)");
     expect(pages.privacy).toContain("may process information in the United States or other countries");
   });
-  it("youth exposure is disclosed: roster on Public pages, link holders, non-anonymous Telegram polls", () => {
+  it("youth exposure is disclosed explicitly for Public, link-shared and Telegram visibility; no youth protections claimed", () => {
+    expect(pages.privacy).toContain("Youth player profiles are handled exactly like other player profiles — there are no separate youth protections.");
+    expect(pages.privacy).toContain("in a Public group, anyone with the group's address can see the roster with each youth player's first and last name and position");
+    expect(pages.privacy).toContain("anyone holding a group share link or match link can see their names in published teams");
+    expect(pages.privacy).toContain("who voted how in the non-anonymous polls");
+    expect(pages.terms).toContain("including for showing youth players' names through Public or link-shared group pages and connected Telegram groups");
     expect(pages.privacy).toContain("shows the roster (first and last names, positions and whether each player is active)");
     expect(pages.privacy).toContain("polls are not anonymous");
     expect(pages.privacy).toContain("anyone who has a link can open it and pass it on");
