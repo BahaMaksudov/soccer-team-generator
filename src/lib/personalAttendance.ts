@@ -119,7 +119,7 @@ export async function revokePersonalLink(groupId: string, matchId: string, playe
 
 // ------------------------------------------------------------------ player (public, token only)
 
-export type PersonalState = "open" | "closed" | "canceled" | "revoked" | "telegram" | "invalid";
+export type PersonalState = "open" | "closed" | "canceled" | "revoked" | "replaced" | "telegram" | "invalid";
 export type PersonalView = {
   state: PersonalState;
   playerName: string;
@@ -130,7 +130,7 @@ export type PersonalView = {
 };
 
 type Resolved = {
-  link: { id: string; matchId: string; groupId: string; playerId: string; revokedAt: Date | null };
+  link: { id: string; matchId: string; groupId: string; playerId: string; revokedAt: Date | null; replacedAt: Date | null };
   match: MatchRow & { date: Date; startTime: string | null; locationName: string | null; venue: { name: string; address: string | null } | null; community: { name: string } | null };
   group: { name: string; timezone: string; isActive: boolean };
   player: { firstName: string; lastName: string; isActive: boolean };
@@ -146,6 +146,7 @@ async function resolveToken(token: unknown): Promise<Resolved | null> {
       groupId: true,
       playerId: true,
       revokedAt: true,
+      replacedAt: true,
       match: { select: { id: true, groupId: true, communityId: true, status: true, attendanceClosedAt: true, attendanceDeadlineAt: true, date: true, startTime: true, locationName: true, venue: { select: { name: true, address: true } }, community: { select: { name: true } } } },
       group: { select: { name: true, timezone: true, isActive: true } },
       player: { select: { firstName: true, lastName: true, isActive: true, groupId: true } },
@@ -153,18 +154,25 @@ async function resolveToken(token: unknown): Promise<Resolved | null> {
   });
   // Defense in depth: every part must belong to the same Group.
   if (!row || row.match.groupId !== row.groupId || row.player.groupId !== row.groupId) return null;
-  return { link: { id: row.id, matchId: row.matchId, groupId: row.groupId, playerId: row.playerId, revokedAt: row.revokedAt }, match: row.match, group: row.group, player: row.player };
+  return { link: { id: row.id, matchId: row.matchId, groupId: row.groupId, playerId: row.playerId, revokedAt: row.revokedAt, replacedAt: row.replacedAt }, match: row.match, group: row.group, player: row.player };
 }
 
 async function stateOf(r: Resolved, now: Date): Promise<PersonalState> {
   if (!r.group.isActive || !r.player.isActive) return "invalid";
-  if (r.link.revokedAt) return "revoked";
+  if (r.link.revokedAt) return revokedState(r.link);
   if (r.match.status === "CANCELED") return "canceled";
   if (!(await rosterIds(r.match)).has(r.link.playerId)) return "invalid";
   if ((await attendanceMode(r.link.groupId, r.link.matchId)) === "telegram") return "telegram";
   if (r.match.status === "COMPLETED" || attendanceIsClosed(r.match, now)) return "closed";
   return "open";
 }
+
+/**
+ * M13B P5 — an emailed link revoked because a NEWER emailed link was accepted for this
+ * player (replacedAt) is "replaced": the recipient should use the most recent email.
+ * Anything else revoked (manual regenerate / organizer revoke) stays "revoked".
+ */
+const revokedState = (link: Resolved["link"]): "revoked" | "replaced" => (link.replacedAt ? "replaced" : "revoked");
 
 function kickoffLabel(r: Resolved): string | null {
   if (!r.match.startTime) return null;
@@ -233,6 +241,7 @@ export async function answerPersonal(token: unknown, status: AttendanceStatus, n
     await recordParticipantResponse(tx, { matchId: r.link.matchId, groupId: r.link.groupId, playerId: r.link.playerId, status, source: "PERSONAL_LINK", at: now });
     return "ok";
   });
+  if (outcome === "revoked") return { ok: false, reason: revokedState(r.link) };
   if (outcome !== "ok") return { ok: false, reason: outcome };
   const current = await currentOf(r);
   return { ok: true, status, setByOrganizer: current.setByOrganizer };

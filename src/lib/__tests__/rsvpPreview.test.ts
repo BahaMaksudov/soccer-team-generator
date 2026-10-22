@@ -36,20 +36,13 @@ describe("owner-approved RSVP allowances in the plan catalog", () => {
   });
 });
 
-describe("P2 has no sending path", () => {
-  const card = fs.readFileSync(path.join(process.cwd(), "src/app/admin/o/[organizationSlug]/g/[groupSlug]/matches/[matchId]/RsvpPreviewCard.tsx"), "utf8");
+describe("the preview stays read-only (P5 sending lives elsewhere)", () => {
   const route = fs.readFileSync(path.join(process.cwd(), "src/app/api/admin/o/[organizationSlug]/g/[groupSlug]/matches/[matchId]/rsvp-preview/route.ts"), "utf8");
-  it("the Send button is disabled and has no handler; the card only GETs", () => {
-    const button = card.slice(card.indexOf("<Button"), card.indexOf("</Button>"));
-    expect(button).toContain("disabled");
-    expect(button).not.toContain("onClick");
-    expect(card).not.toMatch(/method:\s*"(POST|PUT|PATCH|DELETE)"/);
-  });
-  it("the route exports GET only and imports nothing that sends", () => {
+  it("the preview route exports GET only and imports nothing that sends", () => {
     expect(route).toContain("export async function GET");
     expect(route).not.toMatch(/export async function (POST|PUT|PATCH|DELETE)/);
     const lib = fs.readFileSync(path.join(process.cwd(), "src/lib/rsvpPreview.ts"), "utf8");
     // No email-sending module (@/lib/email or @/lib/email/*), no Telegram, no tokens, no writes.
-    expect(lib).not.toMatch(/@\/lib\/email["/]|telegram\(|callTelegram|generateToken|issueUnsubscribeToken|confirmUnsubscribe|\.create\(|\.createMany\(|\.update\(|\.updateMany\(|\.upsert\(|\.delete/);
+    expect(lib).not.toMatch(/@\/lib\/email["/]|@\/lib\/rsvpSend|telegram\(|callTelegram|generateToken|issueUnsubscribeToken|confirmUnsubscribe|\.create\(|\.createMany\(|\.update\(|\.updateMany\(|\.upsert\(|\.delete|\$executeRaw/);
   });
 });

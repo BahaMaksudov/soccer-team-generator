@@ -5,15 +5,20 @@ import { CalendarDays, Clock, MapPin } from "lucide-react";
 import { Card, MatchPageShell } from "@/components/match-link/MatchView";
 import { focusRing } from "@/components/game-day/parts";
 import { cn } from "@/lib/cn";
+import { choiceFromSearch } from "@/lib/rsvpChoice";
 
 /**
  * M12B — the player's own attendance page (personal link). Shows ONLY this
  * player's name and answer; the server decides who the player is (from the
  * link), never this page. The countdown runs on the server's clock (offset
  * measured on load), so a wrong device clock can't make it misleading.
+ *
+ * M13B P5 — an RSVP email's Yes / Maybe / No button opens this page with ?c=…: the
+ * choice is only PRE-SELECTED and saved after an explicit Confirm (opening a link —
+ * by a person, a mail scanner or a preview — never changes attendance).
  */
 type Status = "PLAYING" | "MAYBE" | "NOT_PLAYING";
-type State = "open" | "closed" | "canceled" | "revoked" | "telegram";
+type State = "open" | "closed" | "canceled" | "revoked" | "replaced" | "telegram";
 type View = {
   state: State;
   playerName: string;
@@ -32,6 +37,7 @@ const STATE_TEXT: Record<Exclude<State, "open">, { title: string; body: string }
   closed: { title: "Responses are closed", body: "Attendance for this match is closed. Contact your organizer if your plans changed." },
   canceled: { title: "Match canceled", body: "This match was canceled." },
   revoked: { title: "This link was replaced", body: "Your organizer replaced or revoked this link. Ask them for your current link." },
+  replaced: { title: "A newer invitation was sent", body: "This link was replaced by a newer invitation email for this match. Please use the link in the most recent email." },
   telegram: { title: "Vote in Telegram", body: "This match uses your group's Telegram poll for attendance — please vote there." },
 };
 
@@ -58,6 +64,7 @@ export default function PersonalAttendancePage() {
   const [notice, setNotice] = useState<{ tone: "ok" | "warn"; text: string } | null>(null);
   const [offset, setOffset] = useState(0); // server time − device time
   const [tick, setTick] = useState(() => Date.now());
+  const [pending, setPending] = useState<Status | null>(null); // pre-selected by an email button — NOT saved
 
   useEffect(() => {
     const onHash = () => window.location.reload();
@@ -68,6 +75,12 @@ export default function PersonalAttendancePage() {
   useEffect(() => {
     const t = window.location.hash.replace(/^#/, "");
     setToken(t);
+    const chosen = choiceFromSearch(window.location.search);
+    if (chosen) {
+      setPending(chosen);
+      // Drop ?c= so a reload doesn't pre-select again; the token stays in the fragment.
+      window.history.replaceState(null, "", `${window.location.pathname}${window.location.hash}`);
+    }
     if (!t) return setError("This link is not valid.");
     (async () => {
       try {
@@ -98,9 +111,10 @@ export default function PersonalAttendancePage() {
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
         setNotice({ tone: "warn", text: data?.error || "Your answer could not be saved." });
-        if (["closed", "canceled", "revoked", "telegram"].includes(data?.code)) setView((v) => (v ? { ...v, state: data.code } : v));
+        if (["closed", "canceled", "revoked", "replaced", "telegram"].includes(data?.code)) setView((v) => (v ? { ...v, state: data.code } : v));
         return;
       }
+      setPending(null);
       setView((v) => (v ? { ...v, current: { status, setByOrganizer: data.setByOrganizer } } : v));
       setNotice({ tone: "ok", text: data.setByOrganizer ? "Saved. Your organizer has set your status for this match; they'll see your answer." : "Your answer was saved." });
     } catch {
@@ -123,6 +137,8 @@ export default function PersonalAttendancePage() {
 
   const day = new Date(`${view.match.date}T12:00:00Z`).toLocaleDateString("en-US", { timeZone: "UTC", weekday: "long", month: "long", day: "numeric" });
   const state: State = view.state === "open" && expired ? "closed" : view.state;
+  const label = (s: Status) => OPTIONS.find((o) => o.status === s)!.label;
+  const confirming = state === "open" && pending !== null && pending !== view.current.status;
   return shell(
     <>
       <header>
@@ -155,9 +171,25 @@ export default function PersonalAttendancePage() {
       </Card>
       {state === "open" ? (
         <Card id="answer" title="Your answer" icon={<CalendarDays className="size-5 text-primary" aria-hidden="true" />}>
+          {confirming && (
+            <div className="mb-3 rounded-tbp-md border border-primary/40 bg-primary/5 p-3" role="region" aria-label="Confirm your answer">
+              <p className="text-sm">
+                You chose <span className="font-bold">{label(pending)}</span>. It isn&apos;t saved yet.
+              </p>
+              <div className="mt-2 flex flex-wrap gap-2">
+                <button type="button" disabled={busy} onClick={() => answer(pending)} className={cn("min-h-11 rounded-tbp-md bg-primary px-4 text-sm font-bold text-primary-foreground disabled:opacity-50", focusRing)}>
+                  Confirm: {label(pending)}
+                </button>
+                <button type="button" disabled={busy} onClick={() => setPending(null)} className={cn("min-h-11 rounded-tbp-md border border-input bg-card px-4 text-sm font-semibold disabled:opacity-50", focusRing)}>
+                  Not now
+                </button>
+              </div>
+            </div>
+          )}
           <div className="grid grid-cols-3 gap-2" role="group" aria-label="Your answer">
             {OPTIONS.map((o) => {
               const current = view.current.status === o.status;
+              const selected = confirming && pending === o.status;
               return (
                 <button
                   key={o.status}
@@ -165,7 +197,7 @@ export default function PersonalAttendancePage() {
                   disabled={busy}
                   aria-pressed={current}
                   onClick={() => answer(o.status)}
-                  className={cn("min-h-12 rounded-tbp-md border px-1 text-sm font-bold transition-colors disabled:opacity-50", current ? "border-primary bg-primary text-primary-foreground" : "border-input bg-card hover:bg-muted", focusRing)}
+                  className={cn("min-h-12 rounded-tbp-md border px-1 text-sm font-bold transition-colors disabled:opacity-50", current ? "border-primary bg-primary text-primary-foreground" : selected ? "border-primary border-dashed bg-primary/10" : "border-input bg-card hover:bg-muted", focusRing)}
                 >
                   {o.label}
                 </button>

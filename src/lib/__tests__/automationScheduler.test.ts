@@ -10,6 +10,10 @@ import path from "node:path";
  */
 const runMatchAutomation = vi.fn();
 vi.mock("@/lib/matchAutomation", () => ({ runMatchAutomation: (...args: unknown[]) => runMatchAutomation(...args) }));
+// M13B P5 — the RSVP queue continuation, stubbed: "disabled" (as in Production / Preview) unless a test says otherwise.
+const rsvpMode = vi.fn(() => "disabled");
+const processRsvpQueue = vi.fn();
+vi.mock("@/lib/rsvpSend", () => ({ rsvpDeliveryMode: () => rsvpMode(), processRsvpQueue: (...args: unknown[]) => processRsvpQueue(...args) }));
 import { POST } from "@/app/api/cron/automation/route";
 import * as cronRoute from "@/app/api/cron/automation/route";
 import { authorizeCron } from "@/lib/cronAuth";
@@ -115,8 +119,9 @@ describe("cron endpoint", () => {
     const body = await res.json();
     expect(res.status).toBe(200);
     // M11.3 — the trial lifecycle reports its counts too (OFF by default: TRIAL_LIFECYCLE unset → nothing runs).
-    expect(body).toEqual({ ok: true, schedules: 1, created: 1, pollsPosted: 1, cutoffs: 0, notified: 0, errorCount: 0, trial: TRIAL_OFF });
+    expect(body).toEqual({ ok: true, schedules: 1, created: 1, pollsPosted: 1, cutoffs: 0, notified: 0, errorCount: 0, trial: TRIAL_OFF, rsvp: { disabled: true } });
     expect(runMatchAutomation).toHaveBeenCalledTimes(1);
+    expect(processRsvpQueue).not.toHaveBeenCalled(); // delivery gate off → nothing claimed
     expect(JSON.stringify(body) + logs.join("\n")).not.toContain(SECRET);
   });
 
@@ -137,6 +142,17 @@ describe("cron endpoint", () => {
     runMatchAutomation.mockRejectedValue(new Error("database unreachable"));
     const res = await POST(req(`Bearer ${SECRET}`));
     expect(res.status).toBe(500);
-    expect(await res.json()).toEqual({ ok: false, error: "Automation run failed.", trial: TRIAL_OFF });
+    expect(await res.json()).toEqual({ ok: false, error: "Automation run failed.", trial: TRIAL_OFF, rsvp: { disabled: true } });
+  });
+
+  it("M13B P5 — with the test-outbox gate on, the RSVP queue continues within a bounded budget (counts only)", async () => {
+    vi.stubEnv("CRON_SECRET", SECRET);
+    runMatchAutomation.mockResolvedValue(run);
+    rsvpMode.mockReturnValueOnce("test-outbox");
+    processRsvpQueue.mockResolvedValueOnce({ recovered: 0, sent: 2, failed: 0, uncertain: 0, skipped: 0, errors: 0, remaining: 0, stoppedForTime: false });
+    const res = await POST(req(`Bearer ${SECRET}`));
+    expect(res.status).toBe(200);
+    expect((await res.json()).rsvp).toMatchObject({ sent: 2, remaining: 0 });
+    expect(processRsvpQueue).toHaveBeenCalledWith({ limit: 200, budgetMs: 20_000 });
   });
 });

@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { authorizeCron } from "@/lib/cronAuth";
 import { runMatchAutomation } from "@/lib/matchAutomation";
 import { runTrialLifecycle } from "@/lib/trialLifecycle";
+import { processRsvpQueue, rsvpDeliveryMode } from "@/lib/rsvpSend";
 
 /**
  * M9.2 — scheduled Match Automation entry point. The production clock is a
@@ -20,6 +21,12 @@ import { runTrialLifecycle } from "@/lib/trialLifecycle";
  * emails, TRIAL_EXPIRED audit). It is OFF unless TRIAL_LIFECYCLE is "audit" or
  * "send", is independent of match automation (one failing never skips the
  * other) and never decides plan access (that is evaluated on every request).
+ *
+ * M13B P5 — the same clock continues the RSVP email queue: bounded claims (FOR UPDATE
+ * SKIP LOCKED — overlapping runs never take the same invitation) within a time budget,
+ * stale SENDING rows recovered as UNCERTAIN, never an automatic retry. Delivery is the
+ * test outbox only and only where rsvpDeliveryMode() allows it; in Production / Preview
+ * this part reports { disabled: true } and claims nothing.
  */
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
@@ -30,14 +37,15 @@ export async function POST(req: Request) {
   if (auth === "unauthorized") return NextResponse.json({ ok: false, error: "Unauthorized" }, { status: 401 });
   const now = new Date();
   const trial = await trialLifecycleCounts(now);
+  const rsvp = await rsvpQueueCounts();
   try {
     const { errors, ...counts } = await runMatchAutomation(now);
     if (errors.length > 0) console.error(`[automation] run finished with ${errors.length} error(s): ${JSON.stringify(errors)}`);
-    const ok = errors.length === 0 && trial.ok;
-    return NextResponse.json({ ok, ...counts, errorCount: errors.length, trial: trial.counts }, { status: ok ? 200 : 500 });
+    const ok = errors.length === 0 && trial.ok && rsvp.ok;
+    return NextResponse.json({ ok, ...counts, errorCount: errors.length, trial: trial.counts, rsvp: rsvp.counts }, { status: ok ? 200 : 500 });
   } catch (e) {
     console.error(`[automation] run failed: ${e instanceof Error ? e.message : "error"}`);
-    return NextResponse.json({ ok: false, error: "Automation run failed.", trial: trial.counts }, { status: 500 });
+    return NextResponse.json({ ok: false, error: "Automation run failed.", trial: trial.counts, rsvp: rsvp.counts }, { status: 500 });
   }
 }
 
@@ -49,6 +57,20 @@ async function trialLifecycleCounts(now: Date) {
     return { ok: errors.length === 0, counts: { ...counts, errorCount: errors.length } };
   } catch (e) {
     console.error(`[trial] run failed: ${e instanceof Error ? e.message : "error"}`);
+    return { ok: false, counts: { failed: true } };
+  }
+}
+
+/** RSVP email queue continuation (counts only). Off — nothing claimed — unless delivery is the local test outbox. */
+const RSVP_CRON_BUDGET_MS = 20_000;
+const RSVP_CRON_LIMIT = 200;
+async function rsvpQueueCounts() {
+  if (rsvpDeliveryMode() !== "test-outbox") return { ok: true, counts: { disabled: true } };
+  try {
+    const run = await processRsvpQueue({ limit: RSVP_CRON_LIMIT, budgetMs: RSVP_CRON_BUDGET_MS });
+    return { ok: run.errors === 0, counts: run };
+  } catch (e) {
+    console.error(`[rsvp] queue run failed: ${e instanceof Error ? e.name : "error"}`);
     return { ok: false, counts: { failed: true } };
   }
 }

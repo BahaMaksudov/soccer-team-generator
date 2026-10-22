@@ -84,6 +84,9 @@ const BUCKETS = {
   "join-write": { limit: 20, window: "10 m" },
   // M13B P3 — unsubscribe page preview / confirmation (optional first layer).
   unsubscribe: { limit: 60, window: "10 m" },
+  // M13B P5 — organizer RSVP email send / retry submissions (per organizer; the database
+  // limit in the send route and the plan allowance are authoritative).
+  "rsvp-send": { limit: 20, window: "10 m" },
 } as const;
 export type RateLimitBucket = keyof typeof BUCKETS;
 const bucketLimiters = new Map<RateLimitBucket, Ratelimit>();

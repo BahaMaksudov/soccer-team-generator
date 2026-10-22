@@ -125,7 +125,7 @@ describe("M13B P2 — classification", () => {
     });
     expect(r.body.notOnRoster).toEqual([{ playerId: "p8", name: "Hal Test", status: "NOT_ON_ROSTER" }]);
     expect(r.body.counts).toMatchObject({ willSend: 3, excluded: 5, byStatus: { NOT_ON_ROSTER: 1, SUPPRESSED: 0, OVER_LIMIT: 0 } });
-    expect(r.body).toMatchObject({ suppression: { available: true }, sending: { available: false } });
+    expect(r.body).toMatchObject({ suppression: { available: true }, sending: { available: true } }); // NODE_ENV=test → the test outbox (never in Production / Preview)
     expect(r.body.allowance).toMatchObject({ plan: "LEGACY", day: { limit: 50, used: 0, reserved: 0, remaining: 50 }, month: { limit: 500, used: 0, reserved: 0, remaining: 500 } });
     expect(r.body.counts).toMatchObject({ overLimitIsProvisional: true });
     const text = JSON.stringify(r.body);

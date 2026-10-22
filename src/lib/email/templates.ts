@@ -169,11 +169,16 @@ export function buildGoogleOnlyResetEmail(params: { to: string; name: string | n
 // eslint-disable-next-line no-control-regex
 export const headerSafe = (s: string) => s.replace(/[\u0000-\u001f\u007f]+/g, " ").replace(/\s+/g, " ").trim().slice(0, 200);
 
+export type RsvpChoice = "yes" | "maybe" | "no";
+
 /**
- * M13B P4 — the RSVP invitation for ONE player of ONE match. Sent to the player's own
+ * M13B P4/P5 — the RSVP invitation for ONE player of ONE match. Sent to the player's own
  * address, a parent / guardian contact, or the verified linked account. Contains only
- * this player's name, the match details, their personal answer link and the unsubscribe
- * link — never other players' data. Opening the answer link never answers by itself.
+ * this player's name (in the body, never the subject), the match details, their personal
+ * answer links and the unsubscribe link — never other players' data. The Yes / Maybe / No
+ * buttons only OPEN the RSVP page with that choice pre-selected; nothing is saved until
+ * the recipient confirms there (so link scanners / previews can't answer).
+ * Responsive: a single 560px-max column, stacked-wrapping buttons, inline styles only.
  */
 export function buildRsvpInvitationEmail(params: {
   to: string;
@@ -181,29 +186,67 @@ export function buildRsvpInvitationEmail(params: {
   playerName: string;
   organizationName: string;
   title: string; // community or group name
-  when: string; // e.g. "Wednesday, June 3 · 9:00 PM EDT"
+  when: string; // e.g. "Wednesday, June 3 at 9:00 PM"
   venue: string | null;
   deadline: string | null; // e.g. "Wednesday, June 3 at 6:00 PM EDT"
-  answerUrl: string;
+  answerUrls: { open: string } & Record<RsvpChoice, string>;
   unsubscribeUrl: string;
 }): OutgoingEmail {
   const guardian = params.recipientType === "GUARDIAN";
-  const lines = [
-    guardian ? `You're receiving this as the parent / guardian contact for ${params.playerName}.` : `Hi ${params.playerName},`,
-    `${params.title} has a match ${params.when}${params.venue ? ` at ${params.venue}` : ""}. ${guardian ? `Is ${params.playerName} playing?` : "Are you playing?"}`,
-    ...(params.deadline ? [`Please answer by ${params.deadline}. You can change the answer until then.`] : ["You can change the answer until attendance closes."]),
-    "Choose Playing, Maybe or Not playing on the page that opens — nothing is answered until you choose.",
+  const player = params.playerName;
+  const greeting = guardian ? "Hello," : `Hi ${player},`;
+  const intro = guardian ? `You're receiving this as the parent / guardian contact for ${player}.` : null;
+  const question = guardian ? `Is ${player} playing?` : "Are you playing?";
+  const details = [`${params.title} — ${params.when}`, ...(params.venue ? [`Where: ${params.venue}`] : [])];
+  const deadline = params.deadline ? `Please answer by ${params.deadline}. You can change the answer until then.` : "You can change the answer until attendance closes.";
+  const howTo = "Each button opens your RSVP page with that answer selected — it's saved only after you tap Confirm there.";
+  const footer = `You receive this because ${params.organizationName} uses ${BRAND} to organize this game and added this address for ${guardian ? `${player}'s` : "your"} match invitations. Please don't forward this email — its links answer for ${player}.`;
+  const choices: Array<[RsvpChoice, string, string]> = [
+    ["yes", "Yes, playing", "background:#15803d;color:#ffffff;border:1px solid #15803d"],
+    ["maybe", "Maybe", "background:#ffffff;color:#111111;border:1px solid #9ca3af"],
+    ["no", "No, not playing", "background:#ffffff;color:#111111;border:1px solid #9ca3af"],
   ];
-  const footer = `You receive this because ${params.organizationName} uses ${BRAND} to organize this game and added this address for ${guardian ? `${params.playerName}'s` : "your"} match invitations. Don't forward this email — its link answers for ${params.playerName}.`;
-  const unsubscribeText = `Stop match invitation emails from ${params.organizationName}: ${params.unsubscribeUrl}`;
-  const html = layout(guardian ? `Is ${params.playerName} playing?` : "Are you playing?", lines, { label: "Answer now", url: params.answerUrl }, footer).replace(
-    /<\/div>$/,
-    `<p style="margin:12px 0 0;font-size:12px;color:#777"><a href="${escapeHtml(params.unsubscribeUrl)}" style="color:#777">Unsubscribe from ${escapeHtml(params.organizationName)} match invitations</a></p></div>`
-  );
-  return {
-    to: params.to,
-    subject: headerSafe(`${guardian ? `Is ${params.playerName} playing?` : "Are you playing?"} ${params.title} — ${params.when}`),
-    text: [...lines, "", `Answer: ${params.answerUrl}`, "", footer, unsubscribeText].join("\n"),
-    html,
-  };
+  const e = escapeHtml;
+  const p = (text: string, style = "margin:0 0 12px;font-size:15px;line-height:1.5") => `<p style="${style}">${e(text)}</p>`;
+  const button = ([choice, label, colors]: (typeof choices)[number]) =>
+    `<a href="${e(params.answerUrls[choice])}" style="display:inline-block;${colors};border-radius:8px;padding:12px 16px;margin:0 8px 8px 0;font-size:15px;font-weight:bold;text-decoration:none;min-width:96px;text-align:center">${e(label)}</a>`;
+  const html = [
+    `<div style="background:#f4f5f7;padding:16px 8px;font-family:Arial,Helvetica,sans-serif;color:#111111">`,
+    `<div style="max-width:560px;margin:0 auto;background:#ffffff;border-radius:12px;padding:24px 20px">`,
+    `<p style="margin:0 0 16px;font-size:14px;font-weight:bold;letter-spacing:.04em;color:#15803d">${e(BRAND)}</p>`,
+    `<h1 style="margin:0 0 12px;font-size:22px;line-height:1.3">${e(question)}</h1>`,
+    p(greeting),
+    ...(intro ? [p(intro)] : []),
+    `<div style="margin:0 0 16px;padding:12px;border-radius:8px;background:#f4f5f7">${details.map((d, i) => p(d, `margin:${i ? "4px" : "0"} 0 0;font-size:15px;line-height:1.4${i ? "" : ";font-weight:bold"}`)).join("")}</div>`,
+    p(deadline),
+    `<div style="margin:16px 0 8px">${choices.map(button).join("")}</div>`,
+    p(howTo, "margin:0 0 16px;font-size:13px;line-height:1.5;color:#555555"),
+    `<p style="margin:0 0 16px;font-size:13px;line-height:1.5;color:#555555">Or open your RSVP page: <a href="${e(params.answerUrls.open)}" style="color:#15803d;word-break:break-all">${e(params.answerUrls.open)}</a></p>`,
+    `<p style="margin:16px 0 0;font-size:12px;line-height:1.5;color:#777777">${e(footer)}</p>`,
+    `<p style="margin:12px 0 0;font-size:12px;color:#777777"><a href="${e(params.unsubscribeUrl)}" style="color:#777777">Unsubscribe from ${e(params.organizationName)} match invitations</a></p>`,
+    `</div></div>`,
+  ].join("");
+  const text = [
+    question,
+    "",
+    greeting,
+    ...(intro ? [intro] : []),
+    "",
+    ...details,
+    "",
+    deadline,
+    "",
+    `Yes, playing: ${params.answerUrls.yes}`,
+    `Maybe: ${params.answerUrls.maybe}`,
+    `No, not playing: ${params.answerUrls.no}`,
+    "",
+    howTo,
+    `Answer: ${params.answerUrls.open}`,
+    "",
+    `-- ${BRAND}`,
+    footer,
+    `Stop match invitation emails from ${params.organizationName}: ${params.unsubscribeUrl}`,
+  ].join("\n");
+  // The subject carries no personal details: no player name, no address.
+  return { to: params.to, subject: headerSafe(`RSVP: ${params.title} — ${params.when}`), text, html };
 }

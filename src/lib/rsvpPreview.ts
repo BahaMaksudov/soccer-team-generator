@@ -7,6 +7,7 @@ import { loadRecipients, type Recipient } from "@/lib/playerContact";
 import { organizationPlan, utcDay, utcMonth, type EffectivePlan } from "@/lib/entitlements";
 import { maskEmail } from "@/lib/emailAddress";
 import { suppressedFor } from "@/lib/emailSuppression";
+import { rsvpDeliveryMode } from "@/lib/rsvpDeliveryMode";
 
 /**
  * M13B — RSVP invitation RECIPIENT PREVIEW (OWNER/ADMIN; P2) and the shared
@@ -52,7 +53,8 @@ export type RsvpPreview = {
   counts: { willSend: number; excluded: number; byStatus: Record<PreviewStatus, number>; overLimitIsProvisional: true };
   allowance: RsvpAllowance;
   suppression: { available: true };
-  sending: { available: false };
+  /** P5: true only where rsvpDeliveryMode() is "test-outbox" (never in Production / Preview). */
+  sending: { available: boolean };
 };
 
 export type PreviewRefusal = "NOT_FOUND" | "TELEGRAM_MATCH" | "MATCH_CANCELED" | "MATCH_COMPLETED" | "ATTENDANCE_CLOSED" | "DEADLINE_PASSED";
@@ -173,7 +175,7 @@ export async function previewRsvpRecipients(context: TenantContext, matchId: str
       counts: { willSend: byStatus.WILL_SEND, excluded: recipients.length - byStatus.WILL_SEND, byStatus, overLimitIsProvisional: true },
       allowance,
       suppression: { available: true },
-      sending: { available: false },
+      sending: { available: rsvpDeliveryMode() === "test-outbox" },
     },
   };
 }

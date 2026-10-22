@@ -200,7 +200,9 @@ describe("M13B P4 — queue and deliver (test outbox only)", () => {
       expect(await databaseContains(oneClickToken(m.headers))).toEqual([]);
     }
     const [guardian] = mailTo("guardian.of.ava@example.com");
-    expect(guardian.subject).toMatch(/^Is Ava Test playing\? Wednesday/);
+    expect(guardian.subject).toMatch(/^RSVP: Wednesday — /);
+    expect(guardian.subject).not.toContain("Ava"); // no personal details in the subject
+    expect(guardian.text).toMatch(/^Is Ava Test playing\?/);
     expect(guardian.text).toContain("parent / guardian contact for Ava Test");
     // Only the player's own name: no other player's data in any email.
     for (const m of testOutbox.sent) for (const other of ["Dee", "Eve", "Fay", "Gus"]) expect(m.text).not.toContain(other);
@@ -574,7 +576,8 @@ describe("M13B P4 — personal link lifecycle", () => {
     expect(await send(OWNER(), "m", "key-links-00003", "RESEND")).toMatchObject({ ok: true, round: 3 });
     await processRsvpQueue({ now: NOW });
     const email2 = answerToken(mailTo("ben@example.com")[1].text);
-    expect((await personalView(email1))?.state).toBe("revoked");
+    expect((await personalView(email1))?.state).toBe("replaced"); // superseded by a newer accepted email
+    expect(await answerPersonal(email1, "PLAYING")).toEqual({ ok: false, reason: "replaced" });
     expect((await personalView(email2))?.state).toBe("open");
     expect((await personalView(manual2))?.state).toBe("open");
     expect(await prisma.personalAttendanceLink.count({ where: { playerId: "p2", revokedAt: null } })).toBe(2); // one MANUAL + one EMAIL

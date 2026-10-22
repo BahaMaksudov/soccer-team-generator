@@ -1,19 +1,23 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
-import { Mail } from "lucide-react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { AlertTriangle, Mail } from "lucide-react";
 import { adminTenantApiPath } from "@/lib/adminTenantApi";
 import { Button } from "@/components/ui/button";
 import { SectionCard } from "@/components/game-day/parts";
 import { cn } from "@/lib/cn";
 
 /**
- * M13B P2 — email invitation RECIPIENT PREVIEW (OWNER/ADMIN; website-only matches).
- * Read-only: shows who would receive an RSVP email, masked destinations and why
- * others are excluded, plus the organization's actual allowance (P4: used / reserved /
- * remaining today and this month, UTC). Email sending is not
- * available yet — the Send button is disabled and does nothing.
- * Hidden for Telegram matches (they are answered in the poll).
+ * M13B — RSVP email invitations for one match (OWNER/ADMIN; website-only matches).
+ *   P2  recipient preview: who would get an email, masked destinations, why others are
+ *       excluded, and the organization's ACTUAL remaining allowance (UTC day / month).
+ *   P5  send flow: review → confirm the recipient count and that the organizer may
+ *       contact these recipients for match coordination → submit with a stable,
+ *       client-generated request key (a double click or retry returns the same send) →
+ *       delivery dashboard. Delivery status and RSVP answers are shown SEPARATELY;
+ *       "accepted" means accepted by the provider (here: the test outbox), not delivered.
+ * The server decides whether sending is available (never in Production / Preview); the
+ * button state only mirrors that. Hidden for Telegram matches with no email history.
  */
 type Status = "WILL_SEND" | "NO_EMAIL" | "INVALID_CONTACT" | "ALREADY_ANSWERED" | "ORGANIZER_OVERRIDE" | "NOT_ON_ROSTER" | "SUPPRESSED" | "OVER_LIMIT";
 type Row = { playerId: string; name: string; status: Status; source: "PLAYER" | "GUARDIAN" | "ACCOUNT" | null; maskedEmail: string | null };
@@ -23,6 +27,15 @@ type Preview = {
   notOnRoster: Array<{ playerId: string; name: string }>;
   counts: { willSend: number; excluded: number };
   allowance: { plan: string; day: Window; month: Window; note: string };
+  sending: { available: boolean };
+};
+type Delivery = "QUEUED" | "SENDING" | "SENT" | "FAILED" | "UNCERTAIN" | "SKIPPED";
+type Counts = Record<"queued" | "processing" | "accepted" | "failed" | "uncertain" | "skipped", number>;
+type StatusView = {
+  mode: "test-outbox" | "disabled";
+  sends: Array<{ id: string; round: number; kind: "INITIAL" | "RESEND"; createdAt: string; counts: Counts; retryable: number }>;
+  recipients: Array<{ playerId: string | null; name: string; maskedEmail: string | null; delivery: Delivery; skipReason: string | null; rsvp: "PLAYING" | "MAYBE" | "NOT_PLAYING" | null; rsvpSetByOrganizer: boolean }>;
+  totals: { delivery: Counts; rsvp: { yes: number; maybe: number; no: number; unanswered: number }; inProgress: boolean; uncertain: number };
 };
 
 export const STATUS_LABEL: Record<Status, string> = {
@@ -36,75 +49,192 @@ export const STATUS_LABEL: Record<Status, string> = {
   OVER_LIMIT: "Beyond remaining allowance",
 };
 const SOURCE_LABEL = { PLAYER: "Player", GUARDIAN: "Parent / Guardian", ACCOUNT: "Linked account (verified)" } as const;
+/** Delivery labels — "accepted" is never called "delivered". */
+export const deliveryLabel = (d: Delivery, mode: StatusView["mode"]): string =>
+  ({ QUEUED: "Queued", SENDING: "Processing", SENT: mode === "test-outbox" ? "Accepted by test outbox" : "Accepted by email provider", FAILED: "Not sent (failed)", UNCERTAIN: "Delivery uncertain", SKIPPED: "Skipped" })[d];
+const SKIP_LABEL: Record<string, string> = {
+  ALREADY_ANSWERED: "already answered",
+  ORGANIZER_OVERRIDE: "status set by organizer",
+  NO_EMAIL: "no email address",
+  INVALID_CONTACT: "contact email needs fixing",
+  SUPPRESSED: "not receiving invitation emails",
+  LIMIT: "over the allowance",
+  PLAYER_REMOVED: "player removed",
+};
+const skipText = (reason: string | null) => (reason && SKIP_LABEL[reason] ? `Skipped — ${SKIP_LABEL[reason]}` : "Skipped");
+const RSVP_LABEL = { PLAYING: "Yes", MAYBE: "Maybe", NOT_PLAYING: "No" } as const;
+const newRequestKey = () => (typeof crypto !== "undefined" && "randomUUID" in crypto ? crypto.randomUUID().replace(/-/g, "") : `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 12)}`);
 
 export default function RsvpPreviewCard({ organizationSlug, groupSlug, matchId }: { organizationSlug: string; groupSlug: string; matchId: string }) {
-  const url = adminTenantApiPath({ organizationSlug, groupSlug, path: `/matches/${encodeURIComponent(matchId)}/rsvp-preview` });
+  const api = (p: string) => adminTenantApiPath({ organizationSlug, groupSlug, path: `/matches/${encodeURIComponent(matchId)}/${p}` });
+  const previewUrl = api("rsvp-preview");
+  const sendUrl = api("rsvp-send");
   const [preview, setPreview] = useState<Preview | null>(null);
   const [refusal, setRefusal] = useState<{ code: string; error: string } | null>(null);
-  const [hidden, setHidden] = useState(false);
+  const [status, setStatus] = useState<StatusView | null>(null);
+  const [telegram, setTelegram] = useState(false);
+  const [confirming, setConfirming] = useState(false);
+  const [attested, setAttested] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState<{ tone: "ok" | "warn"; text: string } | null>(null);
+  const requestKey = useRef<string>("");
 
-  const load = useCallback(async () => {
-    const res = await fetch(url, { cache: "no-store" });
+  const loadPreview = useCallback(async () => {
+    const res = await fetch(previewUrl, { cache: "no-store" });
     const data = await res.json().catch(() => ({}));
     if (res.ok) {
       setPreview(data as Preview);
       setRefusal(null);
-    } else if (data?.code === "TELEGRAM_MATCH" || res.status === 404) setHidden(true);
-    else setRefusal({ code: String(data?.code ?? "ERROR"), error: typeof data?.error === "string" ? data.error : "Could not load the preview." });
-  }, [url]);
+    } else {
+      setPreview(null);
+      if (data?.code === "TELEGRAM_MATCH") setTelegram(true);
+      setRefusal({ code: String(data?.code ?? "ERROR"), error: typeof data?.error === "string" ? data.error : "Could not load the preview." });
+    }
+  }, [previewUrl]);
+  const loadStatus = useCallback(async () => {
+    const res = await fetch(sendUrl, { cache: "no-store" });
+    if (res.ok) setStatus((await res.json()) as StatusView);
+  }, [sendUrl]);
   useEffect(() => {
-    void load();
-  }, [load]);
+    void loadPreview();
+    void loadStatus();
+  }, [loadPreview, loadStatus]);
+  // Progress: poll while invitations are queued / processing.
+  useEffect(() => {
+    if (!status?.totals.inProgress) return;
+    const id = window.setInterval(() => void loadStatus(), 3000);
+    return () => window.clearInterval(id);
+  }, [status?.totals.inProgress, loadStatus]);
 
-  if (hidden || (!preview && !refusal)) return null;
+  const hasSends = (status?.sends.length ?? 0) > 0;
+  const kind: "INITIAL" | "RESEND" = hasSends ? "RESEND" : "INITIAL";
+  const willSend = preview?.counts.willSend ?? 0;
+  const available = Boolean(preview?.sending.available);
+
+  function startConfirm() {
+    requestKey.current = newRequestKey(); // one key per confirmation: double clicks / retries reuse it
+    setAttested(false);
+    setMessage(null);
+    setConfirming(true);
+  }
+
+  async function post(body: Record<string, unknown>) {
+    const res = await fetch(sendUrl, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    return { ok: res.ok, data: (await res.json().catch(() => ({}))) as Record<string, unknown> };
+  }
+
+  async function send() {
+    if (busy || !attested) return;
+    setBusy(true);
+    setMessage(null);
+    try {
+      const { ok, data } = await post({ action: "send", kind, requestKey: requestKey.current, expectedCount: willSend, attested: true });
+      if (ok) {
+        const counts = data.counts as { queued: number } | undefined;
+        setConfirming(false);
+        setMessage({ tone: "ok", text: `${counts?.queued ?? willSend} invitation${(counts?.queued ?? willSend) === 1 ? "" : "s"} queued.` });
+      } else {
+        setMessage({ tone: "warn", text: typeof data.error === "string" ? data.error : "Invitations could not be sent." });
+        if (data.code !== "RATE_LIMITED") setConfirming(false); // the roster / match changed: review again
+      }
+    } catch {
+      setMessage({ tone: "warn", text: "Invitations could not be sent. Please try again." }); // same request key on retry
+    } finally {
+      setBusy(false);
+      void loadPreview();
+      void loadStatus();
+    }
+  }
+
+  async function retry(sendId: string) {
+    setBusy(true);
+    setMessage(null);
+    try {
+      const { ok, data } = await post({ action: "retry", sendId });
+      setMessage(ok ? { tone: "ok", text: `${data.requeued} failed invitation${data.requeued === 1 ? "" : "s"} queued again.` } : { tone: "warn", text: typeof data.error === "string" ? data.error : "Could not retry." });
+    } finally {
+      setBusy(false);
+      void loadPreview();
+      void loadStatus();
+    }
+  }
+
+  if ((telegram && !hasSends) || (!preview && !refusal && !status)) return null;
+  const latest = status?.sends[status.sends.length - 1];
   return (
-    <SectionCard id="rsvp-preview" title="Email invitations (preview)" icon={<Mail className="size-5" />} meta="Who would get an RSVP email for this match. Email sending isn't available yet — nothing is sent from here.">
-      {refusal ? (
-        <p className="text-sm text-muted-foreground">{refusal.error}</p>
-      ) : (
-        preview && (
-          <div className="space-y-4">
-            <dl className="grid grid-cols-2 gap-2 text-sm sm:grid-cols-4">
-              <div className="rounded-tbp-md border border-border p-2">
-                <dt className="text-xs text-muted-foreground">Would be invited</dt>
-                <dd className="text-lg font-extrabold tabular-nums">{preview.counts.willSend}</dd>
-              </div>
-              <div className="rounded-tbp-md border border-border p-2">
-                <dt className="text-xs text-muted-foreground">Excluded</dt>
-                <dd className="text-lg font-extrabold tabular-nums">{preview.counts.excluded}</dd>
-              </div>
-              <AllowanceCell label="Remaining today (UTC)" w={preview.allowance.day} />
-              <AllowanceCell label="Remaining this month (UTC)" w={preview.allowance.month} />
-            </dl>
-            <p className="text-xs text-muted-foreground">
-              {preview.allowance.note} Who is invited is provisional until sending: answers, contact changes and unsubscribes are re-checked then.
-            </p>
-            <ul className="divide-y divide-border">
-              {preview.recipients.map((r) => (
-                <li key={r.playerId} className="flex flex-wrap items-start justify-between gap-x-3 gap-y-1 py-2">
-                  <span className="min-w-0">
-                    <span className="block break-words font-semibold">{r.name}</span>
-                    <span className="block break-all text-xs text-muted-foreground">{r.maskedEmail ?? "—"}</span>
-                    {r.source && <span className="block text-xs text-muted-foreground">{SOURCE_LABEL[r.source]}</span>}
-                  </span>
-                  <span className={cn("rounded-full border px-2 py-0.5 text-xs font-semibold", r.status === "WILL_SEND" ? "border-primary/30 bg-primary/10 text-primary" : "border-border bg-muted text-muted-foreground")}>{STATUS_LABEL[r.status]}</span>
-                </li>
-              ))}
-            </ul>
-            {preview.notOnRoster.length > 0 && (
-              <details className="text-sm">
-                <summary className="cursor-pointer font-semibold">Not on this match&apos;s roster ({preview.notOnRoster.length}) — never invited</summary>
-                <p className="mt-1 text-xs text-muted-foreground">{preview.notOnRoster.map((p) => p.name).join(", ")}</p>
-              </details>
-            )}
-            <div>
-              <Button type="button" disabled aria-disabled="true" title="Email sending isn't available yet">
-                Send invitations — coming soon
-              </Button>
+    <SectionCard id="rsvp-preview" title="Email invitations" icon={<Mail className="size-5" />} meta="Invite players to RSVP by email. Each player gets their own link; their answer is saved only when they confirm it.">
+      <div className="space-y-5">
+        {status && hasSends && <Dashboard status={status} busy={busy} canRetry={available} onRetry={retry} retryId={latest?.id} />}
+
+        {refusal ? (
+          <p className="text-sm text-muted-foreground">{refusal.error}</p>
+        ) : (
+          preview && (
+            <div className="space-y-4">
+              {hasSends && <h3 className="text-sm font-bold">Resend to players who haven&apos;t answered</h3>}
+              <dl className="grid grid-cols-2 gap-2 text-sm sm:grid-cols-4">
+                <div className="rounded-tbp-md border border-border p-2">
+                  <dt className="text-xs text-muted-foreground">{hasSends ? "Would be re-invited" : "Would be invited"}</dt>
+                  <dd className="text-lg font-extrabold tabular-nums">{willSend}</dd>
+                </div>
+                <div className="rounded-tbp-md border border-border p-2">
+                  <dt className="text-xs text-muted-foreground">Excluded</dt>
+                  <dd className="text-lg font-extrabold tabular-nums">{preview.counts.excluded}</dd>
+                </div>
+                <AllowanceCell label="Remaining today (UTC)" w={preview.allowance.day} />
+                <AllowanceCell label="Remaining this month (UTC)" w={preview.allowance.month} />
+              </dl>
+              <p className="text-xs text-muted-foreground">
+                {preview.allowance.note} Who is invited is provisional until sending: answers, contact changes and unsubscribes are re-checked then.
+              </p>
+              <RecipientList rows={preview.recipients.filter((r) => r.status === "WILL_SEND")} title={`Will be ${hasSends ? "re-" : ""}invited (${willSend})`} open={!hasSends} />
+              <RecipientList rows={preview.recipients.filter((r) => r.status !== "WILL_SEND")} title={`Excluded (${preview.counts.excluded})`} open={false} />
+              {preview.notOnRoster.length > 0 && (
+                <details className="text-sm">
+                  <summary className="cursor-pointer font-semibold">Not on this match&apos;s roster ({preview.notOnRoster.length}) — never invited</summary>
+                  <p className="mt-1 text-xs text-muted-foreground">{preview.notOnRoster.map((p) => p.name).join(", ")}</p>
+                </details>
+              )}
+
+              {!available ? (
+                <div>
+                  <Button type="button" disabled aria-disabled="true" title="Email sending isn't available yet">
+                    Send invitations — coming soon
+                  </Button>
+                  <p className="mt-1 text-xs text-muted-foreground">Email sending isn&apos;t available yet — nothing is sent from here.</p>
+                </div>
+              ) : !confirming ? (
+                <Button type="button" disabled={willSend === 0 || busy} onClick={startConfirm}>
+                  {hasSends ? `Review resend to ${willSend}` : `Review and send ${willSend} invitation${willSend === 1 ? "" : "s"}`}
+                </Button>
+              ) : (
+                <div className="space-y-3 rounded-tbp-md border border-primary/40 bg-primary/5 p-3" role="region" aria-label="Confirm sending">
+                  <p className="text-sm font-semibold">
+                    {hasSends ? "Resend" : "Send"} an RSVP email to {willSend} recipient{willSend === 1 ? "" : "s"}?
+                  </p>
+                  <label className="flex items-start gap-2 text-sm">
+                    <input type="checkbox" className="mt-1 size-5 shrink-0" checked={attested} onChange={(e) => setAttested(e.target.checked)} />
+                    <span>I&apos;m authorized to contact these {willSend} recipients (players or their parents / guardians) about coordinating this match.</span>
+                  </label>
+                  <div className="flex flex-wrap gap-2">
+                    <Button type="button" disabled={!attested || busy} onClick={send}>
+                      {busy ? "Sending…" : `${hasSends ? "Resend to" : "Send to"} ${willSend}`}
+                    </Button>
+                    <Button type="button" variant="outline" disabled={busy} onClick={() => setConfirming(false)}>
+                      Cancel
+                    </Button>
+                  </div>
+                </div>
+              )}
             </div>
-          </div>
-        )
-      )}
+          )
+        )}
+        {message && (
+          <p role="status" className={cn("text-sm font-semibold", message.tone === "ok" ? "text-primary" : "text-destructive")}>
+            {message.text}
+          </p>
+        )}
+      </div>
     </SectionCard>
   );
 }
@@ -120,6 +250,97 @@ function AllowanceCell({ label, w }: { label: string; w: Window }) {
       <dd className="text-xs text-muted-foreground">
         {w.used} used{w.reserved > 0 ? ` (${w.reserved} queued)` : ""}
       </dd>
+    </div>
+  );
+}
+
+function RecipientList({ rows, title, open }: { rows: Row[]; title: string; open: boolean }) {
+  if (rows.length === 0) return null;
+  return (
+    <details className="text-sm" open={open}>
+      <summary className="cursor-pointer font-semibold">{title}</summary>
+      <ul className="mt-1 divide-y divide-border">
+        {rows.map((r) => (
+          <li key={r.playerId} className="flex flex-wrap items-start justify-between gap-x-3 gap-y-1 py-2">
+            <span className="min-w-0">
+              <span className="block break-words font-semibold">{r.name}</span>
+              <span className="block break-all text-xs text-muted-foreground">{r.maskedEmail ?? "—"}</span>
+              {r.source && <span className="block text-xs text-muted-foreground">{SOURCE_LABEL[r.source]}</span>}
+            </span>
+            <span className={cn("rounded-full border px-2 py-0.5 text-xs font-semibold", r.status === "WILL_SEND" ? "border-primary/30 bg-primary/10 text-primary" : "border-border bg-muted text-muted-foreground")}>{STATUS_LABEL[r.status]}</span>
+          </li>
+        ))}
+      </ul>
+    </details>
+  );
+}
+
+function Dashboard({ status, busy, canRetry, onRetry, retryId }: { status: StatusView; busy: boolean; canRetry: boolean; onRetry: (id: string) => void; retryId?: string }) {
+  const d = status.totals.delivery;
+  const r = status.totals.rsvp;
+  const retryable = status.sends.find((s) => s.id === retryId)?.retryable ?? 0;
+  const cell = (label: string, n: number, warn = false) => (
+    <div className={cn("rounded-tbp-md border p-2", warn && n > 0 ? "border-amber-500/60 bg-amber-500/10" : "border-border")}>
+      <dt className="text-xs text-muted-foreground">{label}</dt>
+      <dd className="text-lg font-extrabold tabular-nums">{n}</dd>
+    </div>
+  );
+  return (
+    <div className="space-y-3">
+      <div>
+        <h3 className="text-sm font-bold">Email delivery{status.totals.inProgress ? " — sending…" : ""}</h3>
+        <p className="text-xs text-muted-foreground">
+          {status.mode === "test-outbox" ? "Test mode: emails go to the local test outbox only — nobody receives them." : "“Accepted” means the email provider accepted the message — not that it reached an inbox."}
+        </p>
+      </div>
+      <dl className="grid grid-cols-2 gap-2 text-sm sm:grid-cols-3">
+        {cell("Queued", d.queued)}
+        {cell("Processing", d.processing)}
+        {cell(status.mode === "test-outbox" ? "Accepted (test outbox)" : "Accepted by provider", d.accepted)}
+        {cell("Failed", d.failed, true)}
+        {cell("Uncertain", d.uncertain, true)}
+        {cell("Skipped", d.skipped)}
+      </dl>
+      {status.totals.uncertain > 0 && (
+        <p className="flex items-start gap-2 rounded-tbp-md border border-amber-500/60 bg-amber-500/10 p-2 text-sm" role="note">
+          <AlertTriangle className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
+          <span>
+            {status.totals.uncertain} email{status.totals.uncertain === 1 ? "" : "s"} may or may not have been sent (the provider didn&apos;t confirm). They are not retried automatically, to avoid duplicates, and still count toward your allowance. Check with those
+            players before resending.
+          </span>
+        </p>
+      )}
+      {retryable > 0 && canRetry && retryId && (
+        <Button type="button" variant="outline" disabled={busy} onClick={() => onRetry(retryId)}>
+          Retry {retryable} failed
+        </Button>
+      )}
+      <div>
+        <h3 className="text-sm font-bold">RSVP answers (invited players)</h3>
+        <dl className="mt-2 grid grid-cols-2 gap-2 text-sm sm:grid-cols-4">
+          {cell("Yes", r.yes)}
+          {cell("Maybe", r.maybe)}
+          {cell("No", r.no)}
+          {cell("Unanswered", r.unanswered)}
+        </dl>
+      </div>
+      <details className="text-sm">
+        <summary className="cursor-pointer font-semibold">Per player ({status.recipients.length})</summary>
+        <ul className="mt-1 divide-y divide-border">
+          {status.recipients.map((x, i) => (
+            <li key={x.playerId ?? `removed-${i}`} className="flex flex-wrap items-start justify-between gap-x-3 gap-y-1 py-2">
+              <span className="min-w-0">
+                <span className="block break-words font-semibold">{x.name}</span>
+                <span className="block break-all text-xs text-muted-foreground">{x.maskedEmail ?? "—"}</span>
+              </span>
+              <span className="flex flex-wrap gap-1 text-xs">
+                <span className={cn("rounded-full border px-2 py-0.5 font-semibold", x.delivery === "UNCERTAIN" || x.delivery === "FAILED" ? "border-amber-500/60 bg-amber-500/10" : "border-border bg-muted text-muted-foreground")}>{x.delivery === "SKIPPED" ? skipText(x.skipReason) : deliveryLabel(x.delivery, status.mode)}</span>
+                <span className="rounded-full border border-border px-2 py-0.5 font-semibold">{x.rsvp ? `RSVP: ${RSVP_LABEL[x.rsvp]}${x.rsvpSetByOrganizer ? " (organizer)" : ""}` : "No answer yet"}</span>
+              </span>
+            </li>
+          ))}
+        </ul>
+      </details>
     </div>
   );
 }

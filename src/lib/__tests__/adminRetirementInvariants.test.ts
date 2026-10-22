@@ -118,6 +118,7 @@ describe("flat operational Admin APIs are deleted", () => {
         canonical("players/[id]/account"), // M6-C
         canonical("players/[id]/contact"), // M13B P1 — organizer-only player contact email
         canonical("matches/[matchId]/rsvp-preview"), // M13B P2 — read-only RSVP recipient preview
+        canonical("matches/[matchId]/rsvp-send"), // M13B P5 — RSVP email send (test outbox only) + delivery dashboard
         canonical("players/[id]/telegram"), // M6.1
         canonical("publish"),
         canonical("settings/balance-weights"),

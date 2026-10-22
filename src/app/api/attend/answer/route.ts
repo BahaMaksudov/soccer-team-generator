@@ -16,6 +16,7 @@ const schema = z.object({ token: z.string().max(100), status: z.enum(["PLAYING",
 const MESSAGES: Record<string, { status: number; error: string }> = {
   invalid: { status: 404, error: "This link is not valid." },
   revoked: { status: 410, error: "This link was replaced or revoked. Ask your organizer for your current link." },
+  replaced: { status: 410, error: "A newer invitation was sent for this match. Please use the link in the most recent email." },
   closed: { status: 409, error: "Responses for this match are closed. Contact the organizer if your plans changed." },
   canceled: { status: 409, error: "This match was canceled." },
   telegram: { status: 409, error: "This match uses your group's Telegram poll for attendance — please vote there." },

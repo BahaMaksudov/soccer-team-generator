@@ -335,6 +335,129 @@ therefore kept apart:
   requires. Request logs (for example Vercel's) may record it. The token can only opt that one address out
   of that one organization's RSVP emails, and it is stored hash-only on our side.
 
+## P5 — organizer send, recipient RSVP and queue continuation (implemented; test outbox only)
+
+### Delivery gate (`src/lib/rsvpDeliveryMode.ts`)
+
+`rsvpDeliveryMode()` is the only switch, and it has no live mode:
+- `test-outbox` when `NODE_ENV=test`;
+- `test-outbox` in a **confirmed local test environment**, which needs all of:
+  - `NODE_ENV=development`;
+  - `RSVP_EMAIL_LOCAL_TEST_OUTBOX=1`;
+  - no `VERCEL` / `VERCEL_ENV`;
+  - `DATABASE_URL` pointing at `localhost` / `127.0.0.1` / `::1`, with a database name containing `test`;
+- `disabled` everywhere else. Every production build (Production, Preview and a local `next start`) runs
+  `NODE_ENV=production`.
+
+When the mode is `disabled`:
+- the Send API returns 403 `DELIVERY_DISABLED` before parsing, reading or writing anything;
+- the cron continuation reports `{ disabled: true }` and claims nothing;
+- the engine throws before claiming;
+- the preview returns `sending.available: false`, so the button is shown disabled (the button only mirrors
+  the server).
+
+### Organizer workflow (match page → "Email invitations")
+
+1. **Review:** who will be invited (masked destination, Player / Parent-Guardian / Linked account), who is
+   excluded and why, and the actual remaining allowance today and this month (UTC).
+2. **Confirm:** "Send an RSVP email to N recipients?" plus an unchecked box: "I'm authorized to contact these
+   N recipients (players or their parents / guardians) about coordinating this match." Send stays disabled
+   until the box is checked.
+3. **Submit:** `POST …/matches/[matchId]/rsvp-send` with `{ action: "send", kind, requestKey, expectedCount,
+   attested: true }`.
+   - `requestKey` is generated once per confirmation (`crypto.randomUUID`), so a double click, network
+     retry or concurrent submit returns the same send.
+   - The server stores `attestedAt` and `confirmedCount` on `RsvpSend`.
+4. **Progress:** the first batch is delivered inline (8 s budget); the cron continues the rest. The card
+   polls every 3 s while anything is queued or processing.
+
+Clear refusals (409):
+- `ROSTER_CHANGED`, with the new count, when anything changed since the review (answers, contacts,
+  unsubscribes, allowance);
+- `DEADLINE_PASSED`, `ATTENDANCE_CLOSED`, `MATCH_CANCELED`, `TELEGRAM_MATCH`;
+- `PLAN_LIMIT`, explaining the 00:00 UTC / 1st-of-month reset;
+- `ALREADY_SENT` (use "Resend to unanswered" instead).
+
+Rate limit (429): at most 10 new sends per organization per 10 minutes. This one is database-backed and
+authoritative, and a repeated request key is still answered. An Upstash `rsvp-send` bucket per organizer is
+an optional first layer.
+
+### Send API (`rsvp-send/route.ts`)
+
+- **Access:** OWNER / ADMIN only. MEMBER, another organization, another group's URL or an unknown match gets
+  the same generic 404; signed out gets 401.
+- **CSRF:** JSON content type plus a same-origin `Origin` header (the same convention as the answer endpoint).
+- **Request shape:** a strict schema. The client can't name recipients, addresses, subjects or bodies; the
+  server re-derives the roster under the locks.
+- **Actions:**
+  - `send` (`INITIAL` or `RESEND` to unanswered players);
+  - `retry` (FAILED rows only; attempt limit and allowance apply; UNCERTAIN rows are never retried).
+- **Errors:** anything other than a tenant error returns a generic 500, never an internal message.
+
+### Delivery dashboard (`GET rsvp-send`, `src/lib/rsvpStatus.ts`)
+
+Delivery status and RSVP status are reported separately:
+- **Delivery:** Queued, Processing, Accepted (by the test outbox or the provider — never called
+  "delivered"), Failed, Uncertain, Skipped (with its reason).
+- **RSVP**, among players an email was meant for: Yes, Maybe, No, Unanswered. Organizer overrides are marked.
+- **Uncertain** rows get an explicit warning: not retried automatically, still counted, check with those
+  players before resending.
+- Destinations are masked; no tokens or keys are returned.
+
+### Invitation email
+
+- **Content:** TeamBalance Pro branding, match name and date/time, venue, RSVP deadline, and Yes / Maybe /
+  No buttons.
+  - The buttons link to `/attend?c=yes|maybe|no#<token>`. The token stays in the fragment.
+  - It also includes the plain answer link, why the recipient got the email, and an unsubscribe link plus the
+    RFC 8058 headers.
+- **Layout:** one responsive column (560px max) with inline styles, plus a plain-text alternative carrying
+  the same links.
+- **Wording:** guardians get a neutral greeting ("Hello,") followed by "You're receiving this as the
+  parent / guardian contact for <player>".
+- **Subject:** `RSVP: <match name> — <date/time>`, with no player name and no address.
+- **No other players' data.**
+
+### Recipient RSVP page (`/attend`)
+
+- **Choice buttons only pre-select.** Opening a link (by a person, a mail scanner or a link preview) never
+  changes attendance.
+  - `?c=` only pre-selects the answer; saving needs an explicit **Confirm** tap ("Not now" dismisses it).
+  - `?c=` is removed from the address bar after load.
+  - Saving is a same-origin JSON POST, so scanners can't trigger it.
+  - The existing answer buttons still save on tap (an explicit action, M12B behavior).
+- **Answers:** Yes / Maybe / No (`PLAYING` / `MAYBE` / `NOT_PLAYING`, which the model already had; no
+  downstream change). Repeated or racing submissions upsert one row. Existing locking and per-link rate
+  limits are unchanged.
+- **States:**
+  - **closed:** the deadline passed or the organizer closed attendance;
+  - **canceled;**
+  - **telegram;**
+  - **revoked:** the organizer revoked or regenerated the link;
+  - **replaced** (new, via `PersonalAttendanceLink.replacedAt`): a newer emailed link was accepted for this
+    player — "please use the link in the most recent email". The answer is refused with 410.
+- **Organizer overrides** keep precedence. The answer is still recorded and the page says the organizer set
+  the status.
+- **No account is needed,** and the page shows only that player's own name and answer.
+
+### Queue continuation
+
+The existing scheduler is the GitHub Actions workflow that POSTs to `/api/cron/automation` every 15
+minutes with the `CRON_SECRET` bearer. It now also runs `processRsvpQueue`:
+- at most 200 claims within a 20 s budget (no new claim after the budget);
+- claims use `FOR UPDATE SKIP LOCKED`, so overlapping runs never take the same row;
+- stale rows are recovered as UNCERTAIN, and there is never an automatic retry;
+- per-row errors are isolated and counted;
+- the response contains counts only.
+
+It is a no-op (`{ disabled: true }`) wherever the delivery gate is off, which is everywhere outside local
+tests.
+
+### Migration `20261215120000_m13b_p5_send_attestation` (additive)
+
+- `RsvpSend.attestedAt`, `RsvpSend.confirmedCount`;
+- `PersonalAttendanceLink.replacedAt`.
+
 ## Open issues / risks
 
 - Consent: organizers enter addresses (including guardians') without the recipient confirming. Unsubscribe
@@ -345,5 +468,5 @@ therefore kept apart:
   destination (for example `p•••@example.com`) if approved.
 - DMARC is not configured for `mail.teambalancepro.com` / `teambalancepro.com`. It is required before P4 goes
   live.
-- P4: no scheduler calls `processRsvpQueue` yet, and no HTTP route exists. Wiring the cron / queue
-  continuation and the real transport is P5+, behind explicit approval.
+- P5: the real transport is not wired anywhere. Enabling live sending (a provider transport behind an
+  explicit, separately approved switch, after DMARC) is P6+.

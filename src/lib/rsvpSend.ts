@@ -3,21 +3,23 @@ import { prisma } from "@/lib/prisma";
 import { requireRole, type TenantContext } from "@/lib/tenantContext";
 import { generateToken, hashToken } from "@/lib/secureToken";
 import { lockMatchForAnswer } from "@/lib/attendanceClosure";
-import { personalLinkPath } from "@/lib/personalAttendance";
+import { PERSONAL_ATTENDANCE_PATH } from "@/lib/personalAttendance";
 import { suppressedFor, unsubscribeLinks, oneClickUnsubscribeHeaders, UNSUBSCRIBE_TOKEN_TTL_DAYS } from "@/lib/emailSuppression";
 import { classifyRoster, matchRefusal, rsvpAllowance, MATCH_SELECT, type PreviewRefusal } from "@/lib/rsvpPreview";
 import { appUrl, getEmailFrom, EmailConfigError } from "@/lib/email/config";
 import { EmailDeliveryError, testOutbox, type EmailTransport } from "@/lib/email/transport";
 import { buildRsvpInvitationEmail } from "@/lib/email/templates";
 import { classifySendError } from "@/lib/trialLifecycle";
+import { rsvpDeliveryMode } from "@/lib/rsvpDeliveryMode";
 import { formatStartTime } from "@/lib/messaging/content";
 import { formatDeadline } from "@/lib/deadlineFormat";
 
 /**
  * M13B P4 — the RSVP email SENDING ENGINE (no HTTP route; not callable from the UI).
  *
- * DELIVERY IS TEST-ONLY IN P4, enforced here on the server: `rsvpTransport()` returns the
- * in-memory test outbox and only under NODE_ENV=test; everywhere else it throws
+ * DELIVERY IS TEST-ONLY, enforced here on the server: `rsvpTransport()` returns the
+ * in-memory test outbox and only when `rsvpDeliveryMode()` says "test-outbox" (automated
+ * tests, or a confirmed local test environment); everywhere else it throws
  * RsvpDeliveryDisabledError BEFORE anything is queued or claimed. No code path in this
  * module reaches the Resend transport, whatever the environment flags say.
  *
@@ -58,26 +60,29 @@ const REQUEST_KEY = /^[A-Za-z0-9_-]{8,100}$/;
 
 export class RsvpDeliveryDisabledError extends Error {
   constructor() {
-    super("RSVP email delivery is not available in this build (M13B P4: test outbox only).");
+    super("RSVP email delivery is not available in this environment (test outbox only).");
     this.name = "RsvpDeliveryDisabledError";
   }
 }
 
+type Env = Record<string, string | undefined>;
+export { rsvpDeliveryMode, isLocalTestDatabaseUrl } from "@/lib/rsvpDeliveryMode";
+
 let testTransportOverride: EmailTransport | null = null;
 /** Tests only: route RSVP delivery through a fake transport (refused outside NODE_ENV=test). */
-export function setRsvpTransportForTests(t: EmailTransport | null, env: Record<string, string | undefined> = process.env): void {
+export function setRsvpTransportForTests(t: EmailTransport | null, env: Env = process.env): void {
   if (env.NODE_ENV !== "test") throw new RsvpDeliveryDisabledError();
   testTransportOverride = t;
 }
-/** The ONLY RSVP transport in P4: the in-memory test outbox, under NODE_ENV=test only. */
-export function rsvpTransport(env: Record<string, string | undefined> = process.env): EmailTransport {
-  if (env.NODE_ENV !== "test") throw new RsvpDeliveryDisabledError();
-  return testTransportOverride ?? testOutbox;
+/** The ONLY RSVP transport: the in-memory test outbox, and only when rsvpDeliveryMode() allows it. */
+export function rsvpTransport(env: Env = process.env): EmailTransport {
+  if (rsvpDeliveryMode(env) !== "test-outbox") throw new RsvpDeliveryDisabledError();
+  return (env.NODE_ENV === "test" ? testTransportOverride : null) ?? testOutbox;
 }
 
-export type SendRefusal = PreviewRefusal | "DELIVERY_DISABLED" | "INVALID_REQUEST" | "REQUEST_KEY_CONFLICT" | "ALREADY_SENT" | "NOTHING_TO_RESEND" | "NOTHING_TO_SEND" | "PLAN_LIMIT";
+export type SendRefusal = PreviewRefusal | "DELIVERY_DISABLED" | "INVALID_REQUEST" | "REQUEST_KEY_CONFLICT" | "ALREADY_SENT" | "NOTHING_TO_RESEND" | "NOTHING_TO_SEND" | "PLAN_LIMIT" | "ROSTER_CHANGED";
 export type SendCounts = { queued: number; skipped: number; byReason: Record<string, number> };
-export type CreateSendResult = { ok: true; sendId: string; round: number; duplicate: boolean; counts: SendCounts } | { ok: false; code: SendRefusal };
+export type CreateSendResult = { ok: true; sendId: string; round: number; duplicate: boolean; counts: SendCounts } | { ok: false; code: SendRefusal; willSend?: number };
 
 // Raw SQL timestamps are passed as UTC ISO text cast to "timestamp" (the columns are
 // timestamp(3) without time zone, holding UTC), never as Date parameters — those would be
@@ -100,7 +105,12 @@ async function existingSend(requestKey: string, organizationId: string, matchId:
 }
 
 /** OWNER/ADMIN: queue an RSVP send for one match (idempotent per requestKey). Sends nothing itself. */
-export async function createRsvpSend(context: TenantContext, matchId: string, input: { kind: RsvpSendKind; requestKey: string }, now: Date = new Date()): Promise<CreateSendResult> {
+export async function createRsvpSend(
+  context: TenantContext,
+  matchId: string,
+  input: { kind: RsvpSendKind; requestKey: string; /** P5: the recipient count the organizer reviewed */ expectedCount?: number; /** P5: the organizer confirmed they may contact them */ attested?: boolean },
+  now: Date = new Date()
+): Promise<CreateSendResult> {
   requireRole(context, [...MANAGERS]);
   try {
     rsvpTransport();
@@ -133,9 +143,12 @@ export async function createRsvpSend(context: TenantContext, matchId: string, in
         const { rows } = await classifyRoster(organizationId, fresh, Math.min(allowance.day.remaining, allowance.month.remaining), tx);
         const willSend = rows.filter((r) => r.status === "WILL_SEND");
         if (willSend.length === 0) return { ok: false, code: rows.some((r) => r.status === "OVER_LIMIT") ? "PLAN_LIMIT" : input.kind === "RESEND" ? "NOTHING_TO_RESEND" : "NOTHING_TO_SEND" };
+        // The organizer confirmed a count from the preview; anything changed since (roster,
+        // answers, contacts, unsubscribes, allowance) → refuse and let them review again.
+        if (input.expectedCount !== undefined && willSend.length !== input.expectedCount) return { ok: false, code: "ROSTER_CHANGED", willSend: willSend.length };
 
         const round = (previous._max.round ?? 0) + 1;
-        const send = await tx.rsvpSend.create({ data: { organizationId, groupId, matchId: match.id, kind: input.kind, round, requestKey: input.requestKey, createdByUserId: context.user.id, createdAt: now }, select: { id: true } });
+        const send = await tx.rsvpSend.create({ data: { organizationId, groupId, matchId: match.id, kind: input.kind, round, requestKey: input.requestKey, createdByUserId: context.user.id, createdAt: now, attestedAt: input.attested ? now : null, confirmedCount: input.expectedCount ?? null }, select: { id: true } });
         await tx.rsvpInvitation.createMany({
           data: rows.map((r) => {
             const sendable = r.status === "WILL_SEND" && (r.recipient.kind === "CONTACT" || r.recipient.kind === "ACCOUNT");
@@ -316,10 +329,16 @@ async function deliverOne(c: Claimed, transport: EmailTransport, now: Date): Pro
       playerName: `${inv.player.firstName} ${inv.player.lastName}`.trim(),
       organizationName: inv.organization.name,
       title: m.community?.name ?? inv.group.name,
-      when: `on ${day}${time ? ` at ${time}` : ""}`,
+      when: `${day}${time ? ` at ${time}` : ""}`,
       venue: m.venue?.name ?? m.locationName ?? null,
       deadline: m.attendanceDeadlineAt ? formatDeadline(m.attendanceDeadlineAt.toISOString(), inv.group.timezone, now) : null,
-      answerUrl: appUrl(personalLinkPath(answerToken)),
+      // The token stays in the fragment (never sent to a server); ?c= only pre-selects a choice.
+      answerUrls: {
+        open: appUrl(`${PERSONAL_ATTENDANCE_PATH}#${answerToken}`),
+        yes: appUrl(`${PERSONAL_ATTENDANCE_PATH}?c=yes#${answerToken}`),
+        maybe: appUrl(`${PERSONAL_ATTENDANCE_PATH}?c=maybe#${answerToken}`),
+        no: appUrl(`${PERSONAL_ATTENDANCE_PATH}?c=no#${answerToken}`),
+      },
       unsubscribeUrl: links.page,
     });
 
@@ -327,7 +346,7 @@ async function deliverOne(c: Claimed, transport: EmailTransport, now: Date): Pro
     await settle(inv.id, inv.organizationId, inv.reservedAt, "SENT", { sentAt: new Date(), providerMessageId: result.providerMessageId, lastError: null });
     await prisma.personalAttendanceLink.updateMany({
       where: { matchId: inv.matchId, playerId: inv.playerId, channel: "EMAIL", revokedAt: null, id: { not: prepared.linkId } },
-      data: { revokedAt: new Date() },
+      data: { revokedAt: new Date(), replacedAt: new Date() },
     });
     return "SENT";
   } catch (e) {
