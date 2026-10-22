@@ -22,7 +22,7 @@ export default function PrivacyPage() {
       intro={
         <>
           <p>
-            {PRODUCT_NAME} (&quot;we&quot;, &quot;us&quot;) is a web app that helps organizers of pickup and recreational sports groups manage players, attendance and balanced teams. {PRODUCT_NAME} is operated under the {OPERATING_BRAND} brand by an individual. <OwnerTodo id="operator-identity" /> This policy explains what information the service handles, why, who can see it, and the choices you have.
+            {PRODUCT_NAME} (&quot;we&quot;, &quot;us&quot;) is a web app that helps organizers of pickup and recreational sports groups manage players, attendance and balanced teams. {PRODUCT_NAME} is operated by an individual under the {OPERATING_BRAND} brand; {OPERATING_BRAND} is a brand name, not a registered company. This policy explains what information the service handles, why, who can see it, and the choices you have.
           </p>
           <p className="mt-2">
             Effective date: <EffectiveDate />
@@ -227,7 +227,7 @@ export default function PrivacyPage() {
 
       <LegalSection id="rights" title="12. Your choices and how to contact us">
         <p>
-          From your account settings you can change your password and connect or disconnect Google. Changing your name or email address is not self-service today. To access, correct, export or delete your information, or for any privacy question, email <ContactEmail />. If information about you was entered by an organizer, you can also ask that organizer. Depending on where you live, you may have additional rights under applicable law. <OwnerTodo id="mailing-address" />
+          From your account settings you can change your password and connect or disconnect Google. Changing your name or email address is not self-service today. To access, correct, export or delete your information, or for any privacy question, email <ContactEmail />. If information about you was entered by an organizer, you can also ask that organizer. Depending on where you live, you may have additional rights under applicable law.
         </p>
       </LegalSection>
 

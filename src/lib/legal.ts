@@ -33,6 +33,8 @@ export const CONFIRMED_DECISIONS = [
   "Public product name: TeamBalance Pro.",
   "Operated under the AYBIA Labs brand — a planned business name, not a registered LLC — by an individual. No LLC or other entity is claimed.",
   "Contact for privacy, legal and support requests: support@teambalancepro.com — confirmed operational (forwarded through ImprovMX to the owner's inbox).",
+  "Operator identification: 'operated by an individual under the AYBIA Labs brand; AYBIA Labs is a brand name, not a registered company'. The owner's personal legal name is not published.",
+  "No mailing address (personal or home) is published; public contact is by email only.",
   "Accounts are for adults aged 18 or older; organizers may keep player profiles for minors when they have appropriate authority. No age or parental-consent verification exists.",
   "Retention is manual: data is kept as needed to run the service; only the listed security records and tokens expire automatically.",
   "Deletion and correction requests are handled manually by email; identity and authority may be verified; no fixed deadline.",
@@ -54,8 +56,6 @@ export const CONFIRMED_DECISIONS = [
 export type OwnerItemCategory = "publication" | "legal-review" | "billing-launch";
 export type OwnerItem = { id: string; label: string; category: OwnerItemCategory };
 export const OWNER_ITEMS: readonly OwnerItem[] = [
-  { id: "operator-identity", category: "publication", label: "How the individual operator is identified in these documents (for example, whether the individual's legal name is published)." },
-  { id: "mailing-address", category: "publication", label: "Whether a public mailing address must be published, and which one." },
   { id: "effective-date", category: "publication", label: "Set at publication: the date these documents are published." },
   { id: "attorney-children", category: "legal-review", label: "Attorney review: information about minors entered by organizers (including COPPA and state-law questions, and visibility of minors' names on Public or link-shared pages)." },
   { id: "attorney-liability", category: "legal-review", label: "Attorney review: disclaimers, limitation of liability and governing-law wording (including whether a venue clause is needed)." },

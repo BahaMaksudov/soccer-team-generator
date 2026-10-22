@@ -26,7 +26,7 @@ export default function TermsPage() {
       intro={
         <>
           <p>
-            These terms govern your use of {PRODUCT_NAME} at teambalancepro.com (the &quot;service&quot;). {PRODUCT_NAME} is operated under the {OPERATING_BRAND} brand by an individual (&quot;we&quot;, &quot;us&quot;). <OwnerTodo id="operator-identity" /> By creating an account or using the service you agree to these terms. Please also read our{" "}
+            These terms govern your use of {PRODUCT_NAME} at teambalancepro.com (the &quot;service&quot;). {PRODUCT_NAME} is operated by an individual under the {OPERATING_BRAND} brand (&quot;we&quot;, &quot;us&quot;); {OPERATING_BRAND} is a brand name, not a registered company. By creating an account or using the service you agree to these terms. Please also read our{" "}
             <Link href={LEGAL_PATHS.privacy} className="underline">
               Privacy Policy
             </Link>
@@ -152,7 +152,7 @@ export default function TermsPage() {
 
       <LegalSection id="contact" title="15. Contact">
         <p>
-          Questions about these terms: <ContactEmail />. <OwnerTodo id="mailing-address" />
+          Questions about these terms: <ContactEmail />.
         </p>
       </LegalSection>
     </LegalPage>

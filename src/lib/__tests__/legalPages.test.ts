@@ -46,10 +46,10 @@ describe("legal pages — public and linked", () => {
 describe("legal pages — no invented facts", () => {
   it("open items, by category (mailbox confirmed; hosting locations verified)", () => {
     const by = (c: string) => OWNER_ITEMS.filter((i) => i.category === c).map((i) => i.id);
-    expect(by("publication")).toEqual(["operator-identity", "mailing-address", "effective-date"]);
+    expect(by("publication")).toEqual(["effective-date"]);
     expect(by("legal-review")).toEqual(["attorney-children", "attorney-liability", "international-transfers"]);
     expect(by("billing-launch")).toEqual(["billing-terms"]);
-    expect(`${privacy}${terms}`).not.toMatch(/id="(mailbox|hosting-disclosure)"/);
+    expect(`${privacy}${terms}`).not.toMatch(/id="(mailbox|hosting-disclosure|operator-identity|mailing-address)"/);
   });
   it("every publication / legal-review item is shown on a page; billing-launch items are not rendered as markers", () => {
     const shown = OWNER_ITEMS.filter((i) => i.category !== "billing-launch").map((i) => i.id);
@@ -107,7 +107,8 @@ describe("legal pages — rendered content (owner decisions applied, no false cl
 
   it("brand, operator structure and contact on both pages; no entity or address claims", () => {
     for (const [name, t] of Object.entries(pages)) {
-      expect(t, name).toContain(`${PRODUCT_NAME} is operated under the ${OPERATING_BRAND} brand by an individual`);
+      expect(t, name).toContain(`${PRODUCT_NAME} is operated by an individual under the ${OPERATING_BRAND} brand`);
+      expect(t, name).toContain(`${OPERATING_BRAND} is a brand name, not a registered company`);
       expect(t, name).toContain(LEGAL_CONTACT_EMAIL);
       expect(t, name).not.toMatch(/\bLLC\b|\bInc\.?\b|\bCorp(oration)?\b|\bLtd\b|incorporated|registered trademark/i);
       expect(t, name).not.toMatch(/\d+\s+\w+\s+(Street|St\.|Avenue|Ave\.|Road|Rd\.|Suite|Blvd)|P\.?O\.? Box/i);
