@@ -863,6 +863,53 @@ run on provider trouble keeps an outage from turning a whole queue into UNCERTAI
   claimed.
 - Account email is unaffected.
 
+## P8B.1 — release readiness: retry window and quota boundaries (still default OFF)
+
+Migration `20261231120000_m13b_p8b1_idempotency_window` adds `RsvpInvitation.idempotencyKeyFirstUsedAt`.
+
+### Retry deadlines (Resend keeps idempotency keys for 24 h)
+
+- **The key's age is recorded.** `idempotencyKeyFirstUsedAt` is when the current key
+  (`rsvp:<invitation>:<attempt>`) was first handed to Resend. A rate-limited retry reuses both the key and this
+  time.
+- **Safe window:** `RSVP_IDEMPOTENCY_SAFE_WINDOW_MS` = 23 hours, leaving 1 hour of margin under Resend's 24.
+- **Two deadlines:**
+  - When a 429 arrives, if the Retry-After would end past the key's window, the row becomes **UNCERTAIN**
+    (`RETRY_WINDOW_EXPIRED`) at once instead of being requeued.
+  - When a rate-limited row is claimed again after its window, it becomes **UNCERTAIN**
+    (`RETRY_WINDOW_EXPIRED`) without being handed off. This can happen if the pilot was paused, or a daily
+    quota kept it waiting.
+- **After a provider attempt, a row is never silently released.** If a rate-limited row becomes ineligible
+  before its retry, it becomes **UNCERTAIN** (`lastError = RATE_LIMITED_NOT_RETRIED`, with the reason in
+  `skipReason`). Ineligible means the player answered or was overridden, the contact changed or was
+  suppressed, the match closed, or the player was deleted. It is not SKIPPED, because we can't prove the
+  earlier attempt wasn't accepted. It stays counted.
+- **UNCERTAIN is never retried automatically** (`retryFailedInvitations` only takes FAILED rows).
+
+**Operator handling for UNCERTAIN rows:**
+
+| `lastError` | Meaning | Action |
+| --- | --- | --- |
+| `RETRY_WINDOW_EXPIRED` | Rate-limited, and couldn't be retried within 23 h | Look up the recipient in Resend's logs for the original attempt time. If it wasn't delivered, the organizer can use "Resend to unanswered" (a new, explicit send). |
+| `RATE_LIMITED_NOT_RETRIED` | Rate-limited, then no longer eligible | Usually nothing to do: the player answered, or the organizer acted. |
+| `HTTP_409`, `HTTP_5xx`, `NETWORK`, `TIMEOUT`, `STALE_CLAIM` | The provider's acceptance is unknown | Check Resend's logs before any resend. |
+
+### Global cap boundaries (tested, with Resend mocked)
+
+- 99 of 100 used today, four pilot organizations at once → **exactly one** reservation; the other three get
+  `PLAN_LIMIT`.
+- UTC rollover: with today full, a reservation dated the next UTC day succeeds and counts on its own day.
+- A FAILED hand-off releases its slot, and another organization takes it. A retry with the cap full gets 0.
+- Deleting the match of an accepted email doesn't free its slot.
+- Deadlock check: concurrent sends from two organizations, retries for two others and a worker all complete,
+  with no `40P01` and the cap held. The lock order is the same everywhere (match → organization → pilot).
+
+Readiness documents:
+- `docs/M13B_MIGRATION_AUDIT.md`
+- `docs/M13B_OWNER_DECISIONS.md`
+- `docs/M13B_DNS_RESEND_CHECKLIST.md`
+- `docs/M13B_PILOT_PLAN.md`
+
 ## Open issues / risks
 
 - Consent: organizers enter addresses (including guardians') without the recipient confirming. Unsubscribe

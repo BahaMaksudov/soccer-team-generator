@@ -1,6 +1,6 @@
 # M13B — RSVP invitation emails: pilot activation runbook
 
-**Status (P8A.1):** M13B P1–P8A.1 are on `feature/m13b-p1-player-emails`. Nothing is merged, deployed or migrated,
+**Status (P8B.1):** M13B P1–P8B.1 are on `feature/m13b-p1-player-emails`. Nothing is merged, deployed or migrated,
 and no real RSVP email has ever been sent. The live transport exists in code but is **off**: no environment has
 its flag.
 
@@ -44,6 +44,9 @@ Production is at `f059181`. M13B adds these migrations, all additive, applied in
 7. `20261225120000_m13b_p7_retention`
 8. `20261228120000_m13b_p8a_support_opt_out`
 9. `20261230120000_m13b_p8a1_delivery_pacing`
+10. `20261231120000_m13b_p8b1_idempotency_window`
+
+Lock and downtime analysis per migration: `docs/M13B_MIGRATION_AUDIT.md`.
 
 Exact steps:
 1. **[APPROVAL]** Create a Neon branch / snapshot of Production named `pre-m13b-<date>`.
@@ -51,7 +54,7 @@ Exact steps:
    project's existing build-time migration procedure, or run `prisma migrate deploy` against Production with
    the documented credentials, per the repository's release process. Never run it from an ad-hoc shell.
 3. Verify:
-   - `_prisma_migrations` lists all nine;
+   - `_prisma_migrations` lists all ten;
    - the app's smoke checks pass (sign-in, match page, attendance, Telegram poll);
    - account email still arrives (a password-reset test to an internal address).
 
@@ -198,7 +201,8 @@ Rollback (R): disable the endpoint in Resend and unset `RESEND_WEBHOOK_SECRET` (
 ## 10. Monitoring (daily during the pilot; logs carry counts only)
 
 - Dashboard per pilot match: accepted / failed / uncertain / skipped. **Any UNCERTAIN** → check Resend's logs
-  for that window before resending.
+  for that window before resending. Meaning of each `lastError` (for example `RETRY_WINDOW_EXPIRED`,
+  `RATE_LIMITED_NOT_RETRIED`): `docs/M13B_RSVP_EMAIL.md`, P8B.1.
 - GitHub Actions automation log: the `rsvp` counts (`sent`, `failed`, `uncertain`, `rateLimited`, `errors`,
   `remaining`, `stoppedForProvider`, `stoppedForTime`).
   - `stoppedForProvider` on two runs in a row → check Resend's status page and logs.

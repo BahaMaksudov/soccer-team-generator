@@ -1776,41 +1776,46 @@ model RsvpSend {
 // allowance by reservedAt; FAILED and SKIPPED do not. playerId is SET NULL on
 // player deletion so deleting players can't erase consumed allowance.
 model RsvpInvitation {
-  id                   String             @id @default(cuid())
-  sendId               String
-  organizationId       String
-  groupId              String
-  matchId              String
-  playerId             String?
-  round                Int
+  id                        String             @id @default(cuid())
+  sendId                    String
+  organizationId            String
+  groupId                   String
+  matchId                   String
+  playerId                  String?
+  round                     Int
   // Snapshot of the destination at send time (null when skipped for having none).
-  email                String?
-  recipientType        RsvpRecipientType?
-  status               RsvpDeliveryStatus
-  skipReason           String?
-  attempts             Int                @default(0)
-  reservedAt           DateTime?
-  claimedAt            DateTime?
-  sentAt               DateTime?
-  failedAt             DateTime?
-  providerMessageId    String?
+  email                     String?
+  recipientType             RsvpRecipientType?
+  status                    RsvpDeliveryStatus
+  skipReason                String?
+  attempts                  Int                @default(0)
+  reservedAt                DateTime?
+  claimedAt                 DateTime?
+  sentAt                    DateTime?
+  failedAt                  DateTime?
+  providerMessageId         String?
   // Sanitized category only (e.g. HTTP_422, TIMEOUT) — never provider text or addresses.
-  lastError            String?
-  idempotencyKey       String?
-  linkId               String?
-  unsubscribeTokenId   String?
+  lastError                 String?
+  idempotencyKey            String?
+  linkId                    String?
+  unsubscribeTokenId        String?
   // M13B P7/P8A — when the DIRECT identifiers (recipient address, provider message id,
   // idempotency key, unsubscribe-token link) were removed: retention (90 days after the
   // match, or at once for a deleted player) or a recipient's erasure request. This is NOT
   // anonymization: the row still links to the match, organization and (unless deleted) the
   // named player, so it stays personal data while those exist. Column kept as "anonymizedAt".
-  identifiersRemovedAt DateTime?          @map("anonymizedAt")
+  identifiersRemovedAt      DateTime?          @map("anonymizedAt")
   // M13B P8A.1 — not claimable before this time: set when the provider rate-limited the
   // hand-off (HTTP 429; Retry-After honored). The row stays QUEUED and reserved, and keeps
   // the SAME provider idempotency key for its next attempt.
-  notBefore            DateTime?
-  createdAt            DateTime           @default(now())
-  updatedAt            DateTime           @updatedAt
+  notBefore                 DateTime?
+  // M13B P8B.1 — when the CURRENT idempotency key was first handed to the provider. A
+  // rate-limited row is retried with that key only inside RSVP_IDEMPOTENCY_SAFE_WINDOW_MS
+  // (23 h, under Resend's 24 h key memory); after it — or if the row becomes ineligible
+  // after an attempt — it is UNCERTAIN (counted, never re-sent automatically).
+  idempotencyKeyFirstUsedAt DateTime?
+  createdAt                 DateTime           @default(now())
+  updatedAt                 DateTime           @updatedAt
 
   send             RsvpSend                @relation(fields: [sendId], references: [id], onDelete: Cascade)
   organization     Organization            @relation(fields: [organizationId], references: [id], onDelete: Cascade)

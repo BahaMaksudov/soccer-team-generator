@@ -222,6 +222,12 @@ export async function createRsvpSend(
  */
 export type ProviderOutcome = { outcome: "FAILED" | "UNCERTAIN" | "RATE_LIMITED"; stop: boolean; backoffSeconds: number | null };
 export const RSVP_RATE_LIMIT_DEFAULT_SECONDS = 60;
+/**
+ * P8B.1 — Resend keeps idempotency keys for 24 h. A rate-limited row may reuse its key only
+ * while the key is younger than this (1 h safety margin); later it becomes UNCERTAIN instead
+ * of risking a second email with a key the provider no longer remembers.
+ */
+export const RSVP_IDEMPOTENCY_SAFE_WINDOW_MS = 23 * 60 * 60 * 1000;
 export function classifyRsvpSendError(e: unknown): ProviderOutcome {
   if (e instanceof EmailConfigError) return { outcome: "FAILED", stop: true, backoffSeconds: null };
   if (e instanceof EmailDeliveryError) {
@@ -349,6 +355,8 @@ async function deliverOne(c: Claimed, transport: EmailTransport, now: Date): Pro
       email: true,
       recipientType: true,
       reservedAt: true,
+      idempotencyKey: true,
+      idempotencyKeyFirstUsedAt: true,
       organization: { select: { name: true } },
       group: { select: { name: true, timezone: true } },
       player: { select: { firstName: true, lastName: true, contactEmail: true, contactEmailType: true, contactAuthorizedAt: true, user: { select: { email: true, emailVerifiedAt: true } } } },
@@ -356,32 +364,50 @@ async function deliverOne(c: Claimed, transport: EmailTransport, now: Date): Pro
     },
   });
   if (!inv) return done("SKIPPED"); // removed with its match after the claim
+  // P8B.1 — has the provider already seen THIS key (an earlier, rate-limited hand-off)?
+  const idempotencyKey = `rsvp:${inv.id}:${c.attempts}`;
+  const keyFirstUsedAt = inv.idempotencyKey === idempotencyKey ? inv.idempotencyKeyFirstUsedAt : null;
+  /**
+   * Not sending now. A row never handed off is SKIPPED (released). A row whose key the
+   * provider already saw is UNCERTAIN instead (counted, never re-sent automatically): we
+   * can't prove the earlier rate-limited attempt wasn't accepted.
+   */
+  const notSent = async (reason: string): Promise<DeliveryResult> => {
+    if (!keyFirstUsedAt) {
+      await skip(inv.id, reason);
+      return done("SKIPPED");
+    }
+    await settle(inv.id, inv.organizationId, inv.reservedAt, "UNCERTAIN", { skipReason: reason, lastError: "RATE_LIMITED_NOT_RETRIED" });
+    return done("UNCERTAIN");
+  };
   if (!inv.playerId || !inv.player || !inv.email || !inv.recipientType) {
-    await skip(inv.id, "PLAYER_REMOVED");
-    return done("SKIPPED");
+    return notSent("PLAYER_REMOVED");
   }
   // Re-check at send time: the match may have closed / become a Telegram match, the
   // address may have been suppressed, the player may have answered meanwhile.
   const refusal = await matchRefusal(inv.groupId, inv.match, now);
   if (refusal) {
-    await skip(inv.id, refusal);
-    return done("SKIPPED");
+    return notSent(refusal);
   }
   // P6: the destination must still be the player's current, confirmed recipient — a contact
   // removed, changed or unconfirmed after queuing is never emailed at its old address.
   const current = resolveRecipient(inv.player);
   if ((current.kind !== "CONTACT" && current.kind !== "ACCOUNT") || current.email !== normalizeEmail(inv.email)) {
-    await skip(inv.id, "CONTACT_CHANGED");
-    return done("SKIPPED");
+    return notSent("CONTACT_CHANGED");
   }
   if ((await suppressedFor(inv.organizationId, [inv.email])).size > 0) {
-    await skip(inv.id, "SUPPRESSED");
-    return done("SKIPPED");
+    return notSent("SUPPRESSED");
   }
   const answered = await prisma.attendanceResponse.findUnique({ where: { matchId_playerId: { matchId: inv.matchId, playerId: inv.playerId } }, select: { participantStatus: true, overrideStatus: true } });
   if (answered?.overrideStatus || answered?.participantStatus) {
-    await skip(inv.id, answered.overrideStatus ? "ORGANIZER_OVERRIDE" : "ALREADY_ANSWERED");
-    return done("SKIPPED");
+    return notSent(answered.overrideStatus ? "ORGANIZER_OVERRIDE" : "ALREADY_ANSWERED");
+  }
+
+  // P8B.1 — the provider forgets idempotency keys after 24 h: past the safe window a retry
+  // could duplicate an email the provider did accept, so it is UNCERTAIN instead.
+  if (keyFirstUsedAt && Date.now() - keyFirstUsedAt.getTime() > RSVP_IDEMPOTENCY_SAFE_WINDOW_MS) {
+    await settle(inv.id, inv.organizationId, inv.reservedAt, "UNCERTAIN", { lastError: "RETRY_WINDOW_EXPIRED" });
+    return done("UNCERTAIN");
   }
 
   // Prepare this attempt's capabilities (hash-only). Existing links are NOT touched here:
@@ -389,7 +415,7 @@ async function deliverOne(c: Claimed, transport: EmailTransport, now: Date): Pro
   const answerToken = generateToken();
   const unsubscribeToken = generateToken(); // the /unsubscribe page link (URL fragment)
   const oneClickToken = generateToken(); // RFC 8058 header URL (query string) — one-click only
-  const idempotencyKey = `rsvp:${inv.id}:${c.attempts}`;
+  const keyUsedAt = keyFirstUsedAt ?? new Date();
   const prepared = await prisma.$transaction(async (tx) => {
     const link = await tx.personalAttendanceLink.create({
       data: { organizationId: inv.organizationId, groupId: inv.groupId, matchId: inv.matchId, playerId: inv.playerId!, tokenHash: hashToken(answerToken), channel: "EMAIL", createdAt: now },
@@ -402,7 +428,7 @@ async function deliverOne(c: Claimed, transport: EmailTransport, now: Date): Pro
     await tx.emailUnsubscribeToken.create({
       data: { organizationId: inv.organizationId, email: inv.email!, tokenHash: hashToken(oneClickToken), oneClickOnly: true, createdAt: now, expiresAt: new Date(now.getTime() + UNSUBSCRIBE_TOKEN_TTL_DAYS * DAY_MS) },
     });
-    await tx.rsvpInvitation.update({ where: { id: inv.id }, data: { linkId: link.id, unsubscribeTokenId: unsub.id, idempotencyKey } });
+    await tx.rsvpInvitation.update({ where: { id: inv.id }, data: { linkId: link.id, unsubscribeTokenId: unsub.id, idempotencyKey, idempotencyKeyFirstUsedAt: keyUsedAt } });
     return { linkId: link.id };
   });
 
@@ -445,7 +471,13 @@ async function deliverOne(c: Claimed, transport: EmailTransport, now: Date): Pro
     if (verdict.outcome === "RATE_LIMITED") {
       // Not accepted (documented 429) — but we don't rely on that: back to QUEUED, still
       // reserved, same idempotency key next time (attempts restored), not before Retry-After.
-      const notBefore = new Date(now.getTime() + (verdict.backoffSeconds ?? RSVP_RATE_LIMIT_DEFAULT_SECONDS) * 1000);
+      const backoffMs = (verdict.backoffSeconds ?? RSVP_RATE_LIMIT_DEFAULT_SECONDS) * 1000;
+      // P8B.1 — a retry that couldn't happen inside the key's safe window is UNCERTAIN now.
+      if (Date.now() + backoffMs > keyUsedAt.getTime() + RSVP_IDEMPOTENCY_SAFE_WINDOW_MS) {
+        await settle(inv.id, inv.organizationId, inv.reservedAt, "UNCERTAIN", { lastError: "RETRY_WINDOW_EXPIRED" });
+        return { kind: "UNCERTAIN", stop: true, backoffSeconds: verdict.backoffSeconds };
+      }
+      const notBefore = new Date(now.getTime() + backoffMs);
       await prisma.rsvpInvitation.updateMany({ where: { id: inv.id, status: "SENDING" }, data: { status: "QUEUED", attempts: { decrement: 1 }, claimedAt: null, notBefore, lastError } });
       return { kind: "RATE_LIMITED", stop: true, backoffSeconds: verdict.backoffSeconds };
     }

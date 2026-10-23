@@ -340,3 +340,142 @@ describe("M13B P8A — live pilot transport (mocked Resend)", () => {
     expect(String(calls[0].body.text)).not.toMatch(/unsubscribe/i);
   });
 });
+
+describe("M13B P8B.1 — rate-limited retries inside the provider's idempotency window", () => {
+  const ok = (n: number) => new Response(JSON.stringify({ id: `re_${n}` }), { status: 200 });
+  const limited = (sec: number) => new Response("{}", { status: 429, headers: { "retry-after": String(sec) } });
+  const quiet = () => {
+    vi.spyOn(console, "info").mockImplementation(() => {});
+    vi.spyOn(console, "error").mockImplementation(() => {});
+  };
+  const clearPacer = () => prisma.$executeRawUnsafe(`TRUNCATE "RsvpDeliveryPacer"`);
+  const HOUR = 3_600_000;
+  const used = async (org: string) => (await rsvpAllowance(org)).day.used;
+
+  async function rateLimitFirst() {
+    respond = (n) => (n === 1 ? limited(1) : ok(n));
+    await send(PILOT, "gp", "mp");
+    expect(await processRsvpQueue()).toMatchObject({ rateLimited: 1 });
+    const row = await prisma.rsvpInvitation.findFirstOrThrow({ where: { lastError: "RATE_LIMITED" } });
+    expect(row.idempotencyKeyFirstUsedAt).not.toBeNull();
+    await clearPacer();
+    await prisma.rsvpInvitation.update({ where: { id: row.id }, data: { notBefore: null } }); // as if Retry-After passed
+    return row;
+  }
+
+  it("inside the window: retried once with the same key; the key's first-use time is kept", async () => {
+    live();
+    quiet();
+    const row = await rateLimitFirst();
+    expect(await processRsvpQueue()).toMatchObject({ sent: 3 });
+    const after = await prisma.rsvpInvitation.findUniqueOrThrow({ where: { id: row.id } });
+    expect(after).toMatchObject({ status: "SENT", idempotencyKey: row.idempotencyKey });
+    expect(after.idempotencyKeyFirstUsedAt).toEqual(row.idempotencyKeyFirstUsedAt);
+    expect(calls.filter((c) => c.headers["Idempotency-Key"] === row.idempotencyKey)).toHaveLength(2);
+  });
+
+  it("past the 23 h safe window: never handed off again — UNCERTAIN (counted), for the operator", async () => {
+    live();
+    quiet();
+    const row = await rateLimitFirst();
+    await prisma.rsvpInvitation.update({ where: { id: row.id }, data: { idempotencyKeyFirstUsedAt: new Date(Date.now() - 23 * HOUR - 60_000) } });
+    const run = await processRsvpQueue();
+    expect(calls.filter((c) => c.headers["Idempotency-Key"] === row.idempotencyKey)).toHaveLength(1); // only the original attempt
+    expect(run).toMatchObject({ uncertain: 1, sent: 2 });
+    expect(await prisma.rsvpInvitation.findUniqueOrThrow({ where: { id: row.id } })).toMatchObject({ status: "UNCERTAIN", lastError: "RETRY_WINDOW_EXPIRED" });
+    expect(await used(PILOT)).toBe(3); // still counted
+    const { retryFailedInvitations } = await import("@/lib/rsvpSend");
+    expect(await retryFailedInvitations(ctx(PILOT, "gp"), row.sendId)).toEqual({ ok: true, requeued: 0, left: 0 }); // never retried
+  });
+
+  it("a Retry-After that would end beyond the window escalates to UNCERTAIN at once", async () => {
+    live();
+    quiet();
+    const row = await rateLimitFirst();
+    await prisma.rsvpInvitation.update({ where: { id: row.id }, data: { idempotencyKeyFirstUsedAt: new Date(Date.now() - 22.5 * HOUR) } });
+    respond = () => limited(3600); // one more hour would pass the 23 h mark
+    expect(await processRsvpQueue()).toMatchObject({ uncertain: 1, rateLimited: 0, stoppedForProvider: true });
+    expect(await prisma.rsvpInvitation.findUniqueOrThrow({ where: { id: row.id } })).toMatchObject({ status: "UNCERTAIN", lastError: "RETRY_WINDOW_EXPIRED", notBefore: null });
+  });
+
+  it("a row that becomes ineligible after a provider attempt is UNCERTAIN, not silently released", async () => {
+    live();
+    quiet();
+    const row = await rateLimitFirst();
+    await prisma.attendanceResponse.create({ data: { matchId: "mp", groupId: "gp", playerId: row.playerId!, participantStatus: "PLAYING", participantSource: "PERSONAL_LINK", participantRespondedAt: new Date() } });
+    await processRsvpQueue();
+    expect(await prisma.rsvpInvitation.findUniqueOrThrow({ where: { id: row.id } })).toMatchObject({ status: "UNCERTAIN", skipReason: "ALREADY_ANSWERED", lastError: "RATE_LIMITED_NOT_RETRIED" });
+    expect(calls.filter((c) => c.headers["Idempotency-Key"] === row.idempotencyKey)).toHaveLength(1);
+    expect(await used(PILOT)).toBe(3);
+  });
+});
+
+describe("M13B P8B.1 — global pilot cap boundaries (100 per UTC day)", () => {
+  const today = () => new Date().toISOString().slice(0, 10);
+  const consumedElsewhere = (n: number) => prisma.$executeRaw`INSERT INTO "RsvpEmailUsage" ("organizationId", "day", "consumed") VALUES (${OTHER}, ${today()}::date, ${n}) ON CONFLICT ("organizationId", "day") DO UPDATE SET "consumed" = ${n}`;
+  const reservedOrUsed = async () => Number((await prisma.$queryRaw<Array<{ n: bigint }>>`SELECT (COALESCE((SELECT SUM("consumed") FROM "RsvpEmailUsage" WHERE "day" = ${today()}::date), 0) + (SELECT count(*) FROM "RsvpInvitation" WHERE "status" IN ('QUEUED','SENDING')))::bigint AS n`)[0].n);
+
+  it("99 of 100 used: four organizations at once → exactly one reservation, the rest refused", async () => {
+    live();
+    await consumedElsewhere(99);
+    const results = await Promise.all([send(PILOT, "gp", "mp"), send(PILOT2, "gp2", "mp2"), send(PILOT3, "gp3", "mp3"), send(PILOT4, "gp4", "mp4")]);
+    const queued = results.map((r) => (r.ok ? r.counts.queued : 0));
+    expect(queued.reduce((a, b) => a + b, 0)).toBe(1);
+    expect(results.filter((r) => !r.ok).map((r) => (r.ok ? "" : r.code))).toEqual(["PLAN_LIMIT", "PLAN_LIMIT", "PLAN_LIMIT"]);
+    expect(await reservedOrUsed()).toBe(100);
+  });
+
+  it("UTC rollover: the next day starts a fresh 100, counted on its own day", async () => {
+    live();
+    await consumedElsewhere(100);
+    expect(await send(PILOT, "gp", "mp")).toEqual({ ok: false, code: "PLAN_LIMIT" });
+    const d = new Date();
+    const tomorrow = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate() + 1));
+    const r = await createRsvpSend(ctx(PILOT, "gp"), "mp", { kind: "INITIAL", requestKey: "key-p8b1-rollover" }, tomorrow);
+    expect(r).toMatchObject({ ok: true, counts: { queued: 3 } });
+    expect((await prisma.rsvpInvitation.findFirstOrThrow()).reservedAt).toEqual(tomorrow);
+    expect(await reservedOrUsed()).toBe(100 + 3); // today's 100 consumed + tomorrow's 3 reserved (different days)
+  });
+
+  it("a failed hand-off releases its slot for others; a retry can't exceed the cap; deleting a match never gives usage back", async () => {
+    live();
+    vi.spyOn(console, "info").mockImplementation(() => {});
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    await consumedElsewhere(99);
+    respond = () => new Response("{}", { status: 422 });
+    const first = await send(PILOT, "gp", "mp");
+    expect(first).toMatchObject({ ok: true, counts: { queued: 1 } });
+    expect(await processRsvpQueue()).toMatchObject({ failed: 1 });
+    expect(await reservedOrUsed()).toBe(99); // released
+    respond = (n) => new Response(JSON.stringify({ id: `re_${n}` }), { status: 200 });
+    expect(await send(PILOT2, "gp2", "mp2")).toMatchObject({ ok: true, counts: { queued: 1 } }); // the freed slot
+    expect(await processRsvpQueue()).toMatchObject({ sent: 1 });
+    const { retryFailedInvitations } = await import("@/lib/rsvpSend");
+    if (!first.ok) throw new Error();
+    expect(await retryFailedInvitations(ctx(PILOT, "gp"), first.sendId)).toEqual({ ok: true, requeued: 0, left: 1 }); // cap full
+    await prisma.match.delete({ where: { id: "mp2" } }); // the accepted email's match
+    expect(await reservedOrUsed()).toBe(100);
+    expect(await send(PILOT3, "gp3", "mp3")).toEqual({ ok: false, code: "PLAN_LIMIT" });
+  });
+
+  it("deadlock safety: mixed sends, retries and workers across organizations always complete (fixed lock order)", async () => {
+    live();
+    vi.spyOn(console, "info").mockImplementation(() => {});
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    respond = (n) => (n % 3 === 0 ? new Response("{}", { status: 422 }) : new Response(JSON.stringify({ id: `re_${n}` }), { status: 200 }));
+    await consumedElsewhere(40);
+    const [a, b] = await Promise.all([send(PILOT, "gp", "mp"), send(PILOT2, "gp2", "mp2")]);
+    if (!a.ok || !b.ok) throw new Error("setup");
+    await processRsvpQueue({ limit: 10 });
+    const { retryFailedInvitations } = await import("@/lib/rsvpSend");
+    const ops = await Promise.allSettled([
+      send(PILOT3, "gp3", "mp3"),
+      send(PILOT4, "gp4", "mp4"),
+      retryFailedInvitations(ctx(PILOT, "gp"), a.sendId),
+      retryFailedInvitations(ctx(PILOT2, "gp2"), b.sendId),
+      processRsvpQueue({ limit: 5, budgetMs: 5000 }),
+    ]);
+    expect(ops.filter((o) => o.status === "rejected")).toEqual([]); // no deadlock (40P01) or other error
+    expect(await reservedOrUsed()).toBeLessThanOrEqual(100);
+  });
+});
