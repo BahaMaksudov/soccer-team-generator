@@ -21,8 +21,12 @@ describe("retention cutoff", () => {
     expect(retentionCutoff(new Date("2027-01-01T05:00:00Z")).toISOString()).toBe("2026-10-03T00:00:00.000Z"); // across the year
     expect(retentionCutoff(new Date("2028-05-29T12:00:00Z")).toISOString()).toBe("2028-02-29T00:00:00.000Z"); // leap day
   });
-  it("cleanup is not scheduled anywhere (no route, cron or page imports it)", () => {
-    expect(sources().filter((f) => f !== "src/lib/rsvpRetention.ts" && /@\/lib\/rsvpRetention/.test(read(f)))).toEqual([]);
+  it("only the automation cron imports the cleanup, and only behind RSVP_RETENTION_MODE (default off)", () => {
+    expect(sources().filter((f) => f !== "src/lib/rsvpRetention.ts" && /@\/lib\/rsvpRetention/.test(read(f)))).toEqual(["src/app/api/cron/automation/route.ts"]);
+    const cron = read("src/app/api/cron/automation/route.ts");
+    expect(cron).toContain('if (mode !== "run") return "off";');
+    expect(cron).toMatch(/now\.getUTCHours\(\) === 3 && now\.getUTCMinutes\(\) < 15/);
+    expect(cron).not.toMatch(/eraseRecipientEmail/); // erasure stays support-only
   });
 });
 

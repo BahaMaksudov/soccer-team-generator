@@ -3,6 +3,7 @@ import { authorizeCron } from "@/lib/cronAuth";
 import { runMatchAutomation } from "@/lib/matchAutomation";
 import { runTrialLifecycle } from "@/lib/trialLifecycle";
 import { processRsvpQueue, rsvpDeliveryMode } from "@/lib/rsvpSend";
+import { runRsvpRetention } from "@/lib/rsvpRetention";
 
 /**
  * M9.2 — scheduled Match Automation entry point. The production clock is a
@@ -28,6 +29,11 @@ import { processRsvpQueue, rsvpDeliveryMode } from "@/lib/rsvpSend";
  * test outbox or — only once separately approved — the Production live pilot (allowlisted
  * organizations' rows only); while delivery is disabled (the default, and always in
  * Preview) this part reports { disabled: true } and claims nothing.
+ *
+ * M13B release — RSVP retention (src/lib/rsvpRetention.ts), OFF unless RSVP_RETENTION_MODE
+ * is set: "dry-run" reports counts on every run and changes nothing; "run" removes direct
+ * identifiers only in the 03:00–03:14 UTC window (≈ once a day; idempotent, bounded).
+ * Counts only in the response. Independent of everything above.
  */
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
@@ -39,14 +45,15 @@ export async function POST(req: Request) {
   const now = new Date();
   const trial = await trialLifecycleCounts(now);
   const rsvp = await rsvpQueueCounts();
+  const retention = await rsvpRetentionCounts(now);
   try {
     const { errors, ...counts } = await runMatchAutomation(now);
     if (errors.length > 0) console.error(`[automation] run finished with ${errors.length} error(s): ${JSON.stringify(errors)}`);
-    const ok = errors.length === 0 && trial.ok && rsvp.ok;
-    return NextResponse.json({ ok, ...counts, errorCount: errors.length, trial: trial.counts, rsvp: rsvp.counts }, { status: ok ? 200 : 500 });
+    const ok = errors.length === 0 && trial.ok && rsvp.ok && retention.ok;
+    return NextResponse.json({ ok, ...counts, errorCount: errors.length, trial: trial.counts, rsvp: rsvp.counts, retention: retention.counts }, { status: ok ? 200 : 500 });
   } catch (e) {
     console.error(`[automation] run failed: ${e instanceof Error ? e.message : "error"}`);
-    return NextResponse.json({ ok: false, error: "Automation run failed.", trial: trial.counts, rsvp: rsvp.counts }, { status: 500 });
+    return NextResponse.json({ ok: false, error: "Automation run failed.", trial: trial.counts, rsvp: rsvp.counts, retention: retention.counts }, { status: 500 });
   }
 }
 
@@ -72,6 +79,25 @@ async function rsvpQueueCounts() {
     return { ok: run.errors === 0, counts: run };
   } catch (e) {
     console.error(`[rsvp] queue run failed: ${e instanceof Error ? e.name : "error"}`);
+    return { ok: false, counts: { failed: true } };
+  }
+}
+
+/** RSVP retention action for this run. Off unless RSVP_RETENTION_MODE is "dry-run" or "run"; "run" acts only 03:00–03:14 UTC. */
+function retentionAction(mode: string | undefined, now: Date): "off" | "dry-run" | "run" | "outside-window" {
+  if (mode === "dry-run") return "dry-run";
+  if (mode !== "run") return "off";
+  return now.getUTCHours() === 3 && now.getUTCMinutes() < 15 ? "run" : "outside-window";
+}
+async function rsvpRetentionCounts(now: Date) {
+  const action = retentionAction(process.env.RSVP_RETENTION_MODE?.trim(), now);
+  if (action === "off") return { ok: true, counts: { disabled: true } };
+  if (action === "outside-window") return { ok: true, counts: { skipped: "outside-window" } };
+  try {
+    const run = await runRsvpRetention({ now, dryRun: action === "dry-run" });
+    return { ok: true, counts: run };
+  } catch (e) {
+    console.error(`[retention] run failed: ${e instanceof Error ? e.name : "error"}`);
     return { ok: false, counts: { failed: true } };
   }
 }

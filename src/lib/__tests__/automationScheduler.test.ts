@@ -14,6 +14,9 @@ vi.mock("@/lib/matchAutomation", () => ({ runMatchAutomation: (...args: unknown[
 const rsvpMode = vi.fn(() => "disabled");
 const processRsvpQueue = vi.fn();
 vi.mock("@/lib/rsvpSend", () => ({ rsvpDeliveryMode: () => rsvpMode(), processRsvpQueue: (...args: unknown[]) => processRsvpQueue(...args) }));
+// M13B release — retention, stubbed (OFF unless RSVP_RETENTION_MODE is set).
+const runRsvpRetention = vi.fn();
+vi.mock("@/lib/rsvpRetention", () => ({ runRsvpRetention: (...args: unknown[]) => runRsvpRetention(...args) }));
 import { POST } from "@/app/api/cron/automation/route";
 import * as cronRoute from "@/app/api/cron/automation/route";
 import { authorizeCron } from "@/lib/cronAuth";
@@ -119,7 +122,7 @@ describe("cron endpoint", () => {
     const body = await res.json();
     expect(res.status).toBe(200);
     // M11.3 — the trial lifecycle reports its counts too (OFF by default: TRIAL_LIFECYCLE unset → nothing runs).
-    expect(body).toEqual({ ok: true, schedules: 1, created: 1, pollsPosted: 1, cutoffs: 0, notified: 0, errorCount: 0, trial: TRIAL_OFF, rsvp: { disabled: true } });
+    expect(body).toEqual({ ok: true, schedules: 1, created: 1, pollsPosted: 1, cutoffs: 0, notified: 0, errorCount: 0, trial: TRIAL_OFF, rsvp: { disabled: true }, retention: { disabled: true } });
     expect(runMatchAutomation).toHaveBeenCalledTimes(1);
     expect(processRsvpQueue).not.toHaveBeenCalled(); // delivery gate off → nothing claimed
     expect(JSON.stringify(body) + logs.join("\n")).not.toContain(SECRET);
@@ -142,7 +145,7 @@ describe("cron endpoint", () => {
     runMatchAutomation.mockRejectedValue(new Error("database unreachable"));
     const res = await POST(req(`Bearer ${SECRET}`));
     expect(res.status).toBe(500);
-    expect(await res.json()).toEqual({ ok: false, error: "Automation run failed.", trial: TRIAL_OFF, rsvp: { disabled: true } });
+    expect(await res.json()).toEqual({ ok: false, error: "Automation run failed.", trial: TRIAL_OFF, rsvp: { disabled: true }, retention: { disabled: true } });
   });
 
   it("M13B P5 — with the test-outbox gate on, the RSVP queue continues within a bounded budget (counts only)", async () => {
@@ -154,5 +157,42 @@ describe("cron endpoint", () => {
     expect(res.status).toBe(200);
     expect((await res.json()).rsvp).toMatchObject({ sent: 2, remaining: 0 });
     expect(processRsvpQueue).toHaveBeenCalledWith({ limit: 200, budgetMs: 20_000 });
+  });
+
+  it("M13B release — retention is OFF by default; dry-run reports counts; run acts only 03:00–03:14 UTC", async () => {
+    vi.stubEnv("CRON_SECRET", SECRET);
+    runMatchAutomation.mockResolvedValue(run);
+    runRsvpRetention.mockReset();
+    expect((await (await POST(req(`Bearer ${SECRET}`))).json()).retention).toEqual({ disabled: true });
+    expect(runRsvpRetention).not.toHaveBeenCalled();
+
+    vi.stubEnv("RSVP_RETENTION_MODE", "dry-run");
+    runRsvpRetention.mockResolvedValue({ dryRun: true, eligible: 2, identifiersRemoved: 0 });
+    expect((await (await POST(req(`Bearer ${SECRET}`))).json()).retention).toMatchObject({ dryRun: true, eligible: 2 });
+    expect(runRsvpRetention).toHaveBeenLastCalledWith(expect.objectContaining({ dryRun: true }));
+
+    vi.stubEnv("RSVP_RETENTION_MODE", "run");
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      vi.setSystemTime(new Date("2026-11-02T12:00:00Z"));
+      runRsvpRetention.mockClear();
+      expect((await (await POST(req(`Bearer ${SECRET}`))).json()).retention).toEqual({ skipped: "outside-window" });
+      expect(runRsvpRetention).not.toHaveBeenCalled();
+      vi.setSystemTime(new Date("2026-11-02T03:05:00Z"));
+      runRsvpRetention.mockResolvedValue({ dryRun: false, identifiersRemoved: 4 });
+      const res = await POST(req(`Bearer ${SECRET}`));
+      expect(res.status).toBe(200);
+      expect((await res.json()).retention).toMatchObject({ identifiersRemoved: 4 });
+      expect(runRsvpRetention).toHaveBeenLastCalledWith(expect.objectContaining({ dryRun: false }));
+      // A failure is visible (500) and generic.
+      runRsvpRetention.mockRejectedValueOnce(new Error("boom"));
+      const bad = await POST(req(`Bearer ${SECRET}`));
+      expect(bad.status).toBe(500);
+      expect((await bad.json()).retention).toEqual({ failed: true });
+    } finally {
+      vi.useRealTimers();
+    }
+    vi.stubEnv("RSVP_RETENTION_MODE", "yes"); // anything else is off
+    expect((await (await POST(req(`Bearer ${SECRET}`))).json()).retention).toEqual({ disabled: true });
   });
 });
