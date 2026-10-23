@@ -443,7 +443,9 @@ describe("M13B P4 — failures, uncertainty and stale claims", () => {
     if (!r.ok) throw new Error();
     const errors = [new EmailDeliveryError("timeout"), new EmailDeliveryError("http", 503), new EmailDeliveryError("http", 409)];
     setRsvpTransportForTests({ name: "flaky", send: async () => Promise.reject(errors.shift()) });
-    expect(await processRsvpQueue({ now: NOW })).toMatchObject({ uncertain: 3, failed: 0 });
+    // P8A.1: a timeout or 5xx ends the run (the provider may be struggling); a 409 doesn't. Three runs drain it.
+    const runs = [await processRsvpQueue({ now: NOW }), await processRsvpQueue({ now: NOW }), await processRsvpQueue({ now: NOW })];
+    expect(runs.map((r) => [r.uncertain, r.failed, r.stoppedForProvider])).toEqual([[1, 0, true], [1, 0, true], [1, 0, false]]);
     expect((await invitations({ sendId: r.sendId, status: "UNCERTAIN" })).map((i) => i.lastError).sort()).toEqual(["HTTP_409", "HTTP_503", "TIMEOUT"]);
     expect((await rsvpAllowance("o", NOW)).day).toMatchObject({ used: 3, reserved: 0, remaining: 47 });
     expect(await prisma.personalAttendanceLink.count({ where: { channel: "EMAIL", revokedAt: null } })).toBe(3);
@@ -458,7 +460,8 @@ describe("M13B P4 — failures, uncertainty and stale claims", () => {
     const r = await send(OWNER(), "m", "key-config-0001");
     if (!r.ok) throw new Error();
     vi.stubEnv("EMAIL_FROM", "");
-    expect(await processRsvpQueue({ now: NOW })).toMatchObject({ failed: 3 });
+    // P8A.1: a configuration error ends the run (every hand-off would fail the same way); each row is still FAILED, never UNCERTAIN.
+    for (let i = 0; i < 3; i++) expect(await processRsvpQueue({ now: NOW })).toMatchObject({ failed: 1, stoppedForProvider: true });
     expect((await invitations({ sendId: r.sendId, status: "FAILED" })).every((i) => i.lastError === "CONFIG")).toBe(true);
   });
 

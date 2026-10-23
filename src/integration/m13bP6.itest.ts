@@ -19,7 +19,7 @@ import * as unsubPreview from "@/app/api/email/unsubscribe/preview/route";
 import * as unsubConfirm from "@/app/api/email/unsubscribe/route";
 import * as oneClick from "@/app/api/email/unsubscribe/one-click/route";
 import * as webhookRoute from "@/app/api/email/webhooks/resend/route";
-import { setRsvpTransportForTests } from "@/lib/rsvpSend";
+import { processRsvpQueue, setRsvpTransportForTests } from "@/lib/rsvpSend";
 import { issuePersonalLinks, personalView } from "@/lib/personalAttendance";
 import { signWebhookForTests } from "@/lib/webhookSignature";
 import { EmailDeliveryError, testOutbox } from "@/lib/email/transport";
@@ -208,7 +208,9 @@ describe("M13B P6 — retry and resend", () => {
     await confirmContacts();
     let n = 0;
     setRsvpTransportForTests({ name: "mixed", send: async () => Promise.reject(++n === 1 ? new EmailDeliveryError("timeout") : new EmailDeliveryError("http", 422)) });
-    expect((await post(send(3, "key-retry-p6-001"))).body.run).toMatchObject({ uncertain: 1, failed: 2 });
+    // P8A.1: the timeout ends the inline run; the next worker run hands off the rest (both refused).
+    expect((await post(send(3, "key-retry-p6-001"))).body.run).toMatchObject({ uncertain: 1, failed: 0, stoppedForProvider: true });
+    expect(await processRsvpQueue()).toMatchObject({ failed: 2 });
     setRsvpTransportForTests(null);
     const sendId = (await prisma.rsvpSend.findFirstOrThrow()).id;
     const [a, b] = await Promise.all([post({ action: "retry", sendId }), post({ action: "retry", sendId })]);

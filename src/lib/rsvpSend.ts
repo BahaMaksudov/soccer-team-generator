@@ -9,7 +9,6 @@ import { classifyRoster, matchRefusal, pilotGlobalRemaining, rsvpAllowance, MATC
 import { appUrl, getEmailFrom, EmailConfigError } from "@/lib/email/config";
 import { createRsvpResendTransport, EmailDeliveryError, testOutbox, type EmailTransport } from "@/lib/email/transport";
 import { buildRsvpInvitationEmail } from "@/lib/email/templates";
-import { classifySendError } from "@/lib/trialLifecycle";
 import { pilotOrganizations, rsvpDeliveryAllowedFor, rsvpDeliveryMode } from "@/lib/rsvpDeliveryMode";
 import { resolveRecipient } from "@/lib/playerContact";
 import { normalizeEmail } from "@/lib/emailAddress";
@@ -203,9 +202,67 @@ export async function createRsvpSend(
   }
 }
 
+/**
+ * M13B P8A.1 — how an RSVP hand-off error is treated (Resend API errors reference,
+ * idempotency-keys and rate-limit docs). Conservative: anything that MAY have been accepted
+ * is UNCERTAIN (counted, never retried automatically); only a definite refusal is FAILED
+ * (released). `stop` ends the current worker run so a broken configuration or a struggling
+ * provider isn't hammered; `backoffSeconds` pushes the global pacer for every worker.
+ *   429 rate_limit_exceeded / daily / monthly quota → RATE_LIMITED: back to QUEUED (still
+ *       reserved) with the SAME idempotency key, not before Retry-After (default 60 s).
+ *       If the provider had in fact processed it, the replay gets the original response
+ *       or a 409 (→ UNCERTAIN) — never a second email.
+ *   409 concurrent / invalid idempotent request / resource_locked → UNCERTAIN.
+ *   401 / 403 / 404 / 405 → FAILED (nothing sent: key, permission or endpoint) and stop.
+ *   other 4xx (400 validation, 422 …) → FAILED (the request was refused).
+ *   5xx (500 application_error, 503 unavailable) → UNCERTAIN, stop, back off 60 s.
+ *   network error / timeout / connection reset → UNCERTAIN, stop, back off 30 s.
+ *   configuration error before hand-off → FAILED and stop (nothing reached the provider).
+ *   anything unexpected → UNCERTAIN.
+ */
+export type ProviderOutcome = { outcome: "FAILED" | "UNCERTAIN" | "RATE_LIMITED"; stop: boolean; backoffSeconds: number | null };
+export const RSVP_RATE_LIMIT_DEFAULT_SECONDS = 60;
+export function classifyRsvpSendError(e: unknown): ProviderOutcome {
+  if (e instanceof EmailConfigError) return { outcome: "FAILED", stop: true, backoffSeconds: null };
+  if (e instanceof EmailDeliveryError) {
+    if (e.reason !== "http" || e.status === null) return { outcome: "UNCERTAIN", stop: true, backoffSeconds: 30 };
+    const s = e.status;
+    if (s === 429) return { outcome: "RATE_LIMITED", stop: true, backoffSeconds: e.retryAfterSeconds ?? RSVP_RATE_LIMIT_DEFAULT_SECONDS };
+    if (s === 409) return { outcome: "UNCERTAIN", stop: false, backoffSeconds: null };
+    if (s === 401 || s === 403 || s === 404 || s === 405) return { outcome: "FAILED", stop: true, backoffSeconds: null };
+    if (s >= 400 && s < 500) return { outcome: "FAILED", stop: false, backoffSeconds: null };
+    if (s >= 500) return { outcome: "UNCERTAIN", stop: true, backoffSeconds: 60 };
+    return { outcome: "UNCERTAIN", stop: true, backoffSeconds: 30 };
+  }
+  return { outcome: "UNCERTAIN", stop: false, backoffSeconds: null };
+}
+
+/**
+ * M13B P8A.1 — global pacing of LIVE hand-offs (all workers, all instances): each hand-off
+ * atomically takes the next slot of the single RsvpDeliveryPacer row, at least
+ * RSVP_LIVE_MIN_INTERVAL_MS apart (≤ 4 per second; Resend's default is 10 per second per
+ * team, shared with account email). Returns how long to wait for the slot.
+ */
+export const RSVP_LIVE_MIN_INTERVAL_MS = 250;
+async function takePacerSlot(): Promise<number> {
+  const at = new Date().toISOString();
+  const [row] = await prisma.$queryRaw<Array<{ slot: Date }>>`
+    INSERT INTO "RsvpDeliveryPacer" ("id", "nextSlotAt") VALUES (1, ${at}::timestamp + make_interval(secs => ${RSVP_LIVE_MIN_INTERVAL_MS / 1000}))
+    ON CONFLICT ("id") DO UPDATE SET "nextSlotAt" = GREATEST("RsvpDeliveryPacer"."nextSlotAt", ${at}::timestamp) + make_interval(secs => ${RSVP_LIVE_MIN_INTERVAL_MS / 1000})
+    RETURNING ("nextSlotAt" - make_interval(secs => ${RSVP_LIVE_MIN_INTERVAL_MS / 1000})) AS slot`;
+  return Math.max(0, row.slot.getTime() - Date.now()); // timestamp columns hold UTC; Prisma reads them as UTC
+}
+/** Provider asked us to slow down (429 Retry-After) or is failing: no worker hands off before then. */
+async function pushPacer(seconds: number): Promise<void> {
+  const until = new Date(Date.now() + seconds * 1000).toISOString();
+  await prisma.$executeRaw`INSERT INTO "RsvpDeliveryPacer" ("id", "nextSlotAt") VALUES (1, ${until}::timestamp)
+    ON CONFLICT ("id") DO UPDATE SET "nextSlotAt" = GREATEST("RsvpDeliveryPacer"."nextSlotAt", ${until}::timestamp)`;
+}
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
 /** Sanitized, address-free error category for storage. */
 export function sanitizeSendError(e: unknown): string {
-  if (e instanceof EmailDeliveryError) return `${e.reason.toUpperCase()}${e.status ? `_${e.status}` : ""}`;
+  if (e instanceof EmailDeliveryError) return e.status === 429 ? "RATE_LIMITED" : `${e.reason.toUpperCase()}${e.status ? `_${e.status}` : ""}`;
   if (e instanceof EmailConfigError) return "CONFIG";
   if (e instanceof RsvpDeliveryDisabledError) return "DELIVERY_DISABLED";
   return "UNEXPECTED";
@@ -268,7 +325,7 @@ async function claimNext(now: Date, sendId: string | null, organizations: string
   // Live pilot: only allowlisted organizations' rows are ever claimed (others stay QUEUED).
   const byOrg = organizations ? Prisma.sql`AND "organizationId" IN (${Prisma.join(organizations)})` : Prisma.empty;
   const rows = await prisma.$queryRaw<Claimed[]>`UPDATE "RsvpInvitation" SET "status" = 'SENDING', "attempts" = "attempts" + 1, "claimedAt" = ${at}::timestamp, "updatedAt" = ${at}::timestamp
-    WHERE "id" = (SELECT "id" FROM "RsvpInvitation" WHERE "status" = 'QUEUED' ${bySend} ${byOrg} ORDER BY "createdAt", "id" FOR UPDATE SKIP LOCKED LIMIT 1)
+    WHERE "id" = (SELECT "id" FROM "RsvpInvitation" WHERE "status" = 'QUEUED' AND ("notBefore" IS NULL OR "notBefore" <= ${at}::timestamp) ${bySend} ${byOrg} ORDER BY "createdAt", "id" FOR UPDATE SKIP LOCKED LIMIT 1)
     RETURNING "id", "attempts"`;
   return rows[0] ?? null;
 }
@@ -276,7 +333,11 @@ async function claimNext(now: Date, sendId: string | null, organizations: string
 const skip = (id: string, reason: string) => prisma.rsvpInvitation.updateMany({ where: { id, status: "SENDING" }, data: { status: "SKIPPED", skipReason: reason, claimedAt: null } });
 
 /** Deliver ONE claimed (SENDING) invitation. */
-async function deliverOne(c: Claimed, transport: EmailTransport, now: Date): Promise<"SENT" | "FAILED" | "UNCERTAIN" | "SKIPPED"> {
+type Delivered = "SENT" | "FAILED" | "UNCERTAIN" | "SKIPPED" | "RATE_LIMITED";
+type DeliveryResult = { kind: Delivered; stop: boolean; backoffSeconds: number | null };
+const done = (kind: Delivered): DeliveryResult => ({ kind, stop: false, backoffSeconds: null });
+
+async function deliverOne(c: Claimed, transport: EmailTransport, now: Date): Promise<DeliveryResult> {
   const inv = await prisma.rsvpInvitation.findUnique({
     where: { id: c.id },
     select: {
@@ -294,33 +355,33 @@ async function deliverOne(c: Claimed, transport: EmailTransport, now: Date): Pro
       match: { select: { ...MATCH_SELECT, locationName: true, venue: { select: { name: true } }, community: { select: { name: true } } } },
     },
   });
-  if (!inv) return "SKIPPED"; // removed with its match after the claim
+  if (!inv) return done("SKIPPED"); // removed with its match after the claim
   if (!inv.playerId || !inv.player || !inv.email || !inv.recipientType) {
     await skip(inv.id, "PLAYER_REMOVED");
-    return "SKIPPED";
+    return done("SKIPPED");
   }
   // Re-check at send time: the match may have closed / become a Telegram match, the
   // address may have been suppressed, the player may have answered meanwhile.
   const refusal = await matchRefusal(inv.groupId, inv.match, now);
   if (refusal) {
     await skip(inv.id, refusal);
-    return "SKIPPED";
+    return done("SKIPPED");
   }
   // P6: the destination must still be the player's current, confirmed recipient — a contact
   // removed, changed or unconfirmed after queuing is never emailed at its old address.
   const current = resolveRecipient(inv.player);
   if ((current.kind !== "CONTACT" && current.kind !== "ACCOUNT") || current.email !== normalizeEmail(inv.email)) {
     await skip(inv.id, "CONTACT_CHANGED");
-    return "SKIPPED";
+    return done("SKIPPED");
   }
   if ((await suppressedFor(inv.organizationId, [inv.email])).size > 0) {
     await skip(inv.id, "SUPPRESSED");
-    return "SKIPPED";
+    return done("SKIPPED");
   }
   const answered = await prisma.attendanceResponse.findUnique({ where: { matchId_playerId: { matchId: inv.matchId, playerId: inv.playerId } }, select: { participantStatus: true, overrideStatus: true } });
   if (answered?.overrideStatus || answered?.participantStatus) {
     await skip(inv.id, answered.overrideStatus ? "ORGANIZER_OVERRIDE" : "ALREADY_ANSWERED");
-    return "SKIPPED";
+    return done("SKIPPED");
   }
 
   // Prepare this attempt's capabilities (hash-only). Existing links are NOT touched here:
@@ -377,23 +438,42 @@ async function deliverOne(c: Claimed, transport: EmailTransport, now: Date): Pro
       where: { matchId: inv.matchId, playerId: inv.playerId, channel: "EMAIL", revokedAt: null, id: { not: prepared.linkId } },
       data: { revokedAt: new Date(), replacedAt: new Date() },
     });
-    return "SENT";
+    return done("SENT");
   } catch (e) {
-    const outcome = classifySendError(e);
+    const verdict = classifyRsvpSendError(e);
     const lastError = sanitizeSendError(e);
-    if (outcome === "FAILED") {
+    if (verdict.outcome === "RATE_LIMITED") {
+      // Not accepted (documented 429) — but we don't rely on that: back to QUEUED, still
+      // reserved, same idempotency key next time (attempts restored), not before Retry-After.
+      const notBefore = new Date(now.getTime() + (verdict.backoffSeconds ?? RSVP_RATE_LIMIT_DEFAULT_SECONDS) * 1000);
+      await prisma.rsvpInvitation.updateMany({ where: { id: inv.id, status: "SENDING" }, data: { status: "QUEUED", attempts: { decrement: 1 }, claimedAt: null, notBefore, lastError } });
+      return { kind: "RATE_LIMITED", stop: true, backoffSeconds: verdict.backoffSeconds };
+    }
+    if (verdict.outcome === "FAILED") {
       // Definitely not accepted: release the reservation; the unsent link is revoked.
       await settle(inv.id, inv.organizationId, inv.reservedAt, "FAILED", { failedAt: new Date(), lastError });
       await prisma.personalAttendanceLink.updateMany({ where: { id: prepared.linkId, revokedAt: null }, data: { revokedAt: new Date() } });
-      return "FAILED";
+      return { kind: "FAILED", stop: verdict.stop, backoffSeconds: verdict.backoffSeconds };
     }
     // Maybe delivered: keep it counted and keep its link working; never retried automatically.
     await settle(inv.id, inv.organizationId, inv.reservedAt, "UNCERTAIN", { lastError });
-    return "UNCERTAIN";
+    return { kind: "UNCERTAIN", stop: verdict.stop, backoffSeconds: verdict.backoffSeconds };
   }
 }
 
-export type QueueRun = { recovered: number; sent: number; failed: number; uncertain: number; skipped: number; errors: number; remaining: number; stoppedForTime: boolean };
+export type QueueRun = {
+  recovered: number;
+  sent: number;
+  failed: number;
+  uncertain: number;
+  skipped: number;
+  rateLimited: number;
+  errors: number;
+  remaining: number;
+  stoppedForTime: boolean;
+  /** P8A.1: the run stopped early because the provider rate-limited, failed or was misconfigured. */
+  stoppedForProvider: boolean;
+};
 
 /**
  * Worker / scheduler continuation: recover stale rows, then deliver QUEUED invitations
@@ -401,26 +481,48 @@ export type QueueRun = { recovered: number; sent: number; failed: number; uncert
  * claim is never started after the budget). An unexpected error on one row is counted
  * and the loop continues; that row stays SENDING and is later recovered as UNCERTAIN
  * (counted, never resent) — the conservative outcome.
+ * P8A.1 — while LIVE: every hand-off waits for its global pacer slot (a slot beyond the
+ * budget ends the run instead); the delivery mode and allowlist are re-read before each
+ * claim (a disabled pilot hands off nothing more); a rate limit, provider failure or
+ * configuration refusal ends the run and backs off every worker.
  */
 export async function processRsvpQueue(opts: { limit?: number; sendId?: string; now?: Date; budgetMs?: number } = {}): Promise<QueueRun> {
   const transport = rsvpTransport(); // throws (before claiming anything) when delivery is disabled
-  const organizations = rsvpDeliveryMode() === "live" ? [...pilotOrganizations()!] : null;
   const now = opts.now ?? new Date();
   const started = Date.now();
-  const run: QueueRun = { recovered: await recoverStaleSending(now), sent: 0, failed: 0, uncertain: 0, skipped: 0, errors: 0, remaining: 0, stoppedForTime: false };
+  const budget = opts.budgetMs ?? 25_000;
+  const run: QueueRun = { recovered: await recoverStaleSending(now), sent: 0, failed: 0, uncertain: 0, skipped: 0, rateLimited: 0, errors: 0, remaining: 0, stoppedForTime: false, stoppedForProvider: false };
+  let organizations: string[] | null = null;
   for (let i = 0; i < (opts.limit ?? RSVP_BATCH_LIMIT); i++) {
-    if (opts.budgetMs !== undefined && Date.now() - started >= opts.budgetMs) {
+    if (Date.now() - started >= budget) {
       run.stoppedForTime = true;
       break;
+    }
+    const mode = rsvpDeliveryMode();
+    if (mode === "disabled") break; // the pilot was switched off mid-run: no further hand-offs
+    organizations = mode === "live" ? [...pilotOrganizations()!] : null;
+    if (mode === "live") {
+      const wait = await takePacerSlot();
+      if (Date.now() - started + wait >= budget) {
+        run.stoppedForTime = true;
+        break;
+      }
+      if (wait > 0) await sleep(wait);
     }
     const claimed = await claimNext(now, opts.sendId ?? null, organizations);
     if (!claimed) break;
     try {
-      const outcome = await deliverOne(claimed, transport, now);
-      if (outcome === "SENT") run.sent++;
-      else if (outcome === "FAILED") run.failed++;
-      else if (outcome === "UNCERTAIN") run.uncertain++;
+      const result = await deliverOne(claimed, transport, now);
+      if (result.kind === "SENT") run.sent++;
+      else if (result.kind === "FAILED") run.failed++;
+      else if (result.kind === "UNCERTAIN") run.uncertain++;
+      else if (result.kind === "RATE_LIMITED") run.rateLimited++;
       else run.skipped++;
+      if (result.backoffSeconds && mode === "live") await pushPacer(result.backoffSeconds);
+      if (result.stop) {
+        run.stoppedForProvider = true;
+        break;
+      }
     } catch {
       run.errors++;
     }

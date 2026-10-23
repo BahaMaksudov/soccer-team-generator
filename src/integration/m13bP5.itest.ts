@@ -16,7 +16,7 @@ import * as previewRoute from "@/app/api/admin/o/[organizationSlug]/g/[groupSlug
 import * as attendView from "@/app/api/attend/route";
 import * as attendAnswer from "@/app/api/attend/answer/route";
 import * as cronRoute from "@/app/api/cron/automation/route";
-import { createRsvpSend, setRsvpTransportForTests } from "@/lib/rsvpSend";
+import { createRsvpSend, processRsvpQueue, setRsvpTransportForTests } from "@/lib/rsvpSend";
 import { rsvpAllowance } from "@/lib/rsvpPreview";
 import type { TenantContext } from "@/lib/tenantContext";
 import { EmailDeliveryError, testOutbox } from "@/lib/email/transport";
@@ -278,7 +278,9 @@ describe("M13B P5 — delivery dashboard", () => {
   it("delivery status and RSVP status are separate; uncertain is flagged; masked destinations only", async () => {
     let n = 0;
     setRsvpTransportForTests({ name: "mixed", send: async (m) => (++n === 2 ? Promise.reject(new EmailDeliveryError("timeout")) : testOutbox.send(m)) });
-    expect((await post(send(3))).body.run).toMatchObject({ sent: 2, uncertain: 1 });
+    // P8A.1: the timeout ends the inline run; the next worker run finishes the queue.
+    expect((await post(send(3))).body.run).toMatchObject({ sent: 1, uncertain: 1, stoppedForProvider: true });
+    expect(await processRsvpQueue()).toMatchObject({ sent: 1, remaining: 0 });
     // Answers from the emailed links: Yes and Maybe; the organizer overrides the third to No.
     const [first, second] = testOutbox.sent; // the uncertain one never reached the outbox
     expect((await answer(tokenOf(first.text), "PLAYING")).status).toBe(200);
@@ -413,7 +415,9 @@ describe("M13B P5 — queue continuation (cron)", () => {
     let n = 0;
     setRsvpTransportForTests({ name: "mixed", send: async () => (++n === 1 ? Promise.reject(new EmailDeliveryError("http", 503)) : { providerMessageId: `c${n}` }) });
     const r = await cron();
-    expect(r).toMatchObject({ status: 200, body: { ok: true, rsvp: { sent: 2, uncertain: 1, remaining: 0, errors: 0 } } });
+    // P8A.1: the 503 is UNCERTAIN and ends that run; the next scheduled run continues.
+    expect(r).toMatchObject({ status: 200, body: { ok: true, rsvp: { sent: 0, uncertain: 1, remaining: 2, errors: 0, stoppedForProvider: true } } });
+    expect((await cron()).body.rsvp).toMatchObject({ sent: 2, uncertain: 0, remaining: 0 });
     expect((await cron()).body.rsvp).toMatchObject({ sent: 0, uncertain: 0, remaining: 0 });
     expect(n).toBe(3);
   });

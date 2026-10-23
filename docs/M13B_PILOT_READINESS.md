@@ -1,6 +1,6 @@
 # M13B — RSVP invitation emails: pilot activation runbook
 
-**Status (P8A):** M13B P1–P8A are on `feature/m13b-p1-player-emails`. Nothing is merged, deployed or migrated,
+**Status (P8A.1):** M13B P1–P8A.1 are on `feature/m13b-p1-player-emails`. Nothing is merged, deployed or migrated,
 and no real RSVP email has ever been sent. The live transport exists in code but is **off**: no environment has
 its flag.
 
@@ -43,6 +43,7 @@ Production is at `f059181`. M13B adds these migrations, all additive, applied in
 6. `20261220120000_m13b_p6_delivery_management`
 7. `20261225120000_m13b_p7_retention`
 8. `20261228120000_m13b_p8a_support_opt_out`
+9. `20261230120000_m13b_p8a1_delivery_pacing`
 
 Exact steps:
 1. **[APPROVAL]** Create a Neon branch / snapshot of Production named `pre-m13b-<date>`.
@@ -50,7 +51,7 @@ Exact steps:
    project's existing build-time migration procedure, or run `prisma migrate deploy` against Production with
    the documented credentials, per the repository's release process. Never run it from an ad-hoc shell.
 3. Verify:
-   - `_prisma_migrations` lists all eight;
+   - `_prisma_migrations` lists all nine;
    - the app's smoke checks pass (sign-in, match page, attendance, Telegram poll);
    - account email still arrives (a password-reset test to an internal address).
 
@@ -198,7 +199,10 @@ Rollback (R): disable the endpoint in Resend and unset `RESEND_WEBHOOK_SECRET` (
 
 - Dashboard per pilot match: accepted / failed / uncertain / skipped. **Any UNCERTAIN** → check Resend's logs
   for that window before resending.
-- GitHub Actions automation log: the `rsvp` counts (`sent`, `failed`, `uncertain`, `errors`, `remaining`).
+- GitHub Actions automation log: the `rsvp` counts (`sent`, `failed`, `uncertain`, `rateLimited`, `errors`,
+  `remaining`, `stoppedForProvider`, `stoppedForTime`).
+  - `stoppedForProvider` on two runs in a row → check Resend's status page and logs.
+  - Any `rateLimited` → check the Resend plan and the account email volume.
 - Resend dashboard: bounces, complaints, delivery rate, webhook failures.
 - Database (read-only): growth of `GlobalEmailSuppression` / `OrganizationEmailOptOut`, and today's
   `RsvpEmailUsage` against the 100-per-day pilot cap.

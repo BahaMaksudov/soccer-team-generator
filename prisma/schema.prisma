@@ -1616,6 +1616,15 @@ enum GlobalSuppressionReason {
   RECIPIENT_REQUEST
 }
 
+// M13B P8A.1 — ONE row (id = 1): the next moment any worker may hand an RSVP email to
+// the provider while delivery is live. Every hand-off atomically takes the next slot
+// (minimum spacing) and a 429 Retry-After pushes it out for every worker — global,
+// database-backed pacing across concurrent workers and instances. No personal data.
+model RsvpDeliveryPacer {
+  id         Int      @id
+  nextSlotAt DateTime
+}
+
 // M13B P6 — provider webhook events already processed (idempotency for retries and
 // replays). Stores the provider's event id and type only — no recipient address.
 model EmailWebhookEvent {
@@ -1796,6 +1805,10 @@ model RsvpInvitation {
   // anonymization: the row still links to the match, organization and (unless deleted) the
   // named player, so it stays personal data while those exist. Column kept as "anonymizedAt".
   identifiersRemovedAt DateTime?          @map("anonymizedAt")
+  // M13B P8A.1 — not claimable before this time: set when the provider rate-limited the
+  // hand-off (HTTP 429; Retry-After honored). The row stays QUEUED and reserved, and keeps
+  // the SAME provider idempotency key for its next attempt.
+  notBefore            DateTime?
   createdAt            DateTime           @default(now())
   updatedAt            DateTime           @updatedAt
 

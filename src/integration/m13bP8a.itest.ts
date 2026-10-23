@@ -21,19 +21,21 @@ const AUTH_AT = new Date("2026-01-01T00:00:00Z");
 const TZ = "America/New_York";
 const PILOT = "cm3pilotorg00000000000001";
 const PILOT2 = "cm3pilotorg00000000000002";
+const PILOT3 = "cm3pilotorg00000000000003";
+const PILOT4 = "cm3pilotorg00000000000004";
 const OTHER = "cm3otherorg00000000000001";
 const FROM = "TeamBalance Pro <noreply@mail.teambalancepro.com>";
 const LIVE: Record<string, string> = {
   NODE_ENV: "production",
   VERCEL_ENV: "production",
   RSVP_EMAIL_DELIVERY: "live-pilot",
-  RSVP_EMAIL_PILOT_ORGS: `${PILOT},${PILOT2}`,
+  RSVP_EMAIL_PILOT_ORGS: `${PILOT},${PILOT2},${PILOT3},${PILOT4}`,
   RESEND_API_KEY: "re_fake_itest_key",
   EMAIL_FROM: FROM,
   APP_BASE_URL: "https://teambalancepro.com",
 };
 
-type Call = { url: string; headers: Record<string, string>; body: Record<string, unknown> };
+type Call = { url: string; headers: Record<string, string>; body: Record<string, unknown>; at: number };
 let calls: Call[] = [];
 let forbidden = 0;
 let respond: (n: number) => Promise<Response> | Response = (n) => new Response(JSON.stringify({ id: `re_${n}` }), { status: 200 });
@@ -51,13 +53,15 @@ const live = (extra: Record<string, string | undefined> = {}) => {
 
 async function seed() {
   await prisma.$executeRawUnsafe(
-    `TRUNCATE "EmailWebhookEvent","RsvpEmailUsage","RsvpInvitation","RsvpSend","EmailUnsubscribeToken","OrganizationEmailOptOut","GlobalEmailSuppression","PersonalAttendanceLink","AttendanceResponse","Match","Player","Group","OrganizationMembership","Organization","User","AppSetting" RESTART IDENTITY CASCADE`
+    `TRUNCATE "RsvpDeliveryPacer","EmailWebhookEvent","RsvpEmailUsage","RsvpInvitation","RsvpSend","EmailUnsubscribeToken","OrganizationEmailOptOut","GlobalEmailSuppression","PersonalAttendanceLink","AttendanceResponse","Match","Player","Group","OrganizationMembership","Organization","User","AppSetting" RESTART IDENTITY CASCADE`
   );
   await prisma.user.create({ data: { id: "u-owner", email: "owner@example.test", name: "owner", passwordHash: null, emailVerifiedAt: VERIFIED } });
   await prisma.organization.createMany({
     data: [
       { id: PILOT, name: "Pilot Club", slug: "pilot", plan: "LEGACY" },
       { id: PILOT2, name: "Pilot Two", slug: "pilot2", plan: "LEGACY" },
+      { id: PILOT3, name: "Pilot Three", slug: "pilot3", plan: "FREE" },
+      { id: PILOT4, name: "Pilot Four", slug: "pilot4", plan: "LEGACY" },
       { id: OTHER, name: "Other Club", slug: "other", plan: "LEGACY" },
     ],
   });
@@ -65,13 +69,23 @@ async function seed() {
     data: [
       { id: "gp", organizationId: PILOT, name: "Pilot group", slug: "gp", sportKey: "soccer", timezone: TZ },
       { id: "gp2", organizationId: PILOT2, name: "Pilot two group", slug: "gp2", sportKey: "soccer", timezone: TZ },
+      { id: "gp3", organizationId: PILOT3, name: "Pilot three group", slug: "gp3", sportKey: "soccer", timezone: TZ },
+      { id: "gp4", organizationId: PILOT4, name: "Pilot four group", slug: "gp4", sportKey: "soccer", timezone: TZ },
       { id: "go", organizationId: OTHER, name: "Other group", slug: "go", sportKey: "soccer", timezone: TZ },
     ],
   });
   const players = (groupId: string, prefix: string, n: number) =>
     Array.from({ length: n }, (_, i) => ({ id: `${prefix}${String(i).padStart(2, "0")}`, groupId, firstName: `${prefix.toUpperCase()}${String(i).padStart(2, "0")}`, lastName: "Test", position: "MIDFIELDER", rating: "GOOD" as const, stamina: 3, contactEmail: `${prefix}${i}@example.com`, contactEmailType: "PLAYER" as const, contactAuthorizedAt: AUTH_AT, contactAuthorizedByUserId: "u-owner" }));
-  await prisma.player.createMany({ data: [...players("gp", "p", 3), ...players("gp2", "t", 25), ...players("go", "o", 2)] });
-  await prisma.match.createMany({ data: [{ id: "mp", groupId: "gp", date: new Date("2099-06-03") }, { id: "mp2", groupId: "gp2", date: new Date("2099-06-03") }, { id: "mo", groupId: "go", date: new Date("2099-06-03") }] });
+  await prisma.player.createMany({ data: [...players("gp", "p", 3), ...players("gp2", "t", 25), ...players("gp3", "u", 25), ...players("gp4", "v", 25), ...players("go", "o", 2)] });
+  await prisma.match.createMany({
+    data: [
+      { id: "mp", groupId: "gp", date: new Date("2099-06-03") },
+      { id: "mp2", groupId: "gp2", date: new Date("2099-06-03") },
+      { id: "mp3", groupId: "gp3", date: new Date("2099-06-03") },
+      { id: "mp4", groupId: "gp4", date: new Date("2099-06-03") },
+      { id: "mo", groupId: "go", date: new Date("2099-06-03") },
+    ],
+  });
 }
 
 beforeAll(async () => {
@@ -85,7 +99,7 @@ beforeAll(async () => {
       forbidden++;
       throw new Error("network access is forbidden in integration tests");
     }
-    calls.push({ url: String(url), headers: init?.headers as Record<string, string>, body: JSON.parse(String(init?.body)) });
+    calls.push({ url: String(url), headers: init?.headers as Record<string, string>, body: JSON.parse(String(init?.body)), at: Date.now() });
     return respond(calls.length);
   }) as typeof fetch;
 });
@@ -180,28 +194,126 @@ describe("M13B P8A — live pilot transport (mocked Resend)", () => {
     expect(await send(PILOT, "gp", "mp-b")).toEqual({ ok: false, code: "PLAN_LIMIT" }); // 78 + 23 reserved ≥ 100
   });
 
-  it("provider outcomes: definite rejections are FAILED (released), everything ambiguous is UNCERTAIN; nothing logged with an address", async () => {
+  const used = async (org: string) => (await rsvpAllowance(org)).day.used;
+  const pacerAt = async () => (await prisma.rsvpDeliveryPacer.findUnique({ where: { id: 1 } }))?.nextSlotAt.getTime() ?? 0;
+  const resetQueue = async () => prisma.$executeRawUnsafe(`TRUNCATE "RsvpDeliveryPacer","RsvpEmailUsage","RsvpInvitation","RsvpSend","EmailUnsubscribeToken","PersonalAttendanceLink" RESTART IDENTITY CASCADE`);
+
+  it("P8A.1 — every provider outcome, one case at a time: classification, run stop, quota and backoff", async () => {
     live();
     const logs: string[] = [];
     for (const k of ["log", "info", "warn", "error"] as const) vi.spyOn(console, k).mockImplementation((...a: unknown[]) => void logs.push(a.map(String).join(" ")));
-    await prisma.player.createMany({
-      data: Array.from({ length: 3 }, (_, i) => ({ id: `px${i}`, groupId: "gp", firstName: `PX${i}`, lastName: "Test", position: "MIDFIELDER", rating: "GOOD" as const, stamina: 3, contactEmail: `px${i}@example.com`, contactEmailType: "PLAYER" as const, contactAuthorizedAt: AUTH_AT, contactAuthorizedByUserId: "u-owner" })),
-    });
-    const outcomes: Array<() => Promise<Response> | Response> = [
-      () => new Response("{}", { status: 422 }),
-      () => new Response("{}", { status: 429 }),
-      () => new Response("{}", { status: 500 }),
-      () => new Response("{}", { status: 409 }),
-      () => Promise.reject(new TypeError("fetch failed")),
-      () => Promise.reject(Object.assign(new Error("timed out"), { name: "TimeoutError" })),
+    const ok = (n: number) => new Response(JSON.stringify({ id: `re_${n}` }), { status: 200 });
+    const cases: Array<{ name: string; first: () => Promise<Response> | Response; status: string; lastError: string; stop: boolean; counted: boolean; backoff: number | null }> = [
+      { name: "400 validation", first: () => new Response("{}", { status: 400 }), status: "FAILED", lastError: "HTTP_400", stop: false, counted: false, backoff: null },
+      { name: "422 unprocessable", first: () => new Response("{}", { status: 422 }), status: "FAILED", lastError: "HTTP_422", stop: false, counted: false, backoff: null },
+      { name: "401 bad key", first: () => new Response("{}", { status: 401 }), status: "FAILED", lastError: "HTTP_401", stop: true, counted: false, backoff: null },
+      { name: "403 forbidden", first: () => new Response("{}", { status: 403 }), status: "FAILED", lastError: "HTTP_403", stop: true, counted: false, backoff: null },
+      { name: "404 endpoint", first: () => new Response("{}", { status: 404 }), status: "FAILED", lastError: "HTTP_404", stop: true, counted: false, backoff: null },
+      { name: "409 idempotency conflict", first: () => new Response("{}", { status: 409 }), status: "UNCERTAIN", lastError: "HTTP_409", stop: false, counted: true, backoff: null },
+      { name: "500 application_error", first: () => new Response("{}", { status: 500 }), status: "UNCERTAIN", lastError: "HTTP_500", stop: true, counted: true, backoff: 60 },
+      { name: "503 unavailable", first: () => new Response("{}", { status: 503 }), status: "UNCERTAIN", lastError: "HTTP_503", stop: true, counted: true, backoff: 60 },
+      { name: "connection reset", first: () => Promise.reject(Object.assign(new TypeError("fetch failed"), { cause: { code: "ECONNRESET" } })), status: "UNCERTAIN", lastError: "NETWORK", stop: true, counted: true, backoff: 30 },
+      { name: "timeout", first: () => Promise.reject(Object.assign(new Error("timed out"), { name: "TimeoutError" })), status: "UNCERTAIN", lastError: "TIMEOUT", stop: true, counted: true, backoff: 30 },
+      { name: "429 rate limited", first: () => new Response("{}", { status: 429, headers: { "retry-after": "7" } }), status: "QUEUED", lastError: "RATE_LIMITED", stop: true, counted: true, backoff: 7 },
     ];
-    respond = (n) => outcomes[n - 1]();
-    expect(await send(PILOT, "gp", "mp")).toMatchObject({ ok: true, counts: { queued: 6 } });
-    expect(await processRsvpQueue()).toMatchObject({ sent: 0, failed: 2, uncertain: 4 });
-    const rows = await prisma.rsvpInvitation.findMany({ orderBy: [{ createdAt: "asc" }, { id: "asc" }], select: { status: true, lastError: true } });
-    expect(rows.map((r) => `${r.status}:${r.lastError}`).sort()).toEqual(["FAILED:HTTP_422", "FAILED:HTTP_429", "UNCERTAIN:HTTP_409", "UNCERTAIN:HTTP_500", "UNCERTAIN:NETWORK", "UNCERTAIN:TIMEOUT"]);
-    expect((await rsvpAllowance(PILOT)).day.used).toBe(4); // failed released, uncertain counted
+    for (const c of cases) {
+      await resetQueue();
+      calls = [];
+      respond = (n) => (n === 1 ? c.first() : ok(n));
+      expect(await send(PILOT, "gp", "mp"), c.name).toMatchObject({ ok: true, counts: { queued: 3 } });
+      const before = Date.now();
+      const run = await processRsvpQueue({ limit: 10, budgetMs: 5000 });
+      const first = await prisma.rsvpInvitation.findFirstOrThrow({ where: { lastError: c.lastError } });
+      expect(first.status, c.name).toBe(c.status);
+      expect(run.stoppedForProvider, c.name).toBe(c.stop);
+      expect(calls.length, c.name).toBe(c.stop ? 1 : 3); // a stop hands off nothing more in this run
+      // Quota: only a definite refusal releases the reservation; uncertain / rate-limited stay counted.
+      expect(await used(PILOT), c.name).toBe(c.counted ? 3 : 2);
+      if (c.backoff) expect(await pacerAt(), c.name).toBeGreaterThanOrEqual(before + (c.backoff - 1) * 1000);
+      else expect(await pacerAt(), c.name).toBeLessThan(before + 5_000);
+    }
     expect(logs.join("\n")).not.toMatch(/@example\.com|re_fake_itest_key|t=[A-Za-z0-9_-]{20,}/);
+  });
+
+  it("P8A.1 — 429: the row waits for Retry-After (globally) and is retried with the SAME idempotency key; never duplicated", async () => {
+    live();
+    vi.spyOn(console, "info").mockImplementation(() => {});
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    respond = (n) => (n === 1 ? new Response("{}", { status: 429, headers: { "retry-after": "2" } }) : new Response(JSON.stringify({ id: `re_${n}` }), { status: 200 }));
+    await send(PILOT, "gp", "mp");
+    const r1 = await processRsvpQueue();
+    expect(r1).toMatchObject({ rateLimited: 1, sent: 0, stoppedForProvider: true, remaining: 3 });
+    const limited = await prisma.rsvpInvitation.findFirstOrThrow({ where: { lastError: "RATE_LIMITED" } });
+    expect(limited).toMatchObject({ status: "QUEUED", attempts: 0, claimedAt: null });
+    expect(limited.notBefore!.getTime()).toBeGreaterThan(Date.now());
+    // Immediately again: the global pacer holds every worker back (nothing handed off).
+    expect(await processRsvpQueue({ budgetMs: 1000 })).toMatchObject({ sent: 0, stoppedForTime: true });
+    expect(calls).toHaveLength(1);
+    await new Promise((res) => setTimeout(res, 2200));
+    expect(await processRsvpQueue()).toMatchObject({ sent: 3, remaining: 0 });
+    const firstKey = calls[0].headers["Idempotency-Key"];
+    const retried = calls.slice(1).find((c) => (c.body.to as string[])[0] === (calls[0].body.to as string[])[0])!;
+    expect(retried.headers["Idempotency-Key"]).toBe(firstKey); // same key → the provider can never send it twice
+    expect(await prisma.rsvpInvitation.count({ where: { status: "SENT", attempts: 1 } })).toBe(3);
+    expect(await used(PILOT)).toBe(3);
+  });
+
+  it("P8A.1 — global pacing: concurrent workers hand off at most one email per 250 ms in total", async () => {
+    live();
+    vi.spyOn(console, "info").mockImplementation(() => {});
+    await send(PILOT2, "gp2", "mp2"); // 20 (pilot limit)
+    await Promise.all([processRsvpQueue({ limit: 50 }), processRsvpQueue({ limit: 50 }), processRsvpQueue({ limit: 50 })]);
+    expect(calls).toHaveLength(20);
+    const at = calls.map((c) => c.at).sort((a, b) => a - b);
+    const gaps = at.slice(1).map((t, i) => t - at[i]);
+    expect(Math.min(...gaps)).toBeGreaterThanOrEqual(200); // 250 ms slots (timer jitter allowed)
+  });
+
+  it("P8A.1 — three pilot organizations at once near the global cap: never more than 100 in a UTC day", async () => {
+    live();
+    const today = new Date().toISOString().slice(0, 10);
+    await prisma.$executeRaw`INSERT INTO "RsvpEmailUsage" ("organizationId", "day", "consumed") VALUES (${OTHER}, ${today}::date, 50)`;
+    const results = await Promise.all([send(PILOT2, "gp2", "mp2"), send(PILOT3, "gp3", "mp3"), send(PILOT4, "gp4", "mp4")]);
+    const queued = results.map((r) => (r.ok ? r.counts.queued : 0));
+    expect(queued.reduce((a, b) => a + b, 0)).toBe(50); // exactly the 50 left
+    expect(Math.max(...queued)).toBeLessThanOrEqual(20); // and each organization within its own pilot cap
+    const [{ total }] = await prisma.$queryRaw<Array<{ total: bigint }>>`SELECT count(*)::bigint AS total FROM "RsvpInvitation" WHERE "status" IN ('QUEUED','SENDING','SENT','UNCERTAIN')`;
+    expect(Number(total) + 50).toBe(100);
+    // A fourth attempt anywhere is refused.
+    await prisma.match.create({ data: { id: "mp-extra", groupId: "gp", date: new Date("2099-06-11") } });
+    expect(await send(PILOT, "gp", "mp-extra")).toEqual({ ok: false, code: "PLAN_LIMIT" });
+  });
+
+  it("P8A.1 — retries and resends can't bypass the per-organization or global cap", async () => {
+    live();
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    respond = () => new Response("{}", { status: 422 });
+    const s = await send(PILOT2, "gp2", "mp2");
+    if (!s.ok) throw new Error();
+    expect(await processRsvpQueue({ limit: 50 })).toMatchObject({ failed: 20 });
+    expect(await used(PILOT2)).toBe(0); // definite refusals released
+    const today = new Date().toISOString().slice(0, 10);
+    await prisma.$executeRaw`INSERT INTO "RsvpEmailUsage" ("organizationId", "day", "consumed") VALUES (${OTHER}, ${today}::date, 96)`;
+    const { retryFailedInvitations } = await import("@/lib/rsvpSend");
+    expect(await retryFailedInvitations(ctx(PILOT2, "gp2"), s.sendId)).toEqual({ ok: true, requeued: 4, left: 16 }); // global: 4 left
+    await prisma.$executeRaw`UPDATE "RsvpEmailUsage" SET "consumed" = 0 WHERE "organizationId" = ${OTHER}`;
+    await prisma.$executeRaw`INSERT INTO "RsvpEmailUsage" ("organizationId", "day", "consumed") VALUES (${PILOT2}, ${today}::date, 14)`;
+    expect(await retryFailedInvitations(ctx(PILOT2, "gp2"), s.sendId)).toEqual({ ok: true, requeued: 2, left: 14 }); // per-organization: 20 − 14 − 4 reserved = 2
+  });
+
+  it("P8A.1 — switching the pilot off mid-run stops further hand-offs; nothing queued is lost", async () => {
+    live();
+    vi.spyOn(console, "info").mockImplementation(() => {});
+    respond = (n) => {
+      if (n === 1) vi.stubEnv("RSVP_EMAIL_DELIVERY", ""); // the kill switch lands while the worker is running
+      return new Response(JSON.stringify({ id: `re_${n}` }), { status: 200 });
+    };
+    await send(PILOT, "gp", "mp");
+    const run = await processRsvpQueue();
+    expect(run).toMatchObject({ sent: 1 });
+    expect(calls).toHaveLength(1);
+    expect(await prisma.rsvpInvitation.count({ where: { status: "QUEUED" } })).toBe(2);
+    await expect(processRsvpQueue()).rejects.toThrow(/not available/);
   });
 
   it("concurrent workers: every invitation is POSTed exactly once", async () => {

@@ -4,10 +4,10 @@ import path from "node:path";
 import { execSync } from "node:child_process";
 
 vi.mock("@/lib/prisma", () => ({ prisma: {} }));
-import { rsvpTransport, setRsvpTransportForTests, sanitizeSendError, RsvpDeliveryDisabledError } from "@/lib/rsvpSend";
+import { rsvpTransport, setRsvpTransportForTests, sanitizeSendError, RsvpDeliveryDisabledError, classifyRsvpSendError, RSVP_LIVE_MIN_INTERVAL_MS } from "@/lib/rsvpSend";
 import { rsvpDeliveryMode, isLocalTestDatabaseUrl, rsvpDeliveryAllowedFor, pilotOrganizations, rsvpSenderValid, RSVP_PILOT_LIMITS } from "@/lib/rsvpDeliveryMode";
 import { buildRsvpInvitationEmail, headerSafe } from "@/lib/email/templates";
-import { EmailDeliveryError, testOutbox } from "@/lib/email/transport";
+import { EmailDeliveryError, parseRetryAfter, testOutbox } from "@/lib/email/transport";
 import { EmailConfigError } from "@/lib/email/config";
 import { choiceFromSearch } from "@/lib/rsvpChoice";
 
@@ -148,6 +148,37 @@ describe("source guards (no real delivery path)", () => {
     expect(card).toMatch(/!available \? \(\s*<div>\s*<Button type="button" disabled aria-disabled="true"/);
     expect(card).toMatch(/action: "send", kind, requestKey: requestKey\.current, expectedCount: willSend, attested: true/);
     expect(card).toContain("disabled={!attested || busy}");
+  });
+});
+
+describe("P8A.1 provider outcome classification (Resend errors reference)", () => {
+  const http = (s: number, retry: number | null = null) => classifyRsvpSendError(new EmailDeliveryError("http", s, retry));
+  it("definite refusals are FAILED (released); configuration refusals also stop the run", () => {
+    for (const s of [400, 422, 451]) expect(http(s), String(s)).toEqual({ outcome: "FAILED", stop: false, backoffSeconds: null });
+    for (const s of [401, 403, 404, 405]) expect(http(s), String(s)).toEqual({ outcome: "FAILED", stop: true, backoffSeconds: null });
+    expect(classifyRsvpSendError(new EmailConfigError("EMAIL_FROM is not set."))).toEqual({ outcome: "FAILED", stop: true, backoffSeconds: null });
+  });
+  it("anything that may have been accepted is UNCERTAIN; provider trouble stops the run and backs off", () => {
+    expect(http(409)).toEqual({ outcome: "UNCERTAIN", stop: false, backoffSeconds: null });
+    for (const s of [500, 502, 503, 504]) expect(http(s), String(s)).toEqual({ outcome: "UNCERTAIN", stop: true, backoffSeconds: 60 });
+    expect(classifyRsvpSendError(new EmailDeliveryError("timeout"))).toEqual({ outcome: "UNCERTAIN", stop: true, backoffSeconds: 30 });
+    expect(classifyRsvpSendError(new EmailDeliveryError("network"))).toEqual({ outcome: "UNCERTAIN", stop: true, backoffSeconds: 30 });
+    expect(classifyRsvpSendError(new Error("weird"))).toEqual({ outcome: "UNCERTAIN", stop: false, backoffSeconds: null });
+  });
+  it("429 is RATE_LIMITED: requeued (not failed, not released), honoring Retry-After or 60 s", () => {
+    expect(http(429, 7)).toEqual({ outcome: "RATE_LIMITED", stop: true, backoffSeconds: 7 });
+    expect(http(429)).toEqual({ outcome: "RATE_LIMITED", stop: true, backoffSeconds: 60 });
+    expect(sanitizeSendError(new EmailDeliveryError("http", 429, 7))).toBe("RATE_LIMITED");
+  });
+  it("Retry-After: whole seconds (or ratelimit-reset), capped at an hour; anything else ignored", () => {
+    expect(parseRetryAfter(new Headers({ "retry-after": "5" }))).toBe(5);
+    expect(parseRetryAfter(new Headers({ "ratelimit-reset": "12" }))).toBe(12);
+    expect(parseRetryAfter(new Headers({ "retry-after": "999999" }))).toBe(3600);
+    for (const v of ["", "-1", "1.5", "Wed, 21 Oct 2026 07:28:00 GMT", "5s"]) expect(parseRetryAfter(new Headers({ "retry-after": v })), v).toBeNull();
+    expect(parseRetryAfter(undefined)).toBeNull();
+  });
+  it("live pacing keeps the total well under Resend's documented 10 requests / second per team", () => {
+    expect(1000 / RSVP_LIVE_MIN_INTERVAL_MS).toBeLessThanOrEqual(4);
   });
 });
 

@@ -778,6 +778,91 @@ sending rows are still skipped until settled.
 - No opt-out or suppression can be deleted by code; erasure never weakens a block.
 - Tests replace global fetch with a fake Resend endpoint that counts any other network access.
 
+## P8A.1 — final live-transport safety audit (still default OFF)
+
+Migration `20261230120000_m13b_p8a1_delivery_pacing` (additive) adds:
+- `RsvpInvitation.notBefore`;
+- the single-row table `RsvpDeliveryPacer` (CHECK `id = 1`; no personal data).
+
+### Provider response classification (checked against Resend's docs)
+
+Sources: the Resend API errors reference, the rate-limit page and the idempotency-keys page.
+- Rate limit: 10 requests per second per team by default, with `retry-after` and `ratelimit-*` headers.
+- Idempotency keys are kept for 24 hours. The same key with the same body returns the original response; with
+  a different body, or while still in progress, the API returns 409.
+
+| Provider answer | Classification | Quota | Run | Backoff (all workers) |
+| --- | --- | --- | --- | --- |
+| 2xx | SENT (accepted, not "delivered") | consumed | continue | — |
+| 400 validation / invalid key, 422, other 4xx | FAILED: the request was refused | released | continue | — |
+| 401 / 403 / 404 / 405 | FAILED: key, permission or endpoint wrong, nothing sent | released | **stop** | — |
+| 409 concurrent / invalid idempotent request / resource_locked | UNCERTAIN | counted | continue | — |
+| 429 rate_limit_exceeded / daily / monthly quota | **RATE_LIMITED** (see below) | **still reserved** | **stop** | Retry-After (default 60 s, max 1 h) |
+| 5xx (500 application_error, 503 unavailable) | UNCERTAIN | counted | **stop** | 60 s |
+| network error, connection reset, timeout | UNCERTAIN | counted | **stop** | 30 s |
+| configuration error before hand-off | FAILED | released | **stop** | — |
+| anything unexpected | UNCERTAIN | counted | continue | — |
+
+**429 handling: conservative without relying on the docs.** Resend documents 429 as a refusal, but we don't
+depend on that:
+- The row goes back to `QUEUED` and stays reserved. `attempts` is restored, so the next claim produces the
+  **same** idempotency key `rsvp:<invitation>:<attempt>`. `notBefore` is set to now + Retry-After.
+- If Resend never processed it, the next attempt is accepted once.
+- If it had, the replay returns the original response or a 409, and a 409 counts as UNCERTAIN. **A second
+  email can't happen.**
+
+UNCERTAIN is never retried automatically, and quota is released only for definite refusals. Stopping the
+run on provider trouble keeps an outage from turning a whole queue into UNCERTAIN. The next run (cron every
+15 minutes) continues after the backoff.
+
+### Rate-limit pacing (live only)
+
+- Each hand-off first takes the next slot of the single `RsvpDeliveryPacer` row, in one atomic
+  `INSERT … ON CONFLICT DO UPDATE SET nextSlotAt = GREATEST(nextSlotAt, now) + 250 ms`. The worker waits for
+  its slot; a slot beyond its time budget ends the run.
+- This holds across concurrent workers and serverless instances: at most 4 RSVP hand-offs per second in
+  total, under Resend's 10 per second shared with account email.
+- A 429 Retry-After or a 5xx / network backoff pushes `nextSlotAt` forward, so **every** worker waits.
+- The delivery mode and allowlist are re-read before each claim. Switching the pilot off mid-run stops the
+  hand-offs, and queued rows simply wait.
+
+### Global pilot quota: locking strategy
+
+- **Reservation is the only place quota is taken.** It happens in `createRsvpSend` and
+  `retryFailedInvitations`, inside one transaction holding three locks, always in this order:
+  1. the match row (`SELECT … FOR UPDATE` via `lockMatchForAnswer`);
+  2. the organization's advisory lock `rsvp-quota:<org>`;
+  3. while live, the pilot-wide advisory lock `rsvp-quota:pilot-all`.
+
+  Every path takes them in this order and nobody waits for an earlier lock while holding a later one, so
+  there is no lock cycle and no deadlock. Different organizations serialize only on (3), and only for the
+  short reservation.
+- **Reading usage:** after the locks, organization usage (day / month) and pilot-wide usage (today, all
+  organizations) are each read **in one SQL statement**: consumed from `RsvpEmailUsage` plus reserved from
+  QUEUED / SENDING invitations. Capacity is the minimum of the organization's remaining day / month and the
+  pilot's remaining day. Reservations are written before commit, which releases the locks. Concurrent
+  reservations therefore never exceed either cap.
+- **Workers never take quota.** They move a row from reserved to consumed in one transaction (`settle`),
+  release it (FAILED / SKIPPED), or keep it reserved (RATE_LIMITED). The totals never go up after
+  reservation, so concurrent workers can't double-count or bypass anything.
+- **Edge cases:**
+  - match deletion: consumed usage stays in the ledger, and never-sent reservations are released;
+  - UTC rollover: usage is counted on the reservation day;
+  - retries: re-reserved under the same locks and caps;
+  - resends: these are new reservations.
+
+### Pilot safety confirmations (tested)
+
+- The per-organization pilot cap (20 per day / 100 per month) applies even on plans with higher limits
+  (LEGACY 50 → 20).
+- The global 100 per day includes every pilot send, resend and retry. Three organizations sending at once
+  next to the cap reserved exactly what was left.
+- Retries can't bypass either cap.
+- FAILED is released; UNCERTAIN and RATE_LIMITED stay counted or reserved.
+- With the pilot disabled nothing is handed off. Non-allowlisted organizations' queued rows are never
+  claimed.
+- Account email is unaffected.
+
 ## Open issues / risks
 
 - Consent: organizers enter addresses (including guardians') without the recipient confirming. Unsubscribe

@@ -52,12 +52,22 @@ export interface EmailTransport {
 export class EmailDeliveryError extends Error {
   readonly reason: "http" | "network" | "timeout";
   readonly status: number | null;
-  constructor(reason: "http" | "network" | "timeout", status: number | null = null) {
+  /** M13B P8A.1 — the provider's Retry-After (seconds, capped), when it sent one. */
+  readonly retryAfterSeconds: number | null;
+  constructor(reason: "http" | "network" | "timeout", status: number | null = null, retryAfterSeconds: number | null = null) {
     super(`Email delivery failed (${reason}${status ? ` ${status}` : ""}).`);
     this.name = "EmailDeliveryError";
     this.reason = reason;
     this.status = status;
+    this.retryAfterSeconds = retryAfterSeconds;
   }
+}
+
+/** Retry-After / ratelimit-reset as whole seconds (Resend documents seconds), capped at one hour; null if absent or unparseable. */
+export function parseRetryAfter(headers: Headers | undefined): number | null {
+  const raw = headers?.get("retry-after") ?? headers?.get("ratelimit-reset");
+  if (!raw || !/^\d{1,6}$/.test(raw.trim())) return null;
+  return Math.min(Number(raw.trim()), 3600);
 }
 
 export const RESEND_ENDPOINT = "https://api.resend.com/emails";
@@ -101,7 +111,7 @@ export function createResendTransport(options: {
 
       if (!res.ok) {
         console.error(`[email] provider=resend delivery failed: HTTP ${res.status}`);
-        throw new EmailDeliveryError("http", res.status);
+        throw new EmailDeliveryError("http", res.status, parseRetryAfter(res.headers));
       }
 
       // 2xx means Resend accepted the message. A malformed body does not
