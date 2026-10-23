@@ -60,6 +60,8 @@ describe("privacy guard: contact fields are touched only by the approved files",
     "src/app/admin/o/[organizationSlug]/g/[groupSlug]/PlayerContactCell.tsx",
     // M13B P6 — the sending engine re-resolves the recipient at send time (server-only, never logged or returned).
     "src/lib/rsvpSend.ts",
+    // M13B P7 — support-only privacy erasure clears a requested address from player contacts (counts only, never logged).
+    "src/lib/rsvpRetention.ts",
   ]);
   const walk = (d: string): string[] => fs.readdirSync(d, { withFileTypes: true }).flatMap((e) => (e.isDirectory() ? walk(path.join(d, e.name)) : [path.join(d, e.name)]));
   it("no other source file reads or writes contactEmail / contactEmailType", () => {

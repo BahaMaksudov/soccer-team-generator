@@ -15,13 +15,36 @@ export const dynamic = "force-dynamic";
 const HEADERS = { "Cache-Control": "no-store" };
 const MAX_BODY_BYTES = 256 * 1024;
 
+/** P7 — read at most `max` bytes of the raw body (null when larger), without buffering an oversized stream. */
+async function readCapped(req: Request, max: number): Promise<string | null> {
+  if (!req.body) return "";
+  const reader = req.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    size += value.byteLength;
+    if (size > max) {
+      await reader.cancel().catch(() => undefined);
+      return null;
+    }
+    chunks.push(value);
+  }
+  return Buffer.concat(chunks).toString("utf8");
+}
+
+/** Svix message ids are short opaque strings ("msg_…"); anything else is refused before any processing. */
+const EVENT_ID = /^[A-Za-z0-9_.:-]{1,128}$/;
+
 export async function POST(req: Request) {
   const declared = Number(req.headers.get("content-length") ?? "0");
   if (declared > MAX_BODY_BYTES) return NextResponse.json({ error: "Payload too large" }, { status: 413, headers: HEADERS });
-  const raw = await req.text();
-  if (Buffer.byteLength(raw, "utf8") > MAX_BODY_BYTES) return NextResponse.json({ error: "Payload too large" }, { status: 413, headers: HEADERS });
+  const raw = await readCapped(req, MAX_BODY_BYTES);
+  if (raw === null) return NextResponse.json({ error: "Payload too large" }, { status: 413, headers: HEADERS });
 
   const h = webhookHeaders(req.headers);
+  if (h.id !== null && !EVENT_ID.test(h.id)) return NextResponse.json({ error: "Unauthorized" }, { status: 401, headers: HEADERS });
   const verified = verifyWebhook(raw, h, process.env.RESEND_WEBHOOK_SECRET);
   if (verified === "not_configured") return NextResponse.json({ error: "Webhook not configured" }, { status: 503, headers: HEADERS });
   if (verified !== "ok") return NextResponse.json({ error: "Unauthorized" }, { status: 401, headers: HEADERS });

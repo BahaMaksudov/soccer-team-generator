@@ -67,6 +67,6 @@ describe("unsubscribe / webhook source guards", () => {
     const route = read("src/app/api/email/webhooks/resend/route.ts");
     expect(route.indexOf("verifyWebhook(")).toBeGreaterThan(0);
     expect(route.indexOf("verifyWebhook(")).toBeLessThan(route.indexOf("JSON.parse("));
-    expect(route).toContain("await req.text()");
+    expect(route).toContain("await readCapped(req, MAX_BODY_BYTES)"); // P7: raw bytes, capped while streaming
   });
 });

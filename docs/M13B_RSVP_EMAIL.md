@@ -564,6 +564,118 @@ No raw tokens and no full addresses (including linked-account addresses) are eve
 The proposed changes are in `docs/legal/privacy-policy-m13b-draft.md`. They are not published, and the
 `/privacy` page is unchanged.
 
+## P7 — retention, deletion policy, final hardening (implemented; nothing scheduled, test outbox only)
+
+Migration `20261225120000_m13b_p7_retention` (additive):
+- the enum value `GlobalSuppressionReason.RECIPIENT_REQUEST`;
+- `RsvpInvitation.anonymizedAt`, plus an index on (`anonymizedAt`, `matchId`);
+- `RsvpSend.retentionHoldUntil`.
+
+The pilot plan is in `docs/M13B_PILOT_READINESS.md`.
+
+### Retention (`src/lib/rsvpRetention.ts`, `runRsvpRetention`)
+
+Foreign keys reviewed first:
+- invitations cascade with their match / send / group / organization;
+- `playerId`, `linkId` and `unsubscribeTokenId` are set to null when their row is deleted;
+- the quota ledger (`RsvpEmailUsage`) has no match or player reference.
+
+The cleanup:
+- **Cutoff:** a match on UTC day D keeps its identifying details through D+90 and is anonymized from D+91
+  00:00Z (`retentionCutoff`).
+- **Anonymization** clears `email`, `providerMessageId` and `idempotencyKey`, and stamps `anonymizedAt`.
+  It keeps status, round, timestamps, skip reason, error category, recipient type and the player reference,
+  so the dashboard keeps its shape with no address.
+- **Never touched:** attendance answers, the quota ledger, personal links (hash-only), opt-outs and
+  suppressions.
+- **Skipped and counted:** QUEUED / SENDING rows (active processing), and sends under an incident hold
+  (`retentionHoldUntil` in the future).
+- **Expired unsubscribe tokens** are deleted: they no longer work, and they hold an address.
+- **Deleted matches** need nothing: their invitations are already gone, and the ledger keeps their usage.
+- **Safety:** idempotent (`anonymizedAt IS NULL`); bounded (`batchSize` up to 5000, `maxBatches` up to 1000);
+  one run at a time (transaction-scoped `pg_try_advisory_xact_lock`; a second concurrent run stops and
+  reports `concurrentRunDetected`), with `FOR UPDATE SKIP LOCKED` as well.
+- **Modes and output:** `dryRun` writes nothing; metrics are counts only.
+- **Not scheduled anywhere;** a unit test guards that nothing imports it.
+
+### Suppression and deletion policy
+
+| Event | What happens to opt-outs / suppressions | Why |
+| --- | --- | --- |
+| Player deleted | Unchanged: opt-outs are per organization and address, not per player. A new player with the same address is still `SUPPRESSED`. | Deleting a player must not make an unsubscribed address mailable again. |
+| Contact email changed | The old address's opt-out stays (blocks it everywhere in that organization); the new address is judged on its own. | No carry-over to a different person's address. |
+| Organization deleted | Its own opt-outs cascade (nobody can send for it any more); global suppressions stay. | No orphaned per-organization data. |
+| Recipient privacy request | `eraseRecipientEmail` (support only): removes the address from invitations, unsubscribe tokens and every organizer contact; QUEUED invitations are canceled and their reservation released; SENDING ones are reported. By default it replaces that address's per-organization opt-outs with **one** global `RECIPIENT_REQUEST` suppression. `keepSuppression: false` (an owner decision) removes that too. **Hard-bounce and complaint suppressions are always kept.** | Least data that still guarantees "don't email me again"; sender reputation. |
+| Resubscription | Not built. If added, it must be recipient-initiated (a confirmation email to the address), never organizer-initiated. | No organizer bypass (a source guard checks that only the support function can delete opt-outs / suppressions). |
+
+**Why plain addresses, not hashes:** suppression must match the normalized address at send time. An unsalted
+hash of an email address is easily reversed by guessing (addresses aren't secret), so it adds risk without
+real protection. A keyed (HMAC) hash would protect against a database leak, but losing or rotating the key
+silently breaks matching, so every stored record would need re-keying. Until that key management exists,
+the minimal-retention approach is:
+- keep only the address, reason, source and date;
+- one row per address (global) instead of one per organization after an erasure;
+- nothing else.
+
+### Guardian authorization (re-review)
+
+Confirmed by tests (P6 and P7):
+- a new or materially changed contact needs the organizer's confirmation, with who and when recorded;
+- unconfirmed contacts are never queued or emailed, and never fall back to the linked account;
+- a contact changed after queuing (including between a failure and a retry) is never emailed at the old
+  address (`CONTACT_CHANGED`);
+- organization and group scoping is enforced;
+- a source guard checks that the UI, emails and contact code never claim consent was verified.
+
+Remaining legal review: whether an organizer's attestation is enough for minors' guardian contacts (versus a
+guardian double opt-in), and the age-related laws that apply. See the open decisions in the legal drafts.
+
+### Webhook review (against Resend / Svix documentation)
+
+| Check | Result |
+| --- | --- |
+| Raw-body verification | ✔ Signature over the exact bytes received. P7 reads the body as a capped stream (`readCapped`), so a body over 256 KB is refused (413) without being buffered, with or without `Content-Length`. |
+| Timestamp tolerance | ✔ ±5 minutes, the Svix library default. Non-numeric timestamps are refused. |
+| Constant-time comparison | ✔ `timingSafeEqual` on equal-length digests. |
+| Multiple signatures | ✔ A space-delimited `v1,` list; any match passes, so key rotation works. Non-`v1` entries are ignored. |
+| Duplicate events | ✔ Event id unique per provider, inserted in the same transaction as the suppressions. |
+| Concurrent events | ✔ The unique constraint decides; the loser reports `duplicate` (tested). |
+| Event id validation | **P7:** `svix-id` must match `^[A-Za-z0-9_.:-]{1,128}$`, or the request gets 401 (previously truncated, which could collide). |
+| Permanent vs transient bounce | ✔ `email.bounced` is documented as permanent (`bounce.type: "Permanent"`). Any other present type is ignored. |
+| Complaints | ✔ `email.complained` → `SPAM_COMPLAINT` (an existing suppression keeps its first reason). |
+| Malformed / oversized | ✔ Invalid JSON → 400; an invalid address in `to` is ignored; oversized → 413. |
+| Missing / invalid secret | ✔ 503, nothing processed. |
+| PII in logs | ✔ Only a fixed string on failure (source-guard test). |
+
+The verification procedure for a real signed test event is in the pilot readiness doc, section 5.
+
+### Unsubscribe and deliverability review
+
+- **RFC 8058:** the two headers only (allowlisted), POST-only with the exact form body, idempotent.
+- **Website flow:**
+  - the fragment token is removed from the address bar;
+  - preview is read-only;
+  - confirmation needs a same-origin JSON POST.
+- **Expiry and replay:** tokens expire after 365 days (P7 cleanup deletes them once expired); a replay changes
+  nothing.
+- **Hosting logs:** the one-click URL carries a one-click-only token that discloses nothing (P6). The
+  remaining risk is Vercel request logs keeping that URL; an owner decision is needed on log retention or a
+  log-drain filter.
+- **Suppression precedence:** a suppressed or opted-out address is never `WILL_SEND`, whatever else is true.
+  It is checked at queue time and again at send time, for every organization (global) or that organization
+  (opt-out). Nothing lets an organizer override it.
+- **Account / security emails** (verification, password reset, invitations) use a separate path that never
+  consults suppression and never carries unsubscribe headers (source-guard test).
+- **Deliverability checklist** (SPF, DKIM, DMARC, verified domain, sender identity, provider limits, webhook,
+  rendering, tracking off): pilot readiness doc, section 4.
+
+### Legal package
+
+- Privacy Policy changes: `docs/legal/privacy-policy-m13b-draft.md` (updated for 90-day retention and
+  privacy requests).
+- Terms changes: `docs/legal/terms-m13b-draft.md`.
+- Neither is published.
+
 ## Open issues / risks
 
 - Consent: organizers enter addresses (including guardians') without the recipient confirming. Unsubscribe

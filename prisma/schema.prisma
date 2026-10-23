@@ -1611,6 +1611,9 @@ model BillingCheckoutSession {
 enum GlobalSuppressionReason {
   HARD_BOUNCE
   SPAM_COMPLAINT
+  // M13B P7 — the recipient asked us to erase their address and stop all invitations
+  // (support-handled privacy request; see src/lib/rsvpRetention.ts eraseRecipientEmail).
+  RECIPIENT_REQUEST
 }
 
 // M13B P6 — provider webhook events already processed (idempotency for retries and
@@ -1730,19 +1733,22 @@ model RsvpEmailUsage {
 // One organizer action ("Send invitations" / "Resend to unanswered") for one match.
 // requestKey makes a double click / retry return the same send (no new reservations).
 model RsvpSend {
-  id              String       @id @default(cuid())
-  organizationId  String
-  groupId         String
-  matchId         String
-  kind            RsvpSendKind
-  round           Int
-  requestKey      String       @unique
-  createdByUserId String?
-  createdAt       DateTime     @default(now())
+  id                 String       @id @default(cuid())
+  organizationId     String
+  groupId            String
+  matchId            String
+  kind               RsvpSendKind
+  round              Int
+  requestKey         String       @unique
+  createdByUserId    String?
+  createdAt          DateTime     @default(now())
   // M13B P5 — the organizer confirmed they may contact these recipients for match
   // coordination (when), and the recipient count they reviewed (null for engine-only use).
-  attestedAt      DateTime?
-  confirmedCount  Int?
+  attestedAt         DateTime?
+  confirmedCount     Int?
+  // M13B P7 — incident hold: retention cleanup skips this send's invitations until then
+  // (set by an operator only while investigating a delivery incident).
+  retentionHoldUntil DateTime?
 
   organization Organization     @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   group        Group            @relation(fields: [groupId], references: [id], onDelete: Cascade)
@@ -1782,6 +1788,10 @@ model RsvpInvitation {
   idempotencyKey     String?
   linkId             String?
   unsubscribeTokenId String?
+  // M13B P7 — when the recipient address and provider details were removed (retention:
+  // 90 days after the match, or a recipient's erasure request). Status, round, timestamps
+  // and the player reference stay for the organizer's history; quota lives in RsvpEmailUsage.
+  anonymizedAt       DateTime?
   createdAt          DateTime           @default(now())
   updatedAt          DateTime           @updatedAt
 
@@ -1796,5 +1806,6 @@ model RsvpInvitation {
   @@unique([matchId, playerId, round])
   @@index([organizationId, status, reservedAt])
   @@index([status, claimedAt])
+  @@index([anonymizedAt, matchId])
   @@index([sendId])
 }
