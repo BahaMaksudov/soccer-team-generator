@@ -4,6 +4,7 @@ import { requireRole, type TenantContext } from "@/lib/tenantContext";
 import { effectiveAttendance, type AttendanceRow } from "@/lib/attendance";
 import { effectiveClosedAt } from "@/lib/attendanceDeadline";
 import { maskEmail } from "@/lib/emailAddress";
+import { suppressedFor } from "@/lib/emailSuppression";
 import { RSVP_MAX_ATTEMPTS, rsvpDeliveryMode } from "@/lib/rsvpSend";
 
 /**
@@ -23,6 +24,11 @@ export type StatusRow = {
   round: number;
   delivery: RsvpDeliveryStatus;
   skipReason: string | null;
+  attempts: number;
+  /** P6 timestamps (ISO): queued (reserved), last attempt (claimed), accepted, failed. */
+  at: { queued: string | null; lastAttempt: string | null; accepted: string | null; failed: string | null };
+  /** P6: the address is now suppressed / opted out for this organization (e.g. a later bounce or unsubscribe). */
+  suppressedNow: boolean;
   rsvp: AttendanceStatus | null;
   rsvpSetByOrganizer: boolean;
 };
@@ -46,7 +52,21 @@ export async function rsvpStatusView(context: TenantContext, matchId: string): P
     prisma.rsvpInvitation.findMany({
       where: { matchId: match.id, organizationId: context.organization.id },
       orderBy: [{ round: "asc" }, { createdAt: "asc" }, { id: "asc" }],
-      select: { sendId: true, playerId: true, round: true, status: true, skipReason: true, email: true, recipientType: true, attempts: true, player: { select: { firstName: true, lastName: true } } },
+      select: {
+        sendId: true,
+        playerId: true,
+        round: true,
+        status: true,
+        skipReason: true,
+        email: true,
+        recipientType: true,
+        attempts: true,
+        reservedAt: true,
+        claimedAt: true,
+        sentAt: true,
+        failedAt: true,
+        player: { select: { firstName: true, lastName: true } },
+      },
     }),
     prisma.attendanceResponse.findMany({ where: { matchId: match.id }, select: { playerId: true, participantStatus: true, participantSource: true, participantRespondedAt: true, overrideStatus: true, overrideAt: true } }),
   ]);
@@ -65,6 +85,8 @@ export async function rsvpStatusView(context: TenantContext, matchId: string): P
     if (!prev || inv.status !== "SKIPPED" || prev.status === "SKIPPED") latest.set(key, inv);
   }
 
+  const iso = (d: Date | null) => d?.toISOString() ?? null;
+  const nowSuppressed = await suppressedFor(context.organization.id, [...latest.values()].flatMap((i) => (i.email ? [i.email] : [])));
   const recipients: StatusRow[] = [...latest.values()].map((inv) => {
     const a = inv.playerId ? answers.get(inv.playerId) : undefined;
     return {
@@ -75,6 +97,9 @@ export async function rsvpStatusView(context: TenantContext, matchId: string): P
       round: inv.round,
       delivery: inv.status,
       skipReason: inv.skipReason,
+      attempts: inv.attempts,
+      at: { queued: iso(inv.reservedAt), lastAttempt: iso(inv.claimedAt), accepted: iso(inv.sentAt), failed: iso(inv.failedAt) },
+      suppressedNow: inv.email ? nowSuppressed.has(inv.email) : false,
       rsvp: a?.status ?? null,
       rsvpSetByOrganizer: a?.overridden ?? false,
     };

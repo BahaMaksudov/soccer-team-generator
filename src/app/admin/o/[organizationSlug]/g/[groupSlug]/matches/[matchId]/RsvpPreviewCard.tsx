@@ -5,6 +5,7 @@ import { AlertTriangle, Mail } from "lucide-react";
 import { adminTenantApiPath } from "@/lib/adminTenantApi";
 import { Button } from "@/components/ui/button";
 import { SectionCard } from "@/components/game-day/parts";
+import Dialog from "@/components/app/Dialog";
 import { cn } from "@/lib/cn";
 
 /**
@@ -18,8 +19,11 @@ import { cn } from "@/lib/cn";
  *       "accepted" means accepted by the provider (here: the test outbox), not delivered.
  * The server decides whether sending is available (never in Production / Preview); the
  * button state only mirrors that. Hidden for Telegram matches with no email history.
+ *   P6  per-recipient delivery details (contact type, masked address, timestamps, what
+ *       each state means, later unsubscribes / bounces) and a confirmation DIALOG before
+ *       every send, resend and retry.
  */
-type Status = "WILL_SEND" | "NO_EMAIL" | "INVALID_CONTACT" | "ALREADY_ANSWERED" | "ORGANIZER_OVERRIDE" | "NOT_ON_ROSTER" | "SUPPRESSED" | "OVER_LIMIT";
+type Status = "WILL_SEND" | "NO_EMAIL" | "INVALID_CONTACT" | "CONTACT_UNCONFIRMED" | "IN_PROGRESS" | "ALREADY_ANSWERED" | "ORGANIZER_OVERRIDE" | "NOT_ON_ROSTER" | "SUPPRESSED" | "OVER_LIMIT";
 type Row = { playerId: string; name: string; status: Status; source: "PLAYER" | "GUARDIAN" | "ACCOUNT" | null; maskedEmail: string | null };
 type Window = { limit: number; used: number; reserved: number; remaining: number; resetsAt: string };
 type Preview = {
@@ -34,7 +38,19 @@ type Counts = Record<"queued" | "processing" | "accepted" | "failed" | "uncertai
 type StatusView = {
   mode: "test-outbox" | "disabled";
   sends: Array<{ id: string; round: number; kind: "INITIAL" | "RESEND"; createdAt: string; counts: Counts; retryable: number }>;
-  recipients: Array<{ playerId: string | null; name: string; maskedEmail: string | null; delivery: Delivery; skipReason: string | null; rsvp: "PLAYING" | "MAYBE" | "NOT_PLAYING" | null; rsvpSetByOrganizer: boolean }>;
+  recipients: Array<{
+    playerId: string | null;
+    name: string;
+    maskedEmail: string | null;
+    recipientType: "PLAYER" | "GUARDIAN" | "ACCOUNT" | null;
+    delivery: Delivery;
+    skipReason: string | null;
+    attempts: number;
+    at: { queued: string | null; lastAttempt: string | null; accepted: string | null; failed: string | null };
+    suppressedNow: boolean;
+    rsvp: "PLAYING" | "MAYBE" | "NOT_PLAYING" | null;
+    rsvpSetByOrganizer: boolean;
+  }>;
   totals: { delivery: Counts; rsvp: { yes: number; maybe: number; no: number; unanswered: number }; inProgress: boolean; uncertain: number };
 };
 
@@ -42,6 +58,8 @@ export const STATUS_LABEL: Record<Status, string> = {
   WILL_SEND: "Will be invited",
   NO_EMAIL: "No email address",
   INVALID_CONTACT: "Contact email needs fixing",
+  CONTACT_UNCONFIRMED: "Contact email not confirmed",
+  IN_PROGRESS: "Invitation already being sent",
   ALREADY_ANSWERED: "Already answered",
   ORGANIZER_OVERRIDE: "Status set by organizer",
   NOT_ON_ROSTER: "Not on this match's roster",
@@ -57,10 +75,37 @@ const SKIP_LABEL: Record<string, string> = {
   ORGANIZER_OVERRIDE: "status set by organizer",
   NO_EMAIL: "no email address",
   INVALID_CONTACT: "contact email needs fixing",
-  SUPPRESSED: "not receiving invitation emails",
+  CONTACT_UNCONFIRMED: "contact email not confirmed",
+  CONTACT_CHANGED: "contact email changed or removed before sending",
+  IN_PROGRESS: "an earlier invitation was still being sent",
+  SUPPRESSED: "unsubscribed or address suppressed",
   LIMIT: "over the allowance",
   PLAYER_REMOVED: "player removed",
+  TELEGRAM_MATCH: "match moved to the Telegram poll",
+  MATCH_CANCELED: "match canceled",
+  MATCH_COMPLETED: "match completed",
+  ATTENDANCE_CLOSED: "attendance closed",
+  DEADLINE_PASSED: "deadline passed",
 };
+const fmt = (iso: string | null) => (iso ? new Date(iso).toLocaleString("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }) : "");
+/** What each delivery state means for the organizer (accepted ≠ delivered). */
+export function deliveryExplanation(x: StatusView["recipients"][number], mode: StatusView["mode"]): string {
+  const by = mode === "test-outbox" ? "the test outbox" : "the email provider";
+  switch (x.delivery) {
+    case "QUEUED":
+      return `Waiting to be sent (queued ${fmt(x.at.queued)}).`;
+    case "SENDING":
+      return `Being handed to ${by} (since ${fmt(x.at.lastAttempt)}).`;
+    case "SENT":
+      return `Accepted by ${by} ${fmt(x.at.accepted)}. That doesn't confirm it reached the inbox.`;
+    case "FAILED":
+      return `Not sent: ${by} rejected it (${fmt(x.at.failed)}). Nothing was delivered${x.attempts < 3 ? " — you can retry." : "; no retries left."}`;
+    case "UNCERTAIN":
+      return `${by[0].toUpperCase()}${by.slice(1)} didn't confirm (last attempt ${fmt(x.at.lastAttempt)}). It may or may not have arrived, so it isn't retried automatically.`;
+    case "SKIPPED":
+      return "Not sent.";
+  }
+}
 const skipText = (reason: string | null) => (reason && SKIP_LABEL[reason] ? `Skipped — ${SKIP_LABEL[reason]}` : "Skipped");
 const RSVP_LABEL = { PLAYING: "Yes", MAYBE: "Maybe", NOT_PLAYING: "No" } as const;
 const newRequestKey = () => (typeof crypto !== "undefined" && "randomUUID" in crypto ? crypto.randomUUID().replace(/-/g, "") : `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 12)}`);
@@ -78,6 +123,7 @@ export default function RsvpPreviewCard({ organizationSlug, groupSlug, matchId }
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<{ tone: "ok" | "warn"; text: string } | null>(null);
   const requestKey = useRef<string>("");
+  const [retryConfirm, setRetryConfirm] = useState<{ id: string; count: number } | null>(null);
 
   const loadPreview = useCallback(async () => {
     const res = await fetch(previewUrl, { cache: "no-store" });
@@ -151,6 +197,7 @@ export default function RsvpPreviewCard({ organizationSlug, groupSlug, matchId }
     setMessage(null);
     try {
       const { ok, data } = await post({ action: "retry", sendId });
+      setRetryConfirm(null);
       setMessage(ok ? { tone: "ok", text: `${data.requeued} failed invitation${data.requeued === 1 ? "" : "s"} queued again.` } : { tone: "warn", text: typeof data.error === "string" ? data.error : "Could not retry." });
     } finally {
       setBusy(false);
@@ -164,7 +211,7 @@ export default function RsvpPreviewCard({ organizationSlug, groupSlug, matchId }
   return (
     <SectionCard id="rsvp-preview" title="Email invitations" icon={<Mail className="size-5" />} meta="Invite players to RSVP by email. Each player gets their own link; their answer is saved only when they confirm it.">
       <div className="space-y-5">
-        {status && hasSends && <Dashboard status={status} busy={busy} canRetry={available} onRetry={retry} retryId={latest?.id} />}
+        {status && hasSends && <Dashboard status={status} busy={busy} canRetry={available} onRetry={(id, count) => setRetryConfirm({ id, count })} retryId={latest?.id} />}
 
         {refusal ? (
           <p className="text-sm text-muted-foreground">{refusal.error}</p>
@@ -203,32 +250,50 @@ export default function RsvpPreviewCard({ organizationSlug, groupSlug, matchId }
                   </Button>
                   <p className="mt-1 text-xs text-muted-foreground">Email sending isn&apos;t available yet — nothing is sent from here.</p>
                 </div>
-              ) : !confirming ? (
-                <Button type="button" disabled={willSend === 0 || busy} onClick={startConfirm}>
-                  {hasSends ? `Review resend to ${willSend}` : `Review and send ${willSend} invitation${willSend === 1 ? "" : "s"}`}
-                </Button>
               ) : (
-                <div className="space-y-3 rounded-tbp-md border border-primary/40 bg-primary/5 p-3" role="region" aria-label="Confirm sending">
-                  <p className="text-sm font-semibold">
-                    {hasSends ? "Resend" : "Send"} an RSVP email to {willSend} recipient{willSend === 1 ? "" : "s"}?
-                  </p>
-                  <label className="flex items-start gap-2 text-sm">
-                    <input type="checkbox" className="mt-1 size-5 shrink-0" checked={attested} onChange={(e) => setAttested(e.target.checked)} />
-                    <span>I&apos;m authorized to contact these {willSend} recipients (players or their parents / guardians) about coordinating this match.</span>
-                  </label>
-                  <div className="flex flex-wrap gap-2">
-                    <Button type="button" disabled={!attested || busy} onClick={send}>
-                      {busy ? "Sending…" : `${hasSends ? "Resend to" : "Send to"} ${willSend}`}
-                    </Button>
-                    <Button type="button" variant="outline" disabled={busy} onClick={() => setConfirming(false)}>
-                      Cancel
-                    </Button>
-                  </div>
-                </div>
+                <Button type="button" disabled={willSend === 0 || busy} onClick={startConfirm}>
+                  {hasSends ? `Resend to ${willSend} unanswered…` : `Send ${willSend} invitation${willSend === 1 ? "" : "s"}…`}
+                </Button>
               )}
             </div>
           )
         )}
+        <Dialog open={confirming} title={hasSends ? "Resend to unanswered players?" : "Send RSVP invitations?"} onClose={() => !busy && setConfirming(false)}>
+          <div className="space-y-3" aria-label="Confirm sending">
+            <p className="text-sm">
+              {hasSends ? "Resend" : "Send"} an RSVP email to <span className="font-bold">{willSend}</span> recipient{willSend === 1 ? "" : "s"}
+              {hasSends ? " who haven't answered" : ""}. Players who answered, were set by you, unsubscribed, or have an invitation still being sent are not included.
+            </p>
+            {hasSends && (status?.totals.uncertain ?? 0) > 0 && (
+              <p className="rounded-tbp-md border border-amber-500/60 bg-amber-500/10 p-2 text-xs">Some earlier emails have an uncertain delivery. A resend may reach those players twice.</p>
+            )}
+            <label className="flex items-start gap-2 text-sm">
+              <input type="checkbox" className="mt-1 size-5 shrink-0" checked={attested} onChange={(e) => setAttested(e.target.checked)} />
+              <span>I&apos;m authorized to contact these {willSend} recipients (players or their parents / guardians) about coordinating this match.</span>
+            </label>
+            <div className="flex flex-wrap justify-end gap-2">
+              <Button type="button" variant="ghost" disabled={busy} onClick={() => setConfirming(false)}>
+                Cancel
+              </Button>
+              <Button type="button" disabled={!attested || busy} onClick={send}>
+                {busy ? "Sending…" : `${hasSends ? "Resend to" : "Send to"} ${willSend}`}
+              </Button>
+            </div>
+          </div>
+        </Dialog>
+        <Dialog open={retryConfirm !== null} title="Retry failed emails?" onClose={() => !busy && setRetryConfirm(null)}>
+          <p className="text-sm">
+            Retry the {retryConfirm?.count ?? 0} email{retryConfirm?.count === 1 ? "" : "s"} the email service rejected. Each player is checked again first (answers, unsubscribes, roster, deadline and allowance). Uncertain emails are never retried.
+          </p>
+          <div className="mt-4 flex flex-wrap justify-end gap-2">
+            <Button type="button" variant="ghost" disabled={busy} onClick={() => setRetryConfirm(null)}>
+              Cancel
+            </Button>
+            <Button type="button" disabled={busy} onClick={() => retryConfirm && retry(retryConfirm.id)}>
+              {busy ? "Retrying…" : "Retry"}
+            </Button>
+          </div>
+        </Dialog>
         {message && (
           <p role="status" className={cn("text-sm font-semibold", message.tone === "ok" ? "text-primary" : "text-destructive")}>
             {message.text}
@@ -275,7 +340,9 @@ function RecipientList({ rows, title, open }: { rows: Row[]; title: string; open
   );
 }
 
-function Dashboard({ status, busy, canRetry, onRetry, retryId }: { status: StatusView; busy: boolean; canRetry: boolean; onRetry: (id: string) => void; retryId?: string }) {
+const CONTACT_LABEL = { PLAYER: "Player's email", GUARDIAN: "Parent / Guardian", ACCOUNT: "Linked account (verified)" } as const;
+
+function Dashboard({ status, busy, canRetry, onRetry, retryId }: { status: StatusView; busy: boolean; canRetry: boolean; onRetry: (id: string, count: number) => void; retryId?: string }) {
   const d = status.totals.delivery;
   const r = status.totals.rsvp;
   const retryable = status.sends.find((s) => s.id === retryId)?.retryable ?? 0;
@@ -311,8 +378,8 @@ function Dashboard({ status, busy, canRetry, onRetry, retryId }: { status: Statu
         </p>
       )}
       {retryable > 0 && canRetry && retryId && (
-        <Button type="button" variant="outline" disabled={busy} onClick={() => onRetry(retryId)}>
-          Retry {retryable} failed
+        <Button type="button" variant="outline" disabled={busy} onClick={() => onRetry(retryId, retryable)}>
+          Retry {retryable} failed…
         </Button>
       )}
       <div>
@@ -328,15 +395,23 @@ function Dashboard({ status, busy, canRetry, onRetry, retryId }: { status: Statu
         <summary className="cursor-pointer font-semibold">Per player ({status.recipients.length})</summary>
         <ul className="mt-1 divide-y divide-border">
           {status.recipients.map((x, i) => (
-            <li key={x.playerId ?? `removed-${i}`} className="flex flex-wrap items-start justify-between gap-x-3 gap-y-1 py-2">
-              <span className="min-w-0">
-                <span className="block break-words font-semibold">{x.name}</span>
-                <span className="block break-all text-xs text-muted-foreground">{x.maskedEmail ?? "—"}</span>
-              </span>
-              <span className="flex flex-wrap gap-1 text-xs">
-                <span className={cn("rounded-full border px-2 py-0.5 font-semibold", x.delivery === "UNCERTAIN" || x.delivery === "FAILED" ? "border-amber-500/60 bg-amber-500/10" : "border-border bg-muted text-muted-foreground")}>{x.delivery === "SKIPPED" ? skipText(x.skipReason) : deliveryLabel(x.delivery, status.mode)}</span>
-                <span className="rounded-full border border-border px-2 py-0.5 font-semibold">{x.rsvp ? `RSVP: ${RSVP_LABEL[x.rsvp]}${x.rsvpSetByOrganizer ? " (organizer)" : ""}` : "No answer yet"}</span>
-              </span>
+            <li key={x.playerId ?? `removed-${i}`} className="space-y-1 py-2">
+              <div className="flex flex-wrap items-start justify-between gap-x-3 gap-y-1">
+                <span className="min-w-0">
+                  <span className="block break-words font-semibold">{x.name}</span>
+                  <span className="block break-all text-xs text-muted-foreground">
+                    {x.maskedEmail ?? "—"}
+                    {x.recipientType ? ` · ${CONTACT_LABEL[x.recipientType]}` : ""}
+                  </span>
+                </span>
+                <span className="flex flex-wrap gap-1 text-xs">
+                  <span className={cn("rounded-full border px-2 py-0.5 font-semibold", x.delivery === "UNCERTAIN" || x.delivery === "FAILED" ? "border-amber-500/60 bg-amber-500/10" : "border-border bg-muted text-muted-foreground")}>{x.delivery === "SKIPPED" ? skipText(x.skipReason) : deliveryLabel(x.delivery, status.mode)}</span>
+                  <span className="rounded-full border border-border px-2 py-0.5 font-semibold">{x.rsvp ? `RSVP: ${RSVP_LABEL[x.rsvp]}${x.rsvpSetByOrganizer ? " (organizer)" : ""}` : "No answer yet"}</span>
+                  {x.suppressedNow && <span className="rounded-full border border-amber-500/60 bg-amber-500/10 px-2 py-0.5 font-semibold">Suppressed</span>}
+                </span>
+              </div>
+              {x.delivery !== "SKIPPED" && <p className="text-xs text-muted-foreground">{deliveryExplanation(x, status.mode)}</p>}
+              {x.suppressedNow && x.delivery !== "SKIPPED" && <p className="text-xs text-muted-foreground">This address has since unsubscribed or bounced — it won&apos;t get further invitations.</p>}
             </li>
           ))}
         </ul>

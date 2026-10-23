@@ -23,6 +23,8 @@ import { EmailDeliveryError, testOutbox } from "@/lib/email/transport";
 
 const VERIFIED = new Date("2026-01-01T00:00:00Z");
 const TZ = "America/New_York";
+/** M13B P6 — contacts seeded directly carry an organizer confirmation (unconfirmed contacts are never emailed). */
+const AUTH_AT = new Date("2026-01-01T00:00:00Z");
 const ORIGIN = "http://itest.local";
 const CRON = "a-long-enough-test-secret";
 let network = 0;
@@ -82,13 +84,13 @@ async function seed() {
   const P = (id: string, groupId: string, firstName: string, extra: Record<string, unknown> = {}) => ({ id, groupId, firstName, lastName: "Test", position: "MIDFIELDER", rating: "GOOD" as const, stamina: 3, ...extra });
   await prisma.player.createMany({
     data: [
-      P("p1", "g", "Ava", { contactEmail: "guardian.of.ava@example.com", contactEmailType: "GUARDIAN" }),
-      P("p2", "g", "Ben", { contactEmail: "ben@example.com", contactEmailType: "PLAYER" }),
+      P("p1", "g", "Ava", { contactEmail: "guardian.of.ava@example.com", contactEmailType: "GUARDIAN", contactAuthorizedAt: AUTH_AT }),
+      P("p2", "g", "Ben", { contactEmail: "ben@example.com", contactEmailType: "PLAYER", contactAuthorizedAt: AUTH_AT }),
       P("p3", "g", "Cal", { userId: "u-linked" }),
       P("p4", "g", "Dee"),
-      P("p5", "g", "Eve", { contactEmail: "eve@example.com", contactEmailType: "PLAYER" }), // opted out
-      P("q1", "g2", "Quinn", { contactEmail: "quinn@example.com", contactEmailType: "PLAYER" }),
-      ...Array.from({ length: 3 }, (_, i) => P(`f${i}`, "gf", `F${i}`, { contactEmail: `f${i}@example.com`, contactEmailType: "PLAYER" })),
+      P("p5", "g", "Eve", { contactEmail: "eve@example.com", contactEmailType: "PLAYER", contactAuthorizedAt: AUTH_AT }), // opted out
+      P("q1", "g2", "Quinn", { contactEmail: "quinn@example.com", contactEmailType: "PLAYER", contactAuthorizedAt: AUTH_AT }),
+      ...Array.from({ length: 3 }, (_, i) => P(`f${i}`, "gf", `F${i}`, { contactEmail: `f${i}@example.com`, contactEmailType: "PLAYER", contactAuthorizedAt: AUTH_AT })),
     ],
   });
   await prisma.organizationEmailOptOut.create({ data: { organizationId: "o", email: "eve@example.com", source: "LINK" } });

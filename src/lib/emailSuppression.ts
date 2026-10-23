@@ -22,6 +22,13 @@ import { appUrl } from "@/lib/email/config";
  *   - RFC 8058 one-click: the mail provider POSTs "List-Unsubscribe=One-Click" to
  *     /api/email/unsubscribe/one-click?t=<token> — no page, no cookies. GET never mutates.
  * Responses never reveal whether an address exists; addresses and tokens are never logged.
+ *
+ * P6 — each RSVP email carries TWO tokens: the page token (URL fragment — never sent to
+ * a server, never in request logs) and a ONE-CLICK-ONLY token in the List-Unsubscribe
+ * header URL (query string — which platform request logs may record). The one-click
+ * token can only opt that address out of that organization through the one-click
+ * endpoint; the page preview and confirmation treat it as invalid, so a logged URL
+ * reveals neither the organization nor the (masked) address.
  */
 export const UNSUBSCRIBE_TOKEN_TTL_DAYS = 365;
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -47,13 +54,13 @@ export function oneClickUnsubscribeHeaders(oneClickUrl: string): Record<string, 
 }
 
 type TokenState = "valid" | "used" | "expired" | "invalid";
-type TokenRow = { id: string; organizationId: string; email: string; expiresAt: Date; usedAt: Date | null; organization: { name: string } };
+type TokenRow = { id: string; organizationId: string; email: string; expiresAt: Date; usedAt: Date | null; oneClickOnly: boolean; organization: { name: string } };
 
 async function findToken(token: unknown): Promise<TokenRow | null> {
   if (!isWellFormedToken(token)) return null;
   return prisma.emailUnsubscribeToken.findUnique({
     where: { tokenHash: hashToken(token) },
-    select: { id: true, organizationId: true, email: true, expiresAt: true, usedAt: true, organization: { select: { name: true } } },
+    select: { id: true, organizationId: true, email: true, expiresAt: true, usedAt: true, oneClickOnly: true, organization: { select: { name: true } } },
   });
 }
 const stateOf = (t: TokenRow | null, now: Date): TokenState => (!t ? "invalid" : t.usedAt ? "used" : t.expiresAt <= now ? "expired" : "valid");
@@ -62,7 +69,8 @@ export type UnsubscribePreview = { state: "valid" | "used"; organizationName: st
 
 /** Read-only, for the confirmation page: what WOULD happen. Changes nothing. */
 export async function unsubscribePreview(token: unknown, now: Date = new Date()): Promise<UnsubscribePreview> {
-  const t = await findToken(token);
+  const found = await findToken(token);
+  const t = found?.oneClickOnly ? null : found; // P6: a one-click token (from a URL that may be logged) discloses nothing
   const state = stateOf(t, now);
   if (!t || state === "invalid" || state === "expired") return { state: state === "expired" ? "expired" : "invalid" };
   return { state, organizationName: t.organization.name, maskedEmail: maskEmail(t.email) };
@@ -76,7 +84,9 @@ export type ConfirmResult = { ok: true; alreadyUnsubscribed: boolean } | { ok: f
  * use is recorded; a replayed / already-used token returns ok without changing anything.
  */
 export async function confirmUnsubscribe(token: unknown, source: EmailOptOutSource, now: Date = new Date()): Promise<ConfirmResult> {
-  const t = await findToken(token);
+  const found = await findToken(token);
+  // P6: one-click-only tokens work only through the RFC 8058 endpoint (source ONE_CLICK).
+  const t = found?.oneClickOnly && source !== "ONE_CLICK" ? null : found;
   const state = stateOf(t, now);
   if (!t || state === "invalid") return { ok: false, state: "invalid" };
   if (state === "expired") return { ok: false, state: "expired" };

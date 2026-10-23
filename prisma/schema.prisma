@@ -197,27 +197,28 @@ model User {
   createdAt          DateTime  @default(now())
   updatedAt          DateTime  @updatedAt
 
-  memberships             OrganizationMembership[]
-  emailVerificationTokens EmailVerificationToken[]
-  passwordResetTokens     PasswordResetToken[]
-  oauthAccounts           OAuthAccount[]
-  accountLinkIntents      AccountLinkIntent[]
-  trialNotices            TrialNotice[]
+  memberships              OrganizationMembership[]
+  emailVerificationTokens  EmailVerificationToken[]
+  passwordResetTokens      PasswordResetToken[]
+  oauthAccounts            OAuthAccount[]
+  accountLinkIntents       AccountLinkIntent[]
+  trialNotices             TrialNotice[]
   // M6-A — optional claimed Player profiles (none yet; claim flow is M6-C).
-  players                 Player[]
-  shareLinksCreated       GroupShareLink[]
-  deliveriesCreated       MessageDelivery[]        @relation("DeliveryCreatedBy")
-  deliveriesResolved      MessageDelivery[]        @relation("DeliveryResolvedBy")
-  playerClaimsCreated     PlayerClaim[]            @relation("ClaimCreatedBy")
-  playerClaimsAccepted    PlayerClaim[]            @relation("ClaimAcceptedBy")
-  playerClaimsUnlinked    PlayerClaim[]            @relation("ClaimUnlinkedBy")
-  telegramConnectCodes    TelegramConnectCode[]
+  players                  Player[]
+  shareLinksCreated        GroupShareLink[]
+  deliveriesCreated        MessageDelivery[]        @relation("DeliveryCreatedBy")
+  deliveriesResolved       MessageDelivery[]        @relation("DeliveryResolvedBy")
+  playerClaimsCreated      PlayerClaim[]            @relation("ClaimCreatedBy")
+  playerClaimsAccepted     PlayerClaim[]            @relation("ClaimAcceptedBy")
+  playerClaimsUnlinked     PlayerClaim[]            @relation("ClaimUnlinkedBy")
+  telegramConnectCodes     TelegramConnectCode[]
   // M13B P4 — RSVP email sends started (audit).
-  rsvpSendsCreated        RsvpSend[]               @relation("RsvpSendCreatedBy")
+  rsvpSendsCreated         RsvpSend[]               @relation("RsvpSendCreatedBy")
+  playerContactsAuthorized Player[]                 @relation("PlayerContactAuthorizedBy")
   // M13A — group join links created; join requests made / decided.
-  groupJoinLinksCreated   GroupJoinLink[]          @relation("JoinLinkCreatedBy")
-  groupJoinRequests       GroupJoinRequest[]       @relation("JoinRequestUser")
-  groupJoinDecisions      GroupJoinRequest[]       @relation("JoinRequestDecidedBy")
+  groupJoinLinksCreated    GroupJoinLink[]          @relation("JoinLinkCreatedBy")
+  groupJoinRequests        GroupJoinRequest[]       @relation("JoinRequestUser")
+  groupJoinDecisions       GroupJoinRequest[]       @relation("JoinRequestDecidedBy")
 
   // M5 — invitations this User created / accepted (audit trail only;
   // never an authorization source — OrganizationMembership is).
@@ -867,9 +868,17 @@ model Player {
   // or a parent / guardian (youth players). Email and type are set and cleared
   // together (CHECK constraint in the migration). Organizer-only: never public,
   // player-facing, Telegram or AI data.
-  contactEmail          String?
-  contactEmailType      PlayerContactType?
-  contactEmailUpdatedAt DateTime?
+  contactEmail              String?
+  contactEmailType          PlayerContactType?
+  contactEmailUpdatedAt     DateTime?
+  // M13B P6 — the OWNER/ADMIN who confirmed this contact may be used for match
+  // coordination email, and when. An organizer's attestation only — NOT proof of a
+  // parent / guardian's legal consent. Cleared when the address or its type changes
+  // materially or the contact is removed; RSVP email is never sent to an unconfirmed
+  // contact.
+  contactAuthorizedAt       DateTime?
+  contactAuthorizedByUserId String?
+  contactAuthorizedBy       User?              @relation("PlayerContactAuthorizedBy", fields: [contactAuthorizedByUserId], references: [id], onDelete: SetNull)
 
   claims                  PlayerClaim[]
   telegramConnectCodes    TelegramConnectCode[]
@@ -1604,6 +1613,20 @@ enum GlobalSuppressionReason {
   SPAM_COMPLAINT
 }
 
+// M13B P6 — provider webhook events already processed (idempotency for retries and
+// replays). Stores the provider's event id and type only — no recipient address.
+model EmailWebhookEvent {
+  id         String   @id @default(cuid())
+  provider   String
+  eventId    String
+  type       String
+  // What the event did: SUPPRESSED (a suppression was recorded or already existed) or IGNORED.
+  outcome    String
+  receivedAt DateTime @default(now())
+
+  @@unique([provider, eventId])
+}
+
 // A global suppression: never send RSVP email to this address again (any organization).
 // One row per address (unique email — no nullable organization id involved).
 model GlobalEmailSuppression {
@@ -1653,6 +1676,11 @@ model EmailUnsubscribeToken {
   createdAt      DateTime     @default(now())
   expiresAt      DateTime
   usedAt         DateTime?
+  // M13B P6 — the RFC 8058 one-click URL carries its token in the query string, which
+  // platform request logs may record. A one-click-only token can ONLY opt out through
+  // the one-click endpoint; the /unsubscribe page preview and confirmation refuse it,
+  // so a logged URL never discloses the organization or the (masked) address.
+  oneClickOnly   Boolean      @default(false)
 
   organization    Organization     @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   rsvpInvitations RsvpInvitation[]

@@ -29,22 +29,27 @@ describe("parseContactEmail", () => {
 
 describe("resolveRecipient (no sending)", () => {
   const verified = { email: "Account@Example.com", emailVerifiedAt: new Date("2026-01-01") };
+  const AUTH = new Date("2026-10-01T00:00:00Z");
+  it("P6: a valid contact nobody confirmed is UNCONFIRMED_CONTACT — never emailed, never falls back to the account", () => {
+    expect(resolveRecipient({ contactEmail: "kid.parent@example.com", contactEmailType: "GUARDIAN", contactAuthorizedAt: null, user: verified })).toEqual({ kind: "UNCONFIRMED_CONTACT", contactType: "GUARDIAN" });
+    expect(resolveRecipient({ contactEmail: "me@example.com", contactEmailType: "PLAYER", contactAuthorizedAt: null, user: null })).toEqual({ kind: "UNCONFIRMED_CONTACT", contactType: "PLAYER" });
+  });
   it("1. the organizer contact wins over the account, keeping PLAYER / GUARDIAN", () => {
-    expect(resolveRecipient({ contactEmail: "kid.parent@example.com", contactEmailType: "GUARDIAN", user: verified })).toEqual({ kind: "CONTACT", email: "kid.parent@example.com", contactType: "GUARDIAN" });
-    expect(resolveRecipient({ contactEmail: "me@example.com", contactEmailType: "PLAYER", user: null })).toEqual({ kind: "CONTACT", email: "me@example.com", contactType: "PLAYER" });
+    expect(resolveRecipient({ contactEmail: "kid.parent@example.com", contactEmailType: "GUARDIAN", contactAuthorizedAt: AUTH, user: verified })).toEqual({ kind: "CONTACT", email: "kid.parent@example.com", contactType: "GUARDIAN" });
+    expect(resolveRecipient({ contactEmail: "me@example.com", contactEmailType: "PLAYER", contactAuthorizedAt: AUTH, user: null })).toEqual({ kind: "CONTACT", email: "me@example.com", contactType: "PLAYER" });
   });
   it("2. otherwise a VERIFIED linked account's email (normalized)", () => {
-    expect(resolveRecipient({ contactEmail: null, contactEmailType: null, user: verified })).toEqual({ kind: "ACCOUNT", email: "account@example.com" });
+    expect(resolveRecipient({ contactEmail: null, contactEmailType: null, contactAuthorizedAt: null, user: verified })).toEqual({ kind: "ACCOUNT", email: "account@example.com" });
   });
   it("an unverified account is never used", () => {
-    expect(resolveRecipient({ contactEmail: null, contactEmailType: null, user: { email: "x@example.com", emailVerifiedAt: null } })).toEqual({ kind: "NO_EMAIL" });
+    expect(resolveRecipient({ contactEmail: null, contactEmailType: null, contactAuthorizedAt: null, user: { email: "x@example.com", emailVerifiedAt: null } })).toEqual({ kind: "NO_EMAIL" });
   });
   it("3. nothing → NO_EMAIL", () => {
-    expect(resolveRecipient({ contactEmail: null, contactEmailType: null, user: null })).toEqual({ kind: "NO_EMAIL" });
+    expect(resolveRecipient({ contactEmail: null, contactEmailType: null, contactAuthorizedAt: null, user: null })).toEqual({ kind: "NO_EMAIL" });
   });
   it("a stored contact that no longer validates (or lacks its type) is INVALID_CONTACT — never falls through to the account", () => {
-    expect(resolveRecipient({ contactEmail: "broken", contactEmailType: "GUARDIAN", user: verified })).toEqual({ kind: "INVALID_CONTACT" });
-    expect(resolveRecipient({ contactEmail: "ok@example.com", contactEmailType: null, user: verified })).toEqual({ kind: "INVALID_CONTACT" });
+    expect(resolveRecipient({ contactEmail: "broken", contactEmailType: "GUARDIAN", contactAuthorizedAt: AUTH, user: verified })).toEqual({ kind: "INVALID_CONTACT" });
+    expect(resolveRecipient({ contactEmail: "ok@example.com", contactEmailType: null, contactAuthorizedAt: AUTH, user: verified })).toEqual({ kind: "INVALID_CONTACT" });
   });
 });
 
@@ -53,6 +58,8 @@ describe("privacy guard: contact fields are touched only by the approved files",
     "src/lib/playerContact.ts",
     "src/app/api/admin/o/[organizationSlug]/g/[groupSlug]/players/[id]/contact/route.ts",
     "src/app/admin/o/[organizationSlug]/g/[groupSlug]/PlayerContactCell.tsx",
+    // M13B P6 — the sending engine re-resolves the recipient at send time (server-only, never logged or returned).
+    "src/lib/rsvpSend.ts",
   ]);
   const walk = (d: string): string[] => fs.readdirSync(d, { withFileTypes: true }).flatMap((e) => (e.isDirectory() ? walk(path.join(d, e.name)) : [path.join(d, e.name)]));
   it("no other source file reads or writes contactEmail / contactEmailType", () => {

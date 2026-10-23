@@ -12,9 +12,19 @@ import { cn } from "@/lib/cn";
  * guardian's. A linked account's verified email is never overwritten or shown here
  * — only whether one exists (it is the fallback for future invitations).
  * Nothing is sent from here.
+ *
+ * M13B P6 — saving a new or changed contact asks the organizer to confirm the address may
+ * be used for match coordination email (recorded with who and when). The wording is an
+ * attestation by the organizer — it doesn't claim to be a parent / guardian's legal consent.
+ * An unconfirmed contact never receives invitations.
  */
 type ContactType = "PLAYER" | "GUARDIAN";
-type View = { contact: { email: string; type: ContactType; updatedAt: string | null } | null; linkedAccount: { linked: boolean; verified: boolean } };
+type View = { contact: { email: string; type: ContactType; updatedAt: string | null; authorization: { at: string; byName: string | null } | null } | null; linkedAccount: { linked: boolean; verified: boolean } };
+
+export const AUTHORIZATION_TEXT: Record<ContactType, string> = {
+  PLAYER: "I confirm this player gave me this address, or agreed to its use, for match coordination emails (invitations to RSVP for matches).",
+  GUARDIAN: "I confirm this parent / guardian gave me this address, or agreed to its use, for match coordination emails about this player (invitations to RSVP for matches).",
+};
 
 const control = "block min-h-11 w-full rounded-tbp-md border border-input bg-card px-3 text-base focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2";
 
@@ -26,11 +36,13 @@ export default function PlayerContactCell({ organizationSlug, groupSlug, playerI
   const [type, setType] = useState<ContactType>("PLAYER");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [authorized, setAuthorized] = useState(false);
 
   const apply = useCallback((v: View) => {
     setView(v);
     setEmail(v.contact?.email ?? "");
     setType(v.contact?.type ?? "PLAYER");
+    setAuthorized(false);
   }, []);
   useEffect(() => {
     let live = true;
@@ -43,7 +55,7 @@ export default function PlayerContactCell({ organizationSlug, groupSlug, playerI
     };
   }, [url, apply]);
 
-  async function save(next: { email: string | null; type?: ContactType }) {
+  async function save(next: { email: string | null; type?: ContactType; authorized?: true }) {
     setBusy(true);
     setError(null);
     onMessage(null);
@@ -60,14 +72,17 @@ export default function PlayerContactCell({ organizationSlug, groupSlug, playerI
 
   if (!view) return <p className="text-xs text-muted-foreground">Loading…</p>;
   const dirty = email.trim().toLowerCase() !== (view.contact?.email ?? "") || (email.trim() !== "" && type !== (view.contact?.type ?? "PLAYER"));
+  // A new or materially changed contact — or one nobody confirmed yet — needs a fresh confirmation.
+  const needsConfirmation = email.trim() !== "" && (dirty || !view.contact?.authorization);
+  const when = (iso: string) => new Date(iso).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
   return (
     <div className="space-y-3">
-      <p className="text-xs text-muted-foreground">Optional. For future match invitations by email. Only organizers can see it — never other players or public pages.</p>
+      <p className="text-xs text-muted-foreground">Optional. Used only for match coordination emails (RSVP invitations). Only organizers can see it — never other players or public pages. Recipients can unsubscribe from any invitation.</p>
       <form
         className="space-y-3"
         onSubmit={(e) => {
           e.preventDefault();
-          void save(email.trim() ? { email, type } : { email: null });
+          void save(email.trim() ? { email, type, ...(needsConfirmation ? { authorized: true as const } : {}) } : { email: null });
         }}
       >
         <div>
@@ -103,13 +118,28 @@ export default function PlayerContactCell({ organizationSlug, groupSlug, playerI
             ))}
           </div>
         </fieldset>
+        {needsConfirmation && (
+          <label className="flex items-start gap-2 rounded-tbp-md border border-border p-2 text-xs">
+            <input type="checkbox" className="mt-0.5 size-5 shrink-0" checked={authorized} onChange={(e) => setAuthorized(e.target.checked)} />
+            <span>
+              {AUTHORIZATION_TEXT[type]} <span className="text-muted-foreground">TeamBalance Pro records that you confirmed this (who and when). It isn&apos;t verified and isn&apos;t a legal consent record.</span>
+            </span>
+          </label>
+        )}
+        {view.contact && !dirty && (
+          <p className={cn("text-xs", view.contact.authorization ? "text-muted-foreground" : "font-semibold text-destructive")}>
+            {view.contact.authorization
+              ? `Confirmed for match emails by ${view.contact.authorization.byName ?? "an organizer"} on ${when(view.contact.authorization.at)}.`
+              : "Not confirmed yet — this address won't receive invitations until you confirm it."}
+          </p>
+        )}
         {error && (
           <p id={`${uid}-error`} role="alert" className="text-xs font-semibold text-destructive">
             {error}
           </p>
         )}
         <div className="flex flex-wrap gap-2">
-          <Button type="submit" size="sm" disabled={busy || !dirty}>
+          <Button type="submit" size="sm" disabled={busy || !(dirty || needsConfirmation) || (needsConfirmation && !authorized)}>
             {busy ? "Saving…" : "Save contact"}
           </Button>
           {view.contact && (

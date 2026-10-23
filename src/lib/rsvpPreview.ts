@@ -19,7 +19,11 @@ import { rsvpDeliveryMode } from "@/lib/rsvpDeliveryMode";
  * links) is classified, in this order:
  *   ORGANIZER_OVERRIDE  — an organizer set the status (never re-asked)
  *   ALREADY_ANSWERED    — the player answered (any channel)
+ *   IN_PROGRESS         — an invitation to this player is still queued / being sent (P6:
+ *                         a resend never duplicates an in-flight email)
  *   INVALID_CONTACT     — the stored organizer contact no longer validates (no fallback)
+ *   CONTACT_UNCONFIRMED — P6: nobody confirmed the contact may be used for match
+ *                         coordination email (no fallback to the account)
  *   NO_EMAIL            — no contact and no verified linked-account email
  *   SUPPRESSED          — globally suppressed (hard bounce / complaint) or opted out of THIS
  *                         organization's RSVP emails (the reason is never shown)
@@ -29,7 +33,7 @@ import { rsvpDeliveryMode } from "@/lib/rsvpDeliveryMode";
  * Group players who are NOT on this match's roster are listed separately (names only).
  * Destinations are masked ("p•••@example.com"); full addresses never leave the server.
  */
-export type PreviewStatus = "WILL_SEND" | "NO_EMAIL" | "INVALID_CONTACT" | "ALREADY_ANSWERED" | "ORGANIZER_OVERRIDE" | "NOT_ON_ROSTER" | "SUPPRESSED" | "OVER_LIMIT";
+export type PreviewStatus = "WILL_SEND" | "NO_EMAIL" | "INVALID_CONTACT" | "CONTACT_UNCONFIRMED" | "IN_PROGRESS" | "ALREADY_ANSWERED" | "ORGANIZER_OVERRIDE" | "NOT_ON_ROSTER" | "SUPPRESSED" | "OVER_LIMIT";
 export type DestinationSource = "PLAYER" | "GUARDIAN" | "ACCOUNT";
 
 export type PreviewRow = { playerId: string; name: string; status: PreviewStatus; source: DestinationSource | null; maskedEmail: string | null };
@@ -123,10 +127,12 @@ export type ClassifiedRow = { playerId: string; name: string; status: PreviewSta
 export async function classifyRoster(organizationId: string, match: MatchRow, capacity: number, db: Db = prisma): Promise<{ rows: ClassifiedRow[]; notOnRoster: Array<{ playerId: string; name: string }> }> {
   const groupId = match.groupId;
   const roster = await matchRosterIds(match);
-  const [players, attendance] = await Promise.all([
+  const [players, attendance, inFlight] = await Promise.all([
     db.player.findMany({ where: { groupId }, orderBy: [{ firstName: "asc" }, { lastName: "asc" }, { id: "asc" }], select: { id: true, firstName: true, lastName: true } }),
     db.attendanceResponse.findMany({ where: { matchId: match.id, groupId }, select: { playerId: true, participantStatus: true, overrideStatus: true } }),
+    db.rsvpInvitation.findMany({ where: { matchId: match.id, status: { in: ["QUEUED", "SENDING"] }, playerId: { not: null } }, select: { playerId: true } }),
   ]);
+  const pending = new Set(inFlight.map((i) => i.playerId));
   const onRoster = players.filter((p) => roster.has(p.id));
   const recipients = await loadRecipients(groupId, onRoster.map((p) => p.id));
   const answers = new Map(attendance.map((a) => [a.playerId, a]));
@@ -139,7 +145,9 @@ export async function classifyRoster(organizationId: string, match: MatchRow, ca
     let status: PreviewStatus;
     if (a?.overrideStatus) status = "ORGANIZER_OVERRIDE";
     else if (a?.participantStatus) status = "ALREADY_ANSWERED";
+    else if (pending.has(p.id)) status = "IN_PROGRESS";
     else if (recipient.kind === "INVALID_CONTACT") status = "INVALID_CONTACT";
+    else if (recipient.kind === "UNCONFIRMED_CONTACT") status = "CONTACT_UNCONFIRMED";
     else if (recipient.kind === "NO_EMAIL") status = "NO_EMAIL";
     else if (suppressed.has(recipient.email)) status = "SUPPRESSED";
     else status = ++sendable > capacity ? "OVER_LIMIT" : "WILL_SEND";
@@ -149,7 +157,7 @@ export async function classifyRoster(organizationId: string, match: MatchRow, ca
 }
 
 const destination = (r: Recipient): { source: DestinationSource | null; maskedEmail: string | null } =>
-  r.kind === "CONTACT" ? { source: r.contactType as PlayerContactType, maskedEmail: maskEmail(r.email) } : r.kind === "ACCOUNT" ? { source: "ACCOUNT", maskedEmail: maskEmail(r.email) } : { source: null, maskedEmail: null };
+  r.kind === "CONTACT" ? { source: r.contactType as PlayerContactType, maskedEmail: maskEmail(r.email) } : r.kind === "ACCOUNT" ? { source: "ACCOUNT", maskedEmail: maskEmail(r.email) } : r.kind === "UNCONFIRMED_CONTACT" ? { source: r.contactType, maskedEmail: null } : { source: null, maskedEmail: null };
 
 export async function previewRsvpRecipients(context: TenantContext, matchId: string, now: Date = new Date()): Promise<{ ok: true; preview: RsvpPreview } | { ok: false; code: PreviewRefusal }> {
   requireRole(context, [...MANAGERS]);
@@ -162,7 +170,7 @@ export async function previewRsvpRecipients(context: TenantContext, matchId: str
   const { rows, notOnRoster } = await classifyRoster(context.organization.id, match, Math.min(allowance.day.remaining, allowance.month.remaining));
   const recipients: PreviewRow[] = rows.map((r) => ({ playerId: r.playerId, name: r.name, status: r.status, ...destination(r.recipient) }));
 
-  const byStatus = Object.fromEntries((["WILL_SEND", "NO_EMAIL", "INVALID_CONTACT", "ALREADY_ANSWERED", "ORGANIZER_OVERRIDE", "NOT_ON_ROSTER", "SUPPRESSED", "OVER_LIMIT"] as const).map((s) => [s, 0])) as Record<PreviewStatus, number>;
+  const byStatus = Object.fromEntries((["WILL_SEND", "NO_EMAIL", "INVALID_CONTACT", "CONTACT_UNCONFIRMED", "IN_PROGRESS", "ALREADY_ANSWERED", "ORGANIZER_OVERRIDE", "NOT_ON_ROSTER", "SUPPRESSED", "OVER_LIMIT"] as const).map((s) => [s, 0])) as Record<PreviewStatus, number>;
   for (const r of recipients) byStatus[r.status]++;
   byStatus.NOT_ON_ROSTER = notOnRoster.length;
 

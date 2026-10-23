@@ -22,6 +22,8 @@ import { testOutbox } from "@/lib/email/transport";
 
 const VERIFIED = new Date("2026-01-01T00:00:00Z");
 const TZ = "America/New_York";
+/** M13B P6 — contacts seeded directly carry an organizer confirmation (unconfirmed contacts are never emailed). */
+const AUTH_AT = new Date("2026-01-01T00:00:00Z");
 let network = 0;
 const originalFetch = global.fetch;
 const ORIGIN = { Origin: "http://itest.local" };
@@ -54,7 +56,7 @@ async function seed() {
   await prisma.organization.createMany({ data: [{ id: "o", name: "Wednesday Club", slug: "o", plan: "LEGACY" }, { id: "o2", name: "Other Club", slug: "o2", plan: "LEGACY" }] });
   await prisma.group.createMany({ data: [{ id: "g", organizationId: "o", name: "G", slug: "g", sportKey: "soccer", timezone: TZ }, { id: "g2", organizationId: "o2", name: "G2", slug: "g2", sportKey: "soccer", timezone: TZ }] });
   await prisma.organizationMembership.createMany({ data: [{ userId: "u-owner", organizationId: "o", role: "OWNER" }, { userId: "u-owner2", organizationId: "o2", role: "OWNER" }] });
-  const P = (id: string, groupId: string, firstName: string, contactEmail: string | null) => ({ id, groupId, firstName, lastName: "Test", position: "MIDFIELDER", rating: "GOOD" as const, stamina: 3, contactEmail, contactEmailType: contactEmail ? ("PLAYER" as const) : null });
+  const P = (id: string, groupId: string, firstName: string, contactEmail: string | null) => ({ id, groupId, firstName, lastName: "Test", position: "MIDFIELDER", rating: "GOOD" as const, stamina: 3, contactEmail, contactEmailType: contactEmail ? ("PLAYER" as const) : null, contactAuthorizedAt: contactEmail ? AUTH_AT : null });
   await prisma.player.createMany({
     data: [P("p1", "g", "Ava", "ava@example.com"), P("p2", "g", "Ben", "ben@example.com"), P("p3", "g", "Cal", "cal@example.com"), P("p4", "g", "Dee", "dee@example.com"), P("p5", "g", "Eli", "eli@example.com"), P("q1", "g2", "Ava", "ava@example.com")],
   });
@@ -182,7 +184,7 @@ describe("M13B P3 — suppression in the recipient preview", () => {
         { matchId: "m", groupId: "g", playerId: "p2", participantStatus: "MAYBE", participantSource: "PERSONAL_LINK", participantRespondedAt: new Date() },
       ],
     });
-    await prisma.player.update({ where: { id: "p4" }, data: { contactEmail: null, contactEmailType: null } });
+    await prisma.player.update({ where: { id: "p4" }, data: { contactEmail: null, contactEmailType: null, contactAuthorizedAt: null } });
     await prisma.$executeRawUnsafe(`UPDATE "Player" SET "contactEmail" = 'broken' WHERE id = 'p5'`);
     expect(await statusOf()).toEqual({ p1: "ORGANIZER_OVERRIDE", p2: "ALREADY_ANSWERED", p3: "SUPPRESSED", p4: "NO_EMAIL", p5: "INVALID_CONTACT" });
   });
@@ -190,7 +192,7 @@ describe("M13B P3 — suppression in the recipient preview", () => {
   it("suppressed recipients never use plan capacity (OVER_LIMIT counts only sendable ones)", async () => {
     await prisma.organization.update({ where: { id: "o" }, data: { plan: "FREE" } });
     await prisma.player.createMany({
-      data: Array.from({ length: 18 }, (_, i) => ({ id: `z${String(i).padStart(2, "0")}`, groupId: "g", firstName: `Z${String(i).padStart(2, "0")}`, lastName: "Test", position: "MIDFIELDER", rating: "GOOD" as const, stamina: 3, contactEmail: `z${i}@example.com`, contactEmailType: "PLAYER" as const })),
+      data: Array.from({ length: 18 }, (_, i) => ({ id: `z${String(i).padStart(2, "0")}`, groupId: "g", firstName: `Z${String(i).padStart(2, "0")}`, lastName: "Test", position: "MIDFIELDER", rating: "GOOD" as const, stamina: 3, contactEmail: `z${i}@example.com`, contactEmailType: "PLAYER" as const, contactAuthorizedAt: AUTH_AT })),
     });
     // 23 sendable before suppression; Free ceiling 20/day.
     expect((await rsvp()).counts.byStatus.OVER_LIMIT).toBe(3);

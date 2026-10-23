@@ -39,7 +39,9 @@ const signIn = (who: string | null) => void (session = who ? { user: { id: `u-${
 const gp = (id: string, org = "o", group = "g") => ({ params: Promise.resolve({ organizationSlug: org, groupSlug: group, id }) });
 const g = (org = "o", group = "g") => ({ params: Promise.resolve({ organizationSlug: org, groupSlug: group }) });
 const getContact = (id: string, org?: string, group?: string) => call(contactRoute.GET(json("GET"), gp(id, org, group)));
-const putContact = (id: string, body: unknown, org?: string, group?: string) => call(contactRoute.PUT(json("PUT", body), gp(id, org, group)));
+// M13B P6 — setting a contact now needs the organizer's confirmation; P1's tests confirm by default (P6 tests cover the rule itself).
+const withAuth = (body: unknown) => (body && typeof body === "object" && !Array.isArray(body) && !("authorized" in body) && (body as { email?: unknown }).email ? { ...body, authorized: true } : body);
+const putContact = (id: string, body: unknown, org?: string, group?: string) => call(contactRoute.PUT(json("PUT", withAuth(body)), gp(id, org, group)));
 const row = (id: string) => prisma.player.findUniqueOrThrow({ where: { id }, select: { contactEmail: true, contactEmailType: true, contactEmailUpdatedAt: true } });
 
 async function seed() {

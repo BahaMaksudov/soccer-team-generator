@@ -10,7 +10,7 @@ import { confirmUnsubscribe } from "@/lib/emailSuppression";
  * a GET (link scanner, prefetch) is 405 and changes nothing. Idempotent.
  * Never logs the token or the address.
  */
-const HEADERS = { "Cache-Control": "no-store, private" };
+const HEADERS = { "Cache-Control": "no-store, private", "X-Robots-Tag": "noindex, nofollow", "Referrer-Policy": "no-referrer" };
 
 async function isOneClickBody(req: Request): Promise<boolean> {
   const type = (req.headers.get("content-type") ?? "").toLowerCase();

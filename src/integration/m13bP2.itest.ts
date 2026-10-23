@@ -14,6 +14,8 @@ import * as previewRoute from "@/app/api/admin/o/[organizationSlug]/g/[groupSlug
 
 const VERIFIED = new Date("2026-01-01T00:00:00Z");
 const TZ = "America/New_York";
+/** M13B P6 — contacts seeded directly carry an organizer confirmation (unconfirmed contacts are never emailed). */
+const AUTH_AT = new Date("2026-01-01T00:00:00Z");
 let network = 0;
 const originalFetch = global.fetch;
 
@@ -60,18 +62,18 @@ async function seed() {
   const P = (id: string, firstName: string, extra: Record<string, unknown> = {}) => ({ id, groupId: "g", firstName, lastName: "Test", position: "MIDFIELDER", rating: "GOOD" as const, stamina: 3, ...extra });
   await prisma.player.createMany({
     data: [
-      P("p1", "Ava", { contactEmail: "guardian.of.ava@example.com", contactEmailType: "GUARDIAN" }),
-      P("p2", "Ben", { contactEmail: "ben.own@example.com", contactEmailType: "PLAYER" }),
+      P("p1", "Ava", { contactEmail: "guardian.of.ava@example.com", contactEmailType: "GUARDIAN", contactAuthorizedAt: AUTH_AT }),
+      P("p2", "Ben", { contactEmail: "ben.own@example.com", contactEmailType: "PLAYER", contactAuthorizedAt: AUTH_AT }),
       P("p3", "Cal", { userId: "u-linked" }), // verified account fallback
       P("p4", "Dee", { userId: "u-unverified" }), // unverified → NO_EMAIL
       P("p5", "Eli"), // nothing
-      P("p6", "Fay", { contactEmail: "fay@example.com", contactEmailType: "PLAYER" }), // answered
-      P("p7", "Gus", { contactEmail: "gus@example.com", contactEmailType: "PLAYER" }), // override
-      P("p8", "Hal", { contactEmail: "hal@example.com", contactEmailType: "PLAYER", isActive: false }), // not on roster
-      P("p9", "Ivy", { contactEmail: "broken", contactEmailType: "PLAYER" }), // stored contact no longer valid (bypassing the API)
+      P("p6", "Fay", { contactEmail: "fay@example.com", contactEmailType: "PLAYER", contactAuthorizedAt: AUTH_AT }), // answered
+      P("p7", "Gus", { contactEmail: "gus@example.com", contactEmailType: "PLAYER", contactAuthorizedAt: AUTH_AT }), // override
+      P("p8", "Hal", { contactEmail: "hal@example.com", contactEmailType: "PLAYER", contactAuthorizedAt: AUTH_AT, isActive: false }), // not on roster
+      P("p9", "Ivy", { contactEmail: "broken", contactEmailType: "PLAYER", contactAuthorizedAt: AUTH_AT }), // stored contact no longer valid (bypassing the API)
     ],
   });
-  await prisma.player.create({ data: { id: "px", groupId: "gx", firstName: "Xi", lastName: "Test", position: "MIDFIELDER", rating: "GOOD", stamina: 3, contactEmail: "xi@example.com", contactEmailType: "PLAYER" } });
+  await prisma.player.create({ data: { id: "px", groupId: "gx", firstName: "Xi", lastName: "Test", position: "MIDFIELDER", rating: "GOOD", stamina: 3, contactEmail: "xi@example.com", contactEmailType: "PLAYER", contactAuthorizedAt: AUTH_AT } });
   await prisma.match.create({ data: { id: "m", groupId: "g", date: new Date("2099-06-03"), startTime: "21:00" } });
   await prisma.attendanceResponse.createMany({
     data: [
@@ -143,7 +145,7 @@ describe("M13B P2 — classification", () => {
 
   it("Free plan: allowance 100 / 20; sendable recipients beyond the daily allowance are OVER_LIMIT (provisional)", async () => {
     await prisma.player.createMany({
-      data: Array.from({ length: 22 }, (_, i) => ({ id: `f${String(i).padStart(2, "0")}`, groupId: "gf", firstName: `F${String(i).padStart(2, "0")}`, lastName: "Free", position: "MIDFIELDER", rating: "GOOD" as const, stamina: 3, contactEmail: `f${i}@example.com`, contactEmailType: "PLAYER" as const })),
+      data: Array.from({ length: 22 }, (_, i) => ({ id: `f${String(i).padStart(2, "0")}`, groupId: "gf", firstName: `F${String(i).padStart(2, "0")}`, lastName: "Free", position: "MIDFIELDER", rating: "GOOD" as const, stamina: 3, contactEmail: `f${i}@example.com`, contactEmailType: "PLAYER" as const, contactAuthorizedAt: AUTH_AT })),
     });
     await prisma.match.create({ data: { id: "mf", groupId: "gf", date: new Date("2099-06-03") } });
     signIn("free");

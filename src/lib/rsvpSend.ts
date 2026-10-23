@@ -11,6 +11,8 @@ import { EmailDeliveryError, testOutbox, type EmailTransport } from "@/lib/email
 import { buildRsvpInvitationEmail } from "@/lib/email/templates";
 import { classifySendError } from "@/lib/trialLifecycle";
 import { rsvpDeliveryMode } from "@/lib/rsvpDeliveryMode";
+import { resolveRecipient } from "@/lib/playerContact";
+import { normalizeEmail } from "@/lib/emailAddress";
 import { formatStartTime } from "@/lib/messaging/content";
 import { formatDeadline } from "@/lib/deadlineFormat";
 
@@ -160,7 +162,7 @@ export async function createRsvpSend(
               playerId: r.playerId,
               round,
               email: sendable && (r.recipient.kind === "CONTACT" || r.recipient.kind === "ACCOUNT") ? r.recipient.email : null,
-              recipientType: r.recipient.kind === "CONTACT" ? r.recipient.contactType : r.recipient.kind === "ACCOUNT" ? "ACCOUNT" : null,
+              recipientType: r.recipient.kind === "CONTACT" || r.recipient.kind === "UNCONFIRMED_CONTACT" ? r.recipient.contactType : r.recipient.kind === "ACCOUNT" ? "ACCOUNT" : null,
               status: sendable ? "QUEUED" : "SKIPPED",
               skipReason: sendable ? null : r.status === "OVER_LIMIT" ? "LIMIT" : r.status,
               reservedAt: sendable ? now : null,
@@ -272,7 +274,7 @@ async function deliverOne(c: Claimed, transport: EmailTransport, now: Date): Pro
       reservedAt: true,
       organization: { select: { name: true } },
       group: { select: { name: true, timezone: true } },
-      player: { select: { firstName: true, lastName: true } },
+      player: { select: { firstName: true, lastName: true, contactEmail: true, contactEmailType: true, contactAuthorizedAt: true, user: { select: { email: true, emailVerifiedAt: true } } } },
       match: { select: { ...MATCH_SELECT, locationName: true, venue: { select: { name: true } }, community: { select: { name: true } } } },
     },
   });
@@ -288,6 +290,13 @@ async function deliverOne(c: Claimed, transport: EmailTransport, now: Date): Pro
     await skip(inv.id, refusal);
     return "SKIPPED";
   }
+  // P6: the destination must still be the player's current, confirmed recipient — a contact
+  // removed, changed or unconfirmed after queuing is never emailed at its old address.
+  const current = resolveRecipient(inv.player);
+  if ((current.kind !== "CONTACT" && current.kind !== "ACCOUNT") || current.email !== normalizeEmail(inv.email)) {
+    await skip(inv.id, "CONTACT_CHANGED");
+    return "SKIPPED";
+  }
   if ((await suppressedFor(inv.organizationId, [inv.email])).size > 0) {
     await skip(inv.id, "SUPPRESSED");
     return "SKIPPED";
@@ -301,7 +310,8 @@ async function deliverOne(c: Claimed, transport: EmailTransport, now: Date): Pro
   // Prepare this attempt's capabilities (hash-only). Existing links are NOT touched here:
   // older EMAIL links are revoked only after this email is accepted; MANUAL links never.
   const answerToken = generateToken();
-  const unsubscribeToken = generateToken();
+  const unsubscribeToken = generateToken(); // the /unsubscribe page link (URL fragment)
+  const oneClickToken = generateToken(); // RFC 8058 header URL (query string) — one-click only
   const idempotencyKey = `rsvp:${inv.id}:${c.attempts}`;
   const prepared = await prisma.$transaction(async (tx) => {
     const link = await tx.personalAttendanceLink.create({
@@ -311,6 +321,9 @@ async function deliverOne(c: Claimed, transport: EmailTransport, now: Date): Pro
     const unsub = await tx.emailUnsubscribeToken.create({
       data: { organizationId: inv.organizationId, email: inv.email!, tokenHash: hashToken(unsubscribeToken), createdAt: now, expiresAt: new Date(now.getTime() + UNSUBSCRIBE_TOKEN_TTL_DAYS * DAY_MS) },
       select: { id: true },
+    });
+    await tx.emailUnsubscribeToken.create({
+      data: { organizationId: inv.organizationId, email: inv.email!, tokenHash: hashToken(oneClickToken), oneClickOnly: true, createdAt: now, expiresAt: new Date(now.getTime() + UNSUBSCRIBE_TOKEN_TTL_DAYS * DAY_MS) },
     });
     await tx.rsvpInvitation.update({ where: { id: inv.id }, data: { linkId: link.id, unsubscribeTokenId: unsub.id, idempotencyKey } });
     return { linkId: link.id };
@@ -322,7 +335,7 @@ async function deliverOne(c: Claimed, transport: EmailTransport, now: Date): Pro
     const m = inv.match;
     const day = m.date.toLocaleDateString("en-US", { timeZone: "UTC", weekday: "long", month: "long", day: "numeric" });
     const time = formatStartTime(m.startTime);
-    const links = unsubscribeLinks(unsubscribeToken);
+    const links = { page: unsubscribeLinks(unsubscribeToken).page, oneClick: unsubscribeLinks(oneClickToken).oneClick };
     const message = buildRsvpInvitationEmail({
       to: inv.email,
       recipientType: inv.recipientType,

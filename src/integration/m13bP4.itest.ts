@@ -17,6 +17,8 @@ import { createResendTransport, EmailDeliveryError, RESEND_ENDPOINT, testOutbox,
 
 const VERIFIED = new Date("2026-01-01T00:00:00Z");
 const TZ = "America/New_York";
+/** M13B P6 — contacts seeded directly carry an organizer confirmation (unconfirmed contacts are never emailed). */
+const AUTH_AT = new Date("2026-01-01T00:00:00Z");
 const NOW = new Date("2026-10-21T15:00:00Z");
 let network = 0;
 const originalFetch = global.fetch;
@@ -69,15 +71,15 @@ async function seed() {
   const P = (id: string, groupId: string, firstName: string, extra: Record<string, unknown> = {}) => ({ id, groupId, firstName, lastName: "Test", position: "MIDFIELDER", rating: "GOOD" as const, stamina: 3, ...extra });
   await prisma.player.createMany({
     data: [
-      P("p1", "g", "Ava", { contactEmail: "guardian.of.ava@example.com", contactEmailType: "GUARDIAN" }),
-      P("p2", "g", "Ben", { contactEmail: "ben@example.com", contactEmailType: "PLAYER" }),
+      P("p1", "g", "Ava", { contactEmail: "guardian.of.ava@example.com", contactEmailType: "GUARDIAN", contactAuthorizedAt: AUTH_AT }),
+      P("p2", "g", "Ben", { contactEmail: "ben@example.com", contactEmailType: "PLAYER", contactAuthorizedAt: AUTH_AT }),
       P("p3", "g", "Cal", { userId: "u-linked" }), // verified linked account
       P("p4", "g", "Dee"), // no email
-      P("p5", "g", "Eve", { contactEmail: "eve@example.com", contactEmailType: "PLAYER" }), // opted out of o
-      P("p6", "g", "Fay", { contactEmail: "fay@example.com", contactEmailType: "PLAYER" }), // answered
-      P("p7", "g", "Gus", { contactEmail: "gus@example.com", contactEmailType: "PLAYER" }), // organizer override
-      P("q1", "g2", "Quinn", { contactEmail: "ben@example.com", contactEmailType: "PLAYER" }), // same address, other organization
-      ...Array.from({ length: 22 }, (_, i) => P(`f${String(i).padStart(2, "0")}`, "gf", `F${String(i).padStart(2, "0")}`, { contactEmail: `f${i}@example.com`, contactEmailType: "PLAYER" })),
+      P("p5", "g", "Eve", { contactEmail: "eve@example.com", contactEmailType: "PLAYER", contactAuthorizedAt: AUTH_AT }), // opted out of o
+      P("p6", "g", "Fay", { contactEmail: "fay@example.com", contactEmailType: "PLAYER", contactAuthorizedAt: AUTH_AT }), // answered
+      P("p7", "g", "Gus", { contactEmail: "gus@example.com", contactEmailType: "PLAYER", contactAuthorizedAt: AUTH_AT }), // organizer override
+      P("q1", "g2", "Quinn", { contactEmail: "ben@example.com", contactEmailType: "PLAYER", contactAuthorizedAt: AUTH_AT }), // same address, other organization
+      ...Array.from({ length: 22 }, (_, i) => P(`f${String(i).padStart(2, "0")}`, "gf", `F${String(i).padStart(2, "0")}`, { contactEmail: `f${i}@example.com`, contactEmailType: "PLAYER", contactAuthorizedAt: AUTH_AT })),
     ],
   });
   await prisma.organizationEmailOptOut.create({ data: { organizationId: "o", email: "eve@example.com", source: "LINK" } });
@@ -266,6 +268,9 @@ describe("M13B P4 — idempotency and concurrency", () => {
     expect([a, b].find((x) => !x.ok)).toEqual({ ok: false, code: "ALREADY_SENT" });
     expect(await prisma.rsvpSend.count()).toBe(1);
     expect(await send(OWNER(), "mb", "key-resend-0001", "RESEND")).toEqual({ ok: false, code: "NOTHING_TO_RESEND" });
+    // P6: while round 1 is still queued, a resend would duplicate it — nobody is eligible.
+    expect(await send(ADMIN(), "m", "key-resend-0003", "RESEND")).toEqual({ ok: false, code: "NOTHING_TO_RESEND" });
+    await processRsvpQueue({ now: NOW });
     // An explicit RESEND is a new round for the still-unanswered players.
     const re = await send(ADMIN(), "m", "key-resend-0002", "RESEND");
     expect(re).toMatchObject({ ok: true, round: 2, counts: { queued: 3 } });
@@ -273,7 +278,7 @@ describe("M13B P4 — idempotency and concurrency", () => {
   });
 
   it("concurrent workers never claim the same invitation", async () => {
-    await prisma.player.createMany({ data: Array.from({ length: 30 }, (_, i) => ({ id: `w${i}`, groupId: "gx", firstName: `W${String(i).padStart(2, "0")}`, lastName: "Test", position: "MIDFIELDER", rating: "GOOD" as const, stamina: 3, contactEmail: `w${i}@example.com`, contactEmailType: "PLAYER" as const })) });
+    await prisma.player.createMany({ data: Array.from({ length: 30 }, (_, i) => ({ id: `w${i}`, groupId: "gx", firstName: `W${String(i).padStart(2, "0")}`, lastName: "Test", position: "MIDFIELDER", rating: "GOOD" as const, stamina: 3, contactEmail: `w${i}@example.com`, contactEmailType: "PLAYER" as const, contactAuthorizedAt: AUTH_AT })) });
     await prisma.match.create({ data: { id: "mw", groupId: "gx", date: new Date("2099-06-03") } });
     const r = await send(ctx("u-owner", "o", "gx"), "mw", "key-workers-001");
     expect(r).toMatchObject({ ok: true, counts: { queued: 30 } });

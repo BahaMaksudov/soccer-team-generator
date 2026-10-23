@@ -458,6 +458,112 @@ tests.
 - `RsvpSend.attestedAt`, `RsvpSend.confirmedCount`;
 - `PersonalAttendanceLink.replacedAt`.
 
+## P6 — delivery management, contact authorization, unsubscribe hardening, webhook (implemented; test outbox only)
+
+Migration `20261220120000_m13b_p6_delivery_management` (additive):
+- `Player.contactAuthorizedAt` and `Player.contactAuthorizedByUserId` (FK to User, set to null on user
+  deletion), plus a CHECK that an authorization exists only together with a contact;
+- `EmailUnsubscribeToken.oneClickOnly`;
+- the `EmailWebhookEvent` table (provider, event id unique, type, outcome — no address).
+
+### Contact authorization (`src/lib/playerContact.ts`)
+
+- **When confirmation is needed:** a new or materially changed contact (a different normalized address, or
+  PLAYER ↔ GUARDIAN) requires `authorized: true`. Wording depends on the type:
+  - player: "this player gave me this address, or agreed to its use, for match coordination emails";
+  - guardian: "this parent / guardian gave me this address …".
+- **What is recorded:** who confirmed it and when, under the Player row lock in one statement.
+- **What it doesn't change:** re-saving the same contact keeps its confirmation, and removing the contact
+  clears it.
+- **Wording:** the UI states that the confirmation "isn't verified and isn't a legal consent record".
+- **What it doesn't collect:** no age, relationship or other details about minors or guardians.
+- **Sending:** an unconfirmed contact is `CONTACT_UNCONFIRMED`. It is never emailed and never falls back to the
+  linked account.
+- **Send-time re-check:** the engine re-resolves the recipient at delivery. If the contact was changed,
+  removed or unconfirmed after queuing, the row becomes `SKIPPED` (`CONTACT_CHANGED`), so the old address
+  is never emailed.
+- **Existing contacts:** contacts saved before P6 are unconfirmed until an organizer confirms them. P1 has not
+  shipped to Production, so this affects only local data.
+
+### Retry / resend review
+
+P5's controls were kept and tightened rather than duplicated:
+- **Retry:** FAILED rows only, fewer than 3 attempts, eligibility and allowance re-checked under the locks.
+  Concurrent retries re-queue once. UNCERTAIN rows are never retried.
+- **Resend:** unanswered, eligible players only. Excluded:
+  - players who answered or have an organizer override;
+  - unsubscribed or suppressed addresses;
+  - unconfirmed contacts;
+  - **new in P6:** players with an invitation still queued or sending (`IN_PROGRESS`), so a resend never
+    duplicates an in-flight email.
+- **Idempotent** per request key; manual links are untouched.
+- **Confirmation dialog** (the shared accessible `Dialog`) before every send, resend and retry. The resend
+  dialog warns when earlier deliveries are uncertain.
+
+### Dashboard
+
+Each recipient row shows:
+- contact type (Player's email / Parent / Guardian / Linked account (verified)) and masked address;
+- delivery label plus an explanation:
+  - "Accepted by … — that doesn't confirm it reached the inbox";
+  - "Not sent: … rejected it — you can retry";
+  - "… didn't confirm — may or may not have arrived, not retried";
+- the skip reason, when skipped;
+- timestamps (queued, last attempt, accepted, failed) and the attempt count;
+- **Suppressed** when the address has since unsubscribed or bounced;
+- the RSVP answer, kept separate from delivery.
+
+No raw tokens and no full addresses (including linked-account addresses) are ever returned.
+
+### Unsubscribe security review
+
+| Check | Finding |
+| --- | --- |
+| Token entropy / storage | 32 random bytes (base64url), only SHA-256 stored. ✔ |
+| Expiration | 365 days, so old emails keep working; checked on every use. ✔ |
+| Idempotency / replay | The opt-out is a unique row (insert-or-nothing). A replayed or used token returns ok and changes nothing. ✔ |
+| GET never unsubscribes | No GET export on any unsubscribe route (405). The page only previews; it confirms via same-origin JSON POST. ✔ |
+| RFC 8058 | POST with form body `List-Unsubscribe=One-Click` only; no cookies or Origin needed. Headers are covered by DKIM once live. ✔ |
+| Referrer / analytics | The page token lives in the URL fragment (never sent to a server or in Referer) and is removed from the address bar after load. The app loads no analytics. Unsubscribe responses send `no-referrer`, `noindex` and `no-store`. ✔ |
+| Query-string logging | **Residual risk.** The one-click URL must carry its token in the query string, and platform request logs (Vercel) may record it. **P6 mitigation:** that URL now uses a separate one-click-only token, which works only on the one-click endpoint. The preview and website confirmation treat it as invalid, so a logged URL reveals neither the organization nor the masked address; it can only unsubscribe that address from that organization. App code never logs URLs, tokens or addresses (source-guard test). Further options: shorter log retention or a log-drain filter, since platform logging isn't controllable from the app. |
+| Cross-organization isolation | Tokens are bound to one organization and address; another organization's sending is unaffected (tested). ✔ |
+| Global suppression | Hard bounces and complaints apply to every organization (webhook below). ✔ |
+
+### Resend webhook (`POST /api/email/webhooks/resend`) — prepared, not registered
+
+- **Verification:** Resend delivers webhooks through Svix (headers `svix-id`, `svix-timestamp`,
+  `svix-signature`). `src/lib/webhookSignature.ts` follows Svix's published manual-verification spec:
+  - HMAC-SHA256 over `${id}.${timestamp}.${rawBody}`;
+  - the key is base64-decoded after the `whsec_` prefix;
+  - signatures are space-delimited `v1,` entries compared in constant time;
+  - a ±5 minute replay window.
+
+  It is unit-tested against Svix's published test vector. No new dependency was added: neither the `resend`
+  SDK nor `svix` is installed.
+- **Flow:**
+  1. Size cap (256 KB).
+  2. Signature check on the raw body.
+  3. Parse.
+  4. `processResendEvent`, idempotent per event id: the event row and the suppressions are written in one
+     transaction, so replays and concurrent duplicates change nothing.
+- **Events:**
+  - `email.bounced` (Resend: "permanently rejected"; `bounce.type` "Permanent") → `HARD_BOUNCE`. A bounce
+    with a different type is ignored.
+  - `email.complained` → `SPAM_COMPLAINT`.
+  - Other events are acknowledged and ignored.
+  - Addresses are normalized. An existing suppression keeps its first reason. Nothing is logged or returned
+    with an address.
+- **Configuration:** fails closed (503) until `RESEND_WEBHOOK_SECRET` is configured. No endpoint is registered
+  with Resend and no secret exists anywhere. Activation needs both, as an approved step.
+- **Assumption to re-check at activation:** the payload fields (`type`, `data.to[]`, `data.bounce.type`) come
+  from Resend's documentation. Verify them against a real test event from the Resend dashboard before
+  relying on them.
+
+### Privacy Policy
+
+The proposed changes are in `docs/legal/privacy-policy-m13b-draft.md`. They are not published, and the
+`/privacy` page is unchanged.
+
 ## Open issues / risks
 
 - Consent: organizers enter addresses (including guardians') without the recipient confirming. Unsubscribe
