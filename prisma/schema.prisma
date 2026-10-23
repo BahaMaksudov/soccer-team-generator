@@ -1647,6 +1647,8 @@ enum EmailOptOutSource {
   LINK
   // RFC 8058 one-click (List-Unsubscribe-Post) from the recipient's mail provider.
   ONE_CLICK
+  // M13B P8A — recorded by support for a verified recipient request about ONE organization.
+  SUPPORT_REQUEST
 }
 
 // The recipient opted out of RSVP invitation emails from ONE organization.
@@ -1765,35 +1767,37 @@ model RsvpSend {
 // allowance by reservedAt; FAILED and SKIPPED do not. playerId is SET NULL on
 // player deletion so deleting players can't erase consumed allowance.
 model RsvpInvitation {
-  id                 String             @id @default(cuid())
-  sendId             String
-  organizationId     String
-  groupId            String
-  matchId            String
-  playerId           String?
-  round              Int
+  id                   String             @id @default(cuid())
+  sendId               String
+  organizationId       String
+  groupId              String
+  matchId              String
+  playerId             String?
+  round                Int
   // Snapshot of the destination at send time (null when skipped for having none).
-  email              String?
-  recipientType      RsvpRecipientType?
-  status             RsvpDeliveryStatus
-  skipReason         String?
-  attempts           Int                @default(0)
-  reservedAt         DateTime?
-  claimedAt          DateTime?
-  sentAt             DateTime?
-  failedAt           DateTime?
-  providerMessageId  String?
+  email                String?
+  recipientType        RsvpRecipientType?
+  status               RsvpDeliveryStatus
+  skipReason           String?
+  attempts             Int                @default(0)
+  reservedAt           DateTime?
+  claimedAt            DateTime?
+  sentAt               DateTime?
+  failedAt             DateTime?
+  providerMessageId    String?
   // Sanitized category only (e.g. HTTP_422, TIMEOUT) — never provider text or addresses.
-  lastError          String?
-  idempotencyKey     String?
-  linkId             String?
-  unsubscribeTokenId String?
-  // M13B P7 — when the recipient address and provider details were removed (retention:
-  // 90 days after the match, or a recipient's erasure request). Status, round, timestamps
-  // and the player reference stay for the organizer's history; quota lives in RsvpEmailUsage.
-  anonymizedAt       DateTime?
-  createdAt          DateTime           @default(now())
-  updatedAt          DateTime           @updatedAt
+  lastError            String?
+  idempotencyKey       String?
+  linkId               String?
+  unsubscribeTokenId   String?
+  // M13B P7/P8A — when the DIRECT identifiers (recipient address, provider message id,
+  // idempotency key, unsubscribe-token link) were removed: retention (90 days after the
+  // match, or at once for a deleted player) or a recipient's erasure request. This is NOT
+  // anonymization: the row still links to the match, organization and (unless deleted) the
+  // named player, so it stays personal data while those exist. Column kept as "anonymizedAt".
+  identifiersRemovedAt DateTime?          @map("anonymizedAt")
+  createdAt            DateTime           @default(now())
+  updatedAt            DateTime           @updatedAt
 
   send             RsvpSend                @relation(fields: [sendId], references: [id], onDelete: Cascade)
   organization     Organization            @relation(fields: [organizationId], references: [id], onDelete: Cascade)
@@ -1806,6 +1810,6 @@ model RsvpInvitation {
   @@unique([matchId, playerId, round])
   @@index([organizationId, status, reservedAt])
   @@index([status, claimedAt])
-  @@index([anonymizedAt, matchId])
+  @@index([identifiersRemovedAt, matchId])
   @@index([sendId])
 }

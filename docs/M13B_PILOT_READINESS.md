@@ -1,30 +1,39 @@
-# M13B — RSVP invitation emails: controlled pilot readiness
+# M13B — RSVP invitation emails: pilot activation runbook
 
-**Status:** M13B P1–P7 are complete on `feature/m13b-p1-player-emails`. Nothing is merged, deployed or
-migrated, and no real RSVP email has ever been sent. Starting the pilot requires the owner's explicit
-approval of every step marked **[APPROVAL]**. This document is a plan; it changes nothing by itself.
+**Status (P8A):** M13B P1–P8A are on `feature/m13b-p1-player-emails`. Nothing is merged, deployed or migrated,
+and no real RSVP email has ever been sent. The live transport exists in code but is **off**: no environment has
+its flag.
 
-Reversibility legend:
-- **R** — reversible by turning a switch off or reverting code;
-- **I** — irreversible (schema migrations once applied, data already anonymized, emails already
-  delivered).
+**Every step that changes Production is marked [APPROVAL].** Each one needs its own explicit "yes" from the
+owner at the time it is done; approving one step doesn't approve the next.
+
+Reversibility:
+- **R** — reversible: turn a switch off or revert a deploy;
+- **I** — irreversible: applied migrations, identifiers already removed, emails already delivered.
 
 ---
 
-## 1. Where things stand (default-off)
+## 1. What exists and its default
 
-| Piece | Current state | How it is switched off |
+| Piece | Default today | Turns on only when |
 | --- | --- | --- |
-| RSVP delivery | `rsvpDeliveryMode()` returns `disabled` in every production build (Production, Preview, `next start`). There is no live mode in code. | Built in (R). |
-| Send button / API | Shown disabled. `POST rsvp-send` returns 403 `DELIVERY_DISABLED` before reading anything. | Follows the delivery mode (R). |
-| Queue continuation (cron) | Reports `{ disabled: true }` and claims nothing. | Follows the delivery mode (R). |
-| Webhook `/api/email/webhooks/resend` | Returns 503 and processes nothing. | Without `RESEND_WEBHOOK_SECRET` (R). |
-| Retention cleanup | Built (`runRsvpRetention`); nothing calls it. | Not scheduled (R). Its effects are I. |
-| Account / security emails | Unchanged path (`src/lib/email/index.ts` → `getEmailTransport`). Never consults suppression and never carries unsubscribe headers (source-guard tests). | — |
+| RSVP delivery mode | `disabled` in every production build; `test-outbox` only in tests and a confirmed local test environment | All live conditions in §5 hold (R) |
+| Live transport (Resend) | Unused: no `RSVP_EMAIL_DELIVERY` anywhere | `RSVP_EMAIL_DELIVERY=live-pilot` in **Production**, plus the allowlist, sender and key (R) |
+| Organization allowlist | Empty, so nobody can send | `RSVP_EMAIL_PILOT_ORGS` lists 1–10 organization ids (R) |
+| Pilot limits | n/a | Live: 20 per organization per UTC day, 100 per organization per month, 100 per UTC day across all organizations. Constants in code (`RSVP_PILOT_LIMITS`); the stricter of plan and pilot applies |
+| Send button / API | Disabled (403 `DELIVERY_DISABLED`) | Delivery is allowed for that organization |
+| Queue continuation (15-minute cron) | `{ disabled: true }`, claims nothing | Live mode; claims only allowlisted organizations' rows |
+| Webhook `/api/email/webhooks/resend` | 503, processes nothing | `RESEND_WEBHOOK_SECRET` is set (R) |
+| Retention cleanup | Not scheduled | Owner approves a schedule (§9). Its effect is I |
+| Account / security email | Unchanged path (`src/lib/email/index.ts`) | Never affected by any RSVP setting |
 
-## 2. Migration order and rollback limits
+**Existing variables can't switch RSVP on.** `EMAIL_TRANSPORT`, `RESEND_API_KEY` and `EMAIL_FROM` alone (as
+already set for account email) leave RSVP `disabled`. That is tested.
 
-Apply with `prisma migrate deploy`, in this order, all additive:
+## 2. Production migration sequence [APPROVAL]
+
+Production is at `f059181`. M13B adds these migrations, all additive, applied in this order by
+`prisma migrate deploy`:
 
 1. `20261201120000_m13b_p1_player_contact_email`
 2. `20261205120000_m13b_p3_email_suppression`
@@ -33,184 +42,195 @@ Apply with `prisma migrate deploy`, in this order, all additive:
 5. `20261215120000_m13b_p5_send_attestation`
 6. `20261220120000_m13b_p6_delivery_management`
 7. `20261225120000_m13b_p7_retention`
+8. `20261228120000_m13b_p8a_support_opt_out`
 
-- **Before migrating:** take a Neon branch / snapshot **[APPROVAL]**. Run migrations only with the
-  documented production procedure, never from a laptop session against Production by accident.
-- **What the migrations change:** they only add tables, columns, enums, indexes and CHECKs. The existing app
-  (`main`) keeps working on the migrated schema, so deploying the code later, or reverting it, doesn't
-  require a down-migration.
-- **Rollback notes:** each migration's header has them. Limits:
-  - enum values (`RECIPIENT_REQUEST` etc.) can't be dropped in place;
-  - dropping M13B tables after the pilot deletes the opt-out and suppression records. **Don't do that**: they
-    are what keeps unsubscribed people from being emailed again;
-  - anonymization done by the retention job can't be undone (I).
-- **Existing data:** the P1 contact fields start empty. Any contact entered before P6 starts *unconfirmed*
-  and is never emailed until an organizer confirms it.
+Exact steps:
+1. **[APPROVAL]** Create a Neon branch / snapshot of Production named `pre-m13b-<date>`.
+2. **[APPROVAL]** Merge the reviewed branch to `main` (code ships with RSVP `disabled`). Let Vercel run the
+   project's existing build-time migration procedure, or run `prisma migrate deploy` against Production with
+   the documented credentials, per the repository's release process. Never run it from an ad-hoc shell.
+3. Verify:
+   - `_prisma_migrations` lists all eight;
+   - the app's smoke checks pass (sign-in, match page, attendance, Telegram poll);
+   - account email still arrives (a password-reset test to an internal address).
 
-## 3. Prerequisites (all must be done before the first real email)
+Rollback limits:
+- **Code** can be reverted (R). The old code ignores the new tables.
+- **Migrations** stay (I). Rolling back means a hand-written down-migration from each migration's header.
+  Enum values can't be dropped in place.
+- **Never drop** `OrganizationEmailOptOut` or `GlobalEmailSuppression`. They are what keeps people who
+  unsubscribed, bounced or complained from being emailed again.
 
-1. **Privacy Policy and Terms published [APPROVAL].** Review `docs/legal/privacy-policy-m13b-draft.md` and
-   `docs/legal/terms-m13b-draft.md`, settle their open decisions, then publish and update the effective date.
-   Legal review is recommended, especially for guardian / minor contacts.
-2. **Deliverability checklist (section 4) complete** on the sending domain.
-3. **Webhook verified** with a real signed test event (section 5).
-4. **Retention schedule decided:** run `runRsvpRetention` daily (dry-run first; section 8).
-5. **Live transport integrated** behind a pilot allowlist (section 6). That code change is reviewed
-   separately.
-6. **Monitoring in place** (section 9).
+## 3. Domain authentication and DMARC [APPROVAL for each DNS change]
 
-## 4. Deliverability checklist (sending domain; no DNS or Resend changes made yet)
+Sending domain: `mail.teambalancepro.com` (the only RSVP sender domain the code accepts).
 
-Current sender: `EMAIL_FROM` (e.g. `TeamBalance Pro <noreply@mail.teambalancepro.com>`), via Resend.
+1. In Resend → Domains, open `mail.teambalancepro.com`. If it isn't verified, add exactly the records Resend
+   shows **[APPROVAL]**:
+   - SPF: the `TXT` / `MX` records on the bounce subdomain Resend specifies;
+   - DKIM: the `TXT` record(s) Resend specifies.
 
-| Item | Check | Owner action |
+   Wait until Resend shows **Verified**.
+2. **DMARC (currently missing — blocker) [APPROVAL]:** add `_dmarc.teambalancepro.com` (or
+   `_dmarc.mail.teambalancepro.com`):
+   `v=DMARC1; p=none; rua=mailto:<monitored address>; adkim=r; aspf=r`.
+   Watch the aggregate reports for at least 7 days before moving to `p=quarantine`.
+3. Send one account email (password reset) to an internal Gmail address and open "Show original". It must
+   show `SPF: PASS`, `DKIM: PASS` and `DMARC: PASS`.
+4. In Resend, check that **open and click tracking are OFF** for this domain. Click tracking would rewrite
+   the `/attend?c=…#token` links.
+
+## 4. Resend quota verification [APPROVAL if the plan changes]
+
+1. In the Resend dashboard, note the plan's daily and monthly sending limits and its rate limit.
+2. The pilot's worst case is **100 RSVP emails per UTC day** (the pilot-wide cap), plus account email. Check
+   that the plan's daily limit is at least 2× that worst case, so account email is never squeezed out.
+3. If it isn't, change the plan **[APPROVAL]**, or keep fewer pilot organizations.
+
+## 5. Feature flags and allowlist [APPROVAL]
+
+The live mode requires **all** of these in Vercel → Project → Settings → Environment Variables, scoped to
+**Production only** (never Preview or Development):
+
+| Variable | Value | Notes |
 | --- | --- | --- |
-| Resend verified domain | Resend dashboard → Domains: `mail.teambalancepro.com` shows **Verified**. | Verify; no change if already verified. |
-| SPF | The Resend-provided SPF record (on the `send` / bounce subdomain Resend specifies) is present and passes. | DNS **[APPROVAL]**. |
-| DKIM | Resend's DKIM `TXT` record(s) present; a test email's headers show `dkim=pass` for the sending domain. | DNS **[APPROVAL]**. |
-| DMARC | A `_dmarc` record exists for the organizational domain `teambalancepro.com` (or the subdomain). Start with `p=none; rua=mailto:<monitored address>`, then move to `quarantine` after clean reports. **Currently missing: blocker.** | DNS **[APPROVAL]**. |
-| Alignment | The From domain aligns with the DKIM `d=` domain (relaxed alignment is fine). | Check in a test email's headers. |
-| Sender identity | Display name "TeamBalance Pro", a monitored reply path decided (reply-to or none), and the footer identifying the organization and why the recipient gets the email (already in the template). | Decide the reply-to. |
-| One-click unsubscribe | Test email headers contain `List-Unsubscribe: <https://…/api/email/unsubscribe/one-click?t=…>` and `List-Unsubscribe-Post: List-Unsubscribe=One-Click`. Gmail / Yahoo show "Unsubscribe". | Check in test email. |
-| Provider limits | The Resend plan's daily / monthly sending limit and per-second rate cover pilot volume (app allowance: Free / Trial 20 per day and 100 per month; Pro / LEGACY 50 per day and 500 per month per organization). | Confirm the plan **[APPROVAL]** if billing changes. |
-| Bounce / complaint webhook | Registered and verified (section 5). | **[APPROVAL]**. |
-| Rendering | Test invitations (player, guardian, linked account; long names; no venue / deadline) checked in Gmail web + mobile, Apple Mail iOS and Outlook. Buttons tappable, the text version readable, nothing clipped. | Send to internal test inboxes only. |
-| Content | The subject has no personal data (`RSVP: <match> — <date/time>`). No tracking pixels or link rewriting: **disable Resend open / click tracking** for this domain or stream. Click tracking would rewrite the `#token` links. | Check Resend settings. |
+| `RSVP_EMAIL_DELIVERY` | `live-pilot` (exact) | Any other value means disabled |
+| `RSVP_EMAIL_PILOT_ORGS` | `<orgId>[,<orgId>…]` (1–10 cuid ids) | One malformed entry disables the whole pilot |
+| `RESEND_API_KEY` | already set for account email | Unchanged |
+| `EMAIL_FROM` | `TeamBalance Pro <noreply@mail.teambalancepro.com>` | Must be a display name on `mail.teambalancepro.com` |
+| `APP_BASE_URL` | `https://teambalancepro.com` | Already set |
+| `VERCEL_ENV` | `production` (set by Vercel) | Preview deployments can never be live |
 
-## 5. Webhook verification procedure (pilot setup only)
+Steps:
+1. Get the pilot organization ids (read-only query, or the admin URL) and confirm them with the owner.
+2. **[APPROVAL]** Add `RSVP_EMAIL_PILOT_ORGS` (Production).
+3. **[APPROVAL]** Add `RSVP_EMAIL_DELIVERY=live-pilot` (Production).
+4. **[APPROVAL]** Redeploy Production (variables apply on deploy).
+5. Check: a pilot organizer's match page shows the Send button enabled; a non-pilot organization's shows
+   "coming soon"; a Preview deployment shows "coming soon".
 
-1. **[APPROVAL]** In the Resend dashboard, create a webhook endpoint
-   `https://teambalancepro.com/api/email/webhooks/resend` with events `email.bounced` and `email.complained`
-   only. Copy the signing secret (`whsec_…`).
-2. **[APPROVAL]** Set `RESEND_WEBHOOK_SECRET` in Vercel **Production** only (not Preview), then redeploy.
-3. Produce a signed `email.bounced`. Resend's testing documentation lists simulator addresses (for example
-   `bounced@resend.dev` and `complained@resend.dev`); confirm this in its current docs. A test send to one of
-   them comes from the live transport, so do this only after section 6 is approved, from a pilot
-   organization, or with a one-off operator script. Otherwise use the dashboard's test-event feature if it
-   offers one.
-4. **Expect:**
-   - HTTP 200 with `{"ok":true,"status":"processed","outcome":"SUPPRESSED"}`;
-   - one `EmailWebhookEvent` row (no address);
-   - one `GlobalEmailSuppression` row for the test address with reason `HARD_BOUNCE`.
+## 6. Webhook (bounces and complaints) [APPROVAL]
 
-   Replaying the same event in the dashboard must give `"status":"duplicate"`.
-5. **Negative checks:**
-   - `curl -X POST` with a wrong signature → 401;
-   - an old timestamp (more than 5 minutes) → 401;
-   - more than 256 KB → 413.
-6. Compare the real payload's fields (`type`, `data.to[]`, `data.bounce.type`) with the handler. If Resend's
-   payload differs from its documentation, **stop** and fix the handler before relying on it.
-7. Delete the test suppression row afterwards, if it used a real internal address.
+1. **[APPROVAL]** In Resend → Webhooks, add the endpoint `https://teambalancepro.com/api/email/webhooks/resend`
+   with events **`email.bounced`** and **`email.complained`** only.
+2. Copy the signing secret (`whsec_…`). **[APPROVAL]** Set `RESEND_WEBHOOK_SECRET` (Production only), then
+   redeploy.
+3. Check the endpoint is reachable but refuses unsigned calls:
+   `curl -s -o /dev/null -w "%{http_code}" -X POST https://teambalancepro.com/api/email/webhooks/resend -d '{}'`
+   must print `401` (`503` means the secret isn't deployed).
+4. **Authentic signed event.** If the Resend dashboard offers a test event for the endpoint, send it.
+   Otherwise, once live (§5), send one RSVP invitation from a pilot organization to Resend's documented bounce
+   test address (`bounced@resend.dev`; confirm it in Resend's current docs).
+5. **Expect:**
+   - Resend's delivery log for the endpoint shows HTTP 200 with
+     `{"ok":true,"status":"processed","outcome":"SUPPRESSED"}`;
+   - one `EmailWebhookEvent` row (provider, event id, type `email.bounced`, outcome `SUPPRESSED`);
+   - one `GlobalEmailSuppression` row (`HARD_BOUNCE`, source `resend-webhook`).
+6. **Complaint:** repeat with `complained@resend.dev`. Expect `SPAM_COMPLAINT`.
+7. **Duplicates:** use "Resend" / replay on the same event in the dashboard. Expect HTTP 200 with
+   `"status":"duplicate"` and no new rows.
+8. **Payload check:** compare the real payload fields (`type`, `data.to[]`, `data.bounce.type`) with the
+   handler. If they differ, **stop** and fix the handler before relying on it.
+9. **Monitoring:**
+   - Resend's endpoint page shows failed deliveries and retries;
+   - our logs only ever contain `[email-webhook] processing failed`, with no ids or addresses;
+   - any 5xx from the endpoint → investigate the same day;
+   - repeated 401s → check the secret wasn't rotated without a redeploy.
+10. Delete the test suppression rows for `bounced@resend.dev` / `complained@resend.dev` afterwards
+   **[APPROVAL]** (one SQL statement, logged).
 
-Rollback (R): unset the secret (back to 503) and disable the endpoint in Resend.
+Rollback (R): disable the endpoint in Resend and unset `RESEND_WEBHOOK_SECRET` (it answers 503 again).
 
-## 6. Live transport integration (separate, reviewed change; not built)
+## 7. Prerequisites before the first real invitation (go / no-go)
 
-Minimum design for the pilot code change:
-- **Explicit mode:** a third mode in `rsvpDeliveryMode()`, `live`, which requires **all** of:
-  - `NODE_ENV=production`;
-  - `VERCEL_ENV=production`, so it can never run in Preview;
-  - `RSVP_EMAIL_DELIVERY=live`;
-  - a non-empty `RSVP_EMAIL_PILOT_ORGS` allowlist (organization ids).
+- [ ] Privacy Policy and Terms changes published **[APPROVAL]**. Drafts:
+      `docs/legal/privacy-policy-m13b-draft.md`, `docs/legal/terms-m13b-draft.md`. Open decisions settled.
+- [ ] §3 passes: SPF, DKIM and DMARC pass; the domain is verified; tracking is off.
+- [ ] §4 quota is confirmed.
+- [ ] §2 migrations are applied, with a snapshot taken.
+- [ ] §6 webhook is verified with an authentic signed event.
+- [ ] The retention schedule is approved (§9).
+- [ ] A named person monitors daily for the whole pilot (§10).
 
-  Anything else stays `disabled`.
-- **Allowlist enforced server-side** in `createRsvpSend`, `retryFailedInvitations`, the send route's preview
-  `sending.available`, and the queue worker. Each claimed row's organization is re-checked against the
-  allowlist; rows of other organizations stay QUEUED.
-- **Transport:** in `live` mode, `rsvpTransport()` returns `createResendTransport` (existing fetch-based
-  transport, idempotency key and the two allowed headers). The test-outbox path stays for tests.
-- **Untouched:** account / security email code (`src/lib/email/index.ts`).
-- **Tests:** allowlist refusal, Preview refusal, live mode only with every condition, and no Resend call in
-  tests (mocked fetch).
-
-Kill switch (R): unset `RSVP_EMAIL_DELIVERY`, or empty the allowlist, then redeploy. Queued rows stay QUEUED,
-nothing is lost, and the counters stay correct. Emails already accepted can't be recalled (I).
-
-## 7. Pilot scope and test scenarios
-
-- **Organizations:** one or two, ideally owned by the operator or a trusted organizer, with fewer than 30
-  players. List them in `RSVP_EMAIL_PILOT_ORGS`.
-- **Recipients:** first round to internal test addresses only (organizer and staff inboxes), then real
-  players who agreed to take part.
-- **Allowance:** keep the plan defaults (20 per day / 100 per month for Free). Check the preview's
-  "Remaining today / this month" before and after each send.
-
-Scenarios (each with expected result):
-1. Preview shows the right eligible and excluded players, with masked addresses and reasons.
-2. Send to 2–3 internal addresses: dashboard "Accepted", email received, Yes / Maybe / No links open the page
-   with the choice pre-selected, nothing saved until Confirm, the answer appears in attendance.
-3. Guardian contact: guardian wording, player name in the body only, not in the subject.
-4. Unsubscribe via the page and via Gmail's one-click: the next preview shows "Not receiving invitation
-   emails", and resend skips them.
-5. Resend to unanswered: answered and overridden players are skipped; the older emailed link reports
-   "replaced"; manual links still work.
-6. Quota: daily allowance reached → `PLAN_LIMIT` message; the next UTC day resets it.
-7. Bounce: send to a known-bad internal address (if Resend allows) → webhook → suppressed → the dashboard
-   shows "Suppressed".
-8. Telegram match: no email card. Telegram polls unaffected.
-9. Account emails (verification, password reset) still arrive during the pilot.
-
-## 8. Retention operation
-
-- Dry run first. `runRsvpRetention({ dryRun: true })` reports `eligible`, `heldForInvestigation`,
-  `activeSkipped` and `expiredTokensEligible`, counts only.
-- **[APPROVAL]** Then schedule a daily run (for example, added to the existing 15-minute automation cron with
-  a once-a-day guard, or a separate daily workflow). Bounded: 500 rows × 20 batches per run. Concurrent runs
-  are safe.
-- **Incident hold:** set `RsvpSend.retentionHoldUntil` for the affected send before investigating. Remove it
-  afterwards.
-- **Privacy request from a recipient:** after confirming they control the address, run
-  `eraseRecipientEmail(address)` (support-only). It keeps one `RECIPIENT_REQUEST` suppression unless the owner
-  decides otherwise. Hard-bounce and complaint suppressions always stay.
-
-## 9. Monitoring and rollback
-
-Daily during the pilot (counts only; no addresses in logs by design):
-- the dashboard per pilot match: accepted / failed / uncertain / skipped;
-- **any UNCERTAIN** → check Resend logs for that time window before resending;
-- cron response `rsvp` counts (`sent`, `failed`, `uncertain`, `errors`, `remaining`), in the GitHub Actions
-  log;
-- `GlobalEmailSuppression` and `OrganizationEmailOptOut` growth; bounce rate > 2% or **any** complaint →
-  pause;
-- Resend dashboard: deliverability, bounces, complaints;
-- `RsvpEmailUsage` against the allowance.
-
-Rollback ladder:
-1. Pause a pilot organization: remove it from the allowlist (R).
-2. Stop all RSVP sending: unset `RSVP_EMAIL_DELIVERY` (R). Account email unaffected.
-3. Revert the deploy to the previous release (R). The schema stays; old code ignores the new tables.
-4. **Not reversible:** emails already accepted (I), anonymized rows (I), applied migrations (I, but additive
-   and harmless).
-
-## 10. Go / no-go criteria
-
-**Go only if all are true:**
-- [ ] Privacy Policy and Terms changes published (owner-approved).
-- [ ] SPF, DKIM and DMARC pass on a test email; the Resend domain is verified; open / click tracking is off.
-- [ ] The webhook passes the section 5 procedure in Production.
-- [ ] Live-mode code (section 6) is reviewed and merged, with Preview refusal and allowlist tests passing.
-- [ ] Migrations applied after a database snapshot; the app is healthy afterwards.
-- [ ] Section 7 scenarios 1–4 pass with internal addresses.
-- [ ] Retention dry run checked; the schedule is approved.
-- [ ] Account email delivery verified unaffected.
-- [ ] A named person monitors daily for the pilot's duration, with a written rollback.
-
-**No-go / stop immediately if:**
+**No-go / stop at once** (§11):
 - any spam complaint;
-- bounce rate > 2%;
-- an email reaches a non-allowlisted organization's players;
-- any address or token appears in logs;
-- account emails are delayed;
-- UNCERTAIN outcomes repeat without explanation.
+- bounce rate over 2%;
+- an email to a non-allowlisted organization's players;
+- an address or token in logs;
+- delayed account email;
+- repeated unexplained UNCERTAIN results.
 
-## 11. Owner decisions still open
+## 8. Pilot test cases (one or two organizations, internal addresses first)
 
-1. Publish the legal changes (and whether to get legal review first).
-2. Guardian contacts: whether an organizer's attestation is enough for the pilot, or a guardian
-   double-opt-in is needed.
-3. Retention period (90 days proposed) and scheduling.
-4. Erasure default: keep the address as a `RECIPIENT_REQUEST` suppression (proposed), or forget it.
-5. Reply-to address for invitations.
+| # | Scenario | Expected |
+| --- | --- | --- |
+| 1 | Preview a match | Correct eligible / excluded players, masked addresses and reasons; "Remaining today / this month" shows pilot limits (at most 20 / 100) |
+| 2 | Send to 2–3 internal addresses | Dashboard "Accepted by email provider"; email arrives; From is `TeamBalance Pro <noreply@mail.teambalancepro.com>`; the subject has no personal data |
+| 3 | Yes / Maybe / No links | The page opens with the choice pre-selected; nothing is saved until Confirm; attendance updates |
+| 4 | Guardian contact | Guardian wording; player name only in the body |
+| 5 | Gmail one-click unsubscribe and the page unsubscribe | The next preview shows "Not receiving invitation emails"; resend skips them |
+| 6 | Resend to unanswered | Answered and overridden players skipped; the older emailed link says "replaced"; manual links still work |
+| 7 | Daily limit | The 21st recipient in a day gets `LIMIT`; a send with none left gets `PLAN_LIMIT`; it resets at 00:00 UTC |
+| 8 | Non-pilot organization | Send disabled (403 `DELIVERY_DISABLED`) |
+| 9 | Bounce / complaint (§6) | Suppressed globally; the dashboard shows "Suppressed" |
+| 10 | Account email during the pilot | Verification and password reset still arrive |
+| 11 | Telegram match | No email card; polls unaffected |
+
+## 9. Retention and privacy requests
+
+- **Retention** (`runRsvpRetention`): **removes direct identifiers**. It does not anonymize (see
+  `docs/M13B_RSVP_EMAIL.md`, P8A).
+  1. Run with `{ dryRun: true }` first and read the counts.
+  2. **[APPROVAL]** Schedule it daily (for example, a once-a-day guard in the existing automation cron, or a
+     separate daily workflow).
+  3. Incident hold: set `RsvpSend.retentionHoldUntil` for the affected send.
+- **Privacy request** from a recipient (support only, after checking they control the address):
+  `eraseRecipientEmail(address, { scope, doNotContact })`.
+  - `scope` is `{ kind: "ALL" }` or `{ kind: "ORGANIZATION", organizationId }`.
+  - `doNotContact` must be chosen explicitly:
+    - `"NONE"`: delete only;
+    - `"ORGANIZATION"`: a support-recorded opt-out for that organization;
+    - `"GLOBAL"`: a do-not-contact for every organization, used only if the recipient asks for it.
+  - Existing opt-outs stay organization-scoped and are never removed or converted. Bounce, complaint and
+    earlier do-not-contact records are never removed.
+
+## 10. Monitoring (daily during the pilot; logs carry counts only)
+
+- Dashboard per pilot match: accepted / failed / uncertain / skipped. **Any UNCERTAIN** → check Resend's logs
+  for that window before resending.
+- GitHub Actions automation log: the `rsvp` counts (`sent`, `failed`, `uncertain`, `errors`, `remaining`).
+- Resend dashboard: bounces, complaints, delivery rate, webhook failures.
+- Database (read-only): growth of `GlobalEmailSuppression` / `OrganizationEmailOptOut`, and today's
+  `RsvpEmailUsage` against the 100-per-day pilot cap.
+- Vercel logs: search for `rsvp` / `email` errors. They should never contain an address or token.
+
+## 11. Emergency disablement (fastest first)
+
+1. **Pause one organization:** remove it from `RSVP_EMAIL_PILOT_ORGS` and redeploy (R). Its queued rows stay
+   QUEUED and aren't claimed.
+2. **Stop all RSVP email:** delete `RSVP_EMAIL_DELIVERY` and redeploy (R). Sends, retries and the cron are
+   refused or report `disabled`. Account email is unaffected.
+3. **Bad deploy:** promote the previous Production deployment in Vercel (R).
+4. **Webhook trouble:** disable the endpoint in Resend (R).
+
+Not reversible (I):
+- emails Resend already accepted;
+- identifiers removed by retention or erasure;
+- applied migrations (additive and harmless).
+
+After an emergency: write down what happened. If it was a delivery incident, put an incident hold on the
+affected sends before investigating.
+
+## 12. Owner decisions (all open)
+
+1. Publish the Privacy Policy and Terms changes; get legal review first (recommended)?
+2. Guardian contacts: is the organizer's attestation enough for the pilot, or is a guardian double opt-in
+   required?
+3. Retention: 90 days after the match (proposed); approve the daily schedule.
+4. Privacy requests: who verifies identity, and how. Default `doNotContact` when a requester doesn't say:
+   proposed `"NONE"`, but ask them.
+5. Reply-to address for invitations (none today).
 6. DMARC record and policy level.
-7. Pilot organizations and duration.
-8. Log retention for the one-click unsubscribe URL in Vercel logs (or a log-drain filter).
+7. Pilot organizations (1–2), start date and duration.
+8. Log retention for the one-click unsubscribe URL in Vercel request logs.
+9. Approve each [APPROVAL] step above, at the time it is done.

@@ -106,14 +106,14 @@ afterAll(async () => {
 });
 
 describe("M13B P7 — retention cutoff (UTC) and what is kept", () => {
-  it("cutoff: a match on day D keeps its details through D+90 and is anonymized from D+91 00:00Z", async () => {
+  it("cutoff: a match on day D keeps its details through D+90 and loses direct identifiers from D+91 00:00Z", async () => {
     expect(retentionCutoff(new Date("2099-09-02T23:59:59Z")).toISOString()).toBe("2099-06-04T00:00:00.000Z");
     await sendFor(O(), "m");
     await processRsvpQueue({ now: SEND_AT });
-    expect(await runRsvpRetention({ now: LAST_RETAINED })).toMatchObject({ eligible: 0, anonymized: 0 });
+    expect(await runRsvpRetention({ now: LAST_RETAINED })).toMatchObject({ eligible: 0, identifiersRemoved: 0 });
     expect(await identifying()).toBe(3);
     const run = await runRsvpRetention({ now: FIRST_ANONYMIZED });
-    expect(run).toMatchObject({ eligible: 3, anonymized: 3, remaining: 0, activeSkipped: 0, concurrentRunDetected: false });
+    expect(run).toMatchObject({ eligible: 3, identifiersRemoved: 3, remaining: 0, activeSkipped: 0, concurrentRunDetected: false });
     expect(await identifying()).toBe(0);
     expect(JSON.stringify(run)).not.toMatch(/@|Ava|Ben/);
   });
@@ -141,15 +141,15 @@ describe("M13B P7 — retention cutoff (UTC) and what is kept", () => {
     await sendFor(O(), "mc");
     await processRsvpQueue({ now: SEND_AT, limit: 100 });
     const dry = await runRsvpRetention({ now: FIRST_ANONYMIZED, dryRun: true });
-    expect(dry).toMatchObject({ dryRun: true, eligible: 6, anonymized: 0, batches: 0 });
+    expect(dry).toMatchObject({ dryRun: true, eligible: 6, identifiersRemoved: 0, batches: 0 });
     expect(await identifying()).toBe(6);
     const partial = await runRsvpRetention({ now: FIRST_ANONYMIZED, batchSize: 2, maxBatches: 2 });
-    expect(partial).toMatchObject({ anonymized: 4, batches: 2, remaining: 2 });
+    expect(partial).toMatchObject({ identifiersRemoved: 4, batches: 2, remaining: 2 });
     const runs = await Promise.all([runRsvpRetention({ now: FIRST_ANONYMIZED, batchSize: 1 }), runRsvpRetention({ now: FIRST_ANONYMIZED, batchSize: 1 })]);
-    expect(runs[0].anonymized + runs[1].anonymized).toBe(2);
-    expect(await runRsvpRetention({ now: FIRST_ANONYMIZED })).toMatchObject({ eligible: 0, anonymized: 0 });
-    const stamps = await prisma.rsvpInvitation.findMany({ select: { anonymizedAt: true } });
-    expect(stamps.every((s) => s.anonymizedAt?.getTime() === FIRST_ANONYMIZED.getTime())).toBe(true);
+    expect(runs[0].identifiersRemoved + runs[1].identifiersRemoved).toBe(2);
+    expect(await runRsvpRetention({ now: FIRST_ANONYMIZED })).toMatchObject({ eligible: 0, identifiersRemoved: 0 });
+    const stamps = await prisma.rsvpInvitation.findMany({ select: { identifiersRemovedAt: true } });
+    expect(stamps.every((s) => s.identifiersRemovedAt?.getTime() === FIRST_ANONYMIZED.getTime())).toBe(true);
   });
 
   it("active delivery rows and incident holds are skipped and counted; a later match is untouched", async () => {
@@ -160,11 +160,11 @@ describe("M13B P7 — retention cutoff (UTC) and what is kept", () => {
     await processRsvpQueue({ now: SEND_AT, limit: 100, sendId: (await prisma.rsvpSend.findFirstOrThrow({ where: { matchId: "late" } })).id });
     await prisma.rsvpSend.update({ where: { id: held.sendId }, data: { retentionHoldUntil: new Date(FIRST_ANONYMIZED.getTime() + 7 * DAY) } });
     const run = await runRsvpRetention({ now: FIRST_ANONYMIZED });
-    expect(run).toMatchObject({ anonymized: 0, activeSkipped: 3, heldForInvestigation: 3 });
-    expect(await prisma.rsvpInvitation.count({ where: { matchId: "late", anonymizedAt: null, email: { not: null } } })).toBe(3);
-    // After the hold expires the held rows are anonymized; QUEUED rows still never are.
+    expect(run).toMatchObject({ identifiersRemoved: 0, activeSkipped: 3, heldForInvestigation: 3 });
+    expect(await prisma.rsvpInvitation.count({ where: { matchId: "late", identifiersRemovedAt: null, email: { not: null } } })).toBe(3);
+    // After the hold expires the held rows lose identifiers; QUEUED rows still never do.
     const after = await runRsvpRetention({ now: new Date(FIRST_ANONYMIZED.getTime() + 8 * DAY) });
-    expect(after).toMatchObject({ anonymized: 3, activeSkipped: 3, heldForInvestigation: 0 });
+    expect(after).toMatchObject({ identifiersRemoved: 3, activeSkipped: 3, heldForInvestigation: 0 });
   });
 
   it("completed, canceled and deleted matches", async () => {
@@ -177,9 +177,33 @@ describe("M13B P7 — retention cutoff (UTC) and what is kept", () => {
     const ledger = await prisma.rsvpEmailUsage.findMany();
     await prisma.match.delete({ where: { id: "mx" } }); // invitations go with it; the ledger stays
     expect(await prisma.rsvpInvitation.count({ where: { matchId: "mx" } })).toBe(0);
-    expect(await runRsvpRetention({ now: FIRST_ANONYMIZED })).toMatchObject({ anonymized: 6, remaining: 0 });
+    expect(await runRsvpRetention({ now: FIRST_ANONYMIZED })).toMatchObject({ identifiersRemoved: 6, remaining: 0 });
     expect(await prisma.rsvpEmailUsage.findMany()).toEqual(ledger);
     expect((await rsvpAllowance("o", SEND_AT)).day.used).toBe(9);
+  });
+
+  it("P8A: a deleted player's invitations lose their identifiers at the next run, whatever the match date", async () => {
+    await sendFor(O(), "late");
+    await processRsvpQueue({ now: SEND_AT });
+    await prisma.player.delete({ where: { id: "p2" } });
+    const run = await runRsvpRetention({ now: SEND_AT }); // long before the 90-day cutoff
+    expect(run).toMatchObject({ eligibleDeletedPlayer: 1, identifiersRemoved: 1 });
+    expect(await prisma.rsvpInvitation.findFirst({ where: { playerId: null } })).toMatchObject({ email: null, providerMessageId: null, idempotencyKey: null, unsubscribeTokenId: null });
+    expect(await prisma.rsvpInvitation.count({ where: { playerId: { not: null }, email: { not: null } } })).toBe(2); // others untouched
+  });
+
+  it("P8A: after retention a row is de-identified, not anonymous — what remains linkable is exactly documented", async () => {
+    await sendFor(O(), "m");
+    await processRsvpQueue({ now: SEND_AT });
+    await runRsvpRetention({ now: FIRST_ANONYMIZED });
+    const row = await prisma.rsvpInvitation.findFirstOrThrow({ where: { playerId: "p1" } });
+    // Removed: the direct identifiers.
+    expect(row).toMatchObject({ email: null, providerMessageId: null, idempotencyKey: null, unsubscribeTokenId: null });
+    // Remaining (documented in docs/M13B_RSVP_EMAIL.md, P8A): links to the named player, match and organization, recipient type, status, dates.
+    expect(row).toMatchObject({ playerId: "p1", matchId: "m", organizationId: "o", recipientType: "GUARDIAN", status: "SENT" });
+    expect(row.sentAt).not.toBeNull();
+    // The unsubscribe tokens still exist until they expire (old emails' links keep working), but are no longer linked to the invitation.
+    expect(await prisma.emailUnsubscribeToken.count()).toBe(6);
   });
 
   it("expired unsubscribe tokens (they hold an address) are deleted; opt-outs stay", async () => {
@@ -211,13 +235,13 @@ describe("M13B P7 — privacy erasure and suppression consistency", () => {
     return Object.fromEntries((await classifyRoster(c.organization.id, match, 100)).rows.map((r) => [r.playerId, r.status]));
   };
 
-  it("erasing an address: invitations anonymized, queued ones canceled, contacts cleared everywhere, one global suppression kept", async () => {
+  it("P8A: erasure without do-not-contact removes the address everywhere but never weakens or converts existing blocks", async () => {
     await sendFor(O(), "m");
     await processRsvpQueue({ now: SEND_AT });
     await sendFor(O2(), "m2"); // still QUEUED for ben@
     await prisma.organizationEmailOptOut.create({ data: { organizationId: "o", email: "ben@example.com", source: "LINK" } });
-    const r = await eraseRecipientEmail("  BEN@example.com ");
-    expect(r).toEqual({ ok: true, invitationsAnonymized: 2, queuedCanceled: 1, inFlight: 0, contactsCleared: 2, tokensDeleted: 2, optOutsReplaced: 1, globalSuppression: "added" });
+    const r = await eraseRecipientEmail("  BEN@example.com ", { scope: { kind: "ALL" }, doNotContact: "NONE" });
+    expect(r).toEqual({ ok: true, invitationsCleared: 2, queuedCanceled: 1, inFlight: 0, contactsCleared: 2, tokensDeleted: 2, organizationOptOutsKept: 1, organizationOptOut: "not-requested", globalSuppression: "not-requested" });
     expect(JSON.stringify(r)).not.toContain("@");
     expect(await prisma.rsvpInvitation.count({ where: { email: "ben@example.com" } })).toBe(0);
     expect(await prisma.rsvpInvitation.findFirst({ where: { organizationId: "o2" } })).toMatchObject({ status: "SKIPPED", skipReason: "RECIPIENT_REQUEST", email: null });
@@ -226,22 +250,43 @@ describe("M13B P7 — privacy erasure and suppression consistency", () => {
       { contactEmail: null, contactAuthorizedAt: null },
       { contactEmail: null, contactAuthorizedAt: null },
     ]);
-    expect(await prisma.organizationEmailOptOut.count()).toBe(0);
-    expect(await prisma.globalEmailSuppression.findMany({ select: { email: true, reason: true } })).toEqual([{ email: "ben@example.com", reason: "RECIPIENT_REQUEST" }]);
-    // Any organizer re-entering the address still can't email it.
+    // o's opt-out is kept AND stays organization-scoped; no global suppression was invented.
+    expect(await prisma.organizationEmailOptOut.findMany({ select: { organizationId: true, email: true } })).toEqual([{ organizationId: "o", email: "ben@example.com" }]);
+    expect(await prisma.globalEmailSuppression.count()).toBe(0);
+    // Re-entered later: still blocked in o (its opt-out); o2 never had a block and none was added.
+    await prisma.player.update({ where: { id: "p2" }, data: { contactEmail: "ben@example.com", contactEmailType: "PLAYER", contactAuthorizedAt: AUTH_AT, contactAuthorizedByUserId: "u-o" } });
     await prisma.player.update({ where: { id: "q1" }, data: { contactEmail: "ben@example.com", contactEmailType: "PLAYER", contactAuthorizedAt: AUTH_AT, contactAuthorizedByUserId: "u-o2" } });
-    expect((await roster(O2(), "m2")).q1).toBe("SUPPRESSED");
-    expect(await eraseRecipientEmail("ben@example.com")).toMatchObject({ ok: true, globalSuppression: "kept" }); // idempotent
-    expect(await eraseRecipientEmail("not an address")).toEqual({ ok: false, code: "INVALID_EMAIL" });
+    expect((await roster(O(), "m")).p2).toBe("SUPPRESSED");
+    expect((await roster(O2(), "m2")).q1).toBe("WILL_SEND");
+    expect(await eraseRecipientEmail("not an address", { scope: { kind: "ALL" }, doNotContact: "NONE" })).toEqual({ ok: false, code: "INVALID_EMAIL" });
   });
 
-  it("keepSuppression:false forgets a recipient-request suppression but never a hard bounce", async () => {
-    await eraseRecipientEmail("ben@example.com");
-    expect(await eraseRecipientEmail("ben@example.com", { keepSuppression: false })).toMatchObject({ globalSuppression: "removed" });
-    expect(await prisma.globalEmailSuppression.count()).toBe(0);
-    await recordGlobalSuppression("ben@example.com", "HARD_BOUNCE", "resend-webhook");
-    expect(await eraseRecipientEmail("ben@example.com", { keepSuppression: false })).toMatchObject({ globalSuppression: "kept" });
-    expect(await prisma.globalEmailSuppression.findMany({ select: { reason: true } })).toEqual([{ reason: "HARD_BOUNCE" }]);
+  it("P8A: a global do-not-contact must be explicit; repeated requests never remove it; bounces and complaints are preserved", async () => {
+    expect(await eraseRecipientEmail("ben@example.com", { scope: { kind: "ALL" }, doNotContact: "GLOBAL" })).toMatchObject({ globalSuppression: "added" });
+    expect(await eraseRecipientEmail("ben@example.com", { scope: { kind: "ALL" }, doNotContact: "NONE" })).toMatchObject({ globalSuppression: "existing" }); // a later request doesn't lift it
+    expect(await eraseRecipientEmail("ben@example.com", { scope: { kind: "ALL" }, doNotContact: "GLOBAL" })).toMatchObject({ globalSuppression: "existing" });
+    expect(await prisma.globalEmailSuppression.findMany({ select: { email: true, reason: true } })).toEqual([{ email: "ben@example.com", reason: "RECIPIENT_REQUEST" }]);
+    // An organizer re-entering the address (the erasure cleared it) still can't email it — in any organization.
+    await prisma.player.update({ where: { id: "q1" }, data: { contactEmail: "ben@example.com", contactEmailType: "PLAYER", contactAuthorizedAt: AUTH_AT, contactAuthorizedByUserId: "u-o2" } });
+    expect((await roster(O2(), "m2")).q1).toBe("SUPPRESSED");
+    await recordGlobalSuppression("angry@example.com", "SPAM_COMPLAINT", "resend-webhook");
+    expect(await eraseRecipientEmail("angry@example.com", { scope: { kind: "ALL" }, doNotContact: "NONE" })).toMatchObject({ globalSuppression: "existing" });
+    expect(await prisma.globalEmailSuppression.findUnique({ where: { email: "angry@example.com" }, select: { reason: true } })).toEqual({ reason: "SPAM_COMPLAINT" });
+  });
+
+  it("P8A: an organization-scoped request touches only that organization; its opt-out is organization-scoped", async () => {
+    await sendFor(O(), "m");
+    await sendFor(O2(), "m2");
+    await processRsvpQueue({ now: SEND_AT, limit: 100 });
+    const r = await eraseRecipientEmail("ben@example.com", { scope: { kind: "ORGANIZATION", organizationId: "o" }, doNotContact: "ORGANIZATION" });
+    expect(r).toMatchObject({ ok: true, invitationsCleared: 1, contactsCleared: 1, tokensDeleted: 2, organizationOptOut: "added", globalSuppression: "not-requested" });
+    expect(await prisma.rsvpInvitation.count({ where: { organizationId: "o2", email: "ben@example.com" } })).toBe(1); // o2 untouched
+    expect(await prisma.player.findUniqueOrThrow({ where: { id: "q1" }, select: { contactEmail: true } })).toEqual({ contactEmail: "ben@example.com" });
+    expect(await prisma.organizationEmailOptOut.findMany({ select: { organizationId: true, source: true } })).toEqual([{ organizationId: "o", source: "SUPPORT_REQUEST" }]);
+    expect(await eraseRecipientEmail("ben@example.com", { scope: { kind: "ORGANIZATION", organizationId: "o" }, doNotContact: "ORGANIZATION" })).toMatchObject({ organizationOptOut: "existing", organizationOptOutsKept: 1 });
+    // Invalid combinations are refused.
+    expect(await eraseRecipientEmail("ben@example.com", { scope: { kind: "ALL" }, doNotContact: "ORGANIZATION" })).toEqual({ ok: false, code: "INVALID_REQUEST" });
+    expect(await eraseRecipientEmail("ben@example.com", { scope: { kind: "ORGANIZATION", organizationId: "nope" }, doNotContact: "NONE" })).toEqual({ ok: false, code: "INVALID_REQUEST" });
   });
 
   it("deletion consistency: deleting a player keeps the address's opt-out; deleting an organization removes only its own opt-outs; global suppressions stay", async () => {
@@ -266,7 +311,7 @@ describe("M13B P7 — privacy erasure and suppression consistency", () => {
   it("an in-flight (SENDING) invitation is reported, not silently erased", async () => {
     await sendFor(O(), "m");
     await prisma.rsvpInvitation.updateMany({ where: { email: "ben@example.com" }, data: { status: "SENDING", claimedAt: SEND_AT, attempts: 1 } });
-    expect(await eraseRecipientEmail("ben@example.com")).toMatchObject({ inFlight: 1, invitationsAnonymized: 0 });
+    expect(await eraseRecipientEmail("ben@example.com", { scope: { kind: "ALL" }, doNotContact: "NONE" })).toMatchObject({ inFlight: 1, invitationsCleared: 0 });
     expect(await prisma.rsvpInvitation.count({ where: { email: "ben@example.com", status: "SENDING" } })).toBe(1);
   });
 });

@@ -3,8 +3,12 @@
 **Status: proposal for review. Not published.** `src/app/privacy/page.tsx` is unchanged. Apply these changes
 only when RSVP email delivery is approved for launch. Update the effective date on the same day.
 
-These changes describe M13B as built (P1–P7; P7 added the 90-day retention cleanup and the privacy-request
-procedure). They have not been reviewed by a lawyer. They do not claim
+These changes describe M13B as built (P1–P8A). P8A corrected the privacy-request procedure: a global
+do-not-contact is recorded only on request, and organization unsubscribes stay per organization. It also
+stopped describing the retention cleanup as "anonymization".
+
+**Status of this draft (P8A): final candidate for owner and legal review.** Items marked **[OWNER]** or
+**[LEGAL]** in the list at the end must be decided before publishing. They have not been reviewed by a lawyer. They do not claim
 compliance with any specific law (for example COPPA, CAN-SPAM, GDPR or state privacy laws). Open questions
 are at the end.
 
@@ -120,10 +124,13 @@ Each change below shows the current text and the proposed replacement, by sectio
 **Add to Retention:**
 
 > - **Invitation records:** we keep the address an invitation was sent to, and our email provider's
->   reference for it, for **90 days after the match**. After that we remove them. We keep only the delivery
->   status and dates, so the organizer's history stays accurate. We may keep them longer only while we
->   investigate a specific delivery problem. If a match is deleted earlier, its invitation records are
->   deleted with it. Daily usage counts hold no addresses and are kept for plan allowances.
+>   reference for it, for **90 days after the match**. After that we remove them.
+>   - If the player is deleted sooner, we remove them at our next routine cleanup.
+>   - The rest of the record stays for the organizer's history: which player it was for, whether it went to
+>     the player, a parent / guardian or a linked account, and its delivery status and dates. It still
+>     relates to that player, so it is still personal information. It is deleted when the match is deleted.
+>   - We may keep the address longer only while we investigate a specific delivery problem.
+>   - Daily usage counts hold no personal information and are kept for plan allowances.
 > - **Players' answers are not affected** by this cleanup.
 > - **Unsubscribe and suppression records** are kept indefinitely, so that we keep honoring them. They
 >   contain only the address, the organization (for unsubscribes), the reason and the date.
@@ -135,15 +142,21 @@ Each change below shows the current text and the proposed replacement, by sectio
 > - Organizers can change or remove a player's contact email at any time. Removing it also removes the record
 >   of who confirmed it.
 > - To stop invitation emails, use the unsubscribe link in any invitation.
-> - **If you received an invitation and want us to delete your address,** email us. We remove it from:
+> - **If you received an invitation and want us to delete your address,** email us. Tell us whether the request
+>   is about one organization or all of them. We remove your address from:
 >   - invitation records;
 >   - unsubscribe links;
->   - every player contact where an organizer entered it.
+>   - the player contacts where an organizer entered it.
+> - **Choosing to stop future invitations is up to you.** You can ask us to:
+>   - only delete your address. An organizer could then enter it again later;
+>   - stop that organization's invitations;
+>   - stop invitations from every organization ("do not contact").
 >
->   Unless you ask otherwise, we keep only your address with a note that you asked not to be contacted, so
->   no organizer can send you invitations again. If you ask us to remove that too, an organizer could enter
->   your address again later. We always keep a record that an address bounced or reported spam, so we
->   don't send it more email.
+>   To honor that choice, we keep only your address, the organization (if it applies), what you asked for and
+>   the date. We never widen an unsubscribe from one organization into a block on all of them.
+> - **Some records stay even after deletion.** If you previously unsubscribed from an organization, that
+>   unsubscribe stays. A record that your address bounced or reported spam also stays. Keeping these is what
+>   stops further email to you.
 > - We may need to confirm that you control the address before acting on a request about it.
 
 ## Section 13 — "Adults-only accounts and youth player profiles"
@@ -159,21 +172,21 @@ Each change below shows the current text and the proposed replacement, by sectio
 
 ## Open questions for review (not resolved by this draft)
 
-1. **Legal review.** This was not reviewed by a lawyer. That matters most for minors' data (COPPA and state
+1. **[LEGAL] Legal review.** This was not reviewed by a lawyer. That matters most for minors' data (COPPA and state
    laws) and for whether an organizer's attestation is enough for a guardian contact.
-2. **Unsubscribes kept forever versus deletion requests.** Keeping an address so we keep honoring its opt-out
-   can conflict with a request to delete it. We need a policy decision, for example keeping a hash of the
-   address instead.
-3. **Request logs.** The one-click unsubscribe URL (which RFC 8058 requires to be in the email header) can
+2. **[OWNER/LEGAL] Unsubscribes kept forever versus deletion requests.** We keep the address only in opt-out /
+   suppression records, to keep honoring them. Confirm this is acceptable under the deletion right that
+   applies. The alternative is a keyed hash, which needs key management (see the engineering doc).
+3. **[OWNER] Request logs.** The one-click unsubscribe URL (which RFC 8058 requires to be in the email header) can
    appear in our hosting provider's request logs. The token there can only unsubscribe that address from
    that organization. Mention it explicitly, or set log retention limits.
-4. **Retention period.** The draft says 90 days after the match. The cleanup is built but not scheduled.
+4. **[OWNER] Retention period.** The draft says 90 days after the match. The cleanup is built but not scheduled.
    Confirm the period, and that it runs (for example, daily) from launch.
-5. **Commercial-email classification.** Invitations are transactional (organizer-initiated match coordination,
+5. **[LEGAL] Commercial-email classification.** Invitations are transactional (organizer-initiated match coordination,
    no marketing). Confirm this classification, and the sender identification and postal address requirements,
    if any.
-6. **Suppression kept after an erasure request.** By default we keep the address in the suppression list.
-   Confirm that this "do not contact" record is acceptable. A salted hash would avoid storing the address,
-   but needs key management: if the key is lost or changed, the record no longer matches.
-7. **Identity check** for requests about an address: decide the minimum check, such as replying from that
+6. **[OWNER] Default when a requester doesn't say whether to block future invitations.** Proposed: ask them;
+   if there's no answer, delete only (no new block), and keep any existing unsubscribe / bounce / complaint
+   record.
+7. **[OWNER] Identity check** for requests about an address: decide the minimum check, such as replying from that
    address.

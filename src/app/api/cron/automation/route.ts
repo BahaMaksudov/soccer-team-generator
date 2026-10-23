@@ -25,8 +25,9 @@ import { processRsvpQueue, rsvpDeliveryMode } from "@/lib/rsvpSend";
  * M13B P5 — the same clock continues the RSVP email queue: bounded claims (FOR UPDATE
  * SKIP LOCKED — overlapping runs never take the same invitation) within a time budget,
  * stale SENDING rows recovered as UNCERTAIN, never an automatic retry. Delivery is the
- * test outbox only and only where rsvpDeliveryMode() allows it; in Production / Preview
- * this part reports { disabled: true } and claims nothing.
+ * test outbox or — only once separately approved — the Production live pilot (allowlisted
+ * organizations' rows only); while delivery is disabled (the default, and always in
+ * Preview) this part reports { disabled: true } and claims nothing.
  */
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
@@ -65,7 +66,7 @@ async function trialLifecycleCounts(now: Date) {
 const RSVP_CRON_BUDGET_MS = 20_000;
 const RSVP_CRON_LIMIT = 200;
 async function rsvpQueueCounts() {
-  if (rsvpDeliveryMode() !== "test-outbox") return { ok: true, counts: { disabled: true } };
+  if (rsvpDeliveryMode() === "disabled") return { ok: true, counts: { disabled: true } };
   try {
     const run = await processRsvpQueue({ limit: RSVP_CRON_LIMIT, budgetMs: RSVP_CRON_BUDGET_MS });
     return { ok: run.errors === 0, counts: run };

@@ -581,9 +581,9 @@ Foreign keys reviewed first:
 - the quota ledger (`RsvpEmailUsage`) has no match or player reference.
 
 The cleanup:
-- **Cutoff:** a match on UTC day D keeps its identifying details through D+90 and is anonymized from D+91
+- **Cutoff:** a match on UTC day D keeps its identifying details through D+90 and loses its direct identifiers from D+91
   00:00Z (`retentionCutoff`).
-- **Anonymization** clears `email`, `providerMessageId` and `idempotencyKey`, and stamps `anonymizedAt`.
+- **Identifier removal** (P8A wording: not anonymization) clears `email`, `providerMessageId` and `idempotencyKey`, and stamps `anonymizedAt` (Prisma: `identifiersRemovedAt`).
   It keeps status, round, timestamps, skip reason, error category, recipient type and the player reference,
   so the dashboard keeps its shape with no address.
 - **Never touched:** attendance answers, the quota ledger, personal links (hash-only), opt-outs and
@@ -605,7 +605,7 @@ The cleanup:
 | Player deleted | Unchanged: opt-outs are per organization and address, not per player. A new player with the same address is still `SUPPRESSED`. | Deleting a player must not make an unsubscribed address mailable again. |
 | Contact email changed | The old address's opt-out stays (blocks it everywhere in that organization); the new address is judged on its own. | No carry-over to a different person's address. |
 | Organization deleted | Its own opt-outs cascade (nobody can send for it any more); global suppressions stay. | No orphaned per-organization data. |
-| Recipient privacy request | `eraseRecipientEmail` (support only): removes the address from invitations, unsubscribe tokens and every organizer contact; QUEUED invitations are canceled and their reservation released; SENDING ones are reported. By default it replaces that address's per-organization opt-outs with **one** global `RECIPIENT_REQUEST` suppression. `keepSuppression: false` (an owner decision) removes that too. **Hard-bounce and complaint suppressions are always kept.** | Least data that still guarantees "don't email me again"; sender reputation. |
+| Recipient privacy request | **Superseded in P8A** (see below): erasure no longer converts or removes opt-outs; a global do-not-contact is recorded only on explicit request. | — |
 | Resubscription | Not built. If added, it must be recipient-initiated (a confirmation email to the address), never organizer-initiated. | No organizer bypass (a source guard checks that only the support function can delete opt-outs / suppressions). |
 
 **Why plain addresses, not hashes:** suppression must match the normalized address at send time. An unsalted
@@ -676,6 +676,108 @@ The verification procedure for a real signed test event is in the pilot readines
 - Terms changes: `docs/legal/terms-m13b-draft.md`.
 - Neither is published.
 
+## P8A — release preparation and security audit (live transport built, default OFF)
+
+Migration `20261228120000_m13b_p8a_support_opt_out` adds the enum value `EmailOptOutSource.SUPPORT_REQUEST`.
+The Prisma field `RsvpInvitation.identifiersRemovedAt` maps to the existing column `anonymizedAt`, so the
+rename needs no database change.
+
+### Privacy erasure correction
+
+P7's `eraseRecipientEmail` had two problems:
+- it replaced an address's organization opt-outs with a global suppression, which widened a one-organization
+  choice to every organization;
+- `keepSuppression: false` could remove a do-not-contact record.
+
+P8A's API is `eraseRecipientEmail(address, { scope, doNotContact })`:
+- **scope** is `{ kind: "ALL" }` or `{ kind: "ORGANIZATION", organizationId }`. The removal (invitation
+  identifiers, unsubscribe tokens, organizer contacts) is limited to that scope.
+- **doNotContact** has no default; the caller must choose:
+  - `"NONE"` records nothing new;
+  - `"ORGANIZATION"` (requires an organization scope) records a `SUPPORT_REQUEST` opt-out for that
+    organization;
+  - `"GLOBAL"` records a `RECIPIENT_REQUEST` global suppression, only when the recipient asks for it.
+- **Never weakened:** existing organization opt-outs stay organization-scoped and are never deleted or
+  converted. Existing global suppressions (bounce, complaint, an earlier request) are never removed.
+  Repeating a request doesn't lift anything.
+- **No code path deletes opt-outs or suppressions** (source-guard test).
+
+What is kept to make suppression work:
+- `OrganizationEmailOptOut`: normalized address, organization, source, date;
+- `GlobalEmailSuppression`: normalized address, reason, source, date.
+
+No player, match or name is kept. Hashing the address isn't used: see P7, "Why plain addresses, not hashes".
+
+### Retention audit — identifiers removed, not anonymized
+
+`runRsvpRetention` removes the **direct identifiers** from an invitation:
+- recipient address, provider message id, idempotency key;
+- the link to the unsubscribe token (new in P8A).
+
+It does not anonymize. The column comment, code, docs and legal drafts now say so.
+
+| What remains on the row afterwards | Linkable to a person? |
+| --- | --- |
+| `playerId` → the named Player (until the player is deleted) | **Yes** |
+| `matchId`, `organizationId`, `groupId`, `sendId` | Via the match / roster |
+| `recipientType` (PLAYER / GUARDIAN / ACCOUNT) | Says whether the player had a guardian contact |
+| status, round, attempts, skip reason, error category, timestamps | Only together with the above |
+| `linkId` → personal answer link (hash-only token, last-used time) | Via the player |
+| `RsvpSend.createdByUserId` → the organizer who sent it | Yes (organizer); an operational record |
+
+Outside the invitation row:
+- **Unsubscribe tokens** (address + organization) stay until they expire (365 days), so links in old emails
+  keep working. Retention unlinks them from the invitation, and the cleanup deletes them once expired.
+- **Quota counts** (`RsvpEmailUsage`) are per organization and day, with no person in them.
+
+**Deleted players (P8A):** their invitation rows (`playerId` null) are now eligible at the **next run,
+whatever the match date**, so the address doesn't stay for up to 90 days after the player is gone. Queued /
+sending rows are still skipped until settled.
+
+### Live transport (built, default off)
+
+- **Mode** (`src/lib/rsvpDeliveryMode.ts`): `"live"` only when **all** of these hold, otherwise `disabled`:
+  - `NODE_ENV=production` and `VERCEL_ENV=production` (never Preview, development or a local `next start`);
+  - `RSVP_EMAIL_DELIVERY=live-pilot` (a new variable with one exact value);
+  - a valid `RSVP_EMAIL_PILOT_ORGS` allowlist (1–10 cuid ids; one bad entry disables it);
+  - `RESEND_API_KEY` set;
+  - `EMAIL_FROM` as `Display Name <local@mail.teambalancepro.com>`.
+
+  `NODE_ENV=test` is always `test-outbox`, never live.
+- **Allowlist enforced on the server:** queuing, retry, the preview's `sending.available`, the send route
+  (403 `DELIVERY_DISABLED`, identical for non-pilot organizations) and the worker (claims only allowlisted
+  organizations' rows; others stay QUEUED).
+- **Pilot limits** (constants, not environment):
+  - 20 per organization per UTC day and 100 per month, the stricter of plan and pilot;
+  - 100 per UTC day across all organizations, under a fixed-order advisory lock (match → organization →
+    pilot). This protects the provider quota that account email shares.
+- **Transport:** its own `createResendTransport` instance (fetch, no SDK). It reuses:
+  - the queue, claims, idempotency keys (`Idempotency-Key: rsvp:<invitation>:<attempt>`), suppression,
+    quota and contact re-checks;
+  - the two allowlisted List-Unsubscribe headers;
+  - error sanitizing (stored errors are categories such as `HTTP_422`, `TIMEOUT`, `NETWORK`).
+- **Provider outcomes:**
+  - 2xx → SENT (accepted);
+  - 4xx except 409 (including 429) → FAILED, released, retry allowed;
+  - 409, 5xx, network, timeout → UNCERTAIN, still counted, never retried automatically.
+- **Account and security email** keep their own path (`getEmailTransport`). RSVP never touches it, and RSVP
+  limits or suppression never block it (tested).
+- **Logs** carry only fixed strings and provider ids. The fetch transport's existing log lines contain no
+  address or token (tested by capturing console output).
+
+### Security safeguards summary
+
+- Delivery is decided on the server in one place; a disabled button is never the only gate.
+- There are three gates to pass: Production-only mode, the exact flag, and the allowlist. Every
+  misconfiguration fails closed.
+- Preview can never be live (`VERCEL_ENV`).
+- Old settings can't activate it.
+- Limits are hard-coded, and there is a cross-organization cap.
+- Webhook: Svix signature, a 5-minute window, a 256 KB streamed cap, strict event ids, idempotent.
+- Unsubscribe tokens are hash-only, and one-click tokens are separate.
+- No opt-out or suppression can be deleted by code; erasure never weakens a block.
+- Tests replace global fetch with a fake Resend endpoint that counts any other network access.
+
 ## Open issues / risks
 
 - Consent: organizers enter addresses (including guardians') without the recipient confirming. Unsubscribe
@@ -686,5 +788,5 @@ The verification procedure for a real signed test event is in the pilot readines
   destination (for example `p•••@example.com`) if approved.
 - DMARC is not configured for `mail.teambalancepro.com` / `teambalancepro.com`. It is required before P4 goes
   live.
-- P5: the real transport is not wired anywhere. Enabling live sending (a provider transport behind an
-  explicit, separately approved switch, after DMARC) is P6+.
+- P8A: the live transport exists but is off. Turning it on is the approval-gated runbook in
+  `docs/M13B_PILOT_READINESS.md` (DMARC is still missing).

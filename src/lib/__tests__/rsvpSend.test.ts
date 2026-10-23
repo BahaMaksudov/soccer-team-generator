@@ -5,7 +5,7 @@ import { execSync } from "node:child_process";
 
 vi.mock("@/lib/prisma", () => ({ prisma: {} }));
 import { rsvpTransport, setRsvpTransportForTests, sanitizeSendError, RsvpDeliveryDisabledError } from "@/lib/rsvpSend";
-import { rsvpDeliveryMode, isLocalTestDatabaseUrl } from "@/lib/rsvpDeliveryMode";
+import { rsvpDeliveryMode, isLocalTestDatabaseUrl, rsvpDeliveryAllowedFor, pilotOrganizations, rsvpSenderValid, RSVP_PILOT_LIMITS } from "@/lib/rsvpDeliveryMode";
 import { buildRsvpInvitationEmail, headerSafe } from "@/lib/email/templates";
 import { EmailDeliveryError, testOutbox } from "@/lib/email/transport";
 import { EmailConfigError } from "@/lib/email/config";
@@ -55,27 +55,92 @@ describe("delivery mode (server-side gate)", () => {
   });
 });
 
+describe("P8A live pilot mode (default off)", () => {
+  const ORG = "cm3pilotorg00000000000001";
+  const LIVE = { NODE_ENV: "production", VERCEL_ENV: "production", RSVP_EMAIL_DELIVERY: "live-pilot", RSVP_EMAIL_PILOT_ORGS: ORG, RESEND_API_KEY: "re_fake_key", EMAIL_FROM: "TeamBalance Pro <noreply@mail.teambalancepro.com>" };
+  it("live only when EVERY condition holds", () => {
+    expect(rsvpDeliveryMode(LIVE)).toBe("live");
+    expect(rsvpTransport(LIVE).name).toBe("resend");
+  });
+  it("no existing setting can switch it on; every missing or wrong condition is disabled", () => {
+    const off: Array<Record<string, string | undefined>> = [
+      { ...LIVE, RSVP_EMAIL_DELIVERY: undefined }, // only the pre-existing Resend settings
+      { ...LIVE, RSVP_EMAIL_DELIVERY: "true" },
+      { ...LIVE, RSVP_EMAIL_DELIVERY: "1" },
+      { ...LIVE, RSVP_EMAIL_DELIVERY: "live" },
+      { ...LIVE, RSVP_EMAIL_DELIVERY: "LIVE-PILOT" },
+      { ...LIVE, VERCEL_ENV: "preview" }, // Preview
+      { ...LIVE, VERCEL_ENV: undefined }, // local `next start`
+      { ...LIVE, NODE_ENV: "development" }, // dev
+      { ...LIVE, RSVP_EMAIL_PILOT_ORGS: undefined },
+      { ...LIVE, RSVP_EMAIL_PILOT_ORGS: "" },
+      { ...LIVE, RSVP_EMAIL_PILOT_ORGS: `${ORG},not valid` }, // one bad entry disables all
+      { ...LIVE, RESEND_API_KEY: undefined },
+      { ...LIVE, RESEND_API_KEY: "  " },
+      { ...LIVE, EMAIL_FROM: "noreply@mail.teambalancepro.com" }, // no display name
+      { ...LIVE, EMAIL_FROM: "TeamBalance Pro <noreply@teambalancepro.com>" }, // not the RSVP sender domain
+      { ...LIVE, EMAIL_FROM: "TeamBalance Pro <noreply@mail.teambalancepro.com.evil.io>" },
+      { ...LIVE, EMAIL_FROM: "Evil\r\nBcc: x <noreply@mail.teambalancepro.com>" },
+      { NODE_ENV: "production", VERCEL_ENV: "production", EMAIL_TRANSPORT: "resend", RESEND_API_KEY: "re_x", EMAIL_FROM: LIVE.EMAIL_FROM },
+    ];
+    for (const env of off) {
+      expect(rsvpDeliveryMode(env), JSON.stringify(env)).toBe("disabled");
+      expect(() => rsvpTransport(env)).toThrow(RsvpDeliveryDisabledError);
+      expect(rsvpDeliveryAllowedFor(ORG, env)).toBe(false);
+    }
+    // In tests the mode is always the outbox, never live — even with every live setting.
+    expect(rsvpDeliveryMode({ ...LIVE, NODE_ENV: "test" })).toBe("test-outbox");
+  });
+  it("the allowlist: only listed organizations, at most 10, cuid-shaped ids", () => {
+    expect(rsvpDeliveryAllowedFor(ORG, LIVE)).toBe(true);
+    expect(rsvpDeliveryAllowedFor("cm3otherorg0000000000000001", LIVE)).toBe(false);
+    expect(pilotOrganizations({ RSVP_EMAIL_PILOT_ORGS: ` ${ORG} , cm3pilotorg00000000000002 ` })).toEqual(new Set([ORG, "cm3pilotorg00000000000002"]));
+    expect(pilotOrganizations({ RSVP_EMAIL_PILOT_ORGS: Array.from({ length: 11 }, (_, i) => `cm3pilotorg0000000000000${String(i).padStart(2, "0")}`).join(",") })).toBeNull();
+    expect(pilotOrganizations({ RSVP_EMAIL_PILOT_ORGS: "*" })).toBeNull();
+  });
+  it("the sender must be a display name on the RSVP sending domain", () => {
+    expect(rsvpSenderValid("TeamBalance Pro <noreply@mail.teambalancepro.com>")).toBe(true);
+    expect(rsvpSenderValid("TeamBalance Pro <noreply@MAIL.teambalancepro.com>")).toBe(true);
+    expect(rsvpSenderValid(undefined)).toBe(false);
+  });
+  it("pilot limits are stricter than any plan and fixed in code", () => {
+    expect(RSVP_PILOT_LIMITS).toEqual({ perOrganizationDay: 20, perOrganizationMonth: 100, allOrganizationsDay: 100 });
+    expect(read("src/lib/rsvpDeliveryMode.ts")).not.toMatch(/env\.[A-Z_]*LIMIT/);
+  });
+  it("a test transport override is never used in live mode", () => {
+    expect(() => setRsvpTransportForTests(testOutbox, LIVE)).toThrow(RsvpDeliveryDisabledError);
+  });
+});
+
 describe("source guards (no real delivery path)", () => {
-  it("the engine never references the real transport, fetch or Resend, and logs nothing", () => {
+  it("the engine reaches Resend only through the live branch of rsvpTransport; never the account-email transport; logs nothing", () => {
     for (const f of ["src/lib/rsvpSend.ts", "src/lib/rsvpDeliveryMode.ts", "src/lib/rsvpStatus.ts"]) {
       const src = read(f);
-      expect(src, f).not.toMatch(/createResendTransport|getEmailTransport|RESEND_ENDPOINT|RESEND_API_KEY|fetch\(|from "@\/lib\/email"/);
-      expect(src, f).not.toMatch(/console\.(log|info|warn)/);
+      expect(src, f).not.toMatch(/getEmailTransport|setEmailTransportForTests|RESEND_ENDPOINT|fetch\(|from "@\/lib\/email"/);
+      expect(src, f).not.toMatch(/console\.(log|info|warn|error)/);
     }
+    const engine = read("src/lib/rsvpSend.ts");
+    expect(engine.match(/createRsvpResendTransport\(/g)).toHaveLength(1);
+    expect(engine).toMatch(/if \(mode === "live"\) return createRsvpResendTransport\(/);
+    expect(engine).not.toMatch(/RESEND_API_KEY|createResendTransport\(/); // the key is read only in src/lib/email/transport.ts
+  });
+  it("account / security email code is untouched by RSVP delivery", () => {
+    const idx = read("src/lib/email/index.ts");
+    expect(idx).not.toMatch(/rsvp|RSVP_EMAIL|pilot/i);
   });
   it("only the send route and the cron continuation import the engine, and both check the delivery gate first", () => {
     const hits = execSync(`grep -rlE "@/lib/rsvpSend\\"" src/app src/middleware.ts || true`, { encoding: "utf8" }).trim().split("\n").filter(Boolean).sort();
     expect(hits).toEqual([CRON_ROUTE, SEND_ROUTE].sort());
     const route = read(SEND_ROUTE);
-    expect(route).toMatch(/if \(rsvpDeliveryMode\(\) !== "test-outbox"\) return refuse\("DELIVERY_DISABLED"\);/);
-    expect(route.indexOf('rsvpDeliveryMode() !== "test-outbox"')).toBeLessThan(route.indexOf("schema.safeParse"));
+    expect(route).toMatch(/if \(!rsvpDeliveryAllowedFor\(context\.organization\.id\)\) return refuse\("DELIVERY_DISABLED"\);/);
+    expect(route.indexOf("rsvpDeliveryAllowedFor(context.organization.id)")).toBeLessThan(route.indexOf("schema.safeParse"));
     expect(route).toContain("requireJsonRequest(req)");
     expect(route).toContain("isSameOrigin(req)");
     expect(route).toContain("managersOnlyResponse(context)");
     expect(route).toMatch(/\.strict\(\)/);
     expect(route).not.toMatch(/\b(to|email|subject|html|body)\s*:\s*z\./); // no addresses or content from the client
     const cron = read(CRON_ROUTE);
-    expect(cron).toMatch(/if \(rsvpDeliveryMode\(\) !== "test-outbox"\) return \{ ok: true, counts: \{ disabled: true \} \};/);
+    expect(cron).toMatch(/if \(rsvpDeliveryMode\(\) === "disabled"\) return \{ ok: true, counts: \{ disabled: true \} \};/);
   });
   it("the card's Send button is shown disabled unless the server says sending is available, and posts a request key + attestation", () => {
     const card = read("src/app/admin/o/[organizationSlug]/g/[groupSlug]/matches/[matchId]/RsvpPreviewCard.tsx");

@@ -33,7 +33,7 @@ export type StatusRow = {
   rsvpSetByOrganizer: boolean;
 };
 export type RsvpStatusView = {
-  mode: "test-outbox" | "disabled";
+  mode: "test-outbox" | "live" | "disabled";
   sends: Array<{ id: string; round: number; kind: RsvpSendKind; createdAt: string; counts: DeliveryCounts; retryable: number }>;
   /** Latest round each player appears in (not SKIPPED where an earlier round reached them). */
   recipients: StatusRow[];

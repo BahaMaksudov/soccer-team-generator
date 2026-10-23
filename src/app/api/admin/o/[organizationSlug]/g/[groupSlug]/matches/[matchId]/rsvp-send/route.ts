@@ -5,7 +5,7 @@ import { requireTenantContextForSlugs, TenantContextError } from "@/lib/tenantCo
 import { canonicalTenantErrorResponse, managersOnlyResponse, requireJsonRequest } from "@/lib/tenantRoute";
 import { isSameOrigin } from "@/lib/sameOrigin";
 import { checkRateLimit } from "@/lib/rateLimit";
-import { createRsvpSend, processRsvpQueue, retryFailedInvitations, rsvpDeliveryMode, type SendRefusal } from "@/lib/rsvpSend";
+import { createRsvpSend, processRsvpQueue, retryFailedInvitations, rsvpDeliveryAllowedFor, type SendRefusal } from "@/lib/rsvpSend";
 import { rsvpStatusView } from "@/lib/rsvpStatus";
 
 /**
@@ -16,10 +16,11 @@ import { rsvpStatusView } from "@/lib/rsvpStatus";
  *        → queue invitations for the roster the server re-derives (the request can't name
  *          recipients, addresses or content), then deliver a first bounded batch.
  *   POST { action: "retry", sendId } → re-queue that send's FAILED invitations.
- * Delivery is the in-memory TEST OUTBOX only and only where rsvpDeliveryMode() allows it
- * (automated tests / a confirmed local test environment). Everywhere else — Production
- * and Preview included — POST is refused with 403 DELIVERY_DISABLED before anything is
- * read or written. JSON + same-origin only (CSRF); rate limited per organizer (Upstash,
+ * Delivery happens only where rsvpDeliveryAllowedFor() allows it for this organization:
+ * the in-memory test outbox (tests / confirmed local test env) or, once separately
+ * approved, the Production-only live pilot for allowlisted organizations. Everywhere
+ * else — Preview always — POST is refused with 403 DELIVERY_DISABLED before the body is
+ * read or anything is written (a non-allowlisted organization gets the same answer). JSON + same-origin only (CSRF); rate limited per organizer (Upstash,
  * optional) and per organization (database, authoritative); idempotent per requestKey.
  */
 type Params = Promise<{ organizationSlug: string; groupSlug: string; matchId: string }>;
@@ -90,7 +91,7 @@ export async function POST(req: Request, { params }: { params: Params }) {
     const denied = managersOnlyResponse(context);
     if (denied) return denied;
     // Server-side delivery gate — before parsing, reading or writing anything.
-    if (rsvpDeliveryMode() !== "test-outbox") return refuse("DELIVERY_DISABLED");
+    if (!rsvpDeliveryAllowedFor(context.organization.id)) return refuse("DELIVERY_DISABLED");
     const parsed = schema.safeParse(await req.json().catch(() => null));
     if (!parsed.success) return refuse("INVALID_REQUEST");
     if (!(await checkRateLimit("rsvp-send", context.user.id)).allowed) return refuse("RATE_LIMITED");

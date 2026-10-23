@@ -36,7 +36,7 @@ type Preview = {
 type Delivery = "QUEUED" | "SENDING" | "SENT" | "FAILED" | "UNCERTAIN" | "SKIPPED";
 type Counts = Record<"queued" | "processing" | "accepted" | "failed" | "uncertain" | "skipped", number>;
 type StatusView = {
-  mode: "test-outbox" | "disabled";
+  mode: "test-outbox" | "live" | "disabled";
   sends: Array<{ id: string; round: number; kind: "INITIAL" | "RESEND"; createdAt: string; counts: Counts; retryable: number }>;
   recipients: Array<{
     playerId: string | null;

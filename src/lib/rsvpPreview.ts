@@ -7,7 +7,7 @@ import { loadRecipients, type Recipient } from "@/lib/playerContact";
 import { organizationPlan, utcDay, utcMonth, type EffectivePlan } from "@/lib/entitlements";
 import { maskEmail } from "@/lib/emailAddress";
 import { suppressedFor } from "@/lib/emailSuppression";
-import { rsvpDeliveryMode } from "@/lib/rsvpDeliveryMode";
+import { RSVP_PILOT_LIMITS, rsvpDeliveryAllowedFor, rsvpDeliveryMode } from "@/lib/rsvpDeliveryMode";
 
 /**
  * M13B — RSVP invitation RECIPIENT PREVIEW (OWNER/ADMIN; P2) and the shared
@@ -57,7 +57,7 @@ export type RsvpPreview = {
   counts: { willSend: number; excluded: number; byStatus: Record<PreviewStatus, number>; overLimitIsProvisional: true };
   allowance: RsvpAllowance;
   suppression: { available: true };
-  /** P5: true only where rsvpDeliveryMode() is "test-outbox" (never in Production / Preview). */
+  /** P5/P8A: true only where delivery is allowed for this organization (test outbox, or the live pilot allowlist). */
   sending: { available: boolean };
 };
 
@@ -89,9 +89,29 @@ async function usageIn(db: Db, organizationId: string, start: Date, end: Date): 
 }
 const isoDay = (d: Date) => d.toISOString().slice(0, 10);
 
+/**
+ * P8A — live pilot only: what is left of the pilot-wide daily cap (all organizations,
+ * UTC day), consumed + reserved, read in one statement. Protects the provider quota that
+ * account / security email shares.
+ */
+export async function pilotGlobalRemaining(now: Date, db: Db = prisma): Promise<number> {
+  const day = utcDay(now);
+  const [row] = await db.$queryRaw<Array<{ used: bigint }>>`
+    SELECT ((SELECT COALESCE(SUM("consumed"), 0) FROM "RsvpEmailUsage" WHERE "day" = ${isoDay(day.start)}::date)
+          + (SELECT count(*) FROM "RsvpInvitation" WHERE "status" IN ('QUEUED', 'SENDING')
+               AND "reservedAt" >= ${day.start.toISOString()}::timestamp AND "reservedAt" < ${day.next.toISOString()}::timestamp))::bigint AS used`;
+  return Math.max(0, RSVP_PILOT_LIMITS.allOrganizationsDay - Number(row.used));
+}
+
 /** The organization's RSVP allowance with ACTUAL ledger usage (UTC calendar day / month). */
 export async function rsvpAllowance(organizationId: string, now: Date = new Date(), db: Db = prisma): Promise<RsvpAllowance> {
-  const { plan, limits } = await organizationPlan(organizationId, now, db);
+  const { plan, limits: planLimits } = await organizationPlan(organizationId, now, db);
+  // P8A — while the live pilot runs, the stricter pilot limits apply on top of the plan.
+  const live = rsvpDeliveryMode() === "live";
+  const limits = {
+    rsvpEmailsPerDay: live ? Math.min(planLimits.rsvpEmailsPerDay, RSVP_PILOT_LIMITS.perOrganizationDay) : planLimits.rsvpEmailsPerDay,
+    rsvpEmailsPerMonth: live ? Math.min(planLimits.rsvpEmailsPerMonth, RSVP_PILOT_LIMITS.perOrganizationMonth) : planLimits.rsvpEmailsPerMonth,
+  };
   const day = utcDay(now);
   const month = utcMonth(now);
   const [d, m] = await Promise.all([usageIn(db, organizationId, day.start, day.next), usageIn(db, organizationId, month.start, month.next)]);
@@ -183,7 +203,7 @@ export async function previewRsvpRecipients(context: TenantContext, matchId: str
       counts: { willSend: byStatus.WILL_SEND, excluded: recipients.length - byStatus.WILL_SEND, byStatus, overLimitIsProvisional: true },
       allowance,
       suppression: { available: true },
-      sending: { available: rsvpDeliveryMode() === "test-outbox" },
+      sending: { available: rsvpDeliveryAllowedFor(context.organization.id) },
     },
   };
 }

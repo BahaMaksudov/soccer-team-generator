@@ -1,6 +1,6 @@
 # DRAFT — Terms of Service changes for RSVP invitation emails (M13B)
 
-**Status: proposal for review. Not published.** `src/app/terms/page.tsx` is unchanged. These changes have not
+**Status (P8A): final candidate for owner and legal review. Not published.** `src/app/terms/page.tsx` is unchanged. These changes have not
 been reviewed by a lawyer.
 
 **Are changes needed?** Not strictly. Section 3 already makes organizers responsible for having authority to
@@ -63,6 +63,7 @@ recommend adopting them together with the Privacy Policy changes.
 
 ## Open decisions (Terms)
 
-1. Adopt the Terms changes together with the Privacy Policy changes, or only the Privacy Policy changes for a
+0. **[LEGAL]** Review all wording, especially the organizer's responsibility for guardian contacts.
+1. **[OWNER]** Adopt the Terms changes together with the Privacy Policy changes, or only the Privacy Policy changes for a
    limited pilot. We recommend adopting both before any real invitation is sent.
-2. Whether pilot organizers must also accept a short written pilot agreement (scope, contact rules, allowance).
+2. **[OWNER]** Whether pilot organizers must also accept a short written pilot agreement (scope, contact rules, allowance).

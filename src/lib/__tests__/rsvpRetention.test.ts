@@ -27,11 +27,11 @@ describe("retention cutoff", () => {
 });
 
 describe("suppression policy guards", () => {
-  it("no organizer path can delete an opt-out or a suppression (only the support erasure function, and never a bounce / complaint)", () => {
-    const deleters = sources().filter((f) => /(organizationEmailOptOut|globalEmailSuppression)\.(delete|deleteMany)\(/.test(read(f)));
-    expect(deleters).toEqual(["src/lib/rsvpRetention.ts"]);
+  it("P8A: no code path deletes an opt-out or a suppression, and erasure never converts opt-outs to a global suppression", () => {
+    const deleters = sources().filter((f) => /(organizationEmailOptOut|globalEmailSuppression)\.(delete|deleteMany)\(|DELETE FROM "(OrganizationEmailOptOut|GlobalEmailSuppression)"/.test(read(f)));
+    expect(deleters).toEqual([]);
     const erase = read("src/lib/rsvpRetention.ts");
-    expect(erase).toContain('existing?.reason === "RECIPIENT_REQUEST"');
+    expect(erase).toMatch(/doNotContact === "GLOBAL"/); // a global do-not-contact only on explicit request
   });
   it("account and security emails never consult suppression or carry unsubscribe headers", () => {
     const idx = read("src/lib/email/index.ts");

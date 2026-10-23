@@ -115,6 +115,21 @@ export function createResendTransport(options: {
   };
 }
 
+/** M13B P8A — whether a Resend API key is configured (the key itself never leaves this module). */
+export function resendKeyConfigured(env: Record<string, string | undefined> = process.env): boolean {
+  return Boolean(env.RESEND_API_KEY?.trim());
+}
+
+/**
+ * M13B P8A — a SEPARATE Resend transport instance for RSVP invitations (live pilot only;
+ * the caller gates it). Account / security email keeps using getEmailTransport().
+ */
+export function createRsvpResendTransport(env: Record<string, string | undefined> = process.env, fetchImpl?: typeof fetch): EmailTransport {
+  const apiKey = env.RESEND_API_KEY?.trim();
+  if (!apiKey) throw new EmailConfigError("RESEND_API_KEY is not set.");
+  return createResendTransport({ apiKey, fetchImpl });
+}
+
 export type CapturedEmail = OutgoingEmail & { from: string };
 
 /** In-memory transport: records messages; never touches the network. */

@@ -5,12 +5,12 @@ import { generateToken, hashToken } from "@/lib/secureToken";
 import { lockMatchForAnswer } from "@/lib/attendanceClosure";
 import { PERSONAL_ATTENDANCE_PATH } from "@/lib/personalAttendance";
 import { suppressedFor, unsubscribeLinks, oneClickUnsubscribeHeaders, UNSUBSCRIBE_TOKEN_TTL_DAYS } from "@/lib/emailSuppression";
-import { classifyRoster, matchRefusal, rsvpAllowance, MATCH_SELECT, type PreviewRefusal } from "@/lib/rsvpPreview";
+import { classifyRoster, matchRefusal, pilotGlobalRemaining, rsvpAllowance, MATCH_SELECT, type PreviewRefusal } from "@/lib/rsvpPreview";
 import { appUrl, getEmailFrom, EmailConfigError } from "@/lib/email/config";
-import { EmailDeliveryError, testOutbox, type EmailTransport } from "@/lib/email/transport";
+import { createRsvpResendTransport, EmailDeliveryError, testOutbox, type EmailTransport } from "@/lib/email/transport";
 import { buildRsvpInvitationEmail } from "@/lib/email/templates";
 import { classifySendError } from "@/lib/trialLifecycle";
-import { rsvpDeliveryMode } from "@/lib/rsvpDeliveryMode";
+import { pilotOrganizations, rsvpDeliveryAllowedFor, rsvpDeliveryMode } from "@/lib/rsvpDeliveryMode";
 import { resolveRecipient } from "@/lib/playerContact";
 import { normalizeEmail } from "@/lib/emailAddress";
 import { formatStartTime } from "@/lib/messaging/content";
@@ -19,11 +19,14 @@ import { formatDeadline } from "@/lib/deadlineFormat";
 /**
  * M13B P4 — the RSVP email SENDING ENGINE (no HTTP route; not callable from the UI).
  *
- * DELIVERY IS TEST-ONLY, enforced here on the server: `rsvpTransport()` returns the
- * in-memory test outbox and only when `rsvpDeliveryMode()` says "test-outbox" (automated
- * tests, or a confirmed local test environment); everywhere else it throws
- * RsvpDeliveryDisabledError BEFORE anything is queued or claimed. No code path in this
- * module reaches the Resend transport, whatever the environment flags say.
+ * DELIVERY GATE, enforced here on the server (src/lib/rsvpDeliveryMode.ts):
+ *   test-outbox — the in-memory outbox (automated tests / confirmed local test env);
+ *   live        — P8A Resend pilot: Production only, an exact opt-in flag, a pilot
+ *                 organization allowlist, a validated sender, pilot limits. DEFAULT OFF:
+ *                 no environment has the flag;
+ *   disabled    — everything else: rsvpTransport() throws RsvpDeliveryDisabledError BEFORE
+ *                 anything is queued or claimed.
+ * Account / security emails never use this module's transport (src/lib/email/index.ts).
  *
  * Flow:
  *   createRsvpSend  — OWNER/ADMIN. In ONE transaction: lock the Match row (FOR UPDATE +
@@ -68,7 +71,7 @@ export class RsvpDeliveryDisabledError extends Error {
 }
 
 type Env = Record<string, string | undefined>;
-export { rsvpDeliveryMode, isLocalTestDatabaseUrl } from "@/lib/rsvpDeliveryMode";
+export { rsvpDeliveryMode, rsvpDeliveryAllowedFor, isLocalTestDatabaseUrl } from "@/lib/rsvpDeliveryMode";
 
 let testTransportOverride: EmailTransport | null = null;
 /** Tests only: route RSVP delivery through a fake transport (refused outside NODE_ENV=test). */
@@ -76,10 +79,18 @@ export function setRsvpTransportForTests(t: EmailTransport | null, env: Env = pr
   if (env.NODE_ENV !== "test") throw new RsvpDeliveryDisabledError();
   testTransportOverride = t;
 }
-/** The ONLY RSVP transport: the in-memory test outbox, and only when rsvpDeliveryMode() allows it. */
-export function rsvpTransport(env: Env = process.env): EmailTransport {
-  if (rsvpDeliveryMode(env) !== "test-outbox") throw new RsvpDeliveryDisabledError();
-  return (env.NODE_ENV === "test" ? testTransportOverride : null) ?? testOutbox;
+/**
+ * The RSVP transport for the current mode: the in-memory test outbox ("test-outbox"), a
+ * dedicated Resend transport ("live" — its own instance; account email keeps its own path),
+ * or RsvpDeliveryDisabledError. The Resend transport serializes the idempotency key and the
+ * two allowlisted List-Unsubscribe headers and refuses any other header; its errors carry
+ * only a category and HTTP status (sanitizeSendError stores no message).
+ */
+export function rsvpTransport(env: Env = process.env, fetchImpl?: typeof fetch): EmailTransport {
+  const mode = rsvpDeliveryMode(env);
+  if (mode === "test-outbox") return (env.NODE_ENV === "test" ? testTransportOverride : null) ?? testOutbox;
+  if (mode === "live") return createRsvpResendTransport(env, fetchImpl);
+  throw new RsvpDeliveryDisabledError();
 }
 
 export type SendRefusal = PreviewRefusal | "DELIVERY_DISABLED" | "INVALID_REQUEST" | "REQUEST_KEY_CONFLICT" | "ALREADY_SENT" | "NOTHING_TO_RESEND" | "NOTHING_TO_SEND" | "PLAN_LIMIT" | "ROSTER_CHANGED";
@@ -90,6 +101,16 @@ export type CreateSendResult = { ok: true; sendId: string; round: number; duplic
 // timestamp(3) without time zone, holding UTC), never as Date parameters — those would be
 // shifted by the session's TimeZone setting.
 const quotaLock = (tx: Prisma.TransactionClient, organizationId: string) => tx.$queryRaw`SELECT 1 AS locked FROM pg_advisory_xact_lock(hashtext(${"rsvp-quota:" + organizationId}))`;
+/** Live pilot only: one cross-organization daily cap, locked AFTER the organization lock (fixed order). */
+const pilotLock = (tx: Prisma.TransactionClient) => tx.$queryRaw`SELECT 1 AS locked FROM pg_advisory_xact_lock(hashtext(${"rsvp-quota:pilot-all"}))`;
+/** Remaining capacity: the organization's day / month allowance and, when live, the pilot-wide daily cap. */
+async function capacityFor(tx: Prisma.TransactionClient, organizationId: string, now: Date): Promise<number> {
+  const allowance = await rsvpAllowance(organizationId, now, tx);
+  const own = Math.min(allowance.day.remaining, allowance.month.remaining);
+  if (rsvpDeliveryMode() !== "live") return own;
+  await pilotLock(tx);
+  return Math.min(own, await pilotGlobalRemaining(now, tx));
+}
 const isUnique = (e: unknown) => e instanceof Prisma.PrismaClientKnownRequestError && e.code === "P2002";
 
 async function countsOf(sendId: string): Promise<SendCounts> {
@@ -114,11 +135,7 @@ export async function createRsvpSend(
   now: Date = new Date()
 ): Promise<CreateSendResult> {
   requireRole(context, [...MANAGERS]);
-  try {
-    rsvpTransport();
-  } catch {
-    return { ok: false, code: "DELIVERY_DISABLED" };
-  }
+  if (!rsvpDeliveryAllowedFor(context.organization.id)) return { ok: false, code: "DELIVERY_DISABLED" };
   if (!REQUEST_KEY.test(input.requestKey) || (input.kind !== "INITIAL" && input.kind !== "RESEND")) return { ok: false, code: "INVALID_REQUEST" };
   const organizationId = context.organization.id;
   const groupId = context.activeGroup.id;
@@ -141,8 +158,7 @@ export async function createRsvpSend(
         if (input.kind === "INITIAL" && previous._max.round !== null) return { ok: false, code: "ALREADY_SENT" };
         if (input.kind === "RESEND" && previous._max.round === null) return { ok: false, code: "NOTHING_TO_RESEND" };
 
-        const allowance = await rsvpAllowance(organizationId, now, tx);
-        const { rows } = await classifyRoster(organizationId, fresh, Math.min(allowance.day.remaining, allowance.month.remaining), tx);
+        const { rows } = await classifyRoster(organizationId, fresh, await capacityFor(tx, organizationId, now), tx);
         const willSend = rows.filter((r) => r.status === "WILL_SEND");
         if (willSend.length === 0) return { ok: false, code: rows.some((r) => r.status === "OVER_LIMIT") ? "PLAN_LIMIT" : input.kind === "RESEND" ? "NOTHING_TO_RESEND" : "NOTHING_TO_SEND" };
         // The organizer confirmed a count from the preview; anything changed since (roster,
@@ -246,14 +262,14 @@ async function settle(id: string, organizationId: string, reservedAt: Date | nul
 
 type Claimed = { id: string; attempts: number };
 
-async function claimNext(now: Date, sendId: string | null): Promise<Claimed | null> {
-  const rows = sendId
-    ? await prisma.$queryRaw<Claimed[]>`UPDATE "RsvpInvitation" SET "status" = 'SENDING', "attempts" = "attempts" + 1, "claimedAt" = ${now.toISOString()}::timestamp, "updatedAt" = ${now.toISOString()}::timestamp
-        WHERE "id" = (SELECT "id" FROM "RsvpInvitation" WHERE "status" = 'QUEUED' AND "sendId" = ${sendId} ORDER BY "createdAt", "id" FOR UPDATE SKIP LOCKED LIMIT 1)
-        RETURNING "id", "attempts"`
-    : await prisma.$queryRaw<Claimed[]>`UPDATE "RsvpInvitation" SET "status" = 'SENDING', "attempts" = "attempts" + 1, "claimedAt" = ${now.toISOString()}::timestamp, "updatedAt" = ${now.toISOString()}::timestamp
-        WHERE "id" = (SELECT "id" FROM "RsvpInvitation" WHERE "status" = 'QUEUED' ORDER BY "createdAt", "id" FOR UPDATE SKIP LOCKED LIMIT 1)
-        RETURNING "id", "attempts"`;
+async function claimNext(now: Date, sendId: string | null, organizations: string[] | null): Promise<Claimed | null> {
+  const at = now.toISOString();
+  const bySend = sendId ? Prisma.sql`AND "sendId" = ${sendId}` : Prisma.empty;
+  // Live pilot: only allowlisted organizations' rows are ever claimed (others stay QUEUED).
+  const byOrg = organizations ? Prisma.sql`AND "organizationId" IN (${Prisma.join(organizations)})` : Prisma.empty;
+  const rows = await prisma.$queryRaw<Claimed[]>`UPDATE "RsvpInvitation" SET "status" = 'SENDING', "attempts" = "attempts" + 1, "claimedAt" = ${at}::timestamp, "updatedAt" = ${at}::timestamp
+    WHERE "id" = (SELECT "id" FROM "RsvpInvitation" WHERE "status" = 'QUEUED' ${bySend} ${byOrg} ORDER BY "createdAt", "id" FOR UPDATE SKIP LOCKED LIMIT 1)
+    RETURNING "id", "attempts"`;
   return rows[0] ?? null;
 }
 
@@ -387,7 +403,8 @@ export type QueueRun = { recovered: number; sent: number; failed: number; uncert
  * (counted, never resent) — the conservative outcome.
  */
 export async function processRsvpQueue(opts: { limit?: number; sendId?: string; now?: Date; budgetMs?: number } = {}): Promise<QueueRun> {
-  const transport = rsvpTransport(); // throws (before claiming anything) outside the test environment
+  const transport = rsvpTransport(); // throws (before claiming anything) when delivery is disabled
+  const organizations = rsvpDeliveryMode() === "live" ? [...pilotOrganizations()!] : null;
   const now = opts.now ?? new Date();
   const started = Date.now();
   const run: QueueRun = { recovered: await recoverStaleSending(now), sent: 0, failed: 0, uncertain: 0, skipped: 0, errors: 0, remaining: 0, stoppedForTime: false };
@@ -396,7 +413,7 @@ export async function processRsvpQueue(opts: { limit?: number; sendId?: string; 
       run.stoppedForTime = true;
       break;
     }
-    const claimed = await claimNext(now, opts.sendId ?? null);
+    const claimed = await claimNext(now, opts.sendId ?? null, organizations);
     if (!claimed) break;
     try {
       const outcome = await deliverOne(claimed, transport, now);
@@ -408,7 +425,7 @@ export async function processRsvpQueue(opts: { limit?: number; sendId?: string; 
       run.errors++;
     }
   }
-  run.remaining = await prisma.rsvpInvitation.count({ where: { status: "QUEUED", ...(opts.sendId ? { sendId: opts.sendId } : {}) } });
+  run.remaining = await prisma.rsvpInvitation.count({ where: { status: "QUEUED", ...(opts.sendId ? { sendId: opts.sendId } : {}), ...(organizations ? { organizationId: { in: organizations } } : {}) } });
   return run;
 }
 
@@ -420,11 +437,7 @@ export async function processRsvpQueue(opts: { limit?: number; sendId?: string; 
  */
 export async function retryFailedInvitations(context: TenantContext, sendId: string, now: Date = new Date()): Promise<{ ok: true; requeued: number; left: number } | { ok: false; code: "NOT_FOUND" | SendRefusal }> {
   requireRole(context, [...MANAGERS]);
-  try {
-    rsvpTransport();
-  } catch {
-    return { ok: false, code: "DELIVERY_DISABLED" };
-  }
+  if (!rsvpDeliveryAllowedFor(context.organization.id)) return { ok: false, code: "DELIVERY_DISABLED" };
   const organizationId = context.organization.id;
   return prisma.$transaction(
     async (tx) => {
@@ -436,12 +449,11 @@ export async function retryFailedInvitations(context: TenantContext, sendId: str
       const refusal = await matchRefusal(match.groupId, match, now, tx);
       if (refusal) return { ok: false as const, code: refusal };
       const failed = await tx.rsvpInvitation.findMany({ where: { sendId, status: "FAILED", attempts: { lt: RSVP_MAX_ATTEMPTS } }, select: { id: true, playerId: true } });
-      const allowance = await rsvpAllowance(organizationId, now, tx);
       // Eligibility without a capacity cut (others of this round may already be sent), then
       // re-reserve only as many as the remaining day / month allowance allows.
       const { rows } = await classifyRoster(organizationId, match, Number.POSITIVE_INFINITY, tx);
       const eligible = new Set(rows.filter((r) => r.status === "WILL_SEND").map((r) => r.playerId));
-      const capacity = Math.min(allowance.day.remaining, allowance.month.remaining);
+      const capacity = await capacityFor(tx, organizationId, now);
       const toRequeue = failed.filter((f) => f.playerId && eligible.has(f.playerId)).slice(0, capacity).map((f) => f.id);
       if (toRequeue.length) await tx.rsvpInvitation.updateMany({ where: { id: { in: toRequeue }, status: "FAILED" }, data: { status: "QUEUED", reservedAt: now, failedAt: null } });
       return { ok: true as const, requeued: toRequeue.length, left: failed.length - toRequeue.length };
