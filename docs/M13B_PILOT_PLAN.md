@@ -1,28 +1,42 @@
-# M13B — proposed RSVP email pilot plan
+# M13B — staff-only RSVP email pilot plan
 
-**Proposal for owner approval.** No organization is created or changed by this document. Every Production
-action follows `docs/M13B_PILOT_READINESS.md` and needs its own **[APPROVAL]**.
+**Owner decision (P8B.2a):** a **staff-only** pilot. No organization is created or changed by this document.
+Every Production action follows `docs/M13B_PILOT_READINESS.md` and `docs/M13B_DEPLOYMENT_SAFETY.md`, and
+needs its own **[APPROVAL]**.
 
-## 1. Pilot organization
+## 1. Pilot organization (staff only)
 
-- **One internal organization:** an existing organization the owner runs, or a new "TeamBalance Pilot"
-  organization created by the owner in the normal UI **[APPROVAL]**.
-- **One group, one upcoming match,** website attendance (not Telegram).
-- **Roster:** 3–5 players whose addresses belong to staff or consenting friends. At least one is a
-  guardian-type contact (an internal address marked Parent / Guardian), and at least one uses a linked
-  verified account.
+**Why a dedicated organization:** a send emails **every eligible player on the match roster**. That includes
+players reachable through their own verified linked account, and there is no per-recipient selection. An
+existing organization with real players must **not** be used.
+
+- **One new, dedicated internal organization,** created by the owner in the normal app (for example "TeamBalance
+  Staff Pilot") **[APPROVAL]**. Its roster contains **only approved staff testers**.
+- **One group, one upcoming test match,** website attendance only: no Telegram chat or poll.
+- **Recipients:**
+  - three to start, at most five during initial testing;
+  - every address is the owner's own or a consenting staff tester's;
+  - each is entered as a **Player**-type contact with the confirmation ticked, or reached through the tester's
+    own verified linked account.
+- **No real players, no guardian contacts** (no Parent / Guardian type at all), no external organizations.
 - **Allowlist:** `RSVP_EMAIL_PILOT_ORGS=<that organization id>` only.
+- **Before the first send, the invitation preview must show exactly three "Will be invited".** Every other
+  roster entry, if any, must be excluded with a visible reason. If the count isn't exactly three, **don't
+  send**.
+- **Staff testers are still data subjects.** Tell them what is stored (address, delivery status, answers), the
+  90-day retention, and how to unsubscribe or ask for deletion; get their consent first.
 
 ## 2. Observation window: 7 days
 
 | Day | Action | Batch |
 | --- | --- | --- |
-| 0 | Enable (runbook §5); send an INITIAL invitation for match 1 to **3 internal recipients** | 3 |
-| 0 | Run test cases 2–6 and 10 from runbook §8 | — |
+| 0 | Enable (runbook §5); check the preview shows **exactly 3**; send an INITIAL invitation to the **3 staff recipients** | 3 |
+| 0 | Run test cases 1–3 and 10 from runbook §8 (no guardian case 4; unsubscribe case 5 comes last) | — |
 | 1 | Resend to unanswered (test case 6); check the "replaced" link | ≤ 3 |
-| 2 | Bounce and complaint checks with `bounced@resend.dev` / `complained@resend.dev` (runbook §6), then clean up | 2 |
-| 3–6 | One more match; normal use by the organizer; up to **10 recipients per day** | ≤ 10 per day |
-| 7 | Review: go / expand / roll back | — |
+| 2 | Optional, **only with explicit approval** (not staff addresses): bounce and complaint checks with `bounced@resend.dev` / `complained@resend.dev` (runbook §6), then clean up | 2 |
+| 3–6 | Optionally add staff testers 4–5; normal use on one more test match | ≤ 5 per day |
+| last | **Unsubscribe test.** Run it last, or on a separate approved test address. An opt-out is permanent: no code can remove it, and lifting it needs a separately approved manual SQL statement | 1 |
+| 7 | Review: extend / expand / roll back | — |
 
 Hard limits during the pilot: the code caps it at 20 per organization per day and 100 across the pilot. The
 plan stays far below that.

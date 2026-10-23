@@ -140,7 +140,7 @@ requires one.
 
 ## D9. Reply-to address [OWNER]
 
-**Today:** there is no reply-to, and replies go to `noreply@mail.teambalancepro.com`.
+**Today:** there is no reply-to, and replies go to the sender `no-reply@mail.teambalancepro.com` (verified Production `EMAIL_FROM`).
 
 | Option | Consequence |
 | --- | --- |

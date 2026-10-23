@@ -50,9 +50,13 @@ Lock and downtime analysis per migration: `docs/M13B_MIGRATION_AUDIT.md`.
 
 Exact steps:
 1. **[APPROVAL]** Create a Neon branch / snapshot of Production named `pre-m13b-<date>`.
-2. **[APPROVAL]** Merge the reviewed branch to `main` (code ships with RSVP `disabled`). Let Vercel run the
-   project's existing build-time migration procedure, or run `prisma migrate deploy` against Production with
-   the documented credentials, per the repository's release process. Never run it from an ad-hoc shell.
+2. **[APPROVAL]** Merge the reviewed branch to `main` (code ships with RSVP `disabled`).
+   - **[VERIFIED in P8B.2b]** The Vercel build command is `npx prisma migrate deploy && npm run build`. The
+     Production build applies the pending migrations to Production during the build, before going live.
+   - **Every push of a branch also builds a Preview** that migrates the Preview database. Confirm Preview isolation
+     before pushing.
+   - Never run migrations from an ad-hoc shell.
+   - Timing, failure cases and recovery: `docs/M13B_DEPLOYMENT_SAFETY.md`.
 3. Verify:
    - `_prisma_migrations` lists all ten;
    - the app's smoke checks pass (sign-in, match page, attendance, Telegram poll);
@@ -75,10 +79,11 @@ Sending domain: `mail.teambalancepro.com` (the only RSVP sender domain the code 
    - DKIM: the `TXT` record(s) Resend specifies.
 
    Wait until Resend shows **Verified**.
-2. **DMARC (currently missing — blocker) [APPROVAL]:** add `_dmarc.teambalancepro.com` (or
-   `_dmarc.mail.teambalancepro.com`):
-   `v=DMARC1; p=none; rua=mailto:<monitored address>; adkim=r; aspf=r`.
-   Watch the aggregate reports for at least 7 days before moving to `p=quarantine`.
+2. **DMARC (currently missing — blocker) [APPROVAL]:** add the TXT record `_dmarc.teambalancepro.com` with
+   `v=DMARC1; p=none; adkim=r; aspf=r`.
+   - Append `; rua=mailto:<mailbox>` only once that reporting mailbox exists.
+   - Watch reports for at least 7 days before moving to `p=quarantine`.
+   - Details, propagation checks and rollback: `docs/M13B_DEPLOYMENT_SAFETY.md` §3.
 3. Send one account email (password reset) to an internal Gmail address and open "Show original". It must
    show `SPF: PASS`, `DKIM: PASS` and `DMARC: PASS`.
 4. In Resend, check that **open and click tracking are OFF** for this domain. Click tracking would rewrite
@@ -101,7 +106,7 @@ The live mode requires **all** of these in Vercel → Project → Settings → E
 | `RSVP_EMAIL_DELIVERY` | `live-pilot` (exact) | Any other value means disabled |
 | `RSVP_EMAIL_PILOT_ORGS` | `<orgId>[,<orgId>…]` (1–10 cuid ids) | One malformed entry disables the whole pilot |
 | `RESEND_API_KEY` | already set for account email | Unchanged |
-| `EMAIL_FROM` | `TeamBalance Pro <noreply@mail.teambalancepro.com>` | Must be a display name on `mail.teambalancepro.com` |
+| `EMAIL_FROM` | already set: `Team Balance Pro <no-reply@mail.teambalancepro.com>` [VERIFIED P8B.2b] | Must be a display name on `mail.teambalancepro.com`; compatible as is |
 | `APP_BASE_URL` | `https://teambalancepro.com` | Already set |
 | `VERCEL_ENV` | `production` (set by Vercel) | Preview deployments can never be live |
 
@@ -169,10 +174,10 @@ Rollback (R): disable the endpoint in Resend and unset `RESEND_WEBHOOK_SECRET` (
 | # | Scenario | Expected |
 | --- | --- | --- |
 | 1 | Preview a match | Correct eligible / excluded players, masked addresses and reasons; "Remaining today / this month" shows pilot limits (at most 20 / 100) |
-| 2 | Send to 2–3 internal addresses | Dashboard "Accepted by email provider"; email arrives; From is `TeamBalance Pro <noreply@mail.teambalancepro.com>`; the subject has no personal data |
+| 2 | Send to 2–3 internal addresses | Dashboard "Accepted by email provider"; email arrives; From is the Production `EMAIL_FROM` (`Team Balance Pro <no-reply@mail.teambalancepro.com>`, verified in P8B.2b); the subject has no personal data |
 | 3 | Yes / Maybe / No links | The page opens with the choice pre-selected; nothing is saved until Confirm; attendance updates |
-| 4 | Guardian contact | Guardian wording; player name only in the body |
-| 5 | Gmail one-click unsubscribe and the page unsubscribe | The next preview shows "Not receiving invitation emails"; resend skips them |
+| 4 | ~~Guardian contact~~ | **Not in the staff-only pilot** (owner decision P8B.2a: no guardian contacts). Test only after D1 is decided and before external use |
+| 5 | Gmail one-click unsubscribe and the page unsubscribe — **run last, or on a separate approved test address** (opt-outs are permanent) | The next preview shows "Not receiving invitation emails"; resend skips them |
 | 6 | Resend to unanswered | Answered and overridden players skipped; the older emailed link says "replaced"; manual links still work |
 | 7 | Daily limit | The 21st recipient in a day gets `LIMIT`; a send with none left gets `PLAN_LIMIT`; it resets at 00:00 UTC |
 | 8 | Non-pilot organization | Send disabled (403 `DELIVERY_DISABLED`) |
