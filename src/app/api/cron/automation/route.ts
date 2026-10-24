@@ -32,7 +32,9 @@ import { runRsvpRetention } from "@/lib/rsvpRetention";
  *
  * M13B release — RSVP retention (src/lib/rsvpRetention.ts), OFF unless RSVP_RETENTION_MODE
  * is set: "dry-run" reports counts on every run and changes nothing; "run" removes direct
- * identifiers only in the 03:00–03:14 UTC window (≈ once a day; idempotent, bounded).
+ * identifiers on every authorized run (the scheduler's timing is irregular, so no time
+ * window). Safe to repeat: idempotent (only rows not yet cleaned, past the 90-day cutoff),
+ * bounded per run, and a concurrent run stops instead of competing.
  * Counts only in the response. Independent of everything above.
  */
 export const dynamic = "force-dynamic";
@@ -83,16 +85,13 @@ async function rsvpQueueCounts() {
   }
 }
 
-/** RSVP retention action for this run. Off unless RSVP_RETENTION_MODE is "dry-run" or "run"; "run" acts only 03:00–03:14 UTC. */
-function retentionAction(mode: string | undefined, now: Date): "off" | "dry-run" | "run" | "outside-window" {
-  if (mode === "dry-run") return "dry-run";
-  if (mode !== "run") return "off";
-  return now.getUTCHours() === 3 && now.getUTCMinutes() < 15 ? "run" : "outside-window";
+/** RSVP retention action for this run: off unless RSVP_RETENTION_MODE is exactly "dry-run" or "run". */
+function retentionAction(mode: string | undefined): "off" | "dry-run" | "run" {
+  return mode === "dry-run" || mode === "run" ? mode : "off";
 }
 async function rsvpRetentionCounts(now: Date) {
-  const action = retentionAction(process.env.RSVP_RETENTION_MODE?.trim(), now);
+  const action = retentionAction(process.env.RSVP_RETENTION_MODE?.trim());
   if (action === "off") return { ok: true, counts: { disabled: true } };
-  if (action === "outside-window") return { ok: true, counts: { skipped: "outside-window" } };
   try {
     const run = await runRsvpRetention({ now, dryRun: action === "dry-run" });
     return { ok: true, counts: run };

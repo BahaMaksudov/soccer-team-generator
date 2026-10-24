@@ -922,3 +922,20 @@ Readiness documents:
   live.
 - P8A: the live transport exists but is off. Turning it on is the approval-gated runbook in
   `docs/M13B_PILOT_READINESS.md` (DMARC is still missing).
+
+## Retention scheduling (post-release fix)
+
+`RSVP_RETENTION_MODE` controls the cleanup in the automation cron:
+- absent, or any other value: off;
+- `dry-run`: counts only, no writes;
+- `run`: removes identifiers on **every** authorized cron run.
+
+The earlier 03:00–03:14 UTC window was removed, because GitHub Actions' scheduled runs land at irregular times
+and could miss it for days. Repeating the job every run is safe:
+- idempotent (`anonymizedAt IS NULL`, past the 90-day cutoff);
+- bounded (500 rows × 20 batches per run);
+- a concurrent run stops (advisory lock).
+
+Opt-outs, suppressions, answers and quota usage are never touched. Tests cover it through the real cron route,
+including an unauthenticated call (401, nothing written) and a dry run (no writes).
+

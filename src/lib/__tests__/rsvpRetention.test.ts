@@ -24,8 +24,9 @@ describe("retention cutoff", () => {
   it("only the automation cron imports the cleanup, and only behind RSVP_RETENTION_MODE (default off)", () => {
     expect(sources().filter((f) => f !== "src/lib/rsvpRetention.ts" && /@\/lib\/rsvpRetention/.test(read(f)))).toEqual(["src/app/api/cron/automation/route.ts"]);
     const cron = read("src/app/api/cron/automation/route.ts");
-    expect(cron).toContain('if (mode !== "run") return "off";');
-    expect(cron).toMatch(/now\.getUTCHours\(\) === 3 && now\.getUTCMinutes\(\) < 15/);
+    expect(cron).toContain('return mode === "dry-run" || mode === "run" ? mode : "off";');
+    expect(cron).toContain('runRsvpRetention({ now, dryRun: action === "dry-run" })'); // library defaults: 90-day cutoff, bounded batches
+    expect(cron.indexOf("authorizeCron(req)")).toBeLessThan(cron.indexOf("rsvpRetentionCounts(now)")); // auth first
     expect(cron).not.toMatch(/eraseRecipientEmail/); // erasure stays support-only
   });
 });

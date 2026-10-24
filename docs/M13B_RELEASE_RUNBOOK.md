@@ -143,8 +143,9 @@ action.
 
 1. Set `RSVP_RETENTION_MODE=dry-run` (Production) and redeploy. The cron's `retention` counts appear on every
    run. Expected now: `eligible: 0`, `identifiersRemoved: 0`, since no invitations exist yet.
-2. After at least one clean dry run, set `RSVP_RETENTION_MODE=run` and redeploy. It acts only in the
-   03:00–03:14 UTC window; other runs report `skipped: "outside-window"`.
+2. After at least one clean dry run, set `RSVP_RETENTION_MODE=run` and redeploy. It acts on **every** authorized
+   cron run. There is no time window, because GitHub's schedule is irregular. That's safe: the job is idempotent
+   (only rows past the 90-day cutoff that aren't cleaned yet), bounded per run, and a concurrent run stops.
 3. **Rollback:** delete `RSVP_RETENTION_MODE` (off) and redeploy. Identifiers already removed stay removed.
 
 ## K. Confirm live RSVP delivery stays disabled

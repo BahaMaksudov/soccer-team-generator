@@ -159,7 +159,7 @@ describe("cron endpoint", () => {
     expect(processRsvpQueue).toHaveBeenCalledWith({ limit: 200, budgetMs: 20_000 });
   });
 
-  it("M13B release — retention is OFF by default; dry-run reports counts; run acts only 03:00–03:14 UTC", async () => {
+  it("M13B release — retention is OFF by default; dry-run reports counts; run acts on every authorized run (no time window)", async () => {
     vi.stubEnv("CRON_SECRET", SECRET);
     runMatchAutomation.mockResolvedValue(run);
     runRsvpRetention.mockReset();
@@ -174,16 +174,17 @@ describe("cron endpoint", () => {
     vi.stubEnv("RSVP_RETENTION_MODE", "run");
     vi.useFakeTimers({ toFake: ["Date"] });
     try {
-      vi.setSystemTime(new Date("2026-11-02T12:00:00Z"));
-      runRsvpRetention.mockClear();
-      expect((await (await POST(req(`Bearer ${SECRET}`))).json()).retention).toEqual({ skipped: "outside-window" });
-      expect(runRsvpRetention).not.toHaveBeenCalled();
-      vi.setSystemTime(new Date("2026-11-02T03:05:00Z"));
-      runRsvpRetention.mockResolvedValue({ dryRun: false, identifiersRemoved: 4 });
-      const res = await POST(req(`Bearer ${SECRET}`));
-      expect(res.status).toBe(200);
-      expect((await res.json()).retention).toMatchObject({ identifiersRemoved: 4 });
-      expect(runRsvpRetention).toHaveBeenLastCalledWith(expect.objectContaining({ dryRun: false }));
+      // Times the old 03:00–03:14 UTC window would have skipped — the scheduler's runs land at irregular times.
+      for (const at of ["2026-11-02T12:00:00Z", "2026-11-02T00:31:42Z", "2026-11-02T21:59:19Z", "2026-11-02T03:20:00Z"]) {
+        vi.setSystemTime(new Date(at));
+        runRsvpRetention.mockClear();
+        runRsvpRetention.mockResolvedValue({ dryRun: false, identifiersRemoved: 4 });
+        const res = await POST(req(`Bearer ${SECRET}`));
+        expect(res.status, at).toBe(200);
+        expect((await res.json()).retention, at).toMatchObject({ identifiersRemoved: 4 });
+        expect(runRsvpRetention).toHaveBeenCalledTimes(1);
+        expect(runRsvpRetention).toHaveBeenLastCalledWith({ now: new Date(at), dryRun: false }); // library defaults: 90 days, bounded batches
+      }
       // A failure is visible (500) and generic.
       runRsvpRetention.mockRejectedValueOnce(new Error("boom"));
       const bad = await POST(req(`Bearer ${SECRET}`));
@@ -192,6 +193,11 @@ describe("cron endpoint", () => {
     } finally {
       vi.useRealTimers();
     }
+    // An unauthenticated request never reaches retention.
+    runRsvpRetention.mockClear();
+    expect((await POST(req())).status).toBe(401);
+    expect((await POST(req("Bearer wrong-secret-value-123"))).status).toBe(401);
+    expect(runRsvpRetention).not.toHaveBeenCalled();
     vi.stubEnv("RSVP_RETENTION_MODE", "yes"); // anything else is off
     expect((await (await POST(req(`Bearer ${SECRET}`))).json()).retention).toEqual({ disabled: true });
   });

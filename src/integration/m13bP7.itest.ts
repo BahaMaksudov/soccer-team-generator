@@ -16,6 +16,7 @@ import { eraseRecipientEmail, retentionCutoff, runRsvpRetention, RSVP_RETENTION_
 import { recordGlobalSuppression } from "@/lib/emailSuppression";
 import { signWebhookForTests } from "@/lib/webhookSignature";
 import * as webhookRoute from "@/app/api/email/webhooks/resend/route";
+import * as cronRoute from "@/app/api/cron/automation/route";
 import { EmailDeliveryError, testOutbox } from "@/lib/email/transport";
 
 const VERIFIED = new Date("2026-01-01T00:00:00Z");
@@ -373,3 +374,73 @@ describe("M13B P7 — webhook edge cases", () => {
     expect(await prisma.globalEmailSuppression.count()).toBe(1);
   });
 });
+
+describe("M13B release — retention through the automation cron (RSVP_RETENTION_MODE)", () => {
+  const CRON = "a-long-enough-test-secret-for-retention";
+  const cron = async (auth?: string) => {
+    const r = await cronRoute.POST(new Request("http://itest.local/api/cron/automation", { method: "POST", headers: auth ? { authorization: auth } : {} }));
+    return { status: r.status, body: (await r.json().catch(() => ({}))) as Record<string, any> }; // eslint-disable-line
+  };
+  const snapshot = async () => ({
+    invitations: await prisma.rsvpInvitation.findMany({ orderBy: { id: "asc" } }),
+    tokens: await prisma.emailUnsubscribeToken.count(),
+    optOuts: await prisma.organizationEmailOptOut.findMany({ orderBy: { email: "asc" } }),
+    suppressions: await prisma.globalEmailSuppression.findMany({ orderBy: { email: "asc" } }),
+    answers: await prisma.attendanceResponse.findMany({ orderBy: { playerId: "asc" } }),
+    usage: await prisma.rsvpEmailUsage.findMany(),
+  });
+  async function sentInvitations() {
+    await sendFor(O(), "m");
+    await processRsvpQueue({ now: SEND_AT });
+    await prisma.organizationEmailOptOut.create({ data: { organizationId: "o", email: "ben@example.com", source: "LINK" } });
+    await recordGlobalSuppression("guardian.of.ava@example.com", "HARD_BOUNCE", "itest");
+    await prisma.attendanceResponse.create({ data: { matchId: "m", groupId: "g", playerId: "p2", participantStatus: "PLAYING", participantSource: "PERSONAL_LINK", participantRespondedAt: SEND_AT } });
+    expect(await prisma.rsvpInvitation.count({ where: { status: { in: ["QUEUED", "SENDING"] } } })).toBe(0); // the cron's queue step has nothing to do
+  }
+  afterEach(() => vi.useRealTimers());
+
+  it("unauthenticated calls never reach retention; dry-run reports counts and writes nothing", async () => {
+    await sentInvitations();
+    vi.stubEnv("CRON_SECRET", CRON);
+    vi.stubEnv("RSVP_RETENTION_MODE", "run");
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date(FIRST_ANONYMIZED.getTime() + 9 * 3_600_000)); // 09:00 UTC, past the cutoff
+    const before = await snapshot();
+    expect((await cron()).status).toBe(401);
+    expect((await cron("Bearer wrong-secret-value-0000")).status).toBe(401);
+    expect(await snapshot()).toEqual(before);
+
+    vi.stubEnv("RSVP_RETENTION_MODE", "dry-run");
+    const r = await cron(`Bearer ${CRON}`);
+    expect(r.status).toBe(200);
+    expect(r.body.retention).toMatchObject({ dryRun: true, eligible: 3, identifiersRemoved: 0, batches: 0, remaining: 3 });
+    expect(JSON.stringify(r.body.retention)).not.toMatch(/@|Ava|Ben/);
+    expect(await snapshot()).toEqual(before); // no database writes at all
+  });
+
+  it("run acts at any time of day (no 03:00 window), honors the 90-day cutoff, is idempotent, and keeps opt-outs, suppressions and answers", async () => {
+    await sentInvitations();
+    vi.stubEnv("CRON_SECRET", CRON);
+    vi.stubEnv("RSVP_RETENTION_MODE", "run");
+    vi.useFakeTimers({ toFake: ["Date"] });
+    // Before the cutoff (D+90, 21:59 UTC): nothing is due.
+    vi.setSystemTime(new Date(LAST_RETAINED.getTime() - 2 * 3_600_000));
+    expect((await cron(`Bearer ${CRON}`)).body.retention).toMatchObject({ dryRun: false, eligible: 0, identifiersRemoved: 0 });
+    expect(await identifying()).toBe(3);
+    // After the cutoff, at an irregular scheduler time far from 03:00 UTC.
+    vi.setSystemTime(new Date(FIRST_ANONYMIZED.getTime() + 21 * 3_600_000 + 59 * 60_000)); // D+91 21:59 UTC
+    const before = await snapshot();
+    const r = await cron(`Bearer ${CRON}`);
+    expect(r.status).toBe(200);
+    expect(r.body.retention).toMatchObject({ dryRun: false, identifiersRemoved: 3, remaining: 0, concurrentRunDetected: false });
+    expect(await identifying()).toBe(0);
+    const after = await snapshot();
+    expect(after.optOuts).toEqual(before.optOuts);
+    expect(after.suppressions).toEqual(before.suppressions);
+    expect(after.answers).toEqual(before.answers);
+    expect(after.usage).toEqual(before.usage);
+    // Again: nothing more to do.
+    expect((await cron(`Bearer ${CRON}`)).body.retention).toMatchObject({ eligible: 0, identifiersRemoved: 0 });
+  });
+});
+
