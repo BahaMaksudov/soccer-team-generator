@@ -2,11 +2,15 @@ import { describe, it, expect } from "vitest";
 import fs from "node:fs";
 import path from "node:path";
 import type Stripe from "stripe";
-import { billingConfig, intervalForPrice, isLiveKey, LIVE_MODE_SUPPORTED, priceFor, stripeModePermitted } from "@/lib/billing/config";
+import { billingConfig, billingConfig as realBillingConfig, billingTermsPending, intervalForPrice, isLiveKey, isWellFormedLiveKey, LIVE_MODE_SUPPORTED, priceFor, stripeModePermitted } from "@/lib/billing/config";
+import { OWNER_ITEMS, type OwnerItem } from "@/lib/legal";
 import { generateTestSignature, STRIPE_API_VERSION, toSubscriptionLite, verifyStripeSignature } from "@/lib/billing/stripe";
 import { ENTITLING_STATUSES, LIVE_STATUSES, statusEntitlesPro } from "@/lib/billing/sync";
 
 /** M11.2A — billing configuration guards, status mapping and signatures (offline). */
+/** A syntactically valid, obviously fake live key (never a real credential). */
+const FAKE_LIVE_SK = "sk_live_" + "FAKE0000000000000000000000000000";
+const FAKE_LIVE_RK = "rk_live_" + "FAKE0000000000000000000000000000";
 const OK = { BILLING_ENABLED: "true", STRIPE_SECRET_KEY: "sk_test_abc", STRIPE_WEBHOOK_SECRET: "whsec_abc", STRIPE_PRICE_PRO_MONTHLY: "price_m", STRIPE_PRICE_PRO_ANNUAL: "price_y" };
 
 describe("billing configuration", () => {
@@ -17,13 +21,16 @@ describe("billing configuration", () => {
     expect(billingConfig({ ...OK, STRIPE_PRICE_PRO_ANNUAL: "price_m" }).enabled).toBe(false); // same Price twice
     expect(billingConfig({ ...OK, STRIPE_WEBHOOK_SECRET: "not-a-secret" }).enabled).toBe(false);
   });
-  it("test keys only in M11.2A: a live key is rejected even with BILLING_ALLOW_LIVE_MODE", () => {
-    expect(LIVE_MODE_SUPPORTED).toBe(false);
-    for (const key of ["sk_live_x", "rk_live_x"]) {
+  it("M11.2B: outside Vercel Production a live key is rejected even with BILLING_ALLOW_LIVE_MODE", () => {
+    expect(LIVE_MODE_SUPPORTED).toBe(true);
+    for (const key of [FAKE_LIVE_SK, FAKE_LIVE_RK, "sk_live_x"]) {
       expect(isLiveKey(key)).toBe(true);
-      expect(billingConfig({ ...OK, STRIPE_SECRET_KEY: key, BILLING_ALLOW_LIVE_MODE: "true" })).toEqual({ enabled: false, reason: "live_key_rejected" });
+      for (const VERCEL_ENV of ["preview", "development", undefined, "", "Production", "prod"]) {
+        expect(billingConfig({ ...OK, STRIPE_SECRET_KEY: key, BILLING_ALLOW_LIVE_MODE: "true", VERCEL_ENV }), `${VERCEL_ENV}`).toEqual({ enabled: false, reason: "live_key_rejected" });
+      }
     }
     expect(billingConfig({ ...OK, STRIPE_SECRET_KEY: "pk_test_x" }).enabled).toBe(false); // publishable key is not a secret key
+    expect(billingConfig({ ...OK, STRIPE_SECRET_KEY: "pk_live_x", VERCEL_ENV: "production", BILLING_ALLOW_LIVE_MODE: "true" }).enabled).toBe(false);
     expect(billingConfig(OK)).toMatchObject({ enabled: true, livemode: false, prices: { month: "price_m", year: "price_y" } });
   });
   it("the Price allow-list maps only month/year", () => {
@@ -57,16 +64,39 @@ describe("Production safety guard: no Stripe TEST mode in Vercel Production", ()
     expect(billingConfig({ ...OK, BILLING_ENABLED: "false", VERCEL_ENV: "production" })).toEqual({ enabled: false, reason: "disabled" });
     expect(billingConfig({ BILLING_ENABLED: "true", VERCEL_ENV: "production" })).toEqual({ enabled: false, reason: "missing_configuration" });
   });
-  it("the live-key restriction is unchanged everywhere (Production included)", () => {
-    for (const VERCEL_ENV of ["production", "preview", undefined]) {
-      expect(billingConfig({ ...OK, STRIPE_SECRET_KEY: "sk_live_x", BILLING_ALLOW_LIVE_MODE: "true", VERCEL_ENV })).toEqual({ enabled: false, reason: "live_key_rejected" });
+  it("M11.2B: live mode in Production only with EVERY condition; any missing one disables billing", () => {
+    const LIVE = { ...OK, STRIPE_SECRET_KEY: FAKE_LIVE_SK, BILLING_ALLOW_LIVE_MODE: "true", VERCEL_ENV: "production" };
+    const billingConfig = (env: Record<string, string | undefined>, items: readonly OwnerItem[] = []) => realBillingConfig(env, items); // terms published unless a case says otherwise
+    expect(billingConfig(LIVE)).toMatchObject({ enabled: true, livemode: true, prices: { month: "price_m", year: "price_y" } });
+    expect(billingConfig({ ...LIVE, STRIPE_SECRET_KEY: FAKE_LIVE_RK })).toMatchObject({ enabled: true, livemode: true }); // restricted key
+    expect(billingConfig({ ...LIVE, BILLING_ENABLED: "" })).toEqual({ enabled: false, reason: "disabled" });
+    for (const v of ["", "false", "TRUE", "1", undefined]) expect(billingConfig({ ...LIVE, BILLING_ALLOW_LIVE_MODE: v }), String(v)).toEqual({ enabled: false, reason: "live_key_rejected" });
+    for (const v of ["preview", "development", "", undefined]) expect(billingConfig({ ...LIVE, VERCEL_ENV: v }), String(v)).toEqual({ enabled: false, reason: "live_key_rejected" });
+    for (const k of ["STRIPE_WEBHOOK_SECRET", "STRIPE_PRICE_PRO_MONTHLY", "STRIPE_PRICE_PRO_ANNUAL"]) expect(billingConfig({ ...LIVE, [k]: "" }), k).toEqual({ enabled: false, reason: "missing_configuration" });
+    expect(billingConfig({ ...LIVE, STRIPE_SECRET_KEY: "" })).toEqual({ enabled: false, reason: "missing_configuration" });
+    expect(billingConfig({ ...LIVE, STRIPE_PRICE_PRO_ANNUAL: "price_m" }).enabled).toBe(false);
+    // A truncated / placeholder live key is not a valid key.
+    for (const key of ["sk_live_x", "sk_live_", "rk_live_short", `${FAKE_LIVE_SK} extra`, "sk_live_FAKE-000000000000000000000000000"]) {
+      expect(isWellFormedLiveKey(key), key).toBe(false);
+      expect(billingConfig({ ...LIVE, STRIPE_SECRET_KEY: key }).enabled, key).toBe(false);
     }
+    // Live charges wait for the published billing / cancellation / refund terms (legal.ts billing-launch item).
+    const pending = [{ id: "billing-terms", category: "billing-launch" as const, label: "x" }];
+    expect(billingConfig(LIVE, pending)).toEqual({ enabled: false, reason: "billing_terms_pending" });
+    expect(billingConfig({ ...OK, VERCEL_ENV: "preview" }, pending)).toMatchObject({ enabled: true, livemode: false }); // test mode unaffected
+    expect(billingTermsPending()).toBe(OWNER_ITEMS.some((i) => i.category === "billing-launch"));
+    expect(realBillingConfig(LIVE).enabled).toBe(!billingTermsPending()); // as committed: off until the terms are published
+    // A test key is still refused in Production, even with the live flag.
+    expect(billingConfig({ ...LIVE, STRIPE_SECRET_KEY: "sk_test_abc" })).toEqual({ enabled: false, reason: "test_key_in_production" });
   });
-  it("stripeModePermitted: test only outside Production; live never while live mode is unsupported", () => {
+  it("stripeModePermitted: test only outside Production; live only in Production with BILLING_ALLOW_LIVE_MODE=true", () => {
     expect(stripeModePermitted(false, {})).toBe(true);
     expect(stripeModePermitted(false, { VERCEL_ENV: "preview" })).toBe(true);
     expect(stripeModePermitted(false, { VERCEL_ENV: "production" })).toBe(false);
-    for (const VERCEL_ENV of ["production", "preview", undefined]) expect(stripeModePermitted(true, { VERCEL_ENV, BILLING_ALLOW_LIVE_MODE: "true" })).toBe(false);
+    expect(stripeModePermitted(false, { VERCEL_ENV: "production", BILLING_ALLOW_LIVE_MODE: "true" })).toBe(false);
+    expect(stripeModePermitted(true, { VERCEL_ENV: "production", BILLING_ALLOW_LIVE_MODE: "true" })).toBe(true);
+    expect(stripeModePermitted(true, { VERCEL_ENV: "production" })).toBe(false);
+    for (const VERCEL_ENV of ["preview", "development", undefined]) expect(stripeModePermitted(true, { VERCEL_ENV, BILLING_ALLOW_LIVE_MODE: "true" })).toBe(false);
   });
   it("one shared gate: every billing path reads billingConfig(); no other code reads the Stripe key", () => {
     const read = (f: string) => fs.readFileSync(path.join(process.cwd(), f), "utf8");

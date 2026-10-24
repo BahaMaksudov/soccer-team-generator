@@ -281,7 +281,7 @@ describe("Production safety guard — only a valid subscription in a permitted S
     }
   });
 
-  it("a mismatched or invalid subscription never unlocks: another Customer, a LIVE-mode row (not launched), or an Organization without a Stripe Customer", async () => {
+  it("a mismatched or invalid subscription never unlocks: another Customer, a LIVE-mode row outside Production, or an Organization without a Stripe Customer", async () => {
     await prisma.billingSubscription.update({ where: { stripeSubscriptionId: "sub_paid" }, data: { stripeCustomerId: "cus_someone_else" } });
     expect(await ownershipAllowance("u-paid")).toMatchObject({ allowed: 1, qualifiedBy: null });
     await prisma.billingSubscription.update({ where: { stripeSubscriptionId: "sub_pastdue" }, data: { livemode: true } });

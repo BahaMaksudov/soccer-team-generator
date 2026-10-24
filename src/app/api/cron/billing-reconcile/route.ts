@@ -7,7 +7,9 @@ import { reconcileBilling } from "@/lib/billing/sync";
  * M11.2A — billing reconciliation (independent of match automation): recovers
  * missed webhooks and inconsistent projections from Stripe's current state.
  * Same fail-closed CRON_SECRET bearer auth as /api/cron/automation; 503 when
- * billing is not enabled. Counts only in the response.
+ * billing is not enabled. Counts only in the response. M11.2B: triggered once a
+ * day by .github/workflows/billing-reconcile.yml; reconciles only this
+ * deployment's Stripe mode.
  */
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;

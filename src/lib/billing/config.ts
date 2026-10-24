@@ -1,23 +1,30 @@
 /**
- * M11.2A — billing configuration and safety guards (server-only).
+ * M11.2A / M11.2B — billing configuration and safety guards (server-only).
  *
  * Billing is OFF unless every condition holds:
  *   BILLING_ENABLED === "true"
- *   STRIPE_SECRET_KEY is a TEST key (sk_test_ / rk_test_). Live keys are
- *     rejected throughout M11.2A — LIVE_MODE_SUPPORTED is false in code, so
- *     BILLING_ALLOW_LIVE_MODE cannot turn them on (M11.2B flips the constant).
- *   STRIPE_WEBHOOK_SECRET, STRIPE_PRICE_PRO_MONTHLY, STRIPE_PRICE_PRO_ANNUAL set.
- * Production has none of these → billing disabled by default. Secrets are
- * never logged or returned.
+ *   STRIPE_SECRET_KEY is either
+ *     a TEST key (sk_test_ / rk_test_) — anywhere EXCEPT Vercel Production, or
+ *     a LIVE key (sk_live_ / rk_live_, well-formed) — ONLY in Vercel Production
+ *       (VERCEL_ENV=production) AND with BILLING_ALLOW_LIVE_MODE === "true";
+ *   STRIPE_WEBHOOK_SECRET (whsec_), STRIPE_PRICE_PRO_MONTHLY and
+ *     STRIPE_PRICE_PRO_ANNUAL (two distinct price_ ids) set.
+ *   and, for LIVE only, no "billing-launch" owner item is pending in legal.ts
+ *     (the billing, renewal, cancellation and refund terms are published).
+ * Checkout additionally verifies both Prices against Stripe (prices.ts) and
+ * fails closed if either is not an active recurring Price in the configured
+ * mode. Secrets are never logged or returned.
  *
- * Production safety guard: Stripe TEST mode is never permitted in the Vercel
- * Production environment (VERCEL_ENV=production) — a test key there disables
- * billing even with BILLING_ENABLED=true, and a stored test-mode subscription
- * never counts there (stripeModePermitted). Preview and local development keep
- * test mode. Every billing path (Checkout, Portal, webhook, sync,
- * reconciliation, the Stripe client) goes through billingConfig().
+ * Mode isolation: a deployment uses exactly ONE Stripe mode. Live keys are
+ * rejected in Preview and Development; test keys are rejected in Production;
+ * webhook events, Checkout Sessions, Customers and subscriptions of the other
+ * mode are never accepted (stripeModePermitted + the livemode checks in
+ * webhook.ts, sync.ts and checkout.ts). Every billing path goes through
+ * billingConfig().
  */
-export const LIVE_MODE_SUPPORTED = false;
+import { OWNER_ITEMS, type OwnerItem } from "@/lib/legal";
+
+export const LIVE_MODE_SUPPORTED = true;
 
 export type BillingInterval = "month" | "year";
 /** Public copy while paid billing is not active (BILLING_ENABLED unset — Production today): prices are planned, nobody is charged. */
@@ -35,10 +42,14 @@ export type BillingConfig =
       prices: Record<BillingInterval, string>;
       portalConfigurationId: string | null;
     }
-  | { enabled: false; reason: "disabled" | "missing_configuration" | "live_key_rejected" | "test_key_in_production" };
+  | { enabled: false; reason: "disabled" | "missing_configuration" | "live_key_rejected" | "test_key_in_production" | "billing_terms_pending" };
 
 export function isLiveKey(key: string): boolean {
   return /^(sk|rk)_live_/.test(key);
+}
+/** A plausibly real live key (Stripe keys are long alphanumeric strings); a truncated / placeholder value is refused. */
+export function isWellFormedLiveKey(key: string): boolean {
+  return /^(sk|rk)_live_[A-Za-z0-9]{24,}$/.test(key);
 }
 export function isTestKey(key: string): boolean {
   return /^(sk|rk)_test_/.test(key);
@@ -51,20 +62,27 @@ export function isVercelProduction(env: Env = process.env): boolean {
 /**
  * The ONE rule for which Stripe mode this deployment may use — for the
  * configured secret key AND for subscriptions already stored in the database.
- *   live: only when live mode is supported in code AND explicitly allowed
- *         (never in M11.2A: LIVE_MODE_SUPPORTED is false);
+ *   live: ONLY in the Vercel Production environment, and only when explicitly
+ *         allowed (BILLING_ALLOW_LIVE_MODE=true) — never in Preview or Development;
  *   test: anywhere EXCEPT the Vercel Production environment.
  */
 export function stripeModePermitted(livemode: boolean, env: Env = process.env): boolean {
-  if (livemode) return LIVE_MODE_SUPPORTED && env.BILLING_ALLOW_LIVE_MODE?.trim() === "true";
+  if (livemode) return LIVE_MODE_SUPPORTED && isVercelProduction(env) && env.BILLING_ALLOW_LIVE_MODE?.trim() === "true";
   return !isVercelProduction(env);
 }
 
-export function billingConfig(env: Env = process.env): BillingConfig {
+/** Live charges need the paid-subscription terms published first (legal.ts billing-launch items resolved). */
+export function billingTermsPending(items: readonly OwnerItem[] = OWNER_ITEMS): boolean {
+  return items.some((i) => i.category === "billing-launch");
+}
+
+export function billingConfig(env: Env = process.env, ownerItems: readonly OwnerItem[] = OWNER_ITEMS): BillingConfig {
   if (env.BILLING_ENABLED?.trim() !== "true") return { enabled: false, reason: "disabled" };
   const secretKey = env.STRIPE_SECRET_KEY?.trim() ?? "";
   if (isLiveKey(secretKey)) {
     if (!stripeModePermitted(true, env)) return { enabled: false, reason: "live_key_rejected" };
+    if (!isWellFormedLiveKey(secretKey)) return { enabled: false, reason: "missing_configuration" };
+    if (billingTermsPending(ownerItems)) return { enabled: false, reason: "billing_terms_pending" };
   } else if (!isTestKey(secretKey)) {
     return { enabled: false, reason: "missing_configuration" };
   } else if (!stripeModePermitted(false, env)) {

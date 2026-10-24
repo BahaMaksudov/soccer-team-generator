@@ -133,6 +133,9 @@ export type ReconcileResult = { synced: number; discovered: number; checkoutsRes
  */
 export async function reconcileBilling(now: Date = new Date()): Promise<ReconcileResult> {
   const result: ReconcileResult = { synced: 0, discovered: 0, checkoutsResolved: 0, eventsRecovered: 0, exceptions: 0, failures: 0 };
+  const config = billingConfig();
+  if (!config.enabled) throw new Error("Billing is not enabled.");
+  const { livemode } = config;
   const stripe = billingStripe();
   const done = new Set<string>();
   // A reconcile-time exception without a webhook event is recorded under a synthetic id so an operator sees it too.
@@ -152,7 +155,7 @@ export async function reconcileBilling(now: Date = new Date()): Promise<Reconcil
           await prisma.stripeEvent.upsert({
             where: { id: syntheticId(subscriptionId) },
             update: { status: "EXCEPTION", error: message, attempts: { increment: 1 } },
-            create: { id: syntheticId(subscriptionId), type: "reconcile.subscription", livemode: false, status: "EXCEPTION", objectId: subscriptionId, error: message, attempts: 1 },
+            create: { id: syntheticId(subscriptionId), type: "reconcile.subscription", livemode, status: "EXCEPTION", objectId: subscriptionId, error: message, attempts: 1 },
           });
       } else result.failures++;
       console.error(`[billing] reconcile ${subscriptionId}: ${message}`);
@@ -160,15 +163,16 @@ export async function reconcileBilling(now: Date = new Date()): Promise<Reconcil
     }
   };
 
+  // Only this deployment's Stripe mode is reconciled (M11.2B): rows of the other mode are never sent to this key.
   // 1. Webhook events that never committed (transient failure / exception) — re-apply from Stripe's current state.
-  const stuck = await prisma.stripeEvent.findMany({ where: { status: { in: ["RECEIVED", "FAILED", "EXCEPTION"] }, objectId: { startsWith: "sub_" } }, select: { id: true, objectId: true } });
+  const stuck = await prisma.stripeEvent.findMany({ where: { livemode, status: { in: ["RECEIVED", "FAILED", "EXCEPTION"] }, objectId: { startsWith: "sub_" } }, select: { id: true, objectId: true } });
   for (const e of stuck) {
     const synthetic = e.id.startsWith("reconcile:");
     if (await sync(e.objectId!, synthetic ? undefined : e.id)) result.eventsRecovered++;
   }
 
   // 2. Every subscription that is not finished.
-  const open = await prisma.billingSubscription.findMany({ where: { status: { notIn: ["canceled", "incomplete_expired"] } }, select: { stripeSubscriptionId: true } });
+  const open = await prisma.billingSubscription.findMany({ where: { livemode, status: { notIn: ["canceled", "incomplete_expired"] } }, select: { stripeSubscriptionId: true } });
   for (const s of open) if (!done.has(s.stripeSubscriptionId)) await sync(s.stripeSubscriptionId);
 
   // 3. Subscriptions Stripe knows but we never saw (missed created events).
@@ -190,6 +194,8 @@ export async function reconcileBilling(now: Date = new Date()): Promise<Reconcil
   // 4. Checkout attempts: completed ones are applied; abandoned ones are closed.
   const checkouts = await prisma.billingCheckoutSession.findMany({ where: { OR: [{ status: "OPEN", expiresAt: { lte: now } }, { status: "CREATING", createdAt: { lte: new Date(now.getTime() - 60 * 60_000) } }] } });
   for (const c of checkouts) {
+    // A Checkout Session id carries its mode (cs_live_ / cs_test_); the other mode's sessions are left alone.
+    if (c.stripeSessionId && c.stripeSessionId.startsWith("cs_live_") !== livemode) continue;
     if (c.status === "CREATING" || !c.stripeSessionId) {
       await prisma.billingCheckoutSession.updateMany({ where: { id: c.id, status: "CREATING" }, data: { status: "FAILED" } }); // its URL never reached a browser
       result.checkoutsResolved++;
@@ -205,6 +211,6 @@ export async function reconcileBilling(now: Date = new Date()): Promise<Reconcil
     }
   }
   // Open exceptions an operator must look at (webhook or reconcile).
-  result.exceptions = await prisma.stripeEvent.count({ where: { status: "EXCEPTION" } });
+  result.exceptions = await prisma.stripeEvent.count({ where: { livemode, status: "EXCEPTION" } });
   return result;
 }

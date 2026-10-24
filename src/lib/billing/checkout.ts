@@ -6,6 +6,7 @@ import { appUrl } from "@/lib/email/config";
 import { effectivePlan, PLAN_LABEL, planSummary } from "@/lib/entitlements";
 import { BILLING_UNAVAILABLE_MESSAGE, billingConfig, PRO_PRICES_USD, priceFor, type BillingInterval } from "@/lib/billing/config";
 import { billingStripe } from "@/lib/billing/stripe";
+import { verifyConfiguredPrices } from "@/lib/billing/prices";
 import { LIVE_STATUSES, syncSubscription } from "@/lib/billing/sync";
 
 /**
@@ -20,8 +21,10 @@ import { LIVE_STATUSES, syncSubscription } from "@/lib/billing/sync";
  *    the Organization lock (at most one CREATING/OPEN per Organization); its id
  *    is the Stripe idempotency key, so retries, double clicks, timeouts and a
  *    crash after Stripe succeeded all return the SAME Checkout Session;
+ *  - both configured Prices are verified with Stripe first (M11.2B, prices.ts);
  *  - the Stripe Customer is created with a per-Organization idempotency key and
- *    stored only if none is stored yet;
+ *    stored only if none is stored yet; a stored Customer that does not exist
+ *    in this deployment's Stripe mode (M11.2B) is never used — it is replaced;
  *  - no database transaction is held open across a Stripe call;
  *  - success / cancel / return URLs are built from the trusted APP_BASE_URL;
  *  - reaching the success URL activates nothing: the server re-fetches the
@@ -41,12 +44,22 @@ async function lockBilling(tx: Prisma.TransactionClient, organizationId: string)
   await tx.$queryRaw`SELECT 1 AS locked FROM pg_advisory_xact_lock(hashtext(${"billing:" + organizationId}))`;
 }
 
-/** The Organization's Stripe Customer (created once; concurrent callers converge on one). */
-async function ensureCustomer(organizationId: string, name: string): Promise<string> {
+/**
+ * The Organization's Stripe Customer (created once; concurrent callers converge on one).
+ * A stored Customer is first confirmed to exist in THIS deployment's mode: a
+ * test-mode Customer is never sent to live Checkout (and vice versa). Only a
+ * definite "not in this mode / deleted" answer replaces it; a Stripe outage throws.
+ */
+async function ensureCustomer(organizationId: string, name: string, livemode: boolean): Promise<string> {
   const existing = await prisma.organization.findUniqueOrThrow({ where: { id: organizationId }, select: { stripeCustomerId: true } });
-  if (existing.stripeCustomerId) return existing.stripeCustomerId;
-  const customer = await billingStripe().createCustomer({ name, metadata: { organizationId } }, `tbp-customer:${organizationId}`);
-  await prisma.organization.updateMany({ where: { id: organizationId, stripeCustomerId: null }, data: { stripeCustomerId: customer.id } });
+  if (existing.stripeCustomerId) {
+    const found = await billingStripe().retrieveCustomer(existing.stripeCustomerId);
+    if (found && !found.deleted && found.livemode === livemode) return existing.stripeCustomerId;
+    console.error(`[billing] organization ${organizationId}: stored Stripe Customer is not usable in ${livemode ? "live" : "test"} mode; creating a new one`);
+  }
+  const key = `tbp-customer${livemode ? ":live" : ""}:${organizationId}${existing.stripeCustomerId ? `:replaces:${existing.stripeCustomerId}` : ""}`;
+  const customer = await billingStripe().createCustomer({ name, metadata: { organizationId } }, key);
+  await prisma.organization.updateMany({ where: { id: organizationId, stripeCustomerId: existing.stripeCustomerId }, data: { stripeCustomerId: customer.id } });
   const stored = await prisma.organization.findUniqueOrThrow({ where: { id: organizationId }, select: { stripeCustomerId: true } });
   return stored.stripeCustomerId!;
 }
@@ -91,6 +104,16 @@ export async function startCheckout(context: OrganizationContext, body: unknown)
   if (op.kind === "refuse") return op.response;
   if (op.kind === "reuse" && op.status === "OPEN" && op.url) return NextResponse.json({ url: op.url });
 
+  // M11.2B: both configured Prices must be valid Prices of this mode before Stripe creates anything.
+  const prices = await verifyConfiguredPrices(config, billingStripe());
+  if (!prices.ok) {
+    console.error(`[billing] checkout ${op.id} refused: ${prices.problem}`);
+    // A NEW operation never reached Stripe, so it can be closed. A reused one stays CREATING: Stripe may
+    // already hold its session (lost response), and only its own idempotency key may recover it.
+    if (op.kind === "new") await prisma.billingCheckoutSession.updateMany({ where: { id: op.id, status: "CREATING" }, data: { status: "FAILED" } });
+    return unavailable();
+  }
+
   try {
     // 2. Any OTHER open Checkout of this Organization (e.g. the other interval) is expired on
     //    Stripe first — and marked EXPIRED only after Stripe confirms — so two sessions are never payable.
@@ -109,7 +132,7 @@ export async function startCheckout(context: OrganizationContext, body: unknown)
       await prisma.billingCheckoutSession.updateMany({ where: { id: other.id }, data: { status: "EXPIRED" } });
     }
     // 3. Stripe calls (idempotent: same operation → same Customer / Session).
-    const customer = await ensureCustomer(organizationId, context.organization.name);
+    const customer = await ensureCustomer(organizationId, context.organization.name, config.livemode);
     const base = billingPagePath(context.organization.slug);
     const session = await billingStripe().createCheckoutSession(
       {
@@ -149,8 +172,12 @@ export async function openPortal(context: OrganizationContext): Promise<NextResp
   const config = billingConfig();
   if (!config.enabled) return unavailable();
   const org = await prisma.organization.findUniqueOrThrow({ where: { id: context.organization.id }, select: { stripeCustomerId: true } });
-  if (!org.stripeCustomerId) return NextResponse.json({ error: "There is no billing account for this organization yet.", code: "NO_CUSTOMER" }, { status: 409 });
+  const noCustomer = () => NextResponse.json({ error: "There is no billing account for this organization yet.", code: "NO_CUSTOMER" }, { status: 409 });
+  if (!org.stripeCustomerId) return noCustomer();
   try {
+    // M11.2B: never open a Portal for a Customer of the other Stripe mode.
+    const found = await billingStripe().retrieveCustomer(org.stripeCustomerId);
+    if (!found || found.deleted || found.livemode !== config.livemode) return noCustomer();
     const portal = await billingStripe().createPortalSession({
       customer: org.stripeCustomerId,
       return_url: appUrl(billingPagePath(context.organization.slug)),

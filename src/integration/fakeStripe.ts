@@ -1,5 +1,5 @@
 import type Stripe from "stripe";
-import { verifyStripeSignature, type BillingStripe, type StripeCheckoutSessionLite, type StripeSubscriptionLite } from "@/lib/billing/stripe";
+import { verifyStripeSignature, type BillingStripe, type StripeCheckoutSessionLite, type StripePriceLite, type StripeSubscriptionLite } from "@/lib/billing/stripe";
 
 /**
  * M11.2A — in-memory Stripe for tests (no network). Mimics the parts the app
@@ -18,6 +18,8 @@ export function createFakeStripe(options: { livemode?: boolean } = {}) {
   const customers = new Map<string, { id: string; name: string; metadata: Record<string, string> }>();
   const sessions = new Map<string, StripeCheckoutSessionLite & { price: string; subscriptionMetadata: Record<string, string>; params: Stripe.Checkout.SessionCreateParams }>();
   const subs = new Map<string, StripeSubscriptionLite>();
+  /** Price overrides; any other id is a valid recurring Price of this mode (annual if the id says so). */
+  const prices = new Map<string, Partial<StripePriceLite> | null>();
   const failNext: Record<string, Failure> = {};
   const calls: Record<string, number> = {};
   const portalCalls: Array<{ customer: string; return_url: string }> = [];
@@ -29,6 +31,20 @@ export function createFakeStripe(options: { livemode?: boolean } = {}) {
   };
 
   const api: BillingStripe = {
+    async retrievePrice(priceId) {
+      count("retrievePrice");
+      if (failure("retrievePrice") === "outage") throw stripeError("StripeConnectionError", "connection timeout");
+      const patch = prices.get(priceId);
+      if (patch === null) throw Object.assign(stripeError("StripeInvalidRequestError", "No such price"), { code: "resource_missing", statusCode: 404 });
+      const year = /annual|year/.test(priceId);
+      return { id: priceId, livemode, active: true, type: "recurring", currency: "usd", unit_amount: year ? 9900 : 999, product: "prod_fake_pro", recurring: { interval: year ? "year" : "month", interval_count: 1, usage_type: "licensed" }, ...patch };
+    },
+    async retrieveCustomer(customerId) {
+      count("retrieveCustomer");
+      if (failure("retrieveCustomer") === "outage") throw stripeError("StripeConnectionError", "connection timeout");
+      const c = customers.get(customerId);
+      return c ? { id: c.id, livemode, deleted: false } : null; // another mode's Customer does not exist for this key
+    },
     async createCustomer(params, key) {
       count("createCustomer");
       if (idem.has(key)) return { id: (idem.get(key) as { id: string }).id };
@@ -45,7 +61,7 @@ export function createFakeStripe(options: { livemode?: boolean } = {}) {
       if (idem.has(key)) return { ...(idem.get(key) as StripeCheckoutSessionLite) };
       const f = failure("createCheckoutSession");
       if (f === "outage") throw stripeError("StripeConnectionError", "connection timeout");
-      const sid = id("cs_test");
+      const sid = id(livemode ? "cs_live" : "cs_test");
       const s = {
         id: sid,
         url: `https://checkout.stripe.test/c/${sid}`,
@@ -128,6 +144,6 @@ export function createFakeStripe(options: { livemode?: boolean } = {}) {
     return subs.get(sub.id)!;
   }
 
-  return { api, customers, sessions, subs, calls, portalCalls, failNext, completeCheckout, updateSubscription, addSubscription };
+  return { api, customers, sessions, subs, prices, calls, portalCalls, failNext, completeCheckout, updateSubscription, addSubscription };
 }
 export type FakeStripe = ReturnType<typeof createFakeStripe>;

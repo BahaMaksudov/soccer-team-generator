@@ -2,8 +2,8 @@ import { NextResponse } from "next/server";
 import { handleStripeWebhook } from "@/lib/billing/webhook";
 
 /**
- * M11.2A — Stripe webhook endpoint (TEST MODE). Not behind the login gate
- * (Stripe calls it); authenticity comes ONLY from the Stripe-Signature over
+ * M11.2A / M11.2B — Stripe webhook endpoint (test mode outside Production,
+ * live mode in Production only). Not behind the login gate (Stripe calls it); authenticity comes ONLY from the Stripe-Signature over
  * the RAW body (read as text, never parsed first). See src/lib/billing/webhook.ts.
  */
 export const runtime = "nodejs";

@@ -1,0 +1,77 @@
+# Team Balance Pro — daily Production billing reconciliation trigger (M11.2B).
+#
+# Like Match automation, this workflow is ONLY a clock. Once a day (and on
+# manual dispatch) it POSTs to the protected Production endpoint
+# /api/cron/billing-reconcile, which re-reads subscriptions from Stripe and
+# repairs missed webhooks. The job is idempotent: a late, repeated or manual
+# run changes nothing that is already correct and never charges anyone.
+# It does not touch match automation, Telegram or email.
+#
+# Target is fixed to Production. Runs only for the main branch of this
+# repository. Uses the EXISTING repository secret TBP_CRON_SECRET
+# (= CRON_SECRET in Vercel) — no new secret is needed.
+#
+# Outcomes:
+#   200 ok:true                        → success (counts only in the log)
+#   503 "Billing is not enabled."      → notice, not a failure (billing off)
+#   anything else (401, 500 ok:false…) → the run fails (visible in Actions)
+# The response body contains counts only — no names, emails or Stripe ids.
+
+name: Billing reconciliation (Production)
+
+on:
+  schedule:
+    - cron: "41 6 * * *" # daily, 06:41 UTC (off the hour; GitHub may start it late)
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: tbp-billing-reconcile
+  cancel-in-progress: false
+
+jobs:
+  reconcile:
+    if: github.repository == 'BahaMaksudov/soccer-team-generator' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Run Team Balance Pro billing reconciliation
+        env:
+          TBP_CRON_SECRET: ${{ secrets.TBP_CRON_SECRET }}
+          ENDPOINT: https://teambalancepro.com/api/cron/billing-reconcile
+        run: |
+          set -euo pipefail
+          echo "Started at $(date -u +%Y-%m-%dT%H:%M:%SZ) (${GITHUB_EVENT_NAME})"
+          if [ -z "${TBP_CRON_SECRET}" ]; then
+            echo "::error::Repository secret TBP_CRON_SECRET is not configured."
+            exit 1
+          fi
+          # The Authorization header is passed to curl on stdin (--config -),
+          # never on the command line and never echoed. No --retry: one
+          # attempt per run (the next daily run catches up).
+          rm -f response.json
+          code=$(printf 'header = "Authorization: Bearer %s"\n' "${TBP_CRON_SECRET}" | curl \
+            --config - \
+            --silent --show-error \
+            --request POST \
+            --max-time 90 \
+            --output response.json \
+            --write-out '%{http_code}' \
+            "${ENDPOINT}" || true)
+          echo "HTTP ${code}"
+          echo "Response:"
+          cat response.json 2>/dev/null || true
+          echo
+          if [ "${code}" = "503" ] && jq -e '.error == "Billing is not enabled."' response.json > /dev/null 2>&1; then
+            echo "::notice::Billing is not enabled in Production; nothing to reconcile."
+            exit 0
+          fi
+          if [ "${code}" != "200" ] || ! jq -e '.ok == true' response.json > /dev/null 2>&1; then
+            echo "::error::Billing reconciliation failed (HTTP ${code}). See the counts above and the Vercel function log."
+            exit 1
+          fi
+          if jq -e '.exceptions > 0' response.json > /dev/null 2>&1; then
+            echo "::warning::Billing has open exceptions that need an operator (StripeEvent status EXCEPTION)."
+          fi
+          echo "Finished at $(date -u +%Y-%m-%dT%H:%M:%SZ)"

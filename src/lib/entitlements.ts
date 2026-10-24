@@ -206,7 +206,7 @@ export async function assertCapacity(tx: Prisma.TransactionClient, organizationI
  * Stripe trial is not a payment), keeping the past_due payment grace. A raw
  * PRO value without such a subscription does not qualify, and neither does a
  * subscription in a Stripe mode this deployment does not permit (test mode in
- * Vercel Production; live mode until it is launched) or one whose Customer is
+ * Vercel Production; live mode anywhere else, or without BILLING_ALLOW_LIVE_MODE) or one whose Customer is
  * not the Organization's own (stripeModePermitted / paidSubscriptionQualifies).
  *
  * Limits only gate CREATION: an owner above the allowance (existing data, or

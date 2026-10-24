@@ -160,8 +160,10 @@ describe("Phase 1 — organization ownership allowance (pure rules)", () => {
     expect(paidSubscriptionQualifies(sub, org, {})).toBe(true);
     expect(paidSubscriptionQualifies({ ...sub, status: "past_due" }, org, {})).toBe(true);
     expect(paidSubscriptionQualifies(sub, org, { VERCEL_ENV: "production" })).toBe(false); // test mode in Production
-    expect(paidSubscriptionQualifies({ ...sub, livemode: true }, org, { BILLING_ALLOW_LIVE_MODE: "true" })).toBe(false); // live not launched
-    expect(paidSubscriptionQualifies({ ...sub, livemode: true }, org, { VERCEL_ENV: "production", BILLING_ALLOW_LIVE_MODE: "true" })).toBe(false);
+    expect(paidSubscriptionQualifies({ ...sub, livemode: true }, org, { BILLING_ALLOW_LIVE_MODE: "true" })).toBe(false); // live outside Production
+    expect(paidSubscriptionQualifies({ ...sub, livemode: true }, org, { VERCEL_ENV: "preview", BILLING_ALLOW_LIVE_MODE: "true" })).toBe(false);
+    expect(paidSubscriptionQualifies({ ...sub, livemode: true }, org, { VERCEL_ENV: "production" })).toBe(false); // live not allowed
+    expect(paidSubscriptionQualifies({ ...sub, livemode: true }, org, { VERCEL_ENV: "production", BILLING_ALLOW_LIVE_MODE: "true" })).toBe(true); // M11.2B
     expect(paidSubscriptionQualifies({ ...sub, stripeCustomerId: "cus_other" }, org, {})).toBe(false); // mismatched Customer
     expect(paidSubscriptionQualifies(sub, { stripeCustomerId: null }, {})).toBe(false);
     for (const status of ["trialing", "canceled", "unpaid", "incomplete", "paused"]) expect(paidSubscriptionQualifies({ ...sub, status }, org, {}), status).toBe(false);

@@ -33,7 +33,22 @@ export type StripeCheckoutSessionLite = {
   livemode: boolean;
 };
 
+export type StripePriceLite = {
+  id: string;
+  livemode: boolean;
+  active: boolean;
+  type: string;
+  currency: string;
+  unit_amount: number | null;
+  product: string | null;
+  recurring: { interval: string; interval_count: number; usage_type: string } | null;
+};
+export type StripeCustomerLite = { id: string; livemode: boolean; deleted: boolean };
+
 export interface BillingStripe {
+  retrievePrice(id: string): Promise<StripePriceLite>;
+  /** null when the Customer does not exist in THIS key's mode (e.g. a test Customer seen with a live key). */
+  retrieveCustomer(id: string): Promise<StripeCustomerLite | null>;
   createCustomer(params: { name: string; metadata: Record<string, string> }, idempotencyKey: string): Promise<{ id: string }>;
   createCheckoutSession(params: Stripe.Checkout.SessionCreateParams, idempotencyKey: string): Promise<StripeCheckoutSessionLite>;
   retrieveCheckoutSession(id: string): Promise<StripeCheckoutSessionLite>;
@@ -59,6 +74,23 @@ export function toSubscriptionLite(s: Stripe.Subscription): StripeSubscriptionLi
     items: { data: s.items.data.map((i) => ({ price: { id: i.price.id }, current_period_end: i.current_period_end })) },
   };
 }
+export function toPriceLite(p: Stripe.Price): StripePriceLite {
+  return {
+    id: p.id,
+    livemode: p.livemode,
+    active: p.active,
+    type: p.type,
+    currency: p.currency,
+    unit_amount: p.unit_amount ?? null,
+    product: ref(p.product),
+    recurring: p.recurring ? { interval: p.recurring.interval, interval_count: p.recurring.interval_count, usage_type: p.recurring.usage_type } : null,
+  };
+}
+/** Stripe's "No such …" error (the object does not exist for this key / mode). */
+export function isResourceMissing(e: unknown): boolean {
+  const err = e as { type?: string; code?: string; statusCode?: number } | null;
+  return Boolean(err && (err.code === "resource_missing" || (err.type === "StripeInvalidRequestError" && err.statusCode === 404)));
+}
 export function toSessionLite(s: Stripe.Checkout.Session): StripeCheckoutSessionLite {
   return {
     id: s.id,
@@ -75,6 +107,18 @@ export function toSessionLite(s: Stripe.Checkout.Session): StripeCheckoutSession
 function realStripe(secretKey: string): BillingStripe {
   const stripe = new Stripe(secretKey, { apiVersion: STRIPE_API_VERSION, timeout: 10_000, maxNetworkRetries: 2, appInfo: { name: "Team Balance Pro" } });
   return {
+    async retrievePrice(id) {
+      return toPriceLite(await stripe.prices.retrieve(id));
+    },
+    async retrieveCustomer(id) {
+      try {
+        const c = await stripe.customers.retrieve(id);
+        return { id: c.id, livemode: "livemode" in c ? c.livemode : false, deleted: Boolean((c as { deleted?: boolean }).deleted) };
+      } catch (e) {
+        if (isResourceMissing(e)) return null;
+        throw e;
+      }
+    },
     async createCustomer(params, idempotencyKey) {
       const c = await stripe.customers.create(params, { idempotencyKey });
       return { id: c.id };
@@ -111,7 +155,7 @@ export function setBillingStripeForTests(fake: BillingStripe | null) {
   override = fake;
 }
 
-/** The Stripe client for an ENABLED billing configuration (never for live keys in M11.2A — see config). */
+/** The Stripe client for an ENABLED billing configuration (live keys only in Vercel Production — see config). */
 export function billingStripe(): BillingStripe {
   if (override) return override;
   const config = billingConfig();

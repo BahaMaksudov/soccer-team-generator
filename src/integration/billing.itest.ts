@@ -1,5 +1,5 @@
 /**
- * M11.2A — Stripe billing (TEST MODE), REAL DATABASE (guarded local test DB
+ * M11.2A / M11.2B — Stripe billing (TEST MODE, and LIVE MODE in simulated Production), REAL DATABASE (guarded local test DB
  * only) with a FAKE Stripe adapter: no network call of any kind is made
  * (global fetch is a tripwire). Webhook signatures use the real Stripe SDK's
  * offline signing helpers with a test secret.
@@ -10,6 +10,18 @@ type TestSession = { user: { id?: string; email: string } } | null;
 let session: TestSession = null;
 vi.mock("next-auth", () => ({ getServerSession: vi.fn(async () => session) }));
 vi.mock("next/cache", () => ({ revalidatePath: vi.fn() }));
+// Live mode also needs the billing terms published (no pending billing-launch owner item); tests choose.
+const legal = vi.hoisted(() => ({ items: [] as Array<{ id: string; label: string; category: "publication" | "legal-review" | "billing-launch" }> }));
+vi.mock("@/lib/legal", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/legal")>();
+  return {
+    ...actual,
+    get OWNER_ITEMS() {
+      return legal.items;
+    },
+  };
+});
+const PENDING_BILLING_TERMS = { id: "billing-terms", category: "billing-launch" as const, label: "billing terms" };
 
 import { prisma } from "@/lib/prisma";
 import * as billingRoute from "@/app/api/admin/o/[organizationSlug]/billing/route";
@@ -19,9 +31,10 @@ import * as webhookRoute from "@/app/api/stripe/webhook/route";
 import * as reconcileRoute from "@/app/api/cron/billing-reconcile/route";
 import * as playersRoute from "@/app/api/admin/o/[organizationSlug]/g/[groupSlug]/players/route";
 import { setBillingStripeForTests, generateTestSignature } from "@/lib/billing/stripe";
+import { resetPriceCheckCacheForTests } from "@/lib/billing/prices";
 import { confirmCheckoutReturn } from "@/lib/billing/checkout";
 import { reconcileBilling, syncSubscription } from "@/lib/billing/sync";
-import { assertTelegram, planSummary } from "@/lib/entitlements";
+import { assertTelegram, organizationPlan, ownershipAllowance, PLAN_LIMITS, planSummary } from "@/lib/entitlements";
 import { runTrialLifecycle } from "@/lib/trialLifecycle";
 import { testOutbox } from "@/lib/email/transport";
 import { requireOrganizationContextForSlug } from "@/lib/tenantContext";
@@ -29,6 +42,8 @@ import { createOrganizationWorkspace } from "@/lib/workspaces";
 import { createFakeStripe, type FakeStripe } from "./fakeStripe";
 
 const WHSEC = "whsec_test_m112a_integration_secret";
+/** Syntactically valid, obviously fake live key — the fake adapter never sends it anywhere. */
+const FAKE_LIVE_KEY = "sk_live_" + "FAKE0000000000000000000000000000";
 const PRICES = { month: "price_test_monthly", year: "price_test_annual" };
 const VERIFIED = new Date("2026-01-01T00:00:00Z");
 const DAY = 86_400_000;
@@ -107,6 +122,8 @@ beforeEach(async () => {
   vi.stubEnv("VERCEL_ENV", ""); // local development unless a test says otherwise
   stripe = createFakeStripe();
   setBillingStripeForTests(stripe.api);
+  resetPriceCheckCacheForTests();
+  legal.items = [];
   otherNetwork = 0;
   session = null;
   await seed();
@@ -140,11 +157,16 @@ describe("M11.2A — billing stays off unless explicitly enabled in TEST mode", 
     expect(Object.keys(stripe.calls)).toEqual([]);
   });
 
-  it("a LIVE key is rejected even with BILLING_ALLOW_LIVE_MODE=true", async () => {
-    vi.stubEnv("STRIPE_SECRET_KEY", "sk_live_should_never_be_used");
+  it("a LIVE key is rejected outside Production even with BILLING_ALLOW_LIVE_MODE=true (Development and Preview)", async () => {
+    vi.stubEnv("STRIPE_SECRET_KEY", FAKE_LIVE_KEY);
     vi.stubEnv("BILLING_ALLOW_LIVE_MODE", "true");
-    expect((await checkout("free")).status).toBe(503);
-    expect((await view("free")).body.billingEnabled).toBe(false);
+    for (const env of ["", "development", "preview"]) {
+      vi.stubEnv("VERCEL_ENV", env);
+      expect((await checkout("free")).status, env).toBe(503);
+      expect((await portal("free")).status, env).toBe(503);
+      expect((await webhook("customer.subscription.updated", { id: "sub_x" }, { livemode: true })).status, env).toBe(503);
+      expect((await view("free")).body.billingEnabled, env).toBe(false);
+    }
     expect(Object.keys(stripe.calls)).toEqual([]);
   });
 });
@@ -187,9 +209,9 @@ describe("Production safety guard — Stripe TEST mode never runs in Vercel Prod
     expect(Object.keys(stripe.calls)).toEqual([]);
   });
 
-  it("Production with a live key: still rejected (live billing is not launched)", async () => {
+  it("Production with a malformed live key: rejected", async () => {
     vi.stubEnv("VERCEL_ENV", "production");
-    vi.stubEnv("STRIPE_SECRET_KEY", "sk_live_should_never_be_used");
+    vi.stubEnv("STRIPE_SECRET_KEY", "sk_live_x");
     vi.stubEnv("BILLING_ALLOW_LIVE_MODE", "true");
     expect((await checkout("free")).status).toBe(503);
     expect((await webhook("customer.subscription.updated", { id: "sub_x" }, { livemode: true })).status).toBe(503);
@@ -507,5 +529,200 @@ describe("M11.3 — after the trial ends, only a VERIFIED Stripe subscription re
     expect(await plan("free")).toBe("FREE");
     await expect(assertTelegram("free")).rejects.toThrow(/Telegram integration is part of Pro/);
     expect((await runTrialLifecycle(new Date(), { mode: "send" })).emailsSent).toBe(0); // converted once → never a trial email again
+  });
+});
+
+// ============================================================ M11.2B — LIVE MODE
+const LIVE_PRICES = { month: "price_live_monthly", year: "price_live_annual" };
+/** Every Live condition: Vercel Production + BILLING_ENABLED + BILLING_ALLOW_LIVE_MODE + live key + webhook secret + live Prices. */
+function goLive() {
+  vi.stubEnv("VERCEL_ENV", "production");
+  vi.stubEnv("BILLING_ALLOW_LIVE_MODE", "true");
+  vi.stubEnv("STRIPE_SECRET_KEY", FAKE_LIVE_KEY);
+  vi.stubEnv("STRIPE_PRICE_PRO_MONTHLY", LIVE_PRICES.month);
+  vi.stubEnv("STRIPE_PRICE_PRO_ANNUAL", LIVE_PRICES.year);
+  stripe = createFakeStripe({ livemode: true });
+  setBillingStripeForTests(stripe.api);
+  resetPriceCheckCacheForTests();
+}
+const liveWebhook = (type: string, object: Record<string, unknown>, opts: { id?: string } = {}) => webhook(type, object, { livemode: true, id: opts.id ?? `evt_live_${++evtSeq}` });
+const reconcileReq = (auth = "Bearer billing-reconcile-test-secret") => new Request("http://itest.local/api/cron/billing-reconcile", { method: "POST", headers: { authorization: auth } });
+const liveSub = (id: string, customer: string, organizationId: string, extra: Record<string, unknown> = {}) =>
+  stripe.addSubscription({ id, customer, status: "active", cancel_at_period_end: false, canceled_at: null, ended_at: null, metadata: { organizationId }, items: { data: [{ price: { id: LIVE_PRICES.month }, current_period_end: Math.floor(Date.now() / 1000) + 30 * 86_400 }] }, ...extra });
+
+describe("M11.2B — Stripe Live mode in Production only", () => {
+  it("all conditions met: live Checkout → live webhook → PRO; Portal works; the same flow for the annual Price", async () => {
+    goLive();
+    expect((await view("free")).body).toMatchObject({ billingEnabled: true, canPurchase: true });
+    const r = await checkout("free");
+    expect(r.status, JSON.stringify(r.body)).toBe(200);
+    const sessionId = String(r.body.url).split("/").pop()!;
+    expect(sessionId.startsWith("cs_live_")).toBe(true);
+    expect(stripe.calls.retrievePrice).toBe(2); // both Prices verified before any Checkout
+    const sub = stripe.completeCheckout(sessionId);
+    expect(await liveWebhook("checkout.session.completed", { id: sessionId, subscription: sub.id })).toMatchObject({ status: 200 });
+    expect(await plan("free")).toBe("PRO");
+    expect(await prisma.billingSubscription.findUniqueOrThrow({ where: { stripeSubscriptionId: sub.id } })).toMatchObject({ livemode: true, interval: "month", stripePriceId: LIVE_PRICES.month });
+    expect((await portal("free")).status).toBe(200);
+    // Annual on another Organization.
+    await prisma.organizationMembership.create({ data: { userId: "u-owner", organizationId: "other", role: "OWNER" } });
+    const y = await checkout("other", { interval: "year" });
+    expect(y.status).toBe(200);
+    expect(stripe.sessions.get(String(y.body.url).split("/").pop()!)!.price).toBe(LIVE_PRICES.year);
+    expect(otherNetwork).toBe(0);
+  });
+
+  it("disabled — no Stripe call at all — when ANY flag or credential is missing", async () => {
+    const cases: Array<[string, string]> = [
+      ["BILLING_ENABLED", ""],
+      ["BILLING_ALLOW_LIVE_MODE", ""],
+      ["BILLING_ALLOW_LIVE_MODE", "false"],
+      ["VERCEL_ENV", "preview"],
+      ["VERCEL_ENV", "development"],
+      ["VERCEL_ENV", ""],
+      ["STRIPE_SECRET_KEY", ""],
+      ["STRIPE_SECRET_KEY", "sk_live_x"],
+      ["STRIPE_SECRET_KEY", "sk_test_m112a_fake_key"], // test key in Production
+      ["STRIPE_WEBHOOK_SECRET", ""],
+      ["STRIPE_PRICE_PRO_MONTHLY", ""],
+      ["STRIPE_PRICE_PRO_ANNUAL", ""],
+      ["BILLING_TERMS", "pending"], // the paid-subscription terms are not published yet
+    ];
+    for (const [name, value] of cases) {
+      goLive();
+      if (name === "BILLING_TERMS") legal.items = [PENDING_BILLING_TERMS];
+      else vi.stubEnv(name, value);
+      const label = `${name}=${value}`;
+      expect(await checkout("free"), label).toMatchObject({ status: 503, body: { code: "BILLING_UNAVAILABLE" } });
+      expect((await portal("free")).status, label).toBe(503);
+      expect((await liveWebhook("customer.subscription.updated", { id: "sub_x" })).status, label).toBe(503);
+      expect((await call(reconcileRoute.POST(reconcileReq()))).status, label).toBe(503);
+      expect((await view("free")).body.billingEnabled, label).toBe(false);
+      expect(Object.keys(stripe.calls), label).toEqual([]);
+      legal.items = [];
+    }
+    expect(await prisma.billingCheckoutSession.count()).toBe(0);
+  });
+
+  it("Prices are verified against Stripe before Checkout: test-mode, inactive, one-time, wrong interval / amount / currency / product, or missing → no Checkout", async () => {
+    const bad: Array<[string, Record<string, unknown> | null]> = [
+      [LIVE_PRICES.month, { livemode: false }], // a TEST Price id configured in live
+      [LIVE_PRICES.year, { livemode: false }],
+      [LIVE_PRICES.month, { active: false }],
+      [LIVE_PRICES.month, { type: "one_time", recurring: null }],
+      [LIVE_PRICES.month, { recurring: { interval: "year", interval_count: 1, usage_type: "licensed" } }],
+      [LIVE_PRICES.month, { recurring: { interval: "month", interval_count: 3, usage_type: "licensed" } }],
+      [LIVE_PRICES.month, { recurring: { interval: "month", interval_count: 1, usage_type: "metered" } }],
+      [LIVE_PRICES.month, { unit_amount: 899 }],
+      [LIVE_PRICES.year, { unit_amount: 9999 }],
+      [LIVE_PRICES.month, { currency: "eur" }],
+      [LIVE_PRICES.year, { product: "prod_other" }],
+      [LIVE_PRICES.month, null], // "No such price" (e.g. a test id looked up with the live key)
+    ];
+    for (const [priceId, patch] of bad) {
+      goLive();
+      stripe.prices.set(priceId, patch);
+      const label = `${priceId} ${JSON.stringify(patch)}`;
+      expect(await checkout("free"), label).toMatchObject({ status: 503, body: { code: "BILLING_UNAVAILABLE" } });
+      expect(stripe.calls.createCustomer ?? 0, label).toBe(0);
+      expect(stripe.calls.createCheckoutSession ?? 0, label).toBe(0);
+    }
+    expect(await prisma.billingCheckoutSession.count({ where: { status: { not: "FAILED" } } })).toBe(0); // refused before Stripe: closed
+    // Stripe unreachable while verifying → fail closed; the next attempt (Stripe back) works.
+    goLive();
+    stripe.failNext.retrievePrice = "outage";
+    expect((await checkout("free")).status).toBe(503);
+    expect((await checkout("free")).status).toBe(200);
+  });
+
+  it("customer isolation: a stored TEST-mode Customer is never used live — Checkout makes a live one; Portal refuses the test one", async () => {
+    // Made in test mode (e.g. a Preview database later copied): the id does not exist for the live key.
+    await prisma.organization.update({ where: { id: "free" }, data: { stripeCustomerId: "cus_test_from_preview" } });
+    goLive();
+    expect(await portal("free")).toMatchObject({ status: 409, body: { code: "NO_CUSTOMER" } });
+    expect(stripe.portalCalls).toHaveLength(0);
+    const r = await checkout("free");
+    expect(r.status).toBe(200);
+    const stored = (await prisma.organization.findUniqueOrThrow({ where: { id: "free" } })).stripeCustomerId!;
+    expect(stored).not.toBe("cus_test_from_preview");
+    expect(stripe.customers.has(stored)).toBe(true);
+    expect(stripe.sessions.get(String(r.body.url).split("/").pop()!)!.customer).toBe(stored);
+    // A Stripe outage while checking the stored Customer never replaces it.
+    await prisma.organization.update({ where: { id: "other" }, data: { stripeCustomerId: "cus_keep" } });
+    stripe.customers.set("cus_keep", { id: "cus_keep", name: "Org other", metadata: { organizationId: "other" } });
+    await prisma.organizationMembership.create({ data: { userId: "u-owner", organizationId: "other", role: "OWNER" } });
+    stripe.failNext.retrieveCustomer = "outage";
+    expect((await checkout("other")).status).toBe(503);
+    expect((await prisma.organization.findUniqueOrThrow({ where: { id: "other" } })).stripeCustomerId).toBe("cus_keep");
+    expect((await checkout("other")).status).toBe(200);
+    expect((await prisma.organization.findUniqueOrThrow({ where: { id: "other" } })).stripeCustomerId).toBe("cus_keep");
+  });
+
+  it("subscription / event isolation: TEST data never counts or syncs live; a test-mode subscription or event is refused", async () => {
+    // A stored test-mode paid subscription (copied from Preview): no Pro, no ownership unlock, not reconciled.
+    await prisma.organization.update({ where: { id: "free" }, data: { stripeCustomerId: "cus_t", plan: "PRO" } });
+    await prisma.billingSubscription.create({ data: { organizationId: "free", stripeSubscriptionId: "sub_test_old", stripeCustomerId: "cus_t", status: "active", livemode: false, lastSyncedAt: new Date() } });
+    await prisma.stripeEvent.create({ data: { id: "evt_test_stuck", type: "customer.subscription.updated", livemode: false, status: "FAILED", objectId: "sub_test_old" } });
+    goLive();
+    await prisma.organizationMembership.deleteMany({ where: { userId: "u-owner", organizationId: { in: ["legacy", "comp"] } } });
+    expect(await ownershipAllowance("u-owner")).toMatchObject({ qualifiedBy: null });
+    const r = await call(reconcileRoute.POST(reconcileReq()));
+    expect(r.status, JSON.stringify(r.body)).toBe(200);
+    expect(stripe.calls.retrieveSubscription ?? 0).toBe(0); // the test rows were never sent to the live key
+    expect(await prisma.stripeEvent.findUniqueOrThrow({ where: { id: "evt_test_stuck" } })).toMatchObject({ status: "FAILED" });
+    // Test-mode webhook event in live → 400, nothing stored.
+    expect((await webhook("customer.subscription.updated", { id: "sub_x" }, { livemode: false })).status).toBe(400);
+    expect(await prisma.stripeEvent.count({ where: { livemode: true } })).toBe(0);
+    // A live-key response claiming test mode is an operator exception, never applied.
+    await prisma.organization.update({ where: { id: "other" }, data: { stripeCustomerId: "cus_live_other" } });
+    liveSub("sub_mode_mismatch", "cus_live_other", "other", { livemode: false });
+    expect((await liveWebhook("customer.subscription.created", { id: "sub_mode_mismatch" })).body).toMatchObject({ exception: true });
+    expect(await plan("other")).toBe("FREE");
+  });
+
+  it("reconciliation in live: auth, idempotency, mode-correct exception records, failures visible without personal data", async () => {
+    goLive();
+    expect((await call(reconcileRoute.POST(reconcileReq("Bearer wrong-secret-value-xx")))).status).toBe(401);
+    expect((await call(reconcileRoute.POST(new Request("http://itest.local/", { method: "POST" })))).status).toBe(401);
+    // A paid live subscription whose webhook was missed is recovered once.
+    await prisma.organization.update({ where: { id: "free" }, data: { stripeCustomerId: "cus_live_free" } });
+    stripe.customers.set("cus_live_free", { id: "cus_live_free", name: "Org free", metadata: { organizationId: "free" } });
+    liveSub("sub_live_missed", "cus_live_free", "free");
+    // An inconsistent one (wrong Organization metadata) → a synthetic exception, recorded as LIVE.
+    liveSub("sub_live_bad", "cus_live_free", "other");
+    const first = await call(reconcileRoute.POST(reconcileReq()));
+    expect(first.status).toBe(200);
+    expect(first.body).toMatchObject({ ok: true, discovered: 2, synced: 1, failures: 0, exceptions: 1 });
+    expect(await plan("free")).toBe("PRO");
+    expect(await prisma.stripeEvent.findUniqueOrThrow({ where: { id: "reconcile:sub_live_bad" } })).toMatchObject({ livemode: true, status: "EXCEPTION" });
+    for (let i = 0; i < 2; i++) expect((await call(reconcileRoute.POST(reconcileReq()))).status).toBe(200);
+    expect(await prisma.billingSubscription.count()).toBe(1);
+    expect(await prisma.entitlementEvent.count({ where: { action: "STRIPE_PRO_STARTED" } })).toBe(1);
+    // A Stripe outage → 500 ok:false with counts only (no ids, emails, names or secrets in the body).
+    stripe.failNext.retrieveSubscription = "outage";
+    const failed = await call(reconcileRoute.POST(reconcileReq()));
+    expect(failed.status).toBe(500);
+    expect(failed.body.ok).toBe(false);
+    expect(Object.keys(failed.body).sort()).toEqual(["checkoutsResolved", "discovered", "eventsRecovered", "exceptions", "failures", "ok", "synced"]);
+    expect(JSON.stringify(failed.body)).not.toMatch(/cus_|sub_|@|sk_|whsec_|Org /);
+    expect(await plan("free")).toBe("PRO"); // a failed run changes nothing
+  });
+
+  it("trial and Pro entitlements are unchanged by live mode", async () => {
+    goLive();
+    expect(await organizationPlan("trial")).toMatchObject({ plan: "TRIAL", limits: PLAN_LIMITS.TRIAL });
+    expect(await organizationPlan("free")).toMatchObject({ plan: "FREE", limits: PLAN_LIMITS.FREE });
+    expect((await planSummary("trial")).telegram).toBe(true);
+    const r = await checkout("trial");
+    expect(r.status).toBe(200);
+    const sub = stripe.completeCheckout(String(r.body.url).split("/").pop()!);
+    await liveWebhook("customer.subscription.created", { id: sub.id });
+    expect(await organizationPlan("trial")).toMatchObject({ plan: "PRO", limits: PLAN_LIMITS.PRO });
+    await assertTelegram("trial");
+    stripe.updateSubscription(sub.id, { status: "canceled", ended_at: Math.floor(Date.now() / 1000) });
+    await liveWebhook("customer.subscription.deleted", { id: sub.id });
+    expect((await planSummary("trial")).plan).toBe("FREE"); // no second trial
+    expect((await planSummary("comp")).plan).toBe("COMP");
+    expect((await planSummary("legacy")).plan).toBe("LEGACY");
   });
 });
