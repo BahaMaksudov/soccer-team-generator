@@ -726,3 +726,62 @@ describe("M11.2B — Stripe Live mode in Production only", () => {
     expect((await planSummary("legacy")).plan).toBe("LEGACY");
   });
 });
+
+// ============================================================ M11.2B — SCHEDULED CANCELLATION
+describe("M11.2B — scheduled cancellation (Customer Portal cancel_at and cancel_at_period_end)", () => {
+  const subView = async (org = "free") => (await view(org)).body.subscription as Record<string, unknown>;
+  const periodEndOf = (subId: string) => stripe.subs.get(subId)!.items.data[0].current_period_end;
+
+  it("Portal cancellation (cancel_at set, cancel_at_period_end=false): Pro kept, access-end date shown; ends → Free", async () => {
+    const { sub } = await subscribe("free", "month");
+    await webhook("customer.subscription.created", { id: sub.id });
+    expect((await subView()).accessEndsAt).toBeNull(); // renewing
+    const end = periodEndOf(sub.id);
+    // Exactly what the Sandbox Portal sent: cancel_at = period end, cancel_at_period_end stays false.
+    stripe.updateSubscription(sub.id, { cancel_at: end, cancel_at_period_end: false, canceled_at: Math.floor(Date.now() / 1000) });
+    expect((await webhook("customer.subscription.updated", { id: sub.id })).status).toBe(200);
+    expect(await plan("free")).toBe("PRO"); // access kept until it actually ends
+    await assertTelegram("free");
+    expect(await prisma.billingSubscription.findUniqueOrThrow({ where: { stripeSubscriptionId: sub.id } })).toMatchObject({ status: "active", cancelAtPeriodEnd: false, cancelAt: new Date(end * 1000) });
+    expect(await subView()).toMatchObject({ status: "active", interval: "month", cancelAtPeriodEnd: false, accessEndsAt: new Date(end * 1000).toISOString() });
+    // Stripe ends it at cancel_at.
+    stripe.updateSubscription(sub.id, { status: "canceled", ended_at: end });
+    await webhook("customer.subscription.deleted", { id: sub.id });
+    expect(await plan("free")).toBe("FREE");
+    expect(await subView()).toMatchObject({ status: "canceled", accessEndsAt: null });
+  });
+
+  it("traditional cancel_at_period_end=true on an annual plan: Pro kept, ends at the period end; resuming clears it", async () => {
+    const { sub } = await subscribe("free", "year");
+    await webhook("customer.subscription.created", { id: sub.id });
+    stripe.updateSubscription(sub.id, { cancel_at_period_end: true });
+    await webhook("customer.subscription.updated", { id: sub.id });
+    expect(await plan("free")).toBe("PRO");
+    expect(await subView()).toMatchObject({ interval: "year", cancelAtPeriodEnd: true, accessEndsAt: new Date(periodEndOf(sub.id) * 1000).toISOString() });
+    // Resumed in the Portal before the end: renewing again.
+    stripe.updateSubscription(sub.id, { cancel_at_period_end: false, cancel_at: null, canceled_at: null });
+    await webhook("customer.subscription.updated", { id: sub.id });
+    expect(await subView()).toMatchObject({ cancelAtPeriodEnd: false, accessEndsAt: null });
+    expect((await prisma.billingSubscription.findUniqueOrThrow({ where: { stripeSubscriptionId: sub.id } })).cancelAt).toBeNull();
+    expect(await plan("free")).toBe("PRO");
+  });
+
+  it("a cancel_at different from the period end: the actual cancel_at date is shown", async () => {
+    const { sub } = await subscribe("free", "month");
+    const later = periodEndOf(sub.id) + 40 * 86_400;
+    stripe.updateSubscription(sub.id, { cancel_at: later });
+    await webhook("customer.subscription.updated", { id: sub.id });
+    expect(await subView()).toMatchObject({ accessEndsAt: new Date(later * 1000).toISOString(), currentPeriodEnd: new Date(periodEndOf(sub.id) * 1000).toISOString() });
+    expect(await plan("free")).toBe("PRO");
+  });
+
+  it("reconciliation also picks up a scheduled cancellation whose webhook was missed", async () => {
+    const { sub } = await subscribe("free", "month");
+    await webhook("customer.subscription.created", { id: sub.id });
+    stripe.updateSubscription(sub.id, { cancel_at: periodEndOf(sub.id) }); // no webhook delivered
+    expect((await subView()).accessEndsAt).toBeNull();
+    await reconcileBilling();
+    expect((await subView()).accessEndsAt).toBe(new Date(periodEndOf(sub.id) * 1000).toISOString());
+    expect(await plan("free")).toBe("PRO");
+  });
+});

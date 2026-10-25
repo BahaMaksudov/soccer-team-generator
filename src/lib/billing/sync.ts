@@ -16,7 +16,7 @@ import { billingStripe, type StripeSubscriptionLite } from "@/lib/billing/stripe
  *
  * Mapping (subscription status → entitlement):
  *   active, trialing, past_due (grace while Stripe retries) → PRO
- *   active + cancel_at_period_end                          → PRO until Stripe ends it
+ *   active + cancel_at_period_end, or a cancel_at date     → PRO until Stripe ends it
  *   unpaid, canceled, incomplete, incomplete_expired, paused → no Pro from this subscription
  * Organization.plan: FREE ↔ PRO only. LEGACY / COMP are never changed here.
  * Converting to paid ends any running introductory trial (billing starts
@@ -76,6 +76,7 @@ export async function syncSubscription(subscriptionId: string, source: { actor: 
     status: sub.status,
     currentPeriodEnd: periodEnds.length ? new Date(Math.max(...periodEnds) * 1000) : null,
     cancelAtPeriodEnd: sub.cancel_at_period_end,
+    cancelAt: ts(sub.cancel_at),
     canceledAt: ts(sub.canceled_at),
     endedAt: ts(sub.ended_at),
     livemode: sub.livemode,

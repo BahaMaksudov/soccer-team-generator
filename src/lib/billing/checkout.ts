@@ -8,6 +8,7 @@ import { BILLING_UNAVAILABLE_MESSAGE, billingConfig, PRO_PRICES_USD, priceFor, t
 import { billingStripe } from "@/lib/billing/stripe";
 import { verifyConfiguredPrices } from "@/lib/billing/prices";
 import { LIVE_STATUSES, syncSubscription } from "@/lib/billing/sync";
+import { scheduledEnd } from "@/lib/billing/statusNote";
 
 /**
  * M11.2A — OWNER-only Checkout and Customer Portal, and the billing view
@@ -220,7 +221,7 @@ export async function billingView(context: OrganizationContext) {
   const sub = await prisma.billingSubscription.findFirst({
     where: { organizationId: context.organization.id },
     orderBy: [{ updatedAt: "desc" }],
-    select: { status: true, interval: true, currentPeriodEnd: true, cancelAtPeriodEnd: true, endedAt: true },
+    select: { status: true, interval: true, currentPeriodEnd: true, cancelAtPeriodEnd: true, cancelAt: true, endedAt: true },
   });
   const org = await prisma.organization.findUniqueOrThrow({ where: { id: context.organization.id }, select: { stripeCustomerId: true } });
   const isOwner = hasOrgRole(context, ["OWNER"]);
@@ -230,7 +231,9 @@ export async function billingView(context: OrganizationContext) {
     summary,
     billingEnabled: config.enabled,
     prices: PRO_PRICES_USD,
-    subscription: sub ? { status: sub.status, interval: sub.interval, currentPeriodEnd: sub.currentPeriodEnd?.toISOString() ?? null, cancelAtPeriodEnd: sub.cancelAtPeriodEnd, endedAt: sub.endedAt?.toISOString() ?? null } : null,
+    subscription: sub
+      ? { status: sub.status, interval: sub.interval, currentPeriodEnd: sub.currentPeriodEnd?.toISOString() ?? null, cancelAtPeriodEnd: sub.cancelAtPeriodEnd, accessEndsAt: scheduledEnd(sub)?.toISOString() ?? null, endedAt: sub.endedAt?.toISOString() ?? null }
+      : null,
     isOwner,
     canPurchase: config.enabled && isOwner && purchasable && !liveSub,
     canManage: config.enabled && isOwner && Boolean(org.stripeCustomerId),

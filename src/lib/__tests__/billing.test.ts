@@ -160,8 +160,26 @@ describe("Stripe SDK integration (offline)", () => {
       items: { data: [{ price: { id: "price_m" }, current_period_end: 1_900_000_000 }] },
       default_payment_method: { card: { last4: "4242" } },
     } as unknown as Stripe.Subscription);
-    expect(lite).toEqual({ id: "sub_1", customer: "cus_1", status: "active", livemode: false, cancel_at_period_end: false, canceled_at: null, ended_at: null, metadata: { organizationId: "org" }, items: { data: [{ price: { id: "price_m" }, current_period_end: 1_900_000_000 }] } });
+    expect(lite).toEqual({ id: "sub_1", customer: "cus_1", status: "active", livemode: false, cancel_at_period_end: false, cancel_at: null, canceled_at: null, ended_at: null, metadata: { organizationId: "org" }, items: { data: [{ price: { id: "price_m" }, current_period_end: 1_900_000_000 }] } });
     expect(JSON.stringify(lite)).not.toContain("4242");
+  });
+  it("M11.2B: a Customer Portal cancellation keeps cancel_at (cancel_at_period_end stays false)", () => {
+    // Shape of the confirmed Sandbox customer.subscription.updated payload.
+    const lite = toSubscriptionLite({
+      id: "sub_portal",
+      customer: "cus_1",
+      status: "active",
+      livemode: false,
+      cancel_at_period_end: false,
+      cancel_at: 1_795_577_883,
+      canceled_at: 1_792_899_693,
+      ended_at: null,
+      cancellation_details: { feedback: "too_expensive" },
+      metadata: { organizationId: "org" },
+      items: { data: [{ price: { id: "price_m" }, current_period_end: 1_795_577_883 }] },
+    } as unknown as Stripe.Subscription);
+    expect(lite).toMatchObject({ status: "active", cancel_at_period_end: false, cancel_at: 1_795_577_883, canceled_at: 1_792_899_693 });
+    expect(JSON.stringify(lite)).not.toContain("too_expensive"); // feedback is not stored
   });
   it("no card / payment-method fields exist in the billing schema", () => {
     const schema = fs.readFileSync(path.join(process.cwd(), "prisma/schema.prisma"), "utf8");

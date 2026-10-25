@@ -6,6 +6,7 @@ import { billingView, CHECKOUT_CHARGE_NOTICE, confirmCheckoutReturn } from "@/li
 import PlanUsageCard from "../PlanUsageCard";
 import PlanComparison from "@/components/billing/PlanComparison";
 import { BILLING_NOT_ACTIVE_NOTE } from "@/lib/billing/config";
+import { billingStatusNote } from "@/lib/billing/statusNote";
 import BillingActions from "./BillingActions";
 
 /**
@@ -18,9 +19,6 @@ import BillingActions from "./BillingActions";
  */
 type Params = Promise<{ organizationSlug: string }>;
 type Search = Promise<{ checkout?: string; session_id?: string }>;
-
-const dateLabel = (iso: string) => new Date(iso).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
-const INTERVAL_LABEL: Record<string, string> = { month: "monthly", year: "annual" };
 
 export const dynamic = "force-dynamic";
 
@@ -43,16 +41,7 @@ export default async function BillingPage({ params, searchParams }: { params: Pa
   const { summary, subscription: sub } = view;
   const orgBase = `/admin/o/${encodeURIComponent(context.organization.slug)}`;
 
-  const statusNote = (() => {
-    if (!sub) return null;
-    if (sub.status === "past_due") return { tone: "warn", text: "Your last payment failed. Stripe is retrying — update your payment method in Manage billing to keep Pro." };
-    if (sub.status === "unpaid") return { tone: "warn", text: "Pro ended because payment didn't go through. Your data is kept; Free limits apply." };
-    if (sub.status === "incomplete") return { tone: "warn", text: "Your payment is still pending. Pro starts once it's confirmed." };
-    if (sub.status === "canceled") return { tone: "info", text: `Your Pro subscription ended${sub.endedAt ? ` on ${dateLabel(sub.endedAt)}` : ""}. Your data is kept; Free limits apply.` };
-    if (sub.cancelAtPeriodEnd && sub.currentPeriodEnd) return { tone: "info", text: `Pro is canceled and stays active until ${dateLabel(sub.currentPeriodEnd)}. You can resume it in Manage billing.` };
-    if ((sub.status === "active" || sub.status === "trialing") && sub.currentPeriodEnd) return { tone: "ok", text: `Pro (${INTERVAL_LABEL[sub.interval ?? ""] ?? "subscription"}) renews on ${dateLabel(sub.currentPeriodEnd)}.` };
-    return null;
-  })();
+  const statusNote = billingStatusNote(sub);
 
   return (
     <div className="space-y-6">

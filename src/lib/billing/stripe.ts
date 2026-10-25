@@ -17,6 +17,8 @@ export type StripeSubscriptionLite = {
   status: string;
   livemode: boolean;
   cancel_at_period_end: boolean;
+  /** M11.2B — when a scheduled cancellation takes effect (the Customer Portal sets this; cancel_at_period_end stays false). */
+  cancel_at: number | null;
   canceled_at: number | null;
   ended_at: number | null;
   metadata: Record<string, string>;
@@ -68,6 +70,7 @@ export function toSubscriptionLite(s: Stripe.Subscription): StripeSubscriptionLi
     status: s.status,
     livemode: s.livemode,
     cancel_at_period_end: s.cancel_at_period_end,
+    cancel_at: s.cancel_at ?? null,
     canceled_at: s.canceled_at ?? null,
     ended_at: s.ended_at ?? null,
     metadata: (s.metadata ?? {}) as Record<string, string>,

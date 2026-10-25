@@ -124,6 +124,7 @@ export function createFakeStripe(options: { livemode?: boolean } = {}) {
       status,
       livemode,
       cancel_at_period_end: false,
+      cancel_at: null,
       canceled_at: null,
       ended_at: null,
       metadata: { ...s.subscriptionMetadata },
@@ -139,8 +140,8 @@ export function createFakeStripe(options: { livemode?: boolean } = {}) {
     return subs.get(subId)!;
   }
   /** A subscription created directly in Stripe (e.g. via the Dashboard), for mapping / exception tests. */
-  function addSubscription(sub: Omit<StripeSubscriptionLite, "livemode"> & { livemode?: boolean }) {
-    subs.set(sub.id, { livemode, ...sub });
+  function addSubscription(sub: Omit<StripeSubscriptionLite, "livemode" | "cancel_at"> & { livemode?: boolean; cancel_at?: number | null }) {
+    subs.set(sub.id, { livemode, cancel_at: null, ...sub });
     return subs.get(sub.id)!;
   }
 

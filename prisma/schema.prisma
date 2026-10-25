@@ -1534,6 +1534,9 @@ model BillingSubscription {
   status               String
   currentPeriodEnd     DateTime?
   cancelAtPeriodEnd    Boolean   @default(false)
+  // M11.2B — Stripe cancel_at: when a scheduled cancellation takes effect (the
+  // Customer Portal sets this, not cancelAtPeriodEnd). Null = not scheduled by date.
+  cancelAt             DateTime?
   canceledAt           DateTime?
   endedAt              DateTime?
   livemode             Boolean
