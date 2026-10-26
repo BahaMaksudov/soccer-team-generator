@@ -1,5 +1,5 @@
 import type Stripe from "stripe";
-import { verifyStripeSignature, type BillingStripe, type StripeCheckoutSessionLite, type StripePriceLite, type StripeSubscriptionLite } from "@/lib/billing/stripe";
+import { verifyStripeSignature, type BillingAddress, type BillingStripe, type StripeCheckoutSessionLite, type StripePriceLite, type StripeSubscriptionLite, type StripeTaxRegistrationLite, type StripeTaxSettingsLite } from "@/lib/billing/stripe";
 
 /**
  * M11.2A — in-memory Stripe for tests (no network). Mimics the parts the app
@@ -15,7 +15,13 @@ export function createFakeStripe(options: { livemode?: boolean } = {}) {
   let seq = 0;
   const id = (prefix: string) => `${prefix}_fake${++seq}`;
   const idem = new Map<string, unknown>();
-  const customers = new Map<string, { id: string; name: string; metadata: Record<string, string> }>();
+  const customers = new Map<string, { id: string; name: string; metadata: Record<string, string>; address?: BillingAddress }>();
+  /** M11.2C — Stripe Tax: active with a Massachusetts registration unless a test changes it. */
+  const tax: { settings: StripeTaxSettingsLite; registrations: StripeTaxRegistrationLite[]; invalidPostalCodes: Set<string> } = {
+    settings: { status: "active", defaultTaxBehavior: "exclusive" },
+    registrations: [{ country: "US", state: "MA" }],
+    invalidPostalCodes: new Set(),
+  };
   const sessions = new Map<string, StripeCheckoutSessionLite & { price: string; subscriptionMetadata: Record<string, string>; params: Stripe.Checkout.SessionCreateParams }>();
   const subs = new Map<string, StripeSubscriptionLite>();
   /** Price overrides; any other id is a valid recurring Price of this mode (annual if the id says so). */
@@ -37,13 +43,32 @@ export function createFakeStripe(options: { livemode?: boolean } = {}) {
       const patch = prices.get(priceId);
       if (patch === null) throw Object.assign(stripeError("StripeInvalidRequestError", "No such price"), { code: "resource_missing", statusCode: 404 });
       const year = /annual|year/.test(priceId);
-      return { id: priceId, livemode, active: true, type: "recurring", currency: "usd", unit_amount: year ? 9900 : 999, product: "prod_fake_pro", recurring: { interval: year ? "year" : "month", interval_count: 1, usage_type: "licensed" }, ...patch };
+      return { id: priceId, livemode, active: true, type: "recurring", currency: "usd", unit_amount: year ? 9900 : 999, product: "prod_fake_pro", recurring: { interval: year ? "year" : "month", interval_count: 1, usage_type: "licensed" }, tax_behavior: "exclusive", ...patch };
     },
     async retrieveCustomer(customerId) {
       count("retrieveCustomer");
       if (failure("retrieveCustomer") === "outage") throw stripeError("StripeConnectionError", "connection timeout");
       const c = customers.get(customerId);
-      return c ? { id: c.id, livemode, deleted: false } : null; // another mode's Customer does not exist for this key
+      return c ? { id: c.id, livemode, deleted: false, addressCountry: c.address?.country ?? null } : null; // another mode's Customer does not exist for this key
+    },
+    async updateCustomerAddress(customerId, address) {
+      count("updateCustomerAddress");
+      if (failure("updateCustomerAddress") === "outage") throw stripeError("StripeConnectionError", "connection timeout");
+      const c = customers.get(customerId);
+      if (!c) throw Object.assign(stripeError("StripeInvalidRequestError", "No such customer"), { code: "resource_missing", statusCode: 404 });
+      // Stripe Tax validate_location=immediately rejects addresses it can't place.
+      if (tax.invalidPostalCodes.has(address.postal_code)) throw Object.assign(stripeError("StripeInvalidRequestError", "The customer's location isn't recognized"), { code: "customer_tax_location_invalid" });
+      c.address = { ...address };
+      return { id: c.id, livemode, deleted: false, addressCountry: c.address.country };
+    },
+    async retrieveTaxSettings() {
+      count("retrieveTaxSettings");
+      if (failure("retrieveTaxSettings") === "outage") throw stripeError("StripeConnectionError", "connection timeout");
+      return { ...tax.settings };
+    },
+    async listActiveTaxRegistrations() {
+      count("listActiveTaxRegistrations");
+      return tax.registrations.map((r) => ({ ...r }));
     },
     async createCustomer(params, key) {
       count("createCustomer");
@@ -58,7 +83,11 @@ export function createFakeStripe(options: { livemode?: boolean } = {}) {
     },
     async createCheckoutSession(params, key) {
       count("createCheckoutSession");
-      if (idem.has(key)) return { ...(idem.get(key) as StripeCheckoutSessionLite) };
+      if (idem.has(key)) {
+        const prior = idem.get(key) as StripeCheckoutSessionLite & { params: Stripe.Checkout.SessionCreateParams };
+        if (JSON.stringify(prior.params) !== JSON.stringify(params)) throw stripeError("StripeIdempotencyError", "Keys for idempotent requests can only be used with the same parameters they were first used with.");
+        return { ...prior };
+      }
       const f = failure("createCheckoutSession");
       if (f === "outage") throw stripeError("StripeConnectionError", "connection timeout");
       const sid = id(livemode ? "cs_live" : "cs_test");
@@ -145,6 +174,6 @@ export function createFakeStripe(options: { livemode?: boolean } = {}) {
     return subs.get(sub.id)!;
   }
 
-  return { api, customers, sessions, subs, prices, calls, portalCalls, failNext, completeCheckout, updateSubscription, addSubscription };
+  return { api, customers, sessions, subs, prices, tax, calls, portalCalls, failNext, completeCheckout, updateSubscription, addSubscription };
 }
 export type FakeStripe = ReturnType<typeof createFakeStripe>;

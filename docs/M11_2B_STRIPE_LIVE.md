@@ -217,3 +217,51 @@ Each step marked **[APPROVAL]** changes Preview or Production.
     Stripe Dashboard if charges must stop.
 - **Key compromise:** roll the restricted key in Stripe, enter the new one in Vercel, then redeploy.
 - **No database restore** is ever part of a billing rollback.
+
+---
+
+## 4. M11.2C launch safeguards (code) and the Dashboard setup they need
+
+**In code (all modes; Production still gated by §1):**
+- **US-only:**
+  - Checkout requires a **US billing address** (50 states + DC, 5- or 9-digit ZIP). It's validated on the server, then stored on the Stripe Customer with Stripe Tax `validate_location: immediately`.
+  - Checkout is created with `customer_update.address = "never"`, so the address can't be changed there.
+  - Stripe Checkout itself can't restrict billing countries, which is why the address comes first.
+- **Tax:**
+  - Checkout always uses `automatic_tax`.
+  - It is **refused** (503, log `[billing] checkout … refused: …`) unless all of these hold:
+    - Stripe Tax is **active**;
+    - an **active US-MA registration** exists;
+    - both Prices are tax-**exclusive** (or unspecified with an exclusive / USD-inferred default).
+  - So Checkout never silently charges zero tax because setup is missing.
+  - An address Stripe Tax can't place → 400 with a clear message.
+- **Recurring-charge disclosure:**
+  - shown next to the button and on Stripe Checkout: price + tax, automatic renewal, cancel any time with access until period end, the refund policy, and that the trial ends;
+  - a **required checkbox** to agree to the Terms and the renewing charge;
+  - the Terms version, time and user are stored in the Checkout Session metadata.
+- **No orphaned subscriptions:** database triggers refuse to:
+  - delete an Organization whose subscription isn't `canceled` / `incomplete_expired`;
+  - remove, demote or move its last OWNER, which also blocks deleting that User.
+
+  This applies to the app, scripts and SQL alike. The app has no organization or account deletion feature; deletions are manual.
+- **Diagnostics:**
+  - one line per applied webhook (`[billing] webhook <evt id> (<type>) processed: plan …`);
+  - a reason code for any ignored Checkout return (no ids).
+- **Legal:** the new Terms §8 / §10 and Privacy billing disclosures are in the pages, but render **only** after the `billing-terms` item is removed from `src/lib/legal.ts`. That removal is the single publication step, and it also unlocks Live.
+
+**Dashboard (owner, Live and Sandbox), required before activation:**
+1. **Stripe Tax:**
+   - Settings → Tax: head office address (Massachusetts), status **active**;
+   - **Registrations → add Massachusetts** once the MA sales-tax registration is complete;
+   - default tax behavior **exclusive** (or set each Price to "exclusive").
+   - Add other states only when nexus requires it.
+2. **Restricted key: add read access to Stripe Tax *settings* and *registrations*** (in addition to the five permissions in §2.5). Without them the tax check fails and Checkout stays off.
+3. **Customer Portal (Live):**
+   - turn **off** plan switching;
+   - cancellation **at end of billing period only**;
+   - recommended: turn off customer **address** editing, so the billing address stays the validated US one.
+4. **Optional:** a Radar rule blocking non-US cards. It isn't needed for tax; the address check is what enforces US-only.
+5. **Annual renewal reminder:** Settings → Billing → Subscriptions and emails → upcoming-renewal emails, if available on the account. The Terms deliberately **do not promise** a reminder until it's configured and verified.
+6. **Sandbox (Preview):** Stripe Tax active, a test MA registration and tax-exclusive test Prices, or Preview Checkout is refused by the same rule.
+
+**Migration** `20270110120000_m112c_launch_safeguards`: one nullable column (`BillingCheckoutSession.requestHash`) and two triggers. It's additive, with no backfill; the rollback is in the file.

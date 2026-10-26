@@ -74,7 +74,9 @@ export async function handleStripeWebhook(rawBody: string, signature: string | n
       await prisma.stripeEvent.update({ where: { id: event.id }, data: { status: "IGNORED", processedAt: new Date() } });
       return { status: 200, body: { received: true, ignored: true } };
     }
-    await syncSubscription(subscriptionId, { actor: `stripe:${event.id}`, eventId: event.id });
+    const result = await syncSubscription(subscriptionId, { actor: `stripe:${event.id}`, eventId: event.id });
+    // M11.2C — one non-sensitive line per applied event (event id + type + outcome; no customer data).
+    console.info(`[billing] webhook ${event.id} (${event.type}) processed: plan ${result.plan}${result.changed ? " (changed)" : ""}${result.stale ? " (stale fetch ignored)" : ""}`);
     return { status: 200, body: { received: true } };
   } catch (e) {
     const message = (e instanceof Error ? e.message : "error").slice(0, 300);

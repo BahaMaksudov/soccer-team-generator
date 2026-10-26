@@ -43,15 +43,27 @@ export type StripePriceLite = {
   currency: string;
   unit_amount: number | null;
   product: string | null;
+  /** M11.2C — "exclusive" (tax added on top), "inclusive", or "unspecified" (Stripe Tax settings default). */
+  tax_behavior: string | null;
   recurring: { interval: string; interval_count: number; usage_type: string } | null;
 };
-export type StripeCustomerLite = { id: string; livemode: boolean; deleted: boolean };
+/** M11.2C — only the address COUNTRY is read back (US-only check); the full address stays in Stripe. */
+export type StripeCustomerLite = { id: string; livemode: boolean; deleted: boolean; addressCountry?: string | null };
+/** M11.2C — a validated US billing address (src/lib/billing/address.ts). */
+export type BillingAddress = { line1: string; line2: string | null; city: string; state: string; postal_code: string; country: "US" };
+/** M11.2C — Stripe Tax readiness, as read from the account (never written by the app). */
+export type StripeTaxSettingsLite = { status: string; defaultTaxBehavior: string | null };
+export type StripeTaxRegistrationLite = { country: string; state: string | null };
 
 export interface BillingStripe {
   retrievePrice(id: string): Promise<StripePriceLite>;
   /** null when the Customer does not exist in THIS key's mode (e.g. a test Customer seen with a live key). */
   retrieveCustomer(id: string): Promise<StripeCustomerLite | null>;
   createCustomer(params: { name: string; metadata: Record<string, string> }, idempotencyKey: string): Promise<{ id: string }>;
+  /** M11.2C — set the Customer's billing address; Stripe Tax validates it immediately (error code customer_tax_location_invalid). */
+  updateCustomerAddress(id: string, address: BillingAddress): Promise<StripeCustomerLite>;
+  retrieveTaxSettings(): Promise<StripeTaxSettingsLite>;
+  listActiveTaxRegistrations(): Promise<StripeTaxRegistrationLite[]>;
   createCheckoutSession(params: Stripe.Checkout.SessionCreateParams, idempotencyKey: string): Promise<StripeCheckoutSessionLite>;
   retrieveCheckoutSession(id: string): Promise<StripeCheckoutSessionLite>;
   expireCheckoutSession(id: string): Promise<StripeCheckoutSessionLite>;
@@ -87,7 +99,12 @@ export function toPriceLite(p: Stripe.Price): StripePriceLite {
     unit_amount: p.unit_amount ?? null,
     product: ref(p.product),
     recurring: p.recurring ? { interval: p.recurring.interval, interval_count: p.recurring.interval_count, usage_type: p.recurring.usage_type } : null,
+    tax_behavior: p.tax_behavior ?? null,
   };
+}
+/** M11.2C — Stripe Tax could not place the address (invalid / unsupported for tax). */
+export function isTaxLocationInvalid(e: unknown): boolean {
+  return (e as { code?: string } | null)?.code === "customer_tax_location_invalid";
 }
 /** Stripe's "No such …" error (the object does not exist for this key / mode). */
 export function isResourceMissing(e: unknown): boolean {
@@ -116,7 +133,8 @@ function realStripe(secretKey: string): BillingStripe {
     async retrieveCustomer(id) {
       try {
         const c = await stripe.customers.retrieve(id);
-        return { id: c.id, livemode: "livemode" in c ? c.livemode : false, deleted: Boolean((c as { deleted?: boolean }).deleted) };
+        const deleted = Boolean((c as { deleted?: boolean }).deleted);
+        return { id: c.id, livemode: "livemode" in c ? c.livemode : false, deleted, addressCountry: deleted ? null : ((c as Stripe.Customer).address?.country ?? null) };
       } catch (e) {
         if (isResourceMissing(e)) return null;
         throw e;
@@ -125,6 +143,19 @@ function realStripe(secretKey: string): BillingStripe {
     async createCustomer(params, idempotencyKey) {
       const c = await stripe.customers.create(params, { idempotencyKey });
       return { id: c.id };
+    },
+    async updateCustomerAddress(id, address) {
+      const c = await stripe.customers.update(id, { address: { ...address, line2: address.line2 ?? "" }, tax: { validate_location: "immediately" } });
+      return { id: c.id, livemode: c.livemode, deleted: false, addressCountry: c.address?.country ?? null };
+    },
+    async retrieveTaxSettings() {
+      const s = await stripe.tax.settings.retrieve();
+      return { status: s.status, defaultTaxBehavior: s.defaults?.tax_behavior ?? null };
+    },
+    async listActiveTaxRegistrations() {
+      const out: StripeTaxRegistrationLite[] = [];
+      for await (const r of stripe.tax.registrations.list({ status: "active", limit: 100 })) out.push({ country: r.country, state: r.country_options?.us?.state ?? null });
+      return out;
     },
     async createCheckoutSession(params, idempotencyKey) {
       return toSessionLite(await stripe.checkout.sessions.create(params, { idempotencyKey }));

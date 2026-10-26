@@ -2,7 +2,8 @@ import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
 import { ArrowLeft, CreditCard } from "lucide-react";
 import { requireOrganizationContextForSlug, TenantContextError, type OrganizationContext } from "@/lib/tenantContext";
-import { billingView, CHECKOUT_CHARGE_NOTICE, confirmCheckoutReturn } from "@/lib/billing/checkout";
+import { billingView, chargeNotice, confirmCheckoutReturn } from "@/lib/billing/checkout";
+import { LEGAL_PATHS } from "@/lib/legal";
 import PlanUsageCard from "../PlanUsageCard";
 import PlanComparison from "@/components/billing/PlanComparison";
 import { BILLING_NOT_ACTIVE_NOTE } from "@/lib/billing/config";
@@ -92,7 +93,14 @@ export default async function BillingPage({ params, searchParams }: { params: Pa
         )}
         {view.billingEnabled && !view.isOwner && <p className="text-sm text-muted-foreground">Only the organization owner can start or change a subscription.</p>}
         {view.billingEnabled && view.isOwner && (view.canPurchase || view.canManage) && (
-          <BillingActions organizationSlug={context.organization.slug} canPurchase={view.canPurchase} canManage={view.canManage} prices={view.prices} chargeNotice={CHECKOUT_CHARGE_NOTICE} />
+          <BillingActions
+            organizationSlug={context.organization.slug}
+            canPurchase={view.canPurchase}
+            canManage={view.canManage}
+            prices={view.prices}
+            chargeNotices={{ month: chargeNotice("month"), year: chargeNotice("year") }}
+            termsHref={LEGAL_PATHS.terms}
+          />
         )}
       </section>
 
@@ -103,7 +111,7 @@ export default async function BillingPage({ params, searchParams }: { params: Pa
         <PlanComparison planned={!view.billingEnabled} />
         <p className="text-xs text-muted-foreground">
           {view.billingEnabled
-            ? "Prices in USD. Pro renews automatically until canceled; cancel any time in Manage billing (Pro stays until the end of the paid period). Reaching a limit never removes data."
+            ? "Prices in USD, plus applicable sales tax. Pro renews automatically until canceled; cancel any time in Manage billing (Pro stays until the end of the paid period). Payments are non-refundable except as described in our Terms. Available with a US billing address. Reaching a limit never removes data."
             : BILLING_NOT_ACTIVE_NOTE}
         </p>
       </section>

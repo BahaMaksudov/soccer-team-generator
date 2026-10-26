@@ -22,7 +22,7 @@
  * webhook.ts, sync.ts and checkout.ts). Every billing path goes through
  * billingConfig().
  */
-import { OWNER_ITEMS, type OwnerItem } from "@/lib/legal";
+import { billingTermsPublished, OWNER_ITEMS, type OwnerItem } from "@/lib/legal";
 
 export const LIVE_MODE_SUPPORTED = true;
 
@@ -73,7 +73,7 @@ export function stripeModePermitted(livemode: boolean, env: Env = process.env): 
 
 /** Live charges need the paid-subscription terms published first (legal.ts billing-launch items resolved). */
 export function billingTermsPending(items: readonly OwnerItem[] = OWNER_ITEMS): boolean {
-  return items.some((i) => i.category === "billing-launch");
+  return !billingTermsPublished(items);
 }
 
 export function billingConfig(env: Env = process.env, ownerItems: readonly OwnerItem[] = OWNER_ITEMS): BillingConfig {

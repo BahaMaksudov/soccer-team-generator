@@ -1,3 +1,5 @@
+> **M11.2C update:** the subscription terms and privacy disclosures are now implemented in `src/app/terms/page.tsx` (§8, §10) and `src/app/privacy/page.tsx`, rendered only after the `billing-terms` owner item is removed (the publication step, which also unlocks Live billing). That code is the current text; this file is kept for history. Still not attorney-reviewed.
+
 # DRAFT — paid subscription terms (M11.2B), for owner review
 
 **Not published.** This text changes nothing on the site. Publishing it is a separate, owner-approved code change

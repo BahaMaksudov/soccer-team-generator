@@ -1,12 +1,13 @@
 import Link from "next/link";
 import LegalPage, { ContactEmail, EffectiveDate, LegalSection } from "@/components/legal/LegalPage";
-import { ACCOUNT_MIN_AGE, GOVERNING_LAW, LEGAL_PATHS, OPERATING_BRAND, PRODUCT_NAME, legalCanonical, legalIsDraft } from "@/lib/legal";
+import { ACCOUNT_MIN_AGE, GOVERNING_LAW, LEGAL_PATHS, OPERATING_BRAND, PRODUCT_NAME, billingTermsPublished, legalCanonical, legalIsDraft } from "@/lib/legal";
 import { PLAN_LIMITS, TRIAL_DAYS } from "@/lib/entitlements";
 import { PRO_PRICES_USD } from "@/lib/billing/config";
 
 /**
  * Public Terms of Service. Plans and trial come from the enforced plan catalog;
- * paid billing is described as NOT active. Pending owner / attorney items are
+ * paid billing is described as NOT active until the billing terms are published
+ * (M11.2C: billingTermsPublished — then §8 / §10 show the subscription terms). Pending owner / attorney items are
  * OwnerTodo markers (src/lib/legal.ts). Noindex while a draft.
  */
 export const metadata = {
@@ -20,6 +21,7 @@ const plural = (n: number | null, one: string, many: string) => `${n} ${n === 1 
 
 export default function TermsPage() {
   const free = PLAN_LIMITS.FREE;
+  const paid = billingTermsPublished();
   return (
     <LegalPage
       title="Terms of Service"
@@ -110,10 +112,54 @@ export default function TermsPage() {
           <li>
             <strong>Pro trial:</strong> the first organization you create includes a {TRIAL_DAYS}-day Pro trial — one trial per account, no payment details required. When it ends, nothing is charged and the organization moves to the Free plan.
           </li>
-          <li>
-            <strong>Paid plans:</strong> paid Pro subscriptions are planned but <strong>not available yet</strong>, and no one is charged today. Our website may show planned prices (currently {PRO_PRICES_USD.month} per month or {PRO_PRICES_USD.year} per year per organization, in USD). Terms for paid subscriptions — including billing, renewal, cancellation and refunds — will be published before paid subscriptions are offered.
-          </li>
-          <li>We may change plans, limits or planned prices.</li>
+          {paid ? (
+            <>
+              <li>
+                <strong>Pro subscriptions:</strong> Pro is a subscription for one organization. Only that organization&apos;s owner can subscribe or manage its billing, and Pro on one organization does not apply to any other organization.
+              </li>
+              <li>
+                <strong>Price:</strong> Pro costs {PRO_PRICES_USD.month} per month or {PRO_PRICES_USD.year} per year, in US dollars, billed in advance for the billing period you choose, plus applicable sales tax.
+              </li>
+              <li>
+                <strong>United States only:</strong> paid subscriptions are currently available only with a billing address in the United States.
+              </li>
+              <li>
+                <strong>Automatic renewal:</strong> your subscription renews automatically at the end of each monthly or annual billing period, for the same period, and your payment method on file is charged the price in effect at that time, plus applicable sales tax, until you cancel. Changing between monthly and annual billing is not currently offered.
+              </li>
+              <li>
+                <strong>Cancelling:</strong> you may cancel at any time from your organization&apos;s Billing page (&quot;Manage billing&quot;). Cancellation takes effect at the end of the current paid billing period. Pro stays available until then and you won&apos;t be charged again. When the period ends, the organization moves to the Free plan; your data isn&apos;t deleted, but Free limits apply. You can resume the subscription before the period ends.
+              </li>
+              <li>
+                <strong>Refunds:</strong> subscription payments are generally non-refundable, and we do not give automatic refunds for unused subscription time, including after you cancel. Cancelling a subscription and requesting a refund are separate: cancelling stops future charges but does not refund past ones, and there is no self-service refund option. We may approve a refund as an exception — for example for a duplicate charge, an accidental plan selection, a significant service failure, or other goodwill reasons. To request an exception, email <ContactEmail /> with your organization&apos;s name and the date of the charge. Each request is reviewed individually, and approval is not guaranteed. We will always honor refunds required by applicable law.
+              </li>
+              <li>
+                <strong>Subscribing during the trial:</strong> paid billing starts immediately and the rest of the trial ends. The trial is not extended or offered again.
+              </li>
+              <li>
+                <strong>Failed payments:</strong> if a payment fails, our payment processor may retry it, and Pro stays available while it does. If payment still can&apos;t be collected, the subscription ends and the organization moves to the Free plan.
+              </li>
+              <li>
+                <strong>Price changes:</strong> we may change Pro prices. We will email the organization&apos;s owner at least 30 days before a price increase applies to your subscription (or earlier where the law requires). The new price applies from your next renewal after that notice, and you can cancel before then.
+              </li>
+              <li>
+                <strong>Sales tax:</strong> prices do not include sales tax. Where we are required to collect it, sales tax is calculated by our payment processor from your billing address and added at checkout and on each renewal.
+              </li>
+              <li>
+                <strong>Payments:</strong> payments are processed by Stripe. We do not receive or store your full card number. Stripe may email you receipts.
+              </li>
+              <li>
+                <strong>If we discontinue Pro:</strong> if we stop offering paid Pro or the service, we will give reasonable notice where possible and refund the unused part of any prepaid billing period. If we suspend or end access because these terms were broken, no refund is due except where the law requires one.
+              </li>
+              <li>We may change plans and limits. A change that reduces a paid plan&apos;s features applies from your next billing period.</li>
+            </>
+          ) : (
+            <>
+              <li>
+                <strong>Paid plans:</strong> paid Pro subscriptions are planned but <strong>not available yet</strong>, and no one is charged today. Our website may show planned prices (currently {PRO_PRICES_USD.month} per month or {PRO_PRICES_USD.year} per year per organization, in USD). Terms for paid subscriptions — including billing, renewal, cancellation and refunds — will be published before paid subscriptions are offered.
+              </li>
+              <li>We may change plans, limits or planned prices.</li>
+            </>
+          )}
         </ul>
       </LegalSection>
 
@@ -128,6 +174,11 @@ export default function TermsPage() {
         <p>
           You may stop using the service at any time. To have your account or information deleted, email <ContactEmail />; requests are handled manually as described in our Privacy Policy. We may suspend or end access for anyone who breaks these terms or puts the service or other people at risk, and we may change or discontinue the service or parts of it. Where reasonable, we will try to give notice.
         </p>
+        {paid && (
+          <p className="mt-2">
+            Ending your account or deleting an organization does not cancel a Pro subscription by itself. Cancel it in Manage billing first, or ask us to cancel it as part of your request. We do not delete an organization, or remove its last owner, until its subscription has ended.
+          </p>
+        )}
       </LegalSection>
 
       <LegalSection id="disclaimers" title="11. Availability and disclaimers">

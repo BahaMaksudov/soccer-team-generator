@@ -5,8 +5,11 @@ import { hasOrgRole, type OrganizationContext } from "@/lib/tenantContext";
 import { appUrl } from "@/lib/email/config";
 import { effectivePlan, PLAN_LABEL, planSummary } from "@/lib/entitlements";
 import { BILLING_UNAVAILABLE_MESSAGE, billingConfig, PRO_PRICES_USD, priceFor, type BillingInterval } from "@/lib/billing/config";
-import { billingStripe } from "@/lib/billing/stripe";
+import { billingStripe, isTaxLocationInvalid } from "@/lib/billing/stripe";
 import { verifyConfiguredPrices } from "@/lib/billing/prices";
+import { verifyTaxReadiness } from "@/lib/billing/tax";
+import { checkoutRequestHash, parseUsBillingAddress, US_ONLY_MESSAGE } from "@/lib/billing/address";
+import { LEGAL_EFFECTIVE_DATE } from "@/lib/legal";
 import { LIVE_STATUSES, syncSubscription } from "@/lib/billing/sync";
 import { scheduledEnd } from "@/lib/billing/statusNote";
 
@@ -27,13 +30,22 @@ import { scheduledEnd } from "@/lib/billing/statusNote";
  *    stored only if none is stored yet; a stored Customer that does not exist
  *    in this deployment's Stripe mode (M11.2B) is never used — it is replaced;
  *  - no database transaction is held open across a Stripe call;
+ *  - M11.2C: the owner must accept the Terms and the recurring charge, and give a
+ *    US billing address (validated here, then by Stripe Tax on the Customer);
+ *    Checkout uses automatic tax and cannot change the address, and is refused
+ *    unless Stripe Tax is active with the home-state registration (tax.ts);
  *  - success / cancel / return URLs are built from the trusted APP_BASE_URL;
  *  - reaching the success URL activates nothing: the server re-fetches the
  *    Checkout Session and the subscription from Stripe.
  */
 const NOT_FOUND = () => NextResponse.json({ error: "Not found" }, { status: 404 });
 const CHECKOUT_TTL_MS = 60 * 60_000; // Stripe allows 30 min – 24 h
-export const CHECKOUT_CHARGE_NOTICE = "Pro billing starts today. Any remaining free trial ends when you subscribe. Your subscription renews automatically until you cancel.";
+/** M11.2C — the recurring-charge disclosure at the decision point (our page and Stripe Checkout). */
+export function chargeNotice(interval: BillingInterval): string {
+  const price = interval === "month" ? `${PRO_PRICES_USD.month} per month` : `${PRO_PRICES_USD.year} per year`;
+  return `You'll be charged ${price}, plus applicable sales tax, starting today. Your subscription renews automatically every ${interval === "month" ? "month" : "year"} at the then-current price until you cancel. Cancel any time in Manage billing; Pro stays until the end of the paid period. Payments are non-refundable except as described in our Terms. Any remaining free trial ends when you subscribe.`;
+}
+export const TERMS_REQUIRED_MESSAGE = "Please confirm you agree to the Terms and the automatically renewing charge.";
 
 export const billingPagePath = (organizationSlug: string) => `/admin/o/${encodeURIComponent(organizationSlug)}/billing`;
 
@@ -77,11 +89,20 @@ export async function startCheckout(context: OrganizationContext, body: unknown)
   const interval = (body as { interval?: unknown } | null)?.interval;
   const priceId = priceFor(config, interval);
   if (!priceId) return NextResponse.json({ error: "Choose monthly or annual billing." }, { status: 400 });
+  // M11.2C — explicit agreement to the Terms and the recurring charge, and a US billing address.
+  if ((body as { acceptTerms?: unknown }).acceptTerms !== true) return NextResponse.json({ error: TERMS_REQUIRED_MESSAGE, code: "TERMS_REQUIRED" }, { status: 400 });
+  const parsedAddress = parseUsBillingAddress((body as { address?: unknown }).address);
+  if (!parsedAddress.ok) return NextResponse.json({ error: parsedAddress.error, code: parsedAddress.field === "country" ? "US_ONLY" : "ADDRESS_INVALID", field: parsedAddress.field ?? null }, { status: 400 });
+  const address = parsedAddress.address;
+  const termsVersion = LEGAL_EFFECTIVE_DATE ?? "unpublished";
+  const requestHash = checkoutRequestHash(String(interval), address, termsVersion);
   const organizationId = context.organization.id;
   const now = new Date();
 
   // 1. Eligibility + the durable operation, under the Organization's billing lock (short, no network).
-  type Op = { kind: "reuse"; id: string; url: string | null; status: string; expiresAt: Date } | { kind: "new"; id: string; expiresAt: Date } | { kind: "refuse"; response: NextResponse };
+  // createdAt / createdByUserId come from the durable operation, so a retry sends Stripe IDENTICAL
+  // parameters under the same idempotency key (Stripe rejects a reused key with different parameters).
+  type Op = { kind: "reuse"; id: string; url: string | null; status: string; expiresAt: Date; createdAt: Date; createdByUserId: string | null } | { kind: "new"; id: string; expiresAt: Date; createdAt: Date; createdByUserId: string | null } | { kind: "refuse"; response: NextResponse };
   const op: Op = await prisma.$transaction(async (tx) => {
     await lockBilling(tx, organizationId);
     const org = await tx.organization.findUniqueOrThrow({ where: { id: organizationId }, select: { plan: true, trialEndsAt: true } });
@@ -94,19 +115,22 @@ export async function startCheckout(context: OrganizationContext, body: unknown)
       return { kind: "refuse", response: NextResponse.json({ error: "This organization already has a subscription. Use Manage billing to change it.", code: "ALREADY_SUBSCRIBED" }, { status: 409 }) };
     }
     const pending = await tx.billingCheckoutSession.findFirst({ where: { organizationId, status: { in: ["CREATING", "OPEN"] }, expiresAt: { gt: now } }, orderBy: { createdAt: "desc" } });
-    if (pending && pending.interval === interval) return { kind: "reuse", id: pending.id, url: pending.url, status: pending.status, expiresAt: pending.expiresAt };
+    // Reused only for the SAME interval, address and terms (otherwise it is expired below like any other).
+    if (pending && pending.interval === interval && pending.requestHash === requestHash) return { kind: "reuse", id: pending.id, url: pending.url, status: pending.status, expiresAt: pending.expiresAt, createdAt: pending.createdAt, createdByUserId: pending.createdByUserId };
     // Another interval's Checkout is still being created (its Stripe session id isn't known yet): don't race it.
     if (pending && pending.status === "CREATING" && !pending.stripeSessionId && pending.createdAt > new Date(now.getTime() - 2 * 60_000)) {
       return { kind: "refuse", response: NextResponse.json({ error: "Another checkout is being prepared. Please try again in a moment.", code: "CHECKOUT_IN_PROGRESS" }, { status: 409 }) };
     }
-    const created = await tx.billingCheckoutSession.create({ data: { organizationId, interval: interval as BillingInterval, stripePriceId: priceId, createdByUserId: context.user.id, expiresAt: new Date(now.getTime() + CHECKOUT_TTL_MS) } });
-    return { kind: "new", id: created.id, expiresAt: created.expiresAt };
+    const created = await tx.billingCheckoutSession.create({ data: { organizationId, interval: interval as BillingInterval, stripePriceId: priceId, createdByUserId: context.user.id, requestHash, expiresAt: new Date(now.getTime() + CHECKOUT_TTL_MS) } });
+    return { kind: "new", id: created.id, expiresAt: created.expiresAt, createdAt: created.createdAt, createdByUserId: created.createdByUserId };
   });
   if (op.kind === "refuse") return op.response;
   if (op.kind === "reuse" && op.status === "OPEN" && op.url) return NextResponse.json({ url: op.url });
 
-  // M11.2B: both configured Prices must be valid Prices of this mode before Stripe creates anything.
-  const prices = await verifyConfiguredPrices(config, billingStripe());
+  // M11.2C: Stripe Tax must be ready (active + home-state registration) — never a silent zero-tax Checkout.
+  // M11.2B: both configured Prices must be valid Prices of this mode (and tax-exclusive) before Stripe creates anything.
+  const tax = await verifyTaxReadiness(config, billingStripe());
+  const prices = tax.ok ? await verifyConfiguredPrices(config, billingStripe(), Date.now(), tax.defaultTaxBehavior) : ({ ok: false, problem: tax.problem } as const);
   if (!prices.ok) {
     console.error(`[billing] checkout ${op.id} refused: ${prices.problem}`);
     // A NEW operation never reached Stripe, so it can be closed. A reused one stays CREATING: Stripe may
@@ -134,6 +158,9 @@ export async function startCheckout(context: OrganizationContext, body: unknown)
     }
     // 3. Stripe calls (idempotent: same operation → same Customer / Session).
     const customer = await ensureCustomer(organizationId, context.organization.name, config.livemode);
+    // M11.2C — the US billing address goes on the Customer (Stripe Tax validates it); Checkout can't change it.
+    const updated = await billingStripe().updateCustomerAddress(customer, address);
+    if (updated.addressCountry !== "US") throw new Error("Stripe did not store a US billing address.");
     const base = billingPagePath(context.organization.slug);
     const session = await billingStripe().createCheckoutSession(
       {
@@ -141,12 +168,15 @@ export async function startCheckout(context: OrganizationContext, body: unknown)
         customer,
         client_reference_id: organizationId,
         line_items: [{ price: priceId, quantity: 1 }],
-        metadata: { organizationId, operationId: op.id },
-        subscription_data: { metadata: { organizationId } },
+        metadata: { organizationId, operationId: op.id, termsVersion, termsAcceptedAt: op.createdAt.toISOString(), termsAcceptedBy: op.createdByUserId ?? context.user.id },
+        subscription_data: { metadata: { organizationId, termsVersion } },
+        automatic_tax: { enabled: true },
+        customer_update: { address: "never" },
+        billing_address_collection: "auto",
         success_url: appUrl(`${base}?checkout=success&session_id={CHECKOUT_SESSION_ID}`),
         cancel_url: appUrl(`${base}?checkout=cancel`),
         expires_at: Math.floor(op.expiresAt.getTime() / 1000),
-        custom_text: { submit: { message: CHECKOUT_CHARGE_NOTICE } },
+        custom_text: { submit: { message: chargeNotice(interval as BillingInterval) } },
         allow_promotion_codes: false,
       },
       `tbp-checkout:${op.id}`
@@ -162,6 +192,10 @@ export async function startCheckout(context: OrganizationContext, body: unknown)
       return NextResponse.json({ error: "Stripe didn't respond. Please try again.", code: "STRIPE_UNAVAILABLE" }, { status: 503 });
     }
     await prisma.billingCheckoutSession.updateMany({ where: { id: op.id, status: "CREATING" }, data: { status: "FAILED" } });
+    if (isTaxLocationInvalid(e)) {
+      console.error(`[billing] checkout ${op.id} refused: billing address not accepted for tax`);
+      return NextResponse.json({ error: `We couldn't verify this billing address for sales tax. Check the street, city, state and ZIP code. ${US_ONLY_MESSAGE}`, code: "ADDRESS_INVALID" }, { status: 400 });
+    }
     console.error(`[billing] checkout ${op.id} failed: ${(e as Error)?.message ?? "error"}`);
     return NextResponse.json({ error: "Checkout could not be started. Please try again later." }, { status: 502 });
   }
@@ -198,11 +232,20 @@ export async function openPortal(context: OrganizationContext): Promise<NextResp
  */
 export async function confirmCheckoutReturn(context: OrganizationContext, sessionId: unknown): Promise<"applied" | "pending" | "ignored"> {
   const config = billingConfig();
-  if (!config.enabled || !hasOrgRole(context, ["OWNER", "ADMIN"]) || typeof sessionId !== "string" || !/^cs_[\w]+$/.test(sessionId)) return "ignored";
+  // M11.2C — a skipped return is logged with a reason CODE only (no ids), so "nothing happened" is diagnosable.
+  const ignored = (reason: string) => {
+    console.info(`[billing] checkout return ignored: ${reason}`);
+    return "ignored" as const;
+  };
+  if (!config.enabled) return "ignored";
+  if (!hasOrgRole(context, ["OWNER", "ADMIN"])) return ignored("not_owner_or_admin");
+  if (typeof sessionId !== "string" || !/^cs_[\w]+$/.test(sessionId)) return ignored("session_id_format");
   const org = await prisma.organization.findUniqueOrThrow({ where: { id: context.organization.id }, select: { id: true, stripeCustomerId: true } });
   try {
     const session = await billingStripe().retrieveCheckoutSession(sessionId);
-    if (session.livemode !== config.livemode || session.metadata?.organizationId !== org.id || session.client_reference_id !== org.id || !org.stripeCustomerId || session.customer !== org.stripeCustomerId) return "ignored";
+    if (session.livemode !== config.livemode) return ignored("mode_mismatch");
+    if (session.metadata?.organizationId !== org.id || session.client_reference_id !== org.id) return ignored("organization_mismatch");
+    if (!org.stripeCustomerId || session.customer !== org.stripeCustomerId) return ignored("customer_mismatch");
     if (session.status !== "complete" || !session.subscription) return "pending";
     await syncSubscription(session.subscription, { actor: `checkout-return:${context.user.id}` });
     await prisma.billingCheckoutSession.updateMany({ where: { stripeSessionId: session.id, status: { in: ["CREATING", "OPEN"] } }, data: { status: "COMPLETED" } });

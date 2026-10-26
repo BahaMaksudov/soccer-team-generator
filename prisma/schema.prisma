@@ -1597,6 +1597,9 @@ model BillingCheckoutSession {
   status          BillingCheckoutStatus @default(CREATING)
   stripeSessionId String?               @unique
   url             String?
+  // M11.2C — one-way fingerprint of interval + US billing address + terms version: a session
+  // created for a different address / terms is never reused. No address is stored.
+  requestHash     String?
   expiresAt       DateTime
   createdAt       DateTime              @default(now())
   updatedAt       DateTime              @updatedAt

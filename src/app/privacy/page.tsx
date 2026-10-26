@@ -1,6 +1,6 @@
 import Link from "next/link";
 import LegalPage, { ContactEmail, EffectiveDate, LegalSection } from "@/components/legal/LegalPage";
-import { ACCOUNT_MIN_AGE, HOSTING, LEGAL_PATHS, OPERATING_BRAND, PRODUCT_NAME, legalCanonical, legalIsDraft } from "@/lib/legal";
+import { ACCOUNT_MIN_AGE, HOSTING, LEGAL_PATHS, OPERATING_BRAND, PRODUCT_NAME, billingTermsPublished, legalCanonical, legalIsDraft } from "@/lib/legal";
 import { TRIAL_DAYS } from "@/lib/entitlements";
 
 /**
@@ -16,6 +16,8 @@ export const metadata = {
 };
 
 export default function PrivacyPage() {
+  // M11.2C — billing disclosures appear only once the billing terms are published (src/lib/legal.ts).
+  const paid = billingTermsPublished();
   return (
     <LegalPage
       title="Privacy Policy"
@@ -78,6 +80,18 @@ export default function PrivacyPage() {
           <li>The link between a Telegram user and a player in the group, when the player or organizer connects them.</li>
           <li>Records of the messages the service posted to the group (for example polls and published teams), so nothing is posted twice.</li>
         </ul>
+        {paid && (
+          <>
+            <p className="font-semibold">Billing information (organization owners who subscribe to Pro)</p>
+            <ul>
+              <li>The organization&apos;s Stripe customer and subscription references, the plan and billing period, the subscription status, billing and renewal dates, and whether and when a cancellation is scheduled.</li>
+              <li>The billing address you enter when subscribing. It is sent to Stripe and kept by Stripe, where it is used to calculate sales tax; we keep only a one-way fingerprint of it to avoid reusing a checkout created for a different address.</li>
+              <li>When you agreed to the Terms for the subscription.</li>
+              <li>Payment card details are entered on Stripe&apos;s pages and handled by Stripe. We never receive full card numbers.</li>
+              <li>If you ask for a refund, your request and our reply.</li>
+            </ul>
+          </>
+        )}
         <p className="font-semibold">Security and technical information</p>
         <ul>
           <li>To protect sign-in and password reset against abuse, we keep keyed one-way digests (HMAC-SHA256) of the email address and the client network address of sign-in and password-reset attempts — not the email or address itself.</li>
@@ -155,6 +169,11 @@ export default function PrivacyPage() {
           <li>
             <strong>AI recaps:</strong> a published recap can mention team names, scores and Player of the Match names, and is visible wherever the match&apos;s published information is visible.
           </li>
+          {paid && (
+            <li>
+              <strong>Billing:</strong> an organization&apos;s owners and admins can see its subscription status and billing dates; only owners can start or manage the subscription.
+            </li>
+          )}
         </ul>
       </LegalSection>
 
@@ -169,6 +188,7 @@ export default function PrivacyPage() {
           <li>Account emails: email verification, password reset and organization invitations.</li>
           <li>Organizer notifications, for example when attendance for a scheduled match is ready.</li>
           <li>When enabled, reminders to organization owners about the end of the {TRIAL_DAYS}-day Pro trial.</li>
+          {paid && <li>Billing emails for organization owners who subscribe: payment receipts and other subscription emails sent by Stripe, and notice of price changes sent by us.</li>}
         </ul>
         <p>We do not send marketing emails. Emails are delivered by our email provider (section 8).</p>
       </LegalSection>
@@ -184,7 +204,11 @@ export default function PrivacyPage() {
           <li><strong>OpenAI</strong> — AI-written match recaps, when an organizer requests one (section 6).</li>
           <li><strong>WeatherAPI.com</strong> — the weather forecast for a match, using the venue&apos;s map coordinates.</li>
           <li><strong>Geoapify</strong> — finding a venue&apos;s map location from the address an organizer types.</li>
-          <li><strong>Stripe</strong> — planned payment processor for paid subscriptions. Paid billing is not active, and no payment information is collected today.</li>
+          {paid ? (
+            <li><strong>Stripe</strong> — processes Pro subscription payments and calculates sales tax. Stripe collects payment details directly, may email receipts, and receives the subscribing owner&apos;s email address, the organization name and the billing address.</li>
+          ) : (
+            <li><strong>Stripe</strong> — planned payment processor for paid subscriptions. Paid billing is not active, and no payment information is collected today.</li>
+          )}
         </ul>
         <p>We may disclose information when required by law. Map links open Google Maps or OpenStreetMap only when you choose to follow them.</p>
       </LegalSection>
@@ -212,6 +236,7 @@ export default function PrivacyPage() {
           <li>Single-use tokens expire: email verification after 24 hours, password reset after 1 hour, organization invitations and player claim links after 7 days, group invite links after the period the organizer chose (30 days by default), and personal attendance links when attendance for the match closes.</li>
           <li>Other account, organization, roster, match and attendance information is not deleted automatically; it remains until it is deleted by an organizer or by us on request.</li>
           <li>We may keep certain information where it is reasonably needed for security, legal or operational purposes, such as resolving disputes or preventing abuse.</li>
+          {paid && <li>Billing records (subscription references, status and dates) are kept while the organization exists and as needed for accounting, tax and dispute purposes. Stripe keeps payment records under its own policies.</li>}
         </ul>
         <p className="font-semibold">Deletion and correction</p>
         <ul>

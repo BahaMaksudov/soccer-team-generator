@@ -32,7 +32,8 @@ import * as reconcileRoute from "@/app/api/cron/billing-reconcile/route";
 import * as playersRoute from "@/app/api/admin/o/[organizationSlug]/g/[groupSlug]/players/route";
 import { setBillingStripeForTests, generateTestSignature } from "@/lib/billing/stripe";
 import { resetPriceCheckCacheForTests } from "@/lib/billing/prices";
-import { confirmCheckoutReturn } from "@/lib/billing/checkout";
+import { resetTaxCheckCacheForTests } from "@/lib/billing/tax";
+import { chargeNotice, confirmCheckoutReturn } from "@/lib/billing/checkout";
 import { reconcileBilling, syncSubscription } from "@/lib/billing/sync";
 import { assertTelegram, organizationPlan, ownershipAllowance, PLAN_LIMITS, planSummary } from "@/lib/entitlements";
 import { runTrialLifecycle } from "@/lib/trialLifecycle";
@@ -63,7 +64,9 @@ const signIn = async (who: string | null) => {
   session = { user: { id: u.id, email: u.email } };
 };
 const o = (org: string) => ({ params: Promise.resolve({ organizationSlug: org }) });
-const checkout = (org: string, body: unknown = { interval: "month" }) => call(checkoutRoute.POST(json("POST", body), o(org)));
+/** M11.2C — a valid US billing address; every checkout sends it and the Terms agreement unless a test overrides them. */
+const US_ADDRESS = { line1: "1 Main St", line2: "", city: "Boston", state: "MA", postal_code: "02108", country: "US" };
+const checkout = (org: string, body: Record<string, unknown> = { interval: "month" }) => call(checkoutRoute.POST(json("POST", { address: US_ADDRESS, acceptTerms: true, ...body }), o(org)));
 const portal = (org: string) => call(portalRoute.POST(json("POST"), o(org)));
 const view = (org: string) => call(billingRoute.GET(json("GET"), o(org)));
 let evtSeq = 0;
@@ -123,6 +126,7 @@ beforeEach(async () => {
   stripe = createFakeStripe();
   setBillingStripeForTests(stripe.api);
   resetPriceCheckCacheForTests();
+  resetTaxCheckCacheForTests();
   legal.items = [];
   otherNetwork = 0;
   session = null;
@@ -251,7 +255,7 @@ describe("M11.2A — Checkout", () => {
       cancel_url: "http://itest.local/admin/o/free/billing?checkout=cancel",
       allow_promotion_codes: false,
     });
-    expect(String((s.params.custom_text as { submit: { message: string } }).submit.message)).toMatch(/billing starts today/i);
+    expect(String((s.params.custom_text as { submit: { message: string } }).submit.message)).toBe(chargeNotice("year"));
     expect(s.params.line_items).toEqual([{ price: PRICES.year, quantity: 1 }]);
   });
 
@@ -544,6 +548,7 @@ function goLive() {
   stripe = createFakeStripe({ livemode: true });
   setBillingStripeForTests(stripe.api);
   resetPriceCheckCacheForTests();
+  resetTaxCheckCacheForTests();
 }
 const liveWebhook = (type: string, object: Record<string, unknown>, opts: { id?: string } = {}) => webhook(type, object, { livemode: true, id: opts.id ?? `evt_live_${++evtSeq}` });
 const reconcileReq = (auth = "Bearer billing-reconcile-test-secret") => new Request("http://itest.local/api/cron/billing-reconcile", { method: "POST", headers: { authorization: auth } });
@@ -783,5 +788,175 @@ describe("M11.2B — scheduled cancellation (Customer Portal cancel_at and cance
     await reconcileBilling();
     expect((await subView()).accessEndsAt).toBe(new Date(periodEndOf(sub.id) * 1000).toISOString());
     expect(await plan("free")).toBe("PRO");
+  });
+});
+
+// ============================================================ M11.2C — LAUNCH SAFEGUARDS
+describe("M11.2C — Terms agreement, US-only address and tax readiness before Checkout", () => {
+  const ops = () => prisma.billingCheckoutSession.findMany({ orderBy: { createdAt: "asc" } });
+
+  it("no Terms agreement, a non-US country, a non-US state or a bad ZIP → 400 before any Stripe call", async () => {
+    expect(await checkout("free", { interval: "month", acceptTerms: false })).toMatchObject({ status: 400, body: { code: "TERMS_REQUIRED" } });
+    expect(await checkout("free", { interval: "month", acceptTerms: "yes" })).toMatchObject({ status: 400, body: { code: "TERMS_REQUIRED" } });
+    for (const country of ["CA", "GB", "PR"]) expect(await checkout("free", { interval: "month", address: { ...US_ADDRESS, country } }), country).toMatchObject({ status: 400, body: { code: "US_ONLY", field: "country" } });
+    expect(await checkout("free", { interval: "month", address: { ...US_ADDRESS, state: "ON" } })).toMatchObject({ status: 400, body: { code: "ADDRESS_INVALID", field: "state" } });
+    expect(await checkout("free", { interval: "month", address: { ...US_ADDRESS, postal_code: "K1A 0B1" } })).toMatchObject({ status: 400, body: { code: "ADDRESS_INVALID", field: "postal_code" } });
+    expect(await checkout("free", { interval: "month", address: null })).toMatchObject({ status: 400 });
+    expect(Object.keys(stripe.calls)).toEqual([]);
+    expect(await ops()).toEqual([]);
+  });
+
+  it("a US address: stored on the Stripe Customer (tax-validated); Checkout uses automatic tax and can't change the address; Terms version recorded", async () => {
+    const r = await checkout("free", { interval: "month" });
+    expect(r.status, JSON.stringify(r.body)).toBe(200);
+    const s = [...stripe.sessions.values()][0];
+    expect(s.params).toMatchObject({ automatic_tax: { enabled: true }, customer_update: { address: "never" }, billing_address_collection: "auto", subscription_data: { metadata: { organizationId: "free", termsVersion: expect.any(String) } } });
+    expect(s.params.metadata).toMatchObject({ organizationId: "free", termsVersion: expect.any(String), termsAcceptedBy: "u-owner", termsAcceptedAt: expect.any(String) });
+    const customerId = (await prisma.organization.findUniqueOrThrow({ where: { id: "free" } })).stripeCustomerId!;
+    expect(stripe.customers.get(customerId)!.address).toMatchObject({ country: "US", state: "MA", postal_code: "02108" });
+    const [op] = await ops();
+    expect(op.requestHash).toMatch(/^[0-9a-f]{64}$/);
+    expect(JSON.stringify(op)).not.toMatch(/Main St|Boston|02108/); // no address in our database
+  });
+
+  it("Stripe Tax not ready → no Checkout (never a silent zero-tax charge): inactive, no home-state registration, lookup outage, inclusive / unresolved tax behavior", async () => {
+    const refused = async (label: string, setup: () => void) => {
+      stripe = createFakeStripe();
+      setBillingStripeForTests(stripe.api);
+      resetTaxCheckCacheForTests();
+      resetPriceCheckCacheForTests();
+      setup();
+      expect(await checkout("free"), label).toMatchObject({ status: 503, body: { code: "BILLING_UNAVAILABLE" } });
+      expect(stripe.calls.createCustomer ?? 0, label).toBe(0);
+      expect(stripe.calls.updateCustomerAddress ?? 0, label).toBe(0);
+      expect(stripe.calls.createCheckoutSession ?? 0, label).toBe(0);
+    };
+    await refused("pending", () => (stripe.tax.settings = { status: "pending", defaultTaxBehavior: "exclusive" }));
+    await refused("no registrations", () => (stripe.tax.registrations = []));
+    await refused("other state only", () => (stripe.tax.registrations = [{ country: "US", state: "NY" }]));
+    await refused("outage", () => (stripe.failNext.retrieveTaxSettings = "outage"));
+    await refused("inclusive price", () => stripe.prices.set(PRICES.month, { tax_behavior: "inclusive" }));
+    await refused("unspecified + inclusive default", () => {
+      stripe.prices.set(PRICES.year, { tax_behavior: "unspecified" });
+      stripe.tax.settings = { status: "active", defaultTaxBehavior: "inclusive" };
+    });
+    expect(await prisma.billingCheckoutSession.count({ where: { status: { not: "FAILED" } } })).toBe(0);
+    // Unspecified Prices with the USD default (inferred by currency → exclusive) are fine.
+    stripe = createFakeStripe();
+    setBillingStripeForTests(stripe.api);
+    resetTaxCheckCacheForTests();
+    resetPriceCheckCacheForTests();
+    stripe.prices.set(PRICES.month, { tax_behavior: "unspecified" });
+    stripe.tax.settings = { status: "active", defaultTaxBehavior: "inferred_by_currency" };
+    expect((await checkout("free")).status).toBe(200);
+  });
+
+  it("an address Stripe Tax can't place → 400 with a clear message; the operation is closed; no session", async () => {
+    stripe.tax.invalidPostalCodes.add("02108");
+    expect(await checkout("free")).toMatchObject({ status: 400, body: { code: "ADDRESS_INVALID", error: expect.stringMatching(/couldn't verify this billing address for sales tax/) } });
+    expect(stripe.calls.createCheckoutSession ?? 0).toBe(0);
+    expect((await ops()).map((o) => o.status)).toEqual(["FAILED"]);
+    stripe.tax.invalidPostalCodes.clear();
+    expect((await checkout("free")).status).toBe(200); // corrected → works
+  });
+
+  it("same address → the same session; a changed address → the old session is expired first and a new one created", async () => {
+    const a = await checkout("free");
+    const b = await checkout("free");
+    expect(b.body.url).toBe(a.body.url);
+    expect(stripe.sessions.size).toBe(1);
+    const c = await checkout("free", { interval: "month", address: { ...US_ADDRESS, postal_code: "02109" } });
+    expect(c.status).toBe(200);
+    expect(c.body.url).not.toBe(a.body.url);
+    expect([...stripe.sessions.values()].map((s) => s.status)).toEqual(["expired", "open"]);
+    expect((await ops()).map((o) => o.status)).toEqual(["EXPIRED", "OPEN"]);
+  });
+
+  it("Live (Production) Checkout uses the same tax and address rules", async () => {
+    goLive();
+    expect((await checkout("free", { interval: "month", address: { ...US_ADDRESS, country: "CA" } })).status).toBe(400);
+    const r = await checkout("free");
+    expect(r.status, JSON.stringify(r.body)).toBe(200);
+    expect([...stripe.sessions.values()][0].params).toMatchObject({ automatic_tax: { enabled: true }, customer_update: { address: "never" } });
+    goLive();
+    stripe.tax.registrations = [];
+    expect((await checkout("other")).status).toBe(404); // not an owner of "other"
+    await prisma.organizationMembership.create({ data: { userId: "u-owner", organizationId: "other", role: "OWNER" } });
+    expect(await checkout("other")).toMatchObject({ status: 503, body: { code: "BILLING_UNAVAILABLE" } });
+  });
+
+  it("only the OWNER can start Checkout, even with a valid address and agreement (ADMIN / MEMBER / other tenant → 404)", async () => {
+    for (const who of ["admin", "member", "other"]) {
+      await signIn(who);
+      expect((await checkout("free")).status, who).toBe(404);
+    }
+    expect(Object.keys(stripe.calls)).toEqual([]);
+  });
+});
+
+describe("M11.2C — an organization with an unfinished subscription can't be deleted or lose its last owner", () => {
+  const guard = /TBP_BILLING_GUARD/;
+  async function activeSub(org = "free") {
+    const { sub } = await subscribe(org);
+    await webhook("customer.subscription.created", { id: sub.id });
+    return sub;
+  }
+
+  it("deleting the organization is refused while the subscription is active or scheduled to end; allowed once it has ended", async () => {
+    const sub = await activeSub();
+    await expect(prisma.organization.delete({ where: { id: "free" } })).rejects.toThrow(guard);
+    stripe.updateSubscription(sub.id, { cancel_at: sub.items.data[0].current_period_end }); // Portal cancellation (still active)
+    await webhook("customer.subscription.updated", { id: sub.id });
+    await expect(prisma.organization.delete({ where: { id: "free" } })).rejects.toThrow(guard);
+    await expect(prisma.$executeRawUnsafe(`DELETE FROM "Organization" WHERE id = 'free'`)).rejects.toThrow(guard); // raw SQL too
+    stripe.updateSubscription(sub.id, { status: "canceled", ended_at: Math.floor(Date.now() / 1000) });
+    await webhook("customer.subscription.deleted", { id: sub.id });
+    await prisma.organization.delete({ where: { id: "free" } });
+    expect(await prisma.organization.findUnique({ where: { id: "free" } })).toBeNull();
+  });
+
+  it("the last owner can't be removed, demoted, moved or deleted (User cascade) while it's unfinished; a second owner makes it possible", async () => {
+    await activeSub();
+    const ownerMembership = await prisma.organizationMembership.findFirstOrThrow({ where: { organizationId: "free", userId: "u-owner" } });
+    await expect(prisma.organizationMembership.delete({ where: { id: ownerMembership.id } })).rejects.toThrow(guard);
+    await expect(prisma.organizationMembership.update({ where: { id: ownerMembership.id }, data: { role: "ADMIN" } })).rejects.toThrow(guard);
+    await expect(prisma.organizationMembership.update({ where: { id: ownerMembership.id }, data: { organizationId: "other" } })).rejects.toThrow(guard);
+    await expect(prisma.user.delete({ where: { id: "u-owner" } })).rejects.toThrow(guard);
+    expect(await prisma.user.findUnique({ where: { id: "u-owner" } })).not.toBeNull();
+    // Other members are unaffected.
+    await prisma.organizationMembership.deleteMany({ where: { organizationId: "free", userId: "u-member" } });
+    // Promote the admin to a second owner → the first owner can now leave.
+    await prisma.organizationMembership.updateMany({ where: { organizationId: "free", userId: "u-admin" }, data: { role: "OWNER" } });
+    await prisma.organizationMembership.delete({ where: { id: ownerMembership.id } });
+    expect(await prisma.organizationMembership.count({ where: { organizationId: "free", role: "OWNER" } })).toBe(1);
+  });
+
+  it("tenant isolation: another organization's subscription never blocks deleting an organization without one", async () => {
+    await activeSub("free");
+    await prisma.organization.delete({ where: { id: "other" } }); // no subscription of its own
+    await prisma.user.delete({ where: { id: "u-other" } }).catch(() => undefined);
+    expect(await prisma.organization.findUnique({ where: { id: "other" } })).toBeNull();
+    await expect(prisma.organization.delete({ where: { id: "free" } })).rejects.toThrow(guard);
+  });
+});
+
+describe("M11.2C — webhook and return diagnostics (non-sensitive)", () => {
+  it("each applied webhook logs event id, type and outcome only; a mismatched return logs a reason code only", async () => {
+    const info = vi.spyOn(console, "info").mockImplementation(() => undefined);
+    try {
+      const { sessionId, sub } = await subscribe("free");
+      await webhook("customer.subscription.updated", { id: sub.id }, { id: "evt_diag_1" });
+      const line = info.mock.calls.map((c) => String(c[0])).find((l) => l.includes("evt_diag_1"));
+      expect(line).toBe("[billing] webhook evt_diag_1 (customer.subscription.updated) processed: plan PRO (changed)");
+      // Another tenant's owner opens this organization's session id on their own billing page.
+      await prisma.organizationMembership.create({ data: { userId: "u-owner", organizationId: "other", role: "OWNER" } });
+      expect(await confirmCheckoutReturn(await requireOrganizationContextForSlug({ organizationSlug: "other" }), sessionId)).toBe("ignored");
+      expect(await confirmCheckoutReturn(await requireOrganizationContextForSlug({ organizationSlug: "free" }), "sub_not_a_session")).toBe("ignored");
+      const logged = info.mock.calls.map((c) => String(c[0])).filter((l) => l.includes("checkout return ignored"));
+      expect(logged).toEqual(["[billing] checkout return ignored: organization_mismatch", "[billing] checkout return ignored: session_id_format"]);
+      expect(logged.join(" ")).not.toMatch(/cs_|sub_|cus_|@/);
+    } finally {
+      info.mockRestore();
+    }
   });
 });

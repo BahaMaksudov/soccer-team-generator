@@ -16,6 +16,7 @@ const price = (interval: "month" | "year", patch: Partial<StripePriceLite> = {})
   unit_amount: LIVE_PRICE_EXPECTATIONS[interval].unit_amount,
   product: "prod_pro",
   recurring: { interval, interval_count: 1, usage_type: "licensed" },
+  tax_behavior: "exclusive",
   ...patch,
 });
 

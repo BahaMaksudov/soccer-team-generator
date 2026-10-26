@@ -60,6 +60,14 @@ export const OWNER_ITEMS: readonly OwnerItem[] = [
   { id: "billing-terms", category: "billing-launch", label: "Before paid subscriptions are enabled: billing, renewal, cancellation and refund terms." },
 ];
 
+/**
+ * M11.2C — the paid-subscription terms (Terms §8 / §10, Privacy billing
+ * disclosures) are rendered ONLY once no billing-launch item is pending. Removing
+ * the "billing-terms" item is therefore the single, approved publication step:
+ * it publishes these texts AND unlocks Live billing in code (billingConfig).
+ */
+export const billingTermsPublished = (items: readonly OwnerItem[] = OWNER_ITEMS) => !items.some((i) => i.category === "billing-launch");
+
 /** Items that keep the legal pages a draft (everything except billing-launch items). */
 export const publicationBlockers = (items: readonly OwnerItem[] = OWNER_ITEMS) => items.filter((i) => i.category !== "billing-launch");
 
