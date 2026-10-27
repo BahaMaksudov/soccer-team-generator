@@ -27,6 +27,8 @@ import { marketingSports } from "@/lib/marketing/sports";
 import { cn } from "@/lib/cn";
 import { supportEmail } from "@/lib/support";
 import pickupGame from "../../public/marketing/pickup-game.jpg";
+import PricingPlans from "@/components/billing/PricingPlans";
+import { billingConfig } from "@/lib/billing/config";
 
 /**
  * UI-1 — Team Balance Pro marketing homepage (replaces the legacy root
@@ -76,6 +78,7 @@ export default function MarketingHomePage() {
         <Sports />
         <Audiences />
         <Comms />
+        <Pricing />
         <FinalCta />
       </main>
       <Footer />
@@ -420,6 +423,17 @@ function Comms() {
         </div>
       </div>
     </section>
+  );
+}
+
+/** Pricing — the same cards as /pricing; paid buttons only while billing is switched on (runtime gate). */
+function Pricing() {
+  return (
+    <div className="border-t border-border bg-card">
+      <div className="mx-auto max-w-6xl px-4 py-20 sm:px-6">
+        <PricingPlans live={billingConfig().enabled} />
+      </div>
+    </div>
   );
 }
 

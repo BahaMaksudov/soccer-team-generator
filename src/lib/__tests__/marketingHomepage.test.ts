@@ -72,11 +72,13 @@ describe("/ renders the marketing homepage", () => {
     expect(hrefsFor(html, "How It Works")).toContain("#how");
     expect(hrefsFor(html, "Features")).toContain("#features");
     expect(hrefsFor(html, "Sports")).toContain("#sports");
-    // Every link stays on the marketing page or goes to an existing public route (auth, legal pages).
-    const all = [...html.matchAll(/href="([^"]+)"/g)].map((m) => m[1]);
-    expect(all.every((h) => ["/", "/login", "/signup", "/privacy", "/terms"].includes(h) || h.startsWith("#"))).toBe(true);
+    // Every link stays on the marketing page or goes to an existing public route (auth, legal pages)
+    // or to the pricing hand-off (/upgrade → sign-in / the existing Billing page; nothing is bought here).
+    const all = [...html.matchAll(/href="([^"]+)"/g)].map((m) => m[1].replace(/&amp;/g, "&"));
+    expect(all.every((h) => ["/", "/login", "/signup", "/privacy", "/terms", "/upgrade?plan=month", "/upgrade?plan=year"].includes(h) || h.startsWith("#")), all.join(" ")).toBe(true);
     expect(hrefsFor(html, "Privacy Policy")).toEqual(["/privacy"]);
-    expect(hrefsFor(html, "Terms of Service")).toEqual(["/terms"]);
+    expect(new Set(hrefsFor(html, "Terms of Service"))).toEqual(new Set(["/terms"])); // footer + pricing footnote
+    expect(hrefsFor(html, "Pricing")).toContain("#pricing");
   });
 
   it("sports come from the production registry (user-facing labels, never internal keys)", () => {
@@ -88,12 +90,15 @@ describe("/ renders the marketing homepage", () => {
   });
 
   it("5: illustrative content only — no real users, tenant, admin or private data; no unsupported claims", () => {
-    const html = render();
+    // The pricing section is checked against the enforced plan catalog in its own test (pricing cards);
+    // everything else on the page keeps the original no-claims rule.
+    const html = render().replace(/<section id="pricing"[\s\S]*?<\/section>/, "");
     const text = visibleText(html);
     expect(text).toContain("Example match");
     expect(text).not.toMatch(/Yasmina|Forekicks|New England Eagles|Indoor Soccer|indoor-soccer|new-england-eagles/i);
     expect(text).not.toMatch(/rating|EXCELLENT|VERY_GOOD|@[a-z0-9.-]+\.[a-z]{2,}|telegramUserId|userId|playerId/i);
-    expect(text).not.toMatch(/WhatsApp|reminder|GPS|\bAI\b|artificial intelligence|thousands|customers|testimonial|\d+\s?%|guarantee|pricing|\$\d/i);
+    // The "Pricing" navigation label (header / footer) links to the pricing section; no price or claim appears outside it.
+    expect(text.replace(/\bPricing\b/g, "")).not.toMatch(/WhatsApp|reminder|GPS|\bAI\b|artificial intelligence|thousands|customers|testimonial|\d+\s?%|guarantee|pricing|\$\d/i);
   });
 
   it("a11y basics: skip link, labelled nav, decorative icons hidden, menu button labelled", () => {
@@ -118,7 +123,7 @@ describe("3: presentation only — no tenant inference, session, data or storage
       // (Marketing copy may mention "Telegram"; actual modules are covered by the import allow-list below.)
       expect(src, f).not.toMatch(/prisma|next-auth|getServerSession|TenantContext|tenantContext|cookies\(|headers\(|localStorage|sessionStorage|document\.cookie|\bfetch\(|openai|defaultPublicGroup|DEFAULT_PUBLIC|organizationSlug|groupSlug/i);
       for (const m of src.matchAll(/from\s+["']([^"']+)["']/g)) {
-        expect(["react", "next/link", "next/image", "lucide-react", "@/components/ui/button", "@/components/marketing/MarketingHeader", "@/components/marketing/parts", "@/lib/marketing/sports", "@/lib/sports", "@/lib/cn", "@/lib/support" /* M12-A: optional SUPPORT_EMAIL (env only) */, "../../public/marketing/pickup-game.jpg"], `${f}: ${m[1]}`).toContain(m[1]);
+        expect(["react", "next/link", "next/image", "lucide-react", "@/components/ui/button", "@/components/marketing/MarketingHeader", "@/components/marketing/parts", "@/lib/marketing/sports", "@/lib/sports", "@/lib/cn", "@/lib/support" /* M12-A: optional SUPPORT_EMAIL (env only) */, "../../public/marketing/pickup-game.jpg", /* pricing cards + the runtime billing switch (env only) */ "@/components/billing/PricingPlans", "@/lib/billing/config", "@/components/brand/BrandLogo"], `${f}: ${m[1]}`).toContain(m[1]);
       }
     }
   });

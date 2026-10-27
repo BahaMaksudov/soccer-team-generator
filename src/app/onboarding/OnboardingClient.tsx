@@ -12,7 +12,12 @@ function firstError(data: unknown): string {
 }
 
 
-export default function OnboardingClient({ sports, defaultTimezone }: { sports: Sport[]; defaultTimezone: string }) {
+/**
+ * `plan` (from a pricing CTA, already validated server-side: "month" | "year"): after the organization
+ * is created, continue to /upgrade, which sends its OWNER to that organization's Billing page with the
+ * interval preselected (nothing is purchased automatically).
+ */
+export default function OnboardingClient({ sports, defaultTimezone, plan = null }: { sports: Sport[]; defaultTimezone: string; plan?: "month" | "year" | null }) {
   const [organizationName, setOrganizationName] = useState("");
   const [groupName, setGroupName] = useState("");
   const [sportKey, setSportKey] = useState(sports[0]?.key ?? "soccer");
@@ -48,7 +53,8 @@ export default function OnboardingClient({ sports, defaultTimezone }: { sports: 
         setLoading(false);
         return;
       }
-      window.location.href = data.href;
+      const slug = typeof data?.organization?.slug === "string" ? data.organization.slug : null;
+      window.location.href = plan && slug ? `/upgrade?plan=${plan}&org=${encodeURIComponent(slug)}` : data.href;
     } catch {
       setErr("Could not create the organization. Please try again.");
       setLoading(false);

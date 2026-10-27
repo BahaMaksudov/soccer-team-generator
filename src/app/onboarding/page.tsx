@@ -11,7 +11,13 @@ import OnboardingClient from "./OnboardingClient";
  * "Create organization". Either way the server makes the session User
  * the OWNER (POST /api/admin/organizations).
  */
-export default async function OnboardingPage() {
+type Search = Promise<{ plan?: string | string[] }>;
+
+export default async function OnboardingPage({ searchParams }: { searchParams: Search }) {
+  // Pricing CTA (/upgrade): remember the chosen Pro interval through onboarding — only these two values.
+  const rawPlan = (await searchParams).plan;
+  const plan = rawPlan === "month" || rawPlan === "year" ? rawPlan : null;
+  const self = plan ? `/onboarding?plan=${plan}` : "/onboarding";
   let organizationCount: number;
   let allowance: OwnershipAllowance;
   let trialAvailable: boolean;
@@ -24,7 +30,7 @@ export default async function OnboardingPage() {
   } catch (e) {
     if (e instanceof TenantContextError) {
       // Organization creation requires a verified email (central rule in tenantContext).
-      redirect(e.code === "EMAIL_NOT_VERIFIED" ? "/verify-email?next=%2Fonboarding" : "/login?callbackUrl=%2Fonboarding");
+      redirect(e.code === "EMAIL_NOT_VERIFIED" ? `/verify-email?next=${encodeURIComponent(self)}` : `/login?callbackUrl=${encodeURIComponent(self)}`);
     }
     throw e;
   }
@@ -39,6 +45,11 @@ export default async function OnboardingPage() {
         <p className="mt-1 text-sm text-muted-foreground">An organization holds your groups. Each group has its own players, teams and settings.</p>
       </header>
       {trialAvailable && <p className="text-sm text-muted-foreground">{TRIAL_POLICY_NOTE}</p>}
+      {plan && (
+        <p role="status" className="rounded-tbp-md border border-primary/30 bg-primary/5 p-3 text-sm">
+          Next, you&apos;ll choose <span className="font-semibold">{plan === "year" ? "Pro Yearly" : "Pro Monthly"}</span> on your new organization&apos;s Billing page. Nothing is charged until you confirm there.
+        </p>
+      )}
       {allowance.owned > 0 && (
         <p className="text-sm">
           <span className="font-semibold">{ownershipCountLabel(allowance)}.</span>{" "}
@@ -47,7 +58,7 @@ export default async function OnboardingPage() {
       )}
       {allowance.canCreate ? (
         <div className="rounded-tbp-2xl border border-border bg-card p-5 shadow-card">
-          <OnboardingClient sports={SUPPORTED_SPORTS.map((s) => ({ key: s.key, label: s.label }))} defaultTimezone={DEFAULT_TIMEZONE} />
+          <OnboardingClient sports={SUPPORTED_SPORTS.map((s) => ({ key: s.key, label: s.label }))} defaultTimezone={DEFAULT_TIMEZONE} plan={plan} />
         </div>
       ) : (
         <div role="status" className="rounded-tbp-2xl border border-border bg-card p-5 text-sm shadow-card">

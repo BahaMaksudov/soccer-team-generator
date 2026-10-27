@@ -189,6 +189,9 @@ describe("UI primitives are presentation-only", () => {
         "src/app/admin/o/[organizationSlug]/billing/BillingActions.tsx",
         "src/app/pricing/page.tsx",
         "src/components/billing/PlanComparison.tsx",
+        // Landing / pricing cards and the shared brand logo.
+        "src/components/billing/PricingPlans.tsx",
+        "src/components/brand/BrandLogo.tsx",
         // M11.3 — password reset landing page.
         "src/app/reset-password/[token]/page.tsx",
         // M12B — personal attendance (player page; organizer card).

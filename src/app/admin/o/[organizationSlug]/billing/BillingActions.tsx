@@ -25,6 +25,7 @@ export default function BillingActions({
   prices,
   chargeNotices,
   termsHref,
+  initialInterval = "month",
 }: {
   organizationSlug: string;
   canPurchase: boolean;
@@ -32,8 +33,10 @@ export default function BillingActions({
   prices: { month: string; year: string };
   chargeNotices: { month: string; year: string };
   termsHref: string;
+  /** Preselected from the pricing CTA (?plan=year); the owner can still change it. */
+  initialInterval?: "month" | "year";
 }) {
-  const [interval, setInterval] = useState<"month" | "year">("month");
+  const [interval, setInterval] = useState<"month" | "year">(initialInterval);
   const [address, setAddress] = useState<Address>(EMPTY);
   const [accepted, setAccepted] = useState(false);
   const [busy, setBusy] = useState(false);

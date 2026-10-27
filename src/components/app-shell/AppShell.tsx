@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { Scale } from "lucide-react";
+import { BrandLogo, BrandMark } from "@/components/brand/BrandLogo";
 import type { ShellData } from "@/lib/appShell";
 import { cn } from "@/lib/cn";
 import { AccountMenu, MobileBottomNav, MobileContext, SidebarContext, SidebarNav, SignOutButton } from "./ShellClient";
@@ -18,12 +18,7 @@ function Brand({ className }: { className?: string }) {
       className={cn("flex items-center gap-2 rounded-tbp-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent", className)}
       aria-label="TeamBalance Pro — My Organizations"
     >
-      <span className="grid size-8 shrink-0 place-items-center rounded-tbp-sm bg-primary text-primary-foreground" aria-hidden="true">
-        <Scale className="size-4" />
-      </span>
-      <span className="font-display font-extrabold tracking-tight" aria-hidden="true">
-        TeamBalance <span className="text-accent">Pro</span>
-      </span>
+      <BrandLogo onDark className="h-8 sm:h-8" />
     </Link>
   );
 }
@@ -66,9 +61,9 @@ export default function AppShell({ data, children }: { data: ShellData; children
           <Link
             href="/admin"
             aria-label="My Organizations"
-            className="grid size-8 shrink-0 place-items-center rounded-tbp-sm bg-primary text-primary-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+            className="grid size-8 shrink-0 place-items-center rounded-tbp-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
           >
-            <Scale className="size-4" aria-hidden="true" />
+            <BrandMark />
           </Link>
           <div className="min-w-0 flex-1">
             <MobileContext data={data} />

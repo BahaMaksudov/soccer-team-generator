@@ -156,6 +156,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
 import { parseCanonicalGroupPath } from "@/lib/canonicalGroupPath";
+import { BrandLogo } from "@/components/brand/BrandLogo";
 
 export default function SiteHeader({ teamName }: { teamName: string }) {
   const pathname = usePathname();
@@ -233,19 +234,13 @@ export default function SiteHeader({ teamName }: { teamName: string }) {
           className="flex items-center gap-3 select-none"
           aria-label="Go to home"
         >
-          <img
-            src="/logo.png"
-            alt="Team Logo"
-            className="
-              h-14 w-auto max-w-[240px]
-              transition-transform duration-200
-              hover:scale-[1.03] active:scale-[0.97]
-            "
-          />
-          <div className="leading-tight">
-            <div className="text-lg font-semibold">{displayTeamName}</div>
-            <div className="text-xs text-white/70">TeamBalance Pro</div>
-          </div>
+          {/* The main logo carries the product name; the text beside it is the group's own team name. */}
+          <BrandLogo onDark className="h-8 sm:h-9" />
+          {displayTeamName && displayTeamName !== "TeamBalance Pro" && (
+            <div className="min-w-0 leading-tight">
+              <div className="truncate text-lg font-semibold">{displayTeamName}</div>
+            </div>
+          )}
         </Link>
 
         {/* Desktop nav */}

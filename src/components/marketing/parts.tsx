@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { Scale } from "lucide-react";
+import { BrandLogo } from "@/components/brand/BrandLogo";
 import { cn } from "@/lib/cn";
 
 /**
@@ -16,20 +17,17 @@ export const MARKETING_NAV = [
   { href: "#how", label: "How It Works" },
   { href: "#features", label: "Features" },
   { href: "#sports", label: "Sports" },
+  { href: "#pricing", label: "Pricing" },
 ] as const;
 
 /** Focus treatment for plain text links on the marketing page (buttons bring their own ring). */
 export const linkFocus = "rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2";
 
-export function Logo({ onDark = false }: { onDark?: boolean }) {
+/** The TeamBalance Pro header logo, linking home. On dark surfaces it sits on a light backing (dark lettering). */
+export function Logo({ onDark = false, priority = false }: { onDark?: boolean; priority?: boolean }) {
   return (
-    <Link href="/" className={cn("flex items-center gap-2", linkFocus)} aria-label="TeamBalance Pro home">
-      <span className="grid size-8 place-items-center rounded-tbp-sm bg-primary text-primary-foreground" aria-hidden="true">
-        <Scale className="size-4" />
-      </span>
-      <span className={cn("font-display text-lg font-extrabold tracking-tight", onDark ? "text-pitch-foreground" : "text-foreground")} aria-hidden="true">
-        TeamBalance <span className="text-accent">Pro</span>
-      </span>
+    <Link href="/" className={cn("flex shrink-0 items-center", linkFocus)} aria-label="TeamBalance Pro home">
+      <BrandLogo priority={priority} onDark={onDark} />
     </Link>
   );
 }

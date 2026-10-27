@@ -19,7 +19,7 @@ export default function MarketingHeader({ anchorBase = "" }: { anchorBase?: stri
   return (
     <header className="sticky top-0 z-50 border-b border-border/70 bg-background/90 backdrop-blur">
       <div className="mx-auto flex h-16 max-w-6xl items-center justify-between px-4 sm:px-6">
-        <Logo />
+        <Logo priority />
         <nav aria-label="Main" className="hidden items-center gap-8 md:flex">
           {MARKETING_NAV.map((n) => (
             <a key={n.href} href={hrefOf(n.href)} className={cn("text-sm font-medium text-muted-foreground hover:text-foreground", linkFocus)}>

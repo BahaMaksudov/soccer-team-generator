@@ -128,7 +128,7 @@ export default function SignupClient({ invite, next = null, googleEnabled = fals
       </p>
       <p className="mt-6 text-center text-sm text-muted-foreground">
         Already have an account?{" "}
-        <TextLink href={invite ? `/login?callbackUrl=${encodeURIComponent(`/invite/${invite.token}`)}` : "/login"}>Sign in</TextLink>
+        <TextLink href={invite ? `/login?callbackUrl=${encodeURIComponent(`/invite/${invite.token}`)}` : next ? `/login?callbackUrl=${encodeURIComponent(next)}` : "/login"}>Sign in</TextLink>
       </p>
     </>
   );

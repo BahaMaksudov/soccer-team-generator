@@ -19,7 +19,7 @@ import BillingActions from "./BillingActions";
  * URL alone activates nothing.
  */
 type Params = Promise<{ organizationSlug: string }>;
-type Search = Promise<{ checkout?: string; session_id?: string }>;
+type Search = Promise<{ checkout?: string; session_id?: string; plan?: string }>;
 
 export const dynamic = "force-dynamic";
 
@@ -100,6 +100,7 @@ export default async function BillingPage({ params, searchParams }: { params: Pa
             prices={view.prices}
             chargeNotices={{ month: chargeNotice("month"), year: chargeNotice("year") }}
             termsHref={LEGAL_PATHS.terms}
+            initialInterval={sp.plan === "year" ? "year" : "month"}
           />
         )}
       </section>

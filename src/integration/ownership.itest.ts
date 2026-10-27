@@ -335,16 +335,16 @@ describe("Phase 1 — UI explains the allowance", () => {
   });
   it("/onboarding: the form is replaced by the reason at the limit; shown with the note when eligible; plain for a first Organization", async () => {
     signIn("free");
-    let html = await render(OnboardingPage);
+    let html = await render(() => OnboardingPage({ searchParams: Promise.resolve({}) }));
     expect(html).toContain("Organizations owned: 1 of 1");
     expect(html).toContain("You can&#x27;t create another organization right now.");
     expect(html).not.toContain("<form");
     signIn("legacy");
-    html = await render(OnboardingPage);
+    html = await render(() => OnboardingPage({ searchParams: Promise.resolve({}) }));
     expect(html).toContain("Organizations owned: 1 of 2");
     expect(html).toContain("<form");
     signIn("stranger");
-    html = await render(OnboardingPage);
+    html = await render(() => OnboardingPage({ searchParams: Promise.resolve({}) }));
     expect(html).not.toContain("Organizations owned");
     expect(html).toContain("<form");
   });
