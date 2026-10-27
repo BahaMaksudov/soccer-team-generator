@@ -100,11 +100,11 @@ describe("published billing terms (rendered once the gate is lifted)", () => {
   const terms = text(createElement(TermsPage));
   const privacy = text(createElement(PrivacyPage));
 
-  it("the gate itself is still in place in the code (this file mocks it open)", async () => {
+  it("the gate is lifted in the code itself (2026-10-27 publication), matching what this file renders", async () => {
     const actual = await vi.importActual<typeof import("@/lib/legal")>("@/lib/legal");
-    expect(OWNER_ITEMS.map((i) => i.id)).toContain("billing-terms");
-    expect(actual.billingTermsPublished()).toBe(false);
-    expect(billingTermsPublished()).toBe(true); // mocked
+    expect(OWNER_ITEMS.map((i) => i.id)).not.toContain("billing-terms");
+    expect(actual.billingTermsPublished()).toBe(true);
+    expect(billingTermsPublished()).toBe(true);
   });
   it("Terms §8: prices, US-only, renewal, cancellation at period end, no plan switching", () => {
     expect(terms).toContain("Pro costs $9.99 per month or $99 per year, in US dollars, billed in advance for the billing period you choose, plus sales tax where we collect it.");

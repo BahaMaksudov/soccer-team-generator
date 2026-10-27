@@ -48,7 +48,7 @@ describe("legal pages — no invented facts", () => {
     const by = (c: string) => OWNER_ITEMS.filter((i) => i.category === c).map((i) => i.id);
     expect(by("publication")).toEqual([]);
     expect(by("legal-review")).toEqual([]);
-    expect(by("billing-launch")).toEqual(["billing-terms"]);
+    expect(by("billing-launch")).toEqual([]); // 2026-10-27: paid subscription terms published
     expect(`${privacy}${terms}`).not.toMatch(/id="(mailbox|hosting-disclosure|operator-identity|mailing-address)"/);
   });
   it("every publication / legal-review item is shown on a page; billing-launch items are not rendered as markers", () => {
@@ -58,9 +58,9 @@ describe("legal pages — no invented facts", () => {
     expect(used).not.toContain("billing-terms");
   });
   it("while any item is open OR the publication date is unset: draft banner + noindex (never presented as a final policy)", () => {
-    // Published 2026-10-21 (owner-approved release): no publication or legal-review item open, explicit date set.
+    // Published 2026-10-21, paid terms added 2026-10-27 (owner-approved releases): nothing open, explicit date set.
     expect(legalIsDraft()).toBe(false);
-    expect(LEGAL_EFFECTIVE_DATE).toBe("2026-10-21");
+    expect(LEGAL_EFFECTIVE_DATE).toBe("2026-10-27");
     expect(legalIsDraft([], null)).toBe(true);
     expect(legalIsDraft([], "2026-13-40")).toBe(true);
     expect(legalIsDraft([{ id: "x", label: "x", category: "publication" }], "2026-12-01")).toBe(true);
@@ -115,7 +115,7 @@ describe("legal pages — rendered content (owner decisions applied, no false cl
       expect(t, name).not.toMatch(/\d+\s+\w+\s+(Street|St\.|Avenue|Ave\.|Road|Rd\.|Suite|Blvd)|P\.?O\.? Box/i);
       expect(t, name).not.toContain("Draft for owner review");
       expect(t, name).not.toContain("Owner to confirm");
-      expect(t, name).toContain("Effective date: October 21, 2026");
+      expect(t, name).toContain("Effective date: October 27, 2026");
     }
   });
   it("adult-only accounts vs organizer-managed youth profiles; no claimed age or consent verification", () => {
@@ -125,10 +125,16 @@ describe("legal pages — rendered content (owner decisions applied, no false cl
     expect(pages.terms).toContain("We do not verify ages or parental permission");
     expect(`${pages.privacy}${pages.terms}`).not.toMatch(/we verify (your )?age|age verification is|parental consent is verified|COPPA[- ]compliant/i);
   });
-  it("paid billing is not described as active; no renewal, cancellation or refund promises", () => {
-    expect(pages.terms).toContain("paid Pro subscriptions are planned but not available yet, and no one is charged today");
-    expect(pages.privacy).toContain("Paid billing is not active");
-    for (const t of Object.values(pages)) expect(t).not.toMatch(/renews? automatically|auto-?renew|full refund|refunds? (are|is) (available|issued)|you will be charged|money-back/i);
+  it("paid subscription terms are published: price, renewal, cancellation, refunds, tax; no over-promises", () => {
+    expect(pages.terms).not.toContain("not available yet");
+    expect(pages.privacy).not.toContain("Paid billing is not active");
+    expect(pages.terms).toContain("Pro costs $9.99 per month or $99 per year, in US dollars, billed in advance");
+    expect(pages.terms).toContain("your subscription renews automatically at the end of each monthly or annual billing period");
+    expect(pages.terms).toContain("Cancellation takes effect at the end of the current paid billing period.");
+    expect(pages.terms).toContain("subscription payments are generally non-refundable");
+    expect(pages.terms).toContain("so the tax may be $0. Any tax is shown at checkout and on each invoice before you pay.");
+    expect(pages.privacy).toContain("Billing information (organization owners who subscribe to Pro)");
+    for (const t of Object.values(pages)) expect(t).not.toMatch(/full refund|money-back|refunds? (are|is) guaranteed|attorney[- ]reviewed|reviewed by (an )?attorney|in every state/i);
   });
   it("deletion is manual: no self-service, no deadlines, no immediate or backup deletion guarantees", () => {
     expect(pages.privacy).toContain("There is no self-service account deletion");

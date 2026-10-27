@@ -26,7 +26,7 @@ export const ACCOUNT_MIN_AGE = 18;
  * set explicitly during the approved release — never the commit or build date.
  * null = not published yet (the pages show it as pending and stay a draft).
  */
-export const LEGAL_EFFECTIVE_DATE: string | null = "2026-10-21";
+export const LEGAL_EFFECTIVE_DATE: string | null = "2026-10-27";
 
 /** Owner decisions already applied to the text (audit trail; not rendered). */
 export const CONFIRMED_DECISIONS = [
@@ -40,7 +40,12 @@ export const CONFIRMED_DECISIONS = [
   "Retention is manual: data is kept as needed to run the service; only the listed security records and tokens expire automatically.",
   "Deletion and correction requests are handled manually by email; identity and authority may be verified; no fixed deadline.",
   "Governing law: Massachusetts, United States (no venue, arbitration or class-action provisions).",
-  "Paid billing is not active; Pro subscriptions are planned.",
+  "2026-10-27: paid Pro subscription terms published (Terms §8 and §10; Privacy billing disclosures), effective for both documents from this date: Pro $9.99 per month or $99 per year (USD) per organization, billed in advance; automatic renewal until canceled; cancellation at the end of the paid period with access until then; no monthly/annual switching; owner-only billing; US billing addresses only.",
+  "Refund policy (10 points, owner-approved): payments generally non-refundable; no automatic refunds for unused time; refunds and cancellations are separate; no self-service refunds; exceptions at the owner's discretion (duplicate charges, accidental plan selection, significant service failures, goodwill) requested by email and reviewed individually without guarantee; refunds required by law are always honored; unused prepaid time is refunded if paid Pro or the service is discontinued.",
+  "Sales tax: Stripe Tax calculates tax from the billing address; tax is added only where tax collection is configured in Stripe (it may be $0 elsewhere). The owner handles tax obligations independently.",
+  "Price increases: at least 30 days' email notice to the organization owner (or earlier where required by law). No annual renewal reminder is promised until one is configured and verified.",
+  "Organizations with an unfinished subscription are not deleted, and their last owner is not removed, until the subscription has ended (enforced by database triggers).",
+  "2026-10-27: like the 2026-10-21 documents, the paid subscription terms are published WITHOUT attorney review at the owner's direction; they must never be described as attorney-reviewed.",
   "Hosting verified: application functions run in Vercel region iad1 (x-vercel-id on Production responses); database on Neon / AWS us-east-1 (database host). Other providers' processing locations are not verified and are described generically.",
 ] as const;
 
@@ -56,9 +61,8 @@ export const CONFIRMED_DECISIONS = [
  */
 export type OwnerItemCategory = "publication" | "legal-review" | "billing-launch";
 export type OwnerItem = { id: string; label: string; category: OwnerItemCategory };
-export const OWNER_ITEMS: readonly OwnerItem[] = [
-  { id: "billing-terms", category: "billing-launch", label: "Before paid subscriptions are enabled: billing, renewal, cancellation and refund terms." },
-];
+// 2026-10-27: "billing-terms" (billing-launch) resolved — the paid subscription terms are published.
+export const OWNER_ITEMS: readonly OwnerItem[] = [];
 
 /**
  * M11.2C — the paid-subscription terms (Terms §8 / §10, Privacy billing
