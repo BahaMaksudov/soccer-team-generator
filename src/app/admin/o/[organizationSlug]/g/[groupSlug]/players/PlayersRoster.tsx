@@ -13,6 +13,7 @@ import { Button } from "@/components/ui/button";
 import Dialog from "@/components/app/Dialog";
 import { cn } from "@/lib/cn";
 import CanonicalPlayerForm from "../CanonicalPlayerForm";
+import PlanLimitNotice, { planLimitFrom } from "@/components/billing/PlanLimitNotice";
 import { adminGroupSettingsPath } from "@/lib/matchPaths";
 import PlayerAccountCell from "../PlayerAccountCell";
 import PlayerTelegramCell from "../PlayerTelegramCell";
@@ -89,6 +90,7 @@ export default function PlayersRoster({
   const [detailId, setDetailId] = useState<string | null>(null);
   const [confirmDelete, setConfirmDelete] = useState<Player | null>(null);
   const [message, setMessage] = useState<string | null>(null);
+  const [limit, setLimit] = useState<{ message: string; plan: string | null } | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
   // One-time claim URLs live in transient memory only (never storage), as in the group page.
   const [claimLinks, setClaimLinks] = useState<Record<string, string>>({});
@@ -146,12 +148,21 @@ export default function PlayersRoster({
     : [];
   const roleOf = (key: string) => roleLabel(sport.key, key);
 
+  /** Fix A — a plan limit closes the dialog and shows the limit notice (with the right next step) above the roster. */
+  const limitReached = (data: unknown): boolean => {
+    const planLimit = planLimitFrom(data);
+    if (!planLimit) return false;
+    setForm(null);
+    setLimit(planLimit);
+    return true;
+  };
   async function create(values: PlayerFormValues, communityIds?: string[]): Promise<string | null> {
     setMessage(null);
+    setLimit(null);
     const body = { ...playerFormToBody(values), ...(communityIds?.length ? { communityIds } : {}) };
     const res = await fetch(playersUrl, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
     const data = await res.json().catch(() => ({}));
-    if (!res.ok) return data?.error ?? "Failed to create player";
+    if (!res.ok) return limitReached(data) ? null : data?.error ?? "Failed to create player";
     setForm(null);
     setMessage(`${values.firstName.trim()} ${values.lastName.trim()} added.`);
     await load();
@@ -159,11 +170,12 @@ export default function PlayersRoster({
   }
   async function save(id: string, values: PlayerFormValues, communityIds?: string[]): Promise<string | null> {
     setMessage(null);
+    setLimit(null);
     // Memberships are sent only when the organizer changed them (undefined = unchanged).
     const body = { ...playerFormToBody(values), ...(communityIds !== undefined ? { communityIds } : {}) };
     const res = await fetch(playerUrl(id), { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
     const data = await res.json().catch(() => ({}));
-    if (!res.ok) return data?.error ?? "Failed to update player";
+    if (!res.ok) return limitReached(data) ? null : data?.error ?? "Failed to update player";
     setForm(null);
     setMessage("Player updated.");
     await load();
@@ -173,8 +185,11 @@ export default function PlayersRoster({
     setMessage(null);
     setBusyId(p.id);
     try {
+      setLimit(null);
       const res = await fetch(playerUrl(p.id), { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ isActive: !p.isActive }) });
-      setMessage(res.ok ? `${fullName(p)} ${p.isActive ? "deactivated" : "activated"}.` : "Failed to update player");
+      const data = res.ok ? null : await res.json().catch(() => ({}));
+      if (!res.ok && limitReached(data)) setMessage(null);
+      else setMessage(res.ok ? `${fullName(p)} ${p.isActive ? "deactivated" : "activated"}.` : "Failed to update player");
       await load();
     } finally {
       setBusyId(null);
@@ -232,6 +247,7 @@ export default function PlayersRoster({
         )}
       </header>
 
+      {limit && <PlanLimitNotice message={limit.message} plan={limit.plan} />}
       {message && (
         <p role="status" aria-live="polite" className="rounded-tbp border border-border bg-secondary px-4 py-3 text-sm font-medium text-secondary-foreground">
           {message}

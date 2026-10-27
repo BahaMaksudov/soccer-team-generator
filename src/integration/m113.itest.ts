@@ -230,7 +230,7 @@ describe("M11.3 — the 90-day trial", () => {
 // ============================================================ PART C — Telegram after expiry
 describe("M11.3 — Telegram after the trial ended", () => {
   it("every organizer Telegram SEND is refused with an understandable 402 (never a generic error), dated in the organization's timezone; NOTHING is sent", async () => {
-    const msg = /^Telegram integration is part of Pro\. This organization's Pro trial ended on \w{3} \d{1,2}, \d{4}, \d{1,2}:\d{2} [AP]M E[SD]T, so it is now on the Free plan\. .*kept\. Pro plans and upgrades are coming soon\.$/;
+    const msg = /^Telegram integration is available with Pro\. This organization's Pro trial ended on \w{3} \d{1,2}, \d{4}, \d{1,2}:\d{2} [AP]M E[SD]T, so it is now on the Free plan\. .*kept\. Pro plans and upgrades are coming soon\.$/;
     const post = await call(pollRoute.POST(json("POST", { intent: "post" }), gm("expired", "expired-m")));
     expect(post).toMatchObject({ status: 402, body: { code: "PLAN_LIMIT", metric: "telegram" } });
     expect(String(post.body.error)).toMatch(msg);

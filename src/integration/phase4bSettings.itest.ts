@@ -138,7 +138,7 @@ describe("Phase 4B — permissions, plans and tenant isolation", () => {
   it("Free: turning it on is refused on the server (402 PLAN_LIMIT, the existing explanation); turning it off / preferences while off are allowed", async () => {
     const view = await get("free");
     expect(view.body).toMatchObject({ telegramAvailable: false });
-    expect(String(view.body.planMessage)).toContain("Telegram integration is part of Pro");
+    expect(String(view.body.planMessage)).toContain("Telegram integration is available with Pro");
     expect(await put("free", ON)).toMatchObject({ status: 402, body: { code: "PLAN_LIMIT", metric: "telegram" } });
     expect(await stored("free-g")).toBeNull();
     expect((await put("free", { ...ON, enabled: false })).status).toBe(200);

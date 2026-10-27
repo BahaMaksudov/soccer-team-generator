@@ -142,7 +142,7 @@ export async function aiCreditsUsed(organizationId: string, now: Date = new Date
 
 const NOUN: Record<CapacityMetric, (n: number) => string> = {
   activeGroups: (n) => `${n} active group${n === 1 ? "" : "s"}`,
-  activePlayers: (n) => `${n} active players`,
+  activePlayers: (n) => `${n} active players per organization`,
   monthlyMatches: (n) => `${n} new matches per month`,
   activeSchedules: (n) => `${n} active recurring schedule${n === 1 ? "" : "s"}`,
 };
@@ -158,20 +158,56 @@ export function limitReachedMessage(plan: EffectivePlan, detail: string): string
   return `Your Free plan limit has been reached (${detail}). ${billingConfig().enabled ? FREE_LIMIT_UPGRADE : FREE_LIMIT_COMING_SOON}`;
 }
 
+/**
+ * Fix A — the Free-plan limit message names the Free allowance and what Pro adds, both read
+ * from PLAN_LIMITS (never hard-coded). While billing is off it says Pro is coming soon instead
+ * of offering an upgrade. Other plans keep limitReachedMessage ("Your Pro plan limit…").
+ */
+export type LimitMetric = CapacityMetric | "monthlyAiRecaps";
+const count = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
+const FREE_ALLOWANCE: Record<LimitMetric, (l: Limits) => string> = {
+  activeGroups: (l) => `Your Free plan allows ${count(l.activeGroups ?? 0, "group", "groups")}.`,
+  activePlayers: (l) => `Your Free plan allows ${l.activePlayers} players per organization.`,
+  monthlyMatches: (l) => `Your Free plan allows ${count(l.monthlyMatches ?? 0, "match", "matches")} per month.`,
+  activeSchedules: (l) => `Your Free plan allows ${count(l.activeSchedules ?? 0, "active recurring schedule", "active recurring schedules")}.`,
+  monthlyAiRecaps: (l) => `Your Free plan includes ${l.monthlyAiRecaps} AI recaps per month.`,
+};
+const PRO_OFFER: Record<LimitMetric, (l: Limits) => string> = {
+  activeGroups: (l) => (l.activeGroups === null ? "Upgrade to Pro for unlimited groups." : `Upgrade to Pro to manage up to ${l.activeGroups} groups.`),
+  activePlayers: (l) => (l.activePlayers === null ? "Upgrade to Pro for unlimited players." : `Upgrade to Pro for up to ${l.activePlayers} players per organization.`),
+  monthlyMatches: (l) => (l.monthlyMatches === null ? "Upgrade to Pro for unlimited matches." : `Upgrade to Pro for up to ${l.monthlyMatches} matches per month.`),
+  activeSchedules: (l) => (l.activeSchedules === null ? "Upgrade to Pro for unlimited recurring schedules." : `Upgrade to Pro for up to ${l.activeSchedules} active recurring schedules.`),
+  monthlyAiRecaps: (l) => (l.monthlyAiRecaps === null ? "Upgrade to Pro for unlimited AI recaps." : `Upgrade to Pro for ${l.monthlyAiRecaps} per month.`),
+};
+const LIMIT_NOUN: Record<LimitMetric, (n: number) => string> = { ...NOUN, monthlyAiRecaps: (n) => `${n} AI recaps per month` };
+
+/** The message for reaching `metric` on `plan` (Free: allowance + Pro offer; others: the plain limit). */
+export function planLimitMessage(plan: EffectivePlan, metric: LimitMetric): string {
+  const limit = PLAN_LIMITS[plan][metric];
+  if (plan !== "FREE") return limitReachedMessage(plan, LIMIT_NOUN[metric](limit ?? 0));
+  const head = `You've reached your Free plan limit. ${FREE_ALLOWANCE[metric](PLAN_LIMITS.FREE)}`;
+  return billingConfig().enabled ? `${head} ${PRO_OFFER[metric](PLAN_LIMITS.PRO)}` : `${head} ${FREE_LIMIT_COMING_SOON}`;
+}
+
 export class EntitlementError extends Error {
   readonly metric: CapacityMetric | "telegram" | "monthlyAiRecaps";
   readonly limit: number | null;
-  constructor(metric: EntitlementError["metric"], limit: number | null, message: string) {
+  /** Fix A — the organization's effective plan and Pro's allowance for this metric (null = unlimited / not numeric). */
+  readonly plan: EffectivePlan | null;
+  readonly proLimit: number | null;
+  constructor(metric: EntitlementError["metric"], limit: number | null, message: string, plan: EffectivePlan | null = null) {
     super(message);
     this.name = "EntitlementError";
     this.metric = metric;
     this.limit = limit;
+    this.plan = plan;
+    this.proLimit = metric === "telegram" ? null : PLAN_LIMITS.PRO[metric];
   }
 }
 
 /** HTTP shape of a plan limit (402 + code PLAN_LIMIT), shared by every enforcement point. */
 export function planLimitResponse(e: EntitlementError): NextResponse {
-  return NextResponse.json({ error: e.message, code: "PLAN_LIMIT", metric: e.metric, limit: e.limit }, { status: 402 });
+  return NextResponse.json({ error: e.message, code: "PLAN_LIMIT", metric: e.metric, limit: e.limit, plan: e.plan, proLimit: e.proLimit }, { status: 402 });
 }
 
 /** Serialize capacity-changing work of one Organization (transaction-scoped). */
@@ -191,7 +227,7 @@ export async function assertCapacity(tx: Prisma.TransactionClient, organizationI
   if (limit === null) return;
   const used = (await capacityUsage(organizationId, now, tx))[metric];
   if (used + adding > limit) {
-    throw new EntitlementError(metric, limit, limitReachedMessage(plan, NOUN[metric](limit)));
+    throw new EntitlementError(metric, limit, planLimitMessage(plan, metric), plan);
   }
 }
 
@@ -332,14 +368,16 @@ export function telegramNotInPlanMessage(org: { plan: OrganizationPlan; trialEnd
     trial.phase === "expired" && trial.endsAt
       ? `This organization's Pro trial ended on ${trialDateLabel(trial.endsAt, timeZone)}, so it is now on the Free plan. Players can still answer through the match link, and existing polls, messages and connected Telegram groups are kept.`
       : "This organization is on the Free plan; players can answer through the match link.";
-  return `Telegram integration is part of Pro. ${why} ${upgradeHint(env)}`;
+  const next = billingConfig().enabled ? "Upgrade to Pro to connect Telegram." : upgradeHint(env);
+  return `Telegram integration is available with Pro. ${why} ${next}`;
 }
 
 /** Telegram premium actions (connect a Telegram group, post or close polls, post teams / post-game messages, Game Day Updates). */
 export async function assertTelegram(organizationId: string, now: Date = new Date(), db: Db = prisma): Promise<void> {
   const org = await db.organization.findUniqueOrThrow({ where: { id: organizationId }, select: { plan: true, trialEndsAt: true } });
-  if (!PLAN_LIMITS[effectivePlan(org, now)].telegram) {
-    throw new EntitlementError("telegram", null, telegramNotInPlanMessage(org, now, process.env, await organizationTimeZone(organizationId, db)));
+  const plan = effectivePlan(org, now);
+  if (!PLAN_LIMITS[plan].telegram) {
+    throw new EntitlementError("telegram", null, telegramNotInPlanMessage(org, now, process.env, await organizationTimeZone(organizationId, db)), plan);
   }
 }
 
@@ -400,11 +438,7 @@ export async function reserveAiCredit(input: { organizationId: string; groupId: 
     if (limit !== null && (await aiCreditsUsed(input.organizationId, now, tx)) >= limit) {
       const { next } = utcMonth(now);
       const reset = next.toLocaleDateString("en-US", { timeZone: "UTC", month: "short", day: "numeric" });
-      throw new EntitlementError(
-        "monthlyAiRecaps",
-        limit,
-        `${limitReachedMessage(plan, `${limit} AI recaps per month`)} Write or edit the recap yourself — AI recaps reset ${reset}.`
-      );
+      throw new EntitlementError("monthlyAiRecaps", limit, `${planLimitMessage(plan, "monthlyAiRecaps")} Write or edit the recap yourself — AI recaps reset ${reset}.`, plan);
     }
     const row = await tx.aiUsage.create({
       data: { ...input, period: utcMonth(now).period, status: "RESERVED", expiresAt: new Date(now.getTime() + AI_RESERVATION_TTL_MS) },
@@ -436,7 +470,7 @@ export async function monthlyMatchAllowance(organizationId: string, now: Date = 
     limit,
     exhausted,
     resetsAt: utcMonth(now).next.toISOString(),
-    message: exhausted ? limitReachedMessage(plan, NOUN.monthlyMatches(limit)) : null,
+    message: exhausted ? planLimitMessage(plan, "monthlyMatches") : null,
   };
 }
 

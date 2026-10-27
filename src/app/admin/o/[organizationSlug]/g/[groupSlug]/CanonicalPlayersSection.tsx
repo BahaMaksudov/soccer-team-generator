@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import PlanLimitNotice, { planLimitFrom } from "@/components/billing/PlanLimitNotice";
 import { adminTenantApiPath } from "@/lib/adminTenantApi";
 import { ratingLabel } from "@/lib/labels";
 import { newPlayerRoleKey, roleLabel, type SportClientView } from "@/lib/sports";
@@ -70,6 +71,7 @@ export default function CanonicalPlayersSection({
   // Bumped after a successful create to remount (reset) the create form.
   const [createFormKey, setCreateFormKey] = useState(0);
   const [editing, setEditing] = useState<Player | null>(null);
+  const [limit, setLimit] = useState<{ message: string; plan: string | null } | null>(null);
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
   // M6-C fix — one-time claim URLs, by Player id, in transient memory only
   // (never storage). Owned here, not by the row, so refreshing the list
@@ -85,12 +87,18 @@ export default function CanonicalPlayersSection({
 
   async function createPlayer(values: PlayerFormValues): Promise<string | null> {
     onMessage(null);
+    setLimit(null);
     const res = await fetch(playersUrl, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(playerFormToBody(values)),
     });
     const data = await res.json().catch(() => ({}));
+    const planLimit = res.ok ? null : planLimitFrom(data);
+    if (planLimit) {
+      setLimit(planLimit);
+      return null;
+    }
     if (!res.ok) return data?.error ?? "Failed to create player";
     setCreateFormKey((k) => k + 1);
     onMessage("✅ Player created.");
@@ -101,12 +109,18 @@ export default function CanonicalPlayersSection({
   async function saveEdit(values: PlayerFormValues): Promise<string | null> {
     if (!editing) return null;
     onMessage(null);
+    setLimit(null);
     const res = await fetch(playerUrl(editing.id), {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(playerFormToBody(values)),
     });
     const data = await res.json().catch(() => ({}));
+    const planLimit = res.ok ? null : planLimitFrom(data);
+    if (planLimit) {
+      setLimit(planLimit);
+      return null;
+    }
     if (!res.ok) return data?.error ?? "Failed to update player";
     setEditing(null);
     onMessage("✅ Player updated.");
@@ -155,6 +169,8 @@ export default function CanonicalPlayersSection({
           ? "Tenant-bound workspace — every request targets the canonical API for this Group only. Check a player to select them for team generation below."
           : "The group's roster. Owners and admins manage players."}
       </p>
+
+      {limit && <PlanLimitNotice message={limit.message} plan={limit.plan} />}
 
       {/* UI-4A — roster changes are organizer mutations (OWNER/ADMIN; enforced server-side). */}
       {canManage && (

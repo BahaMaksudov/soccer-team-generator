@@ -191,6 +191,8 @@ describe("UI primitives are presentation-only", () => {
         "src/components/billing/PlanComparison.tsx",
         // Landing / pricing cards and the shared brand logo.
         "src/components/billing/PricingPlans.tsx",
+        // Fix A — the shared plan-limit notice.
+        "src/components/billing/PlanLimitNotice.tsx",
         "src/components/brand/BrandLogo.tsx",
         // M11.3 — password reset landing page.
         "src/app/reset-password/[token]/page.tsx",

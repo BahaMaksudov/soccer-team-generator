@@ -251,8 +251,8 @@ describe("M11.1 — existing Organizations and complimentary Pro", () => {
 describe("M11.1 — capacity limits are enforced on the server", () => {
   it("groups: Free 1, trial 3 (402 PLAN_LIMIT with a clear message)", async () => {
     const r = await call(groupsRoute.POST(json("POST", { groupName: "Second", sportKey: "soccer", timezone: "UTC" }), o("free")));
-    expect(r).toMatchObject({ status: 402, body: { code: "PLAN_LIMIT", metric: "activeGroups", limit: 1 } });
-    expect(r.body.error).toBe("Your Free plan limit has been reached (1 active group). Pro plans and upgrades are coming soon.");
+    expect(r).toMatchObject({ status: 402, body: { code: "PLAN_LIMIT", metric: "activeGroups", limit: 1, plan: "FREE", proLimit: 3 } });
+    expect(r.body.error).toBe("You've reached your Free plan limit. Your Free plan allows 1 group. Pro plans and upgrades are coming soon.");
     expect(await prisma.group.count({ where: { organizationId: "free" } })).toBe(1);
     for (const n of ["A", "B"]) expect((await call(groupsRoute.POST(json("POST", { groupName: n, sportKey: "soccer", timezone: "UTC" }), o("trial")))).status).toBe(201);
     expect((await call(groupsRoute.POST(json("POST", { groupName: "D", sportKey: "soccer", timezone: "UTC" }), o("trial")))).body.error).toBe("Your Pro trial plan limit has been reached (3 active groups).");
@@ -306,7 +306,7 @@ describe("M11.1 — capacity limits are enforced on the server", () => {
     expect((await planSummary("free")).usage.monthlyMatches.used).toBe(3);
     expect((await newMatch("free", "2099-01-09")).status).toBe(201); // the 4th
     const refused = await newMatch("free", "2099-01-10");
-    expect(refused).toMatchObject({ status: 402, body: { error: "Your Free plan limit has been reached (4 new matches per month). Pro plans and upgrades are coming soon." } });
+    expect(refused).toMatchObject({ status: 402, body: { error: "You've reached your Free plan limit. Your Free plan allows 4 matches per month. Pro plans and upgrades are coming soon.", plan: "FREE", proLimit: null } });
     expect((await planSummary("free")).usage.monthlyMatches.used).toBe(4); // the refused one isn't counted
     expect(await prisma.match.count({ where: { groupId: "free-g" } })).toBe(4);
   });
@@ -339,13 +339,30 @@ describe("M11.1 — Telegram is a Pro capability", () => {
       status: 402,
       body: { code: "PLAN_LIMIT", metric: "telegram", error:
           // M11.3 — says WHY (the trial ended, in the organization’s timezone: 2026-01-01T00:00Z in New York), what is kept, and what’s next.
-          "Telegram integration is part of Pro. This organization's Pro trial ended on Dec 31, 2025, 7:00 PM EST, so it is now on the Free plan. Players can still answer through the match link, and existing polls, messages and connected Telegram groups are kept. Pro plans and upgrades are coming soon." },
+          "Telegram integration is available with Pro. This organization's Pro trial ended on Dec 31, 2025, 7:00 PM EST, so it is now on the Free plan. Players can still answer through the match link, and existing polls, messages and connected Telegram groups are kept. Pro plans and upgrades are coming soon." },
     });
     expect((await call(pollRoute.POST(json("POST", { chatRef: chat.id, intent: "post" }), gm("free", m.id)))).status).toBe(402);
     expect(tgCalls).toEqual([]);
     for (const org of ["trial", "comp"]) expect((await call(channelsRoute.POST(json("POST", {}), g(org)))).status, org).toBeLessThan(300);
     // The existing connection is kept (never deleted).
     expect(await prisma.telegramChat.count({ where: { groupId: "free-g" } })).toBe(1);
+  });
+
+  it("Fix A — match-page Telegram actions answer a Free organization with a 402 PLAN_LIMIT the shared notice recognizes; other Telegram errors don't", async () => {
+    const m = await prisma.match.create({ data: { groupId: "free-g", communityId: "free-c", date: new Date("2099-04-06") } });
+    const chat = await prisma.telegramChat.create({ data: { chatId: -1002n, title: "Old chat", groupId: "free-g", communityId: "free-c" } });
+    const telegram402 = { status: 402, body: { code: "PLAN_LIMIT", metric: "telegram", plan: "FREE", proLimit: null, error: expect.stringMatching(/^Telegram integration is available with Pro\./) } };
+    expect(await call(pollRoute.POST(json("POST", { chatRef: chat.id, intent: "post" }), gm("free", m.id))), "post poll").toMatchObject(telegram402);
+    expect(await call(postGameRoute.POST(json("POST", { action: "start_mvp" }), gm("free", m.id))), "start MVP").toMatchObject(telegram402);
+    expect(await call(postGameRoute.POST(json("POST", { action: "post_message", kind: "summary", intent: "post" }), gm("free", m.id))), "post to Telegram").toMatchObject(telegram402);
+    expect(tgCalls).toEqual([]); // nothing was sent
+    // A Telegram-capable plan with a bad request gets its ordinary error — never a plan-limit reply.
+    const t = await prisma.match.create({ data: { groupId: "trial-g", communityId: "trial-c", date: new Date("2099-04-06") } });
+    const other = await call(pollRoute.POST(json("POST", { chatRef: 999_999, intent: "post" }), gm("trial", t.id)));
+    expect(other.status).toBeGreaterThanOrEqual(400);
+    expect(other.status).not.toBe(402);
+    expect(other.body.code).not.toBe("PLAN_LIMIT");
+    expect(tgCalls).toEqual([]);
   });
 });
 
@@ -445,7 +462,8 @@ describe("M11.1 — AI recap credits and unlimited team generation", () => {
     expect((await pg({ action: "generate_recap" })).body).toMatchObject({ ok: true, aiUsage: { used: 2, limit: 2 } }); // a regeneration costs one
     const third = await pg({ action: "generate_recap" });
     expect(third).toMatchObject({ status: 402, body: { code: "PLAN_LIMIT", metric: "monthlyAiRecaps", limit: 2 } });
-    expect(String(third.body.error)).toMatch(/^Your Free plan limit has been reached \(2 AI recaps per month\)\. Pro plans and upgrades are coming soon\. Write or edit the recap yourself — AI recaps reset /);
+    expect(third.body).toMatchObject({ plan: "FREE", proLimit: 30 });
+    expect(String(third.body.error)).toMatch(/^You've reached your Free plan limit\. Your Free plan includes 2 AI recaps per month\. Pro plans and upgrades are coming soon\. Write or edit the recap yourself — AI recaps reset /);
     expect(third.body.fallback).toEqual(expect.any(String));
     expect(aiCalls).toBe(3); // the refused request never reached OpenAI
     // Save / publish / view cost nothing.

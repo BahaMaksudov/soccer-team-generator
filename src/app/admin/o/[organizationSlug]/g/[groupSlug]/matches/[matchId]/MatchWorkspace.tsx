@@ -29,6 +29,7 @@ import type { Player } from "../../CanonicalAdminWorkspace";
 import { computeSelection, NO_ADJUSTMENTS, reconcileAdjustments, toggleSelection, type EffectiveStatuses, type SelectionAdjustments } from "@/lib/matchSelection";
 import { runFeedback, type RunResult } from "@/lib/automationFeedback";
 import Dialog from "@/components/app/Dialog";
+import PlanLimitNotice, { planLimitFrom } from "@/components/billing/PlanLimitNotice";
 import { closeAndPostFeedback, pollButtonView, type PollPostView } from "@/lib/telegramPublishingUi";
 import { formatDeadline, localKickoff, timeZoneAbbreviation, toLocalInput } from "@/lib/deadlineFormat";
 
@@ -132,6 +133,14 @@ export default function MatchWorkspace({
   const [view, setView] = useState<MatchView | null>(null);
   const [notFound, setNotFound] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
+  // Fix A — a genuine 402 PLAN_LIMIT (e.g. Telegram is a Pro capability) is shown with the shared
+  // notice and the right next step; every other error keeps its existing message.
+  const [limit, setLimit] = useState<{ message: string; plan: string | null } | null>(null);
+  const planLimitShown = (res: Response, data: unknown) => {
+    const planLimit = res.ok ? null : planLimitFrom(data);
+    setLimit(planLimit);
+    return planLimit !== null;
+  };
   const [busy, setBusy] = useState(false);
   // Selection = attendance-derived default (server: effective PLAYING) ± the
   // organizer's explicit adjustments (src/lib/matchSelection.ts). Re-derived on
@@ -218,11 +227,13 @@ export default function MatchWorkspace({
   async function call(path: string, body: unknown, ok: string) {
     setBusy(true);
     setMessage(null);
+    setLimit(null);
     try {
       const res = await fetch(api(path), { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
       const data = await res.json().catch(() => ({}));
       // M12B — closing attendance reports exactly what happened (attendance, Telegram poll, notice).
-      setMessage(res.ok ? (data.state === "already_posted" ? "Already posted — nothing was sent again." : typeof data.message === "string" ? data.message : ok) : data?.error ?? "Something went wrong.");
+      if (planLimitShown(res, data)) setMessage(null);
+      else setMessage(res.ok ? (data.state === "already_posted" ? "Already posted — nothing was sent again." : typeof data.message === "string" ? data.message : ok) : data?.error ?? "Something went wrong.");
       await load();
       return { ok: res.ok, data };
     } finally {
@@ -235,6 +246,7 @@ export default function MatchWorkspace({
     if (!view?.telegram.selectedChat) return;
     setBusy(true);
     setMessage(null);
+    setLimit(null);
     try {
       const path = `/channels/telegram/${view.telegram.selectedChat.ref}/players`;
       const res = await fetch(adminTenantApiPath({ organizationSlug, groupSlug, path }), {
@@ -243,7 +255,8 @@ export default function MatchWorkspace({
         body: JSON.stringify({ playerId, fromSuggestion }),
       });
       const data = await res.json().catch(() => ({}));
-      setMessage(res.ok ? (method === "POST" ? "Added to this Telegram group's players." : "Removed from this Telegram group's players.") : data?.error ?? "Something went wrong.");
+      if (planLimitShown(res, data)) setMessage(null);
+      else setMessage(res.ok ? (method === "POST" ? "Added to this Telegram group's players." : "Removed from this Telegram group's players.") : data?.error ?? "Something went wrong.");
       await load();
     } finally {
       setBusy(false);
@@ -253,6 +266,7 @@ export default function MatchWorkspace({
   async function saveMatch(patch: Record<string, unknown>, ok: string) {
     setBusy(true);
     setMessage(null);
+    setLimit(null);
     try {
       const res = await fetch(api(""), { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(patch) });
       const data = await res.json().catch(() => ({}));
@@ -268,6 +282,7 @@ export default function MatchWorkspace({
     if (!view?.telegram.poll?.pollId || !published) return;
     setBusy(true);
     setMessage(null);
+    setLimit(null);
     try {
       const res = await fetch(adminTenantApiPath({ organizationSlug, groupSlug, path: "/telegram/close-and-post" }), {
         method: "POST",
@@ -275,7 +290,7 @@ export default function MatchWorkspace({
         body: JSON.stringify({ pollId: view.telegram.poll.pollId, teamGenerationId: published.id, intent, ...(deliveryId ? { deliveryId } : {}), ...(shareUrl.trim() ? { shareUrl: shareUrl.trim() } : {}) }),
       });
       const data = await res.json().catch(() => ({}));
-      setMessage(closeAndPostFeedback(res.ok, data));
+      setMessage(planLimitShown(res, data) ? null : closeAndPostFeedback(res.ok, data));
       await loadTeamsDelivery();
       await load(); // the poll's closed state + closure notice are server state
     } finally {
@@ -287,10 +302,12 @@ export default function MatchWorkspace({
   async function closePollAgain() {
     setBusy(true);
     setMessage(null);
+    setLimit(null);
     try {
       const res = await fetch(api("/poll/close"), { method: "POST" });
       const data = await res.json().catch(() => ({}));
-      setMessage(data?.message ?? data?.error ?? (res.ok ? "Attendance poll closed in Telegram." : "Could not close the poll."));
+      if (planLimitShown(res, data)) setMessage(null);
+      else setMessage(data?.message ?? data?.error ?? (res.ok ? "Attendance poll closed in Telegram." : "Could not close the poll."));
       await load();
     } finally {
       setBusy(false);
@@ -299,10 +316,12 @@ export default function MatchWorkspace({
   async function noticeAction(action: "retry" | "mark_sent", deliveryId: string) {
     setBusy(true);
     setMessage(null);
+    setLimit(null);
     try {
       const res = await fetch(api("/poll/close-notice"), { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action, deliveryId }) });
       const data = await res.json().catch(() => ({}));
-      setMessage(data?.message ?? data?.error ?? "Something went wrong.");
+      if (planLimitShown(res, data)) setMessage(null);
+      else setMessage(data?.message ?? data?.error ?? "Something went wrong.");
       setNoticeChecked(false);
       await load();
     } finally {
@@ -314,6 +333,7 @@ export default function MatchWorkspace({
   async function setCommunity(communityId: string) {
     setBusy(true);
     setMessage(null);
+    setLimit(null);
     try {
       const res = await fetch(api(""), { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ communityId }) });
       const data = await res.json().catch(() => ({}));
@@ -327,6 +347,7 @@ export default function MatchWorkspace({
     if (!view?.community) return;
     setBusy(true);
     setMessage(null);
+    setLimit(null);
     try {
       const res = await fetch(adminTenantApiPath({ organizationSlug, groupSlug, path: `/communities/${view.community.id}/players` }), {
         method: "POST",
@@ -344,6 +365,7 @@ export default function MatchWorkspace({
   async function markTeamsSent(deliveryId: string) {
     setBusy(true);
     setMessage(null);
+    setLimit(null);
     try {
       const res = await fetch(adminTenantApiPath({ organizationSlug, groupSlug, path: "/telegram/delivery" }), {
         method: "POST",
@@ -351,7 +373,8 @@ export default function MatchWorkspace({
         body: JSON.stringify({ action: "mark_sent", deliveryId }),
       });
       const data = await res.json().catch(() => ({}));
-      setMessage(res.ok ? "Marked as sent. Nothing was posted to Telegram." : data?.error ?? "Could not mark the teams as sent.");
+      if (planLimitShown(res, data)) setMessage(null);
+      else setMessage(res.ok ? "Marked as sent. Nothing was posted to Telegram." : data?.error ?? "Could not mark the teams as sent.");
       await loadTeamsDelivery();
     } finally {
       setBusy(false);
@@ -630,6 +653,7 @@ export default function MatchWorkspace({
         )}
       </Dialog>
 
+      {limit && <PlanLimitNotice message={limit.message} plan={limit.plan} />}
       {message && (
         <p role="status" aria-live="polite" className="rounded-tbp border border-border bg-secondary px-4 py-3 text-sm font-medium text-secondary-foreground">
           {message}

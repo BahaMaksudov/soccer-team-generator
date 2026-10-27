@@ -41,6 +41,10 @@ import { testOutbox } from "@/lib/email/transport";
 import { requireOrganizationContextForSlug } from "@/lib/tenantContext";
 import { createOrganizationWorkspace } from "@/lib/workspaces";
 import { createFakeStripe, type FakeStripe } from "./fakeStripe";
+import { renderToStaticMarkup } from "react-dom/server";
+import * as groupsRoute from "@/app/api/admin/o/[organizationSlug]/groups/route";
+import OrganizationLayout from "@/app/admin/o/[organizationSlug]/layout";
+import AddGroupPage from "@/app/admin/o/[organizationSlug]/groups/new/page";
 
 const WHSEC = "whsec_test_m112a_integration_secret";
 /** Syntactically valid, obviously fake live key — the fake adapter never sends it anywhere. */
@@ -418,7 +422,7 @@ describe("M11.2A — subscription lifecycle → entitlements", () => {
     expect(await prisma.entitlementEvent.findMany({ where: { organizationId: "free" }, orderBy: { createdAt: "asc" }, select: { action: true } })).toEqual([{ action: "STRIPE_PRO_STARTED" }, { action: "STRIPE_PRO_ENDED" }]);
     expect(await prisma.player.count({ where: { groupId: "free-g", isActive: true } })).toBe(40); // nothing deleted
     await signIn("owner");
-    expect((await call(playersRoute.POST(json("POST", { firstName: "New", lastName: "P", position: "MIDFIELDER", rating: "GOOD" }), { params: Promise.resolve({ organizationSlug: "free", groupSlug: "free-g" }) }))).body).toMatchObject({ code: "PLAN_LIMIT", error: expect.stringMatching(/Billing page/) });
+    expect((await call(playersRoute.POST(json("POST", { firstName: "New", lastName: "P", position: "MIDFIELDER", rating: "GOOD" }), { params: Promise.resolve({ organizationSlug: "free", groupSlug: "free-g" }) }))).body).toMatchObject({ code: "PLAN_LIMIT", error: expect.stringMatching(/Upgrade to Pro for up to 150 players per organization/) });
   });
 
   it("unpaid → FREE; incomplete never grants PRO; past_due on an invoice event without subscription id is ignored", async () => {
@@ -513,9 +517,9 @@ describe("M11.3 — after the trial ends, only a VERIFIED Stripe subscription re
     await expect(assertTelegram("free")).rejects.toThrow(/Pro trial ended on/);
 
     const { sub } = await subscribe("free", "month", "incomplete");
-    await expect(assertTelegram("free")).rejects.toThrow(/Telegram integration is part of Pro/); // the return from Checkout grants nothing
+    await expect(assertTelegram("free")).rejects.toThrow(/Telegram integration is available with Pro/); // the return from Checkout grants nothing
     await webhook("customer.subscription.created", { id: sub.id });
-    await expect(assertTelegram("free")).rejects.toThrow(/Telegram integration is part of Pro/); // incomplete = not paid
+    await expect(assertTelegram("free")).rejects.toThrow(/Telegram integration is available with Pro/); // incomplete = not paid
 
     stripe.updateSubscription(sub.id, { status: "active" });
     await webhook("customer.subscription.updated", { id: sub.id });
@@ -531,7 +535,7 @@ describe("M11.3 — after the trial ends, only a VERIFIED Stripe subscription re
     stripe.updateSubscription(sub.id, { status: "canceled" });
     await webhook("customer.subscription.deleted", { id: sub.id });
     expect(await plan("free")).toBe("FREE");
-    await expect(assertTelegram("free")).rejects.toThrow(/Telegram integration is part of Pro/);
+    await expect(assertTelegram("free")).rejects.toThrow(/Telegram integration is available with Pro/);
     expect((await runTrialLifecycle(new Date(), { mode: "send" })).emailsSent).toBe(0); // converted once → never a trial email again
   });
 });
@@ -1000,5 +1004,82 @@ describe("M11.2C — webhook and return diagnostics (non-sensitive)", () => {
     } finally {
       info.mockRestore();
     }
+  });
+});
+
+// ============================================================ FIX A — PLAN-LIMIT UPGRADE UX
+describe("Fix A — at a Free limit the OWNER gets an Upgrade link to THEIR Billing page; nobody gets a Checkout", () => {
+  const newGroup = (org: string, name = "Second") => call(groupsRoute.POST(json("POST", { groupName: name, sportKey: "soccer", timezone: "UTC" }), o(org)));
+  /** The real organization layout around the real Create-group page, as the browser receives it. */
+  const createGroupHtml = async (org: string) => renderToStaticMarkup(await OrganizationLayout({ params: Promise.resolve({ organizationSlug: org }), children: await AddGroupPage({ params: Promise.resolve({ organizationSlug: org }) }) }));
+  const nothingBilled = async () => {
+    expect(Object.keys(stripe.calls)).toEqual([]); // no Stripe call at all
+    expect(await prisma.billingCheckoutSession.count()).toBe(0);
+    expect(await prisma.billingSubscription.count()).toBe(0);
+  };
+
+  it("Free OWNER: up-front notice + Upgrade to Pro → /admin/o/free/billing; the refused create says what Pro adds (402 plan + proLimit)", async () => {
+    const html = await createGroupHtml("free");
+    expect(html).toContain("Your Free plan allows 1 group. Upgrade to Pro to manage up to 3 groups.");
+    expect(html).toMatch(/<a [^>]*href="\/admin\/o\/free\/billing"[^>]*>Upgrade to Pro/);
+    expect(html).not.toContain("/admin/o/other/billing");
+    expect(html).not.toContain("Ask your organization owner");
+    expect(html).not.toContain('name="groupName"'); // the form is replaced at the limit
+    for (let i = 0; i < 3; i++) {
+      const r = await newGroup("free", `Again ${i}`);
+      expect(r).toMatchObject({ status: 402, body: { code: "PLAN_LIMIT", metric: "activeGroups", limit: 1, plan: "FREE", proLimit: 3, error: expect.stringContaining("Upgrade to Pro to manage up to 3 groups.") } });
+    }
+    expect(await prisma.group.count({ where: { organizationId: "free" } })).toBe(1); // enforcement unchanged
+    await nothingBilled(); // hitting a limit — even repeatedly — never starts or duplicates a Checkout
+  });
+
+  it("ADMIN of a Free organization: the same message, 'ask your owner', and no Billing link", async () => {
+    await signIn("admin");
+    const html = await createGroupHtml("free");
+    expect(html).toContain("Your Free plan allows 1 group.");
+    expect(html).toContain("Ask your organization owner to upgrade to Pro.");
+    expect(html).not.toContain("/billing");
+    expect((await newGroup("free")).body).toMatchObject({ code: "PLAN_LIMIT", plan: "FREE", proLimit: 3 });
+    await nothingBilled();
+  });
+
+  it("Pro-level plans (complimentary, trial, paid Pro) at their limit: never an upgrade action", async () => {
+    for (const org of ["comp", "trial"]) {
+      for (const n of ["A", "B"]) expect((await newGroup(org, `${org} ${n}`)).status, org).toBe(201);
+      expect(await prisma.group.count({ where: { organizationId: org, isActive: true } }), org).toBe(3);
+      const html = await createGroupHtml(org);
+      expect(html, org).toContain("plan limit has been reached (3 active groups)");
+      expect(html, org).not.toContain("Upgrade to Pro");
+      expect(html, org).not.toContain("/billing");
+      const r = await newGroup(org, `${org} D`);
+      expect(r.body, org).toMatchObject({ code: "PLAN_LIMIT", limit: 3, proLimit: 3, plan: org === "comp" ? "COMP" : "TRIAL" });
+      expect(String(r.body.error), org).not.toMatch(/Upgrade/);
+    }
+    await nothingBilled();
+  });
+
+  it("tenant isolation: one organization's limit and Billing link never reach another organization", async () => {
+    await prisma.player.createMany({ data: Array.from({ length: PLAN_LIMITS.FREE.activePlayers! }, (_, i) => ({ id: `iso${i}`, groupId: "free-g", firstName: `P${i}`, lastName: "T", position: "MIDFIELDER", rating: "GOOD" as const, stamina: 3 })) });
+    const addPlayer = (org: string) => call(playersRoute.POST(json("POST", { firstName: "New", lastName: "P", position: "MIDFIELDER", rating: "GOOD" }), { params: Promise.resolve({ organizationSlug: org, groupSlug: `${org}-g` }) }));
+    expect((await addPlayer("free")).body).toMatchObject({ code: "PLAN_LIMIT", metric: "activePlayers", plan: "FREE", proLimit: 150 });
+    await signIn("other"); // OWNER of a different Free organization with room
+    expect((await addPlayer("other")).status).toBe(200);
+    const otherHtml = await createGroupHtml("other");
+    expect(otherHtml).toMatch(/href="\/admin\/o\/other\/billing"/); // its OWN Billing page
+    expect(otherHtml).not.toContain("/admin/o/free/");
+    // A non-member asking for the Free organization's page gets no plan-limit viewer and no Billing link.
+    const foreign = renderToStaticMarkup(await OrganizationLayout({ params: Promise.resolve({ organizationSlug: "free" }), children: "page" }));
+    expect(foreign).toBe("page");
+    expect((await newGroup("free")).status).not.toBe(402); // refused as a non-member before any plan check
+    await nothingBilled();
+  });
+
+  it("billing off: the Free allowance is still explained, without any upgrade action", async () => {
+    vi.stubEnv("BILLING_ENABLED", "");
+    const html = await createGroupHtml("free");
+    expect(html).toContain("Your Free plan allows 1 group. Pro plans and upgrades are coming soon.");
+    expect(html).not.toContain("Upgrade to Pro");
+    expect(html).not.toContain("Ask your organization owner");
+    await nothingBilled();
   });
 });

@@ -33,7 +33,7 @@ describe("pricing cards come from the enforced catalog", () => {
   it("Free: exactly the requested lines, from PLAN_LIMITS.FREE", () => {
     expect(planFeatures(PLAN_LIMITS.FREE, { upTo: false })).toEqual([
       { text: "1 group", included: true },
-      { text: "Up to 30 players", included: true },
+      { text: "Up to 30 players per organization, across all groups", included: true },
       { text: "4 matches per month", included: true },
       { text: "1 recurring schedule", included: true },
       { text: "2 AI recaps per month", included: true },
@@ -44,7 +44,7 @@ describe("pricing cards come from the enforced catalog", () => {
   it("Pro (monthly and yearly — identical entitlements): exactly the requested lines, from PLAN_LIMITS.PRO", () => {
     expect(planFeatures(PLAN_LIMITS.PRO, { upTo: true })).toEqual([
       { text: "Up to 3 groups", included: true },
-      { text: "Up to 150 players", included: true },
+      { text: "Up to 150 players per organization, across all groups", included: true },
       { text: "Unlimited matches", included: true },
       { text: "Unlimited recurring schedules", included: true },
       { text: "30 AI recaps per month", included: true },

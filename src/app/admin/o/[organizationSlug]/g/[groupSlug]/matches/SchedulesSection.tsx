@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import PlanLimitNotice, { planLimitFrom } from "@/components/billing/PlanLimitNotice";
 import { CalendarClock, Pause, Pencil, Play, Plus, RefreshCw } from "lucide-react";
 import { adminTenantApiPath } from "@/lib/adminTenantApi";
 import { WEEKDAYS } from "@/lib/scheduleTime";
@@ -70,6 +71,7 @@ export default function SchedulesSection({
   const empty: Form = { communityId: communities.length === 1 ? communities[0].id : "", venueId: "", timezone: defaultTimezone, weekday: 1, startTime: "21:00", pollDaysBefore: 1, pollTime: "20:00", cutoffDaysBefore: 0, cutoffTime: "20:00" };
   const [values, setValues] = useState<Form>(empty);
   const [msg, setMsg] = useState<string | null>(null);
+  const [limit, setLimit] = useState<{ message: string; plan: string | null } | null>(null);
   const [busy, setBusy] = useState(false);
   const [feedback, setFeedback] = useState<Record<string, Feedback>>({});
   const [confirmPause, setConfirmPause] = useState<Schedule | null>(null);
@@ -118,9 +120,16 @@ export default function SchedulesSection({
   async function setActive(s: Schedule, isActive: boolean) {
     setConfirmPause(null);
     setBusy(true);
+    setLimit(null);
     try {
       const res = await fetch(url(`/schedules/${s.id}`), { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ isActive }) });
       const data = await res.json().catch(() => ({}));
+      const planLimit = res.ok ? null : planLimitFrom(data);
+      if (planLimit) {
+        setLimit(planLimit);
+        await load();
+        return;
+      }
       setFeedback((f) => ({
         ...f,
         [s.id]: res.ok
@@ -148,9 +157,16 @@ export default function SchedulesSection({
   async function send(path: string, method: string, body: unknown, ok: string) {
     setBusy(true);
     setMsg(null);
+    setLimit(null);
     try {
       const res = await fetch(url(path), { method, headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
       const data = await res.json().catch(() => ({}));
+      const planLimit = res.ok ? null : planLimitFrom(data);
+      if (planLimit) {
+        setLimit(planLimit);
+        await load();
+        return false;
+      }
       setMsg(res.ok ? ok : data?.issues?.fieldErrors ? (Object.values(data.issues.fieldErrors).flat()[0] as string) : data?.error ?? "Something went wrong.");
       await load();
       return res.ok;
@@ -192,6 +208,7 @@ export default function SchedulesSection({
           Automation is paused: your plan includes {planLimit.limit} active recurring schedule{planLimit.limit === 1 ? "" : "s"} and your organization has {planLimit.active}. Choose the schedule to keep active — the others are paused, never deleted, and their matches stay as they are.
         </p>
       )}
+      {limit && <PlanLimitNotice message={limit.message} plan={limit.plan} className="mt-3" />}
       {msg && (
         <p role="status" className="mt-3 rounded-tbp border border-border bg-secondary px-3 py-2 text-sm">
           {msg}

@@ -3,6 +3,8 @@ import { notFound, redirect } from "next/navigation";
 import { hasOrgRole, requireOrganizationContextForSlug, TenantContextError } from "@/lib/tenantContext";
 import { DEFAULT_TIMEZONE, GROUP_CREATOR_ROLES, SUPPORTED_SPORTS } from "@/lib/workspaces";
 import AddGroupForm from "./AddGroupForm";
+import { capacityUsage, organizationPlan, planLimitMessage } from "@/lib/entitlements";
+import PlanLimitNotice from "@/components/billing/PlanLimitNotice";
 
 /**
  * M7 — Add Group to an existing Organization (OWNER/ADMIN). The
@@ -13,7 +15,7 @@ type Params = Promise<{ organizationSlug: string }>;
 
 export default async function AddGroupPage({ params }: { params: Params }) {
   const { organizationSlug } = await params;
-  let organization: { name: string; slug: string };
+  let organization: { id: string; name: string; slug: string };
   try {
     const context = await requireOrganizationContextForSlug({ organizationSlug });
     if (!hasOrgRole(context, [...GROUP_CREATOR_ROLES])) notFound();
@@ -25,6 +27,10 @@ export default async function AddGroupPage({ params }: { params: Params }) {
     }
     throw e;
   }
+
+  // Fix A — say so up front when the group limit is already reached (the server still decides on submit).
+  const { plan, limits } = await organizationPlan(organization.id);
+  const atLimit = limits.activeGroups !== null && (await capacityUsage(organization.id)).activeGroups >= limits.activeGroups;
 
   // UI-5 — redesigned presentation; same OWNER/ADMIN gate and request.
   return (
@@ -41,7 +47,11 @@ export default async function AddGroupPage({ params }: { params: Params }) {
           <h1 className="mt-1 text-2xl font-extrabold">Create group</h1>
           <p className="mt-1 text-sm text-muted-foreground">A group is one recurring game with its own players and sport, e.g. &quot;Tuesday Basketball&quot;.</p>
         </div>
-        <AddGroupForm organizationSlug={organization.slug} sports={SUPPORTED_SPORTS} defaultTimezone={DEFAULT_TIMEZONE} />
+        {atLimit ? (
+          <PlanLimitNotice message={planLimitMessage(plan, "activeGroups")} plan={plan} />
+        ) : (
+          <AddGroupForm organizationSlug={organization.slug} sports={SUPPORTED_SPORTS} defaultTimezone={DEFAULT_TIMEZONE} />
+        )}
       </div>
     </div>
   );

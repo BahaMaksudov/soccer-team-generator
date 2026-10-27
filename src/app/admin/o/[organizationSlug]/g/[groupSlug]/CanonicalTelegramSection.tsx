@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import PlanLimitNotice, { planLimitFrom } from "@/components/billing/PlanLimitNotice";
 import { adminTenantApiPath } from "@/lib/adminTenantApi";
 import { formatMDYYFromISO } from "@/lib/telegramFormat";
 import {
@@ -160,6 +161,7 @@ export default function CanonicalTelegramSection({
   const [question, setQuestion] = useState("");
   const [creating, setCreating] = useState(false);
   const [createMsg, setCreateMsg] = useState<string | null>(null);
+  const [telegramLimit, setTelegramLimit] = useState<{ message: string; plan: string | null } | null>(null);
 
   useEffect(() => {
     if (!selectedChatId && chats.length > 0) {
@@ -194,7 +196,9 @@ export default function CanonicalTelegramSection({
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
-        setCreateMsg(data?.error ?? "Failed to create poll");
+        const planLimit = planLimitFrom(data);
+        setTelegramLimit(planLimit);
+        if (!planLimit) setCreateMsg(data?.error ?? "Failed to create poll");
         return;
       }
       setQuestion("");
@@ -232,7 +236,9 @@ export default function CanonicalTelegramSection({
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
-        setImportMsg(data?.error ?? "Failed to import from Telegram poll");
+        const planLimit = planLimitFrom(data);
+        setTelegramLimit(planLimit);
+        if (!planLimit) setImportMsg(data?.error ?? "Failed to import from Telegram poll");
         return;
       }
 
@@ -466,6 +472,7 @@ export default function CanonicalTelegramSection({
             </button>
           </div>
         )}
+        {telegramLimit && <PlanLimitNotice message={telegramLimit.message} plan={telegramLimit.plan} />}
         {createMsg && <div className="text-sm text-blue-700">{createMsg}</div>}
       </div>
 

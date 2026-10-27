@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import PlanLimitNotice, { planLimitFrom } from "@/components/billing/PlanLimitNotice";
 import {
   aiButtonLabel,
   generateRecapDraft,
@@ -115,6 +116,7 @@ export default function PostGameSection({
   const [recapText, setRecapText] = useState<string>(pg.recap?.content ?? "");
   const [shortlist, setShortlist] = useState<string[]>([]);
   const [aiMessage, setAiMessage] = useState<string | null>(null);
+  const [aiLimit, setAiLimit] = useState<{ message: string; plan: string | null } | null>(null);
   const [generating, setGenerating] = useState(false);
   // Player of the Match: the organizer's in-page method choice (until the server locks one) and pick.
   const [chosenMethod, setChosenMethod] = useState<MvpMethod | null>(null);
@@ -175,6 +177,7 @@ export default function PostGameSection({
           const d = (res.data ?? {}) as { aiUsage?: AiUsage; code?: string; limit?: number | null };
           if (d.aiUsage) setAiUsage(d.aiUsage);
           else if (d.code === "PLAN_LIMIT" && aiUsage) setAiUsage({ ...aiUsage, used: aiUsage.limit ?? aiUsage.used });
+          setAiLimit(planLimitFrom(res.data)); // Fix A — shown with the right next step (owner: Upgrade to Pro)
           return res;
         },
         setDraft: (t) => {
@@ -498,8 +501,9 @@ export default function PostGameSection({
               </div>
             )}
             {!pg.aiConfigured && <p className="text-xs text-muted-foreground">AI recaps are not set up; the standard recap is always available.</p>}
-            {pg.aiConfigured && aiUsage && <p className="text-xs text-muted-foreground">{aiUsageText(aiUsage)}</p>}
-            {aiMessage && <p role="alert" className="text-xs text-destructive">{aiMessage}</p>}
+            {pg.aiConfigured && aiUsage && !aiExhausted && <p className="text-xs text-muted-foreground">{aiUsageText(aiUsage)}</p>}
+            {pg.aiConfigured && aiUsage && aiExhausted && !aiLimit && <PlanLimitNotice message={aiUsageText(aiUsage)} />}
+            {aiLimit ? <PlanLimitNotice message={aiLimit.message} plan={aiLimit.plan} /> : aiMessage && <p role="alert" className="text-xs text-destructive">{aiMessage}</p>}
             <label htmlFor="recap-text" className="sr-only">Recap text</label>
             <textarea id="recap-text" className="w-full rounded-tbp-md border border-input bg-card p-3 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" rows={5} maxLength={1200} value={recapText} onChange={(e) => setRecapText(e.target.value)} placeholder="Recap text" />
             {(recapEditor.dirty || pg.recap?.changesUnpublished) && pg.recap?.published && (

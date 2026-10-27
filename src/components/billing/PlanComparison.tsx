@@ -10,7 +10,7 @@ import { PRO_PRICES_USD } from "@/lib/billing/config";
 const n = (v: number | null, unit: string) => (v === null ? `Unlimited ${unit}` : `${v} ${unit}`);
 const ROWS: Array<{ label: string; free: string | boolean; pro: string | boolean }> = [
   { label: "Active groups", free: String(PLAN_LIMITS.FREE.activeGroups), pro: String(PLAN_LIMITS.PRO.activeGroups) },
-  { label: "Active players", free: String(PLAN_LIMITS.FREE.activePlayers), pro: String(PLAN_LIMITS.PRO.activePlayers) },
+  { label: "Active players (per organization, across all groups)", free: String(PLAN_LIMITS.FREE.activePlayers), pro: String(PLAN_LIMITS.PRO.activePlayers) },
   { label: "New matches per month", free: n(PLAN_LIMITS.FREE.monthlyMatches, "").trim(), pro: "Unlimited" },
   { label: "Recurring schedules", free: n(PLAN_LIMITS.FREE.activeSchedules, "active").trim(), pro: "Unlimited" },
   { label: "AI match recaps per month", free: String(PLAN_LIMITS.FREE.monthlyAiRecaps), pro: String(PLAN_LIMITS.PRO.monthlyAiRecaps) },

@@ -133,7 +133,7 @@ describe("Phase 2 — Free: 4 new matches per UTC calendar month", () => {
     const fifth = await newMatch("free", "2099-01-05");
     expect(fifth).toMatchObject({
       status: 402,
-      body: { code: "PLAN_LIMIT", metric: "monthlyMatches", limit: 4, error: "Your Free plan limit has been reached (4 new matches per month). Pro plans and upgrades are coming soon." },
+      body: { code: "PLAN_LIMIT", metric: "monthlyMatches", limit: 4, plan: "FREE", proLimit: null, error: "You've reached your Free plan limit. Your Free plan allows 4 matches per month. Pro plans and upgrades are coming soon." },
     });
     expect(await prisma.match.count({ where: { groupId: "free-g" } })).toBe(4);
     expect(await used("free")).toBe(4);
@@ -189,7 +189,7 @@ describe("Phase 2 — Free: 4 new matches per UTC calendar month", () => {
     await fill("free", 1, new Date(Date.now() + 1));
     html = renderToStaticMarkup(await MatchesPage({ params: Promise.resolve(slugs("free")) }));
     expect(html).toContain("New matches this month: 4 of 4");
-    expect(html).toContain("Your Free plan limit has been reached (4 new matches per month).");
+    expect(html).toContain("You&#x27;ve reached your Free plan limit. Your Free plan allows 4 matches per month.");
     expect(html).toMatch(/<button[^>]*disabled=""[^>]*>.*?New match/s);
     // Unlimited plans show no allowance; MEMBERs never see it.
     expect(renderToStaticMarkup(await MatchesPage({ params: Promise.resolve(slugs("pro")) }))).not.toContain("New matches this month");

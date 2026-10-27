@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { adminTenantApiPath } from "@/lib/adminTenantApi";
+import PlanLimitNotice, { planLimitFrom } from "@/components/billing/PlanLimitNotice";
 
 type Channel = { ref: number; title: string; connectedAt: string };
 type Bind = { code: string; deepLink: string | null; command: string; expiresAt: string };
@@ -18,6 +19,7 @@ export default function CommunicationChannelsSection({ organizationSlug, groupSl
   const [bind, setBind] = useState<Bind | null>(null);
   const [confirmRef, setConfirmRef] = useState<number | null>(null);
   const [msg, setMsg] = useState<string | null>(null);
+  const [limit, setLimit] = useState<{ message: string; plan: string | null } | null>(null);
   const [busy, setBusy] = useState(false);
 
   async function load() {
@@ -35,6 +37,9 @@ export default function CommunicationChannelsSection({ organizationSlug, groupSl
     try {
       const res = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
       const data = await res.json().catch(() => ({}));
+      const planLimit = res.ok ? null : planLimitFrom(data);
+      setLimit(planLimit); // Fix A — Telegram is a Pro capability: the shared notice offers the next step
+      if (planLimit) return;
       if (!res.ok) setMsg(data?.error ?? "Could not create a connect code.");
       else setBind(data);
     } finally {
@@ -114,6 +119,7 @@ export default function CommunicationChannelsSection({ organizationSlug, groupSl
         <div className="text-gray-600">Share links are coming soon.</div>
       </div>
 
+      {limit && <PlanLimitNotice message={limit.message} plan={limit.plan} />}
       {msg && <div className="text-blue-700">{msg}</div>}
     </div>
   );

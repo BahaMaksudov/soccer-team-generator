@@ -21,7 +21,8 @@ export function planFeatures(l: Limits, opts: { upTo: boolean }): Array<{ text: 
   const upTo = (n: number, one: string, many: string) => (opts.upTo ? `Up to ${plural(n, one, many)}` : plural(n, one, many));
   return [
     { text: l.activeGroups === null ? "Unlimited groups" : upTo(l.activeGroups, "group", "groups"), included: true },
-    { text: l.activePlayers === null ? "Unlimited players" : `Up to ${plural(l.activePlayers, "player", "players")}`, included: true },
+    // Player limits are per organization, across all of its groups (as enforced).
+    { text: l.activePlayers === null ? "Unlimited players" : `Up to ${plural(l.activePlayers, "player", "players")} per organization, across all groups`, included: true },
     { text: l.monthlyMatches === null ? "Unlimited matches" : `${plural(l.monthlyMatches, "match", "matches")} per month`, included: true },
     { text: l.activeSchedules === null ? "Unlimited recurring schedules" : plural(l.activeSchedules, "recurring schedule", "recurring schedules"), included: true },
     { text: l.monthlyAiRecaps === null ? "Unlimited AI recaps" : `${plural(l.monthlyAiRecaps, "AI recap", "AI recaps")} per month`, included: true },

@@ -62,10 +62,10 @@ describe("Telegram 'not in plan' message — understandable, honest about billin
   it("after the trial: when it ended, what still works, nothing deleted, coming soon (billing off)", () => {
     vi.stubEnv("BILLING_ENABLED", "");
     expect(telegramNotInPlanMessage({ plan: "FREE", trialEndsAt: END }, at(DAY), {})).toBe(
-      "Telegram integration is part of Pro. This organization's Pro trial ended on Jan 31, 2027, 10:30 AM UTC, so it is now on the Free plan. Players can still answer through the match link, and existing polls, messages and connected Telegram groups are kept. Pro plans and upgrades are coming soon."
+      "Telegram integration is available with Pro. This organization's Pro trial ended on Jan 31, 2027, 10:30 AM UTC, so it is now on the Free plan. Players can still answer through the match link, and existing polls, messages and connected Telegram groups are kept. Pro plans and upgrades are coming soon."
     );
     expect(telegramNotInPlanMessage({ plan: "FREE", trialEndsAt: null }, END, {})).toBe(
-      "Telegram integration is part of Pro. This organization is on the Free plan; players can answer through the match link. Pro plans and upgrades are coming soon."
+      "Telegram integration is available with Pro. This organization is on the Free plan; players can answer through the match link. Pro plans and upgrades are coming soon."
     );
   });
   it("support contact only when SUPPORT_EMAIL is a valid address", () => {

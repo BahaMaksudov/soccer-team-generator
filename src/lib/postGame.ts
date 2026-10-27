@@ -517,7 +517,7 @@ export async function runPostGameAction(context: TenantContext, matchId: string,
       try {
         credit = await reserveAiCredit({ organizationId: context.organization.id, groupId, matchId: m.id, userId: context.user.id });
       } catch (e) {
-        if (e instanceof EntitlementError) return NextResponse.json({ error: e.message, code: "PLAN_LIMIT", metric: e.metric, limit: e.limit, fallback: deterministicRecap(facts) }, { status: 402 });
+        if (e instanceof EntitlementError) return NextResponse.json({ error: e.message, code: "PLAN_LIMIT", metric: e.metric, limit: e.limit, plan: e.plan, proLimit: e.proLimit, fallback: deterministicRecap(facts) }, { status: 402 });
         throw e;
       }
       let succeeded = false;

@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { timeZoneOptions } from "@/lib/timeZoneOptions";
+import PlanLimitNotice, { planLimitFrom } from "@/components/billing/PlanLimitNotice";
 
 type Sport = { key: string; label: string };
 
@@ -25,6 +26,7 @@ export default function AddGroupForm({
   const [sportKey, setSportKey] = useState(sports[0]?.key ?? "");
   const [timezone, setTimezone] = useState(defaultTimezone);
   const [err, setErr] = useState<string | null>(null);
+  const [limit, setLimit] = useState<{ message: string; plan: string | null } | null>(null);
   const [loading, setLoading] = useState(false);
 
   useEffect(() => {
@@ -41,6 +43,7 @@ export default function AddGroupForm({
     e.preventDefault();
     if (loading) return;
     setErr(null);
+    setLimit(null);
     setLoading(true);
     try {
       const res = await fetch(`/api/admin/o/${encodeURIComponent(organizationSlug)}/groups`, {
@@ -50,7 +53,9 @@ export default function AddGroupForm({
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok || typeof data?.href !== "string") {
-        setErr(res.status === 401 ? "Your session has expired. Please sign in again." : firstError(data));
+        const planLimit = planLimitFrom(data);
+        if (planLimit) setLimit(planLimit);
+        else setErr(res.status === 401 ? "Your session has expired. Please sign in again." : firstError(data));
         setLoading(false);
         return;
       }
@@ -64,6 +69,7 @@ export default function AddGroupForm({
   return (
     <form onSubmit={submit} className="space-y-3">
       {err && <p className="text-sm text-destructive" role="alert">{err}</p>}
+      {limit && <PlanLimitNotice message={limit.message} plan={limit.plan} />}
       <div>
         <label className="mb-1 block text-sm font-semibold" htmlFor="groupName">Group name</label>
         <input id="groupName" className="h-11 w-full rounded-tbp-md border border-input bg-card px-3 text-base focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring md:text-sm" value={groupName}

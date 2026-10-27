@@ -6,6 +6,7 @@ import { adminTenantApiPath } from "@/lib/adminTenantApi";
 import { localKickoff, timeZoneAbbreviation } from "@/lib/deadlineFormat";
 import { canonicalAdminMatchPath } from "@/lib/matchPaths";
 import { Button } from "@/components/ui/button";
+import PlanLimitNotice, { planLimitFrom } from "@/components/billing/PlanLimitNotice";
 
 /**
  * M9-A create-match form (moved from the former CanonicalMatchesSection, same
@@ -23,13 +24,11 @@ const resetLabel = (iso: string) => new Date(iso).toLocaleDateString("en-US", { 
 
 function AllowanceNote({ allowance, id }: { allowance: MatchAllowance; id: string }) {
   if (allowance.limit === null) return null;
+  // Fix A — the shared plan-limit notice (owner: Upgrade to Pro; others: ask the owner).
   return allowance.exhausted ? (
-    <div id={id} role="alert" className="rounded-tbp border border-accent/40 bg-accent/10 px-3 py-2 text-sm">
-      <p className="font-semibold">
-        New matches this month: {allowance.used} of {allowance.limit}
-      </p>
-      <p className="mt-0.5">{allowance.message}</p>
-      <p className="mt-0.5 text-muted-foreground">You can still open, edit and run every existing match. New matches are available again on {resetLabel(allowance.resetsAt)} (UTC).</p>
+    <div id={id} className="space-y-1">
+      <PlanLimitNotice message={`New matches this month: ${allowance.used} of ${allowance.limit}. ${allowance.message ?? ""}`.trim()} />
+      <p className="text-sm text-muted-foreground">You can still open, edit and run every existing match. New matches are available again on {resetLabel(allowance.resetsAt)} (UTC).</p>
     </div>
   ) : (
     <p id={id} className="text-sm text-muted-foreground">
@@ -64,6 +63,7 @@ export default function CreateMatchForm({
   const [form, setForm] = useState({ date: "", startTime: "", locationName: "", communityId: communities.length === 1 ? communities[0].id : "", attendanceDeadline: "" });
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  const [limit, setLimit] = useState<{ message: string; plan: string | null } | null>(null);
   const id = useId();
   const blocked = Boolean(allowance?.exhausted);
 
@@ -85,6 +85,7 @@ export default function CreateMatchForm({
       return;
     }
     setBusy(true);
+    setLimit(null);
     setErr(null);
     try {
       // M9.2 — "New venue": save it first (Organization-level, reusable), then use it.
@@ -116,7 +117,9 @@ export default function CreateMatchForm({
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
-        setErr(data?.issues?.fieldErrors ? (Object.values(data.issues.fieldErrors).flat()[0] as string) : data?.error ?? "Could not create the match.");
+        const planLimit = planLimitFrom(data);
+        if (planLimit) setLimit(planLimit);
+        else setErr(data?.issues?.fieldErrors ? (Object.values(data.issues.fieldErrors).flat()[0] as string) : data?.error ?? "Could not create the match.");
         return;
       }
       window.location.href = canonicalAdminMatchPath(organizationSlug, groupSlug, data.match.id);
@@ -221,6 +224,7 @@ export default function CreateMatchForm({
         </p>
       </div>
       {err && <p role="alert" className="text-sm text-destructive">{err}</p>}
+      {limit && !allowance?.exhausted && <PlanLimitNotice message={limit.message} plan={limit.plan} />}
       {allowance && <AllowanceNote allowance={allowance} id={`${id}-allowance`} />}
       <div className="flex flex-wrap items-center gap-3">
         <Button type="submit" disabled={busy || blocked} aria-busy={busy}>

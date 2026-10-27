@@ -4,6 +4,7 @@ import { useId, useState } from "react";
 import { adminTenantApiPath } from "@/lib/adminTenantApi";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/cn";
+import PlanLimitNotice, { planLimitFrom } from "@/components/billing/PlanLimitNotice";
 import type { GameDayUpdateSettings, GameDayUpdateView } from "@/lib/gameDayUpdateSettings";
 
 /**
@@ -41,6 +42,8 @@ export default function GameDayUpdateSection({ organizationSlug, groupSlug, init
   const [v, setV] = useState<GameDayUpdateSettings>(initial.settings);
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<{ tone: "ok" | "error"; text: string } | null>(null);
+  // Fix A — a 402 PLAN_LIMIT (Telegram is a Pro capability) gets the shared notice; other errors keep msg.
+  const [limit, setLimit] = useState<{ message: string; plan: string | null } | null>(null);
   const available = initial.telegramAvailable;
   const dirty = JSON.stringify(v) !== JSON.stringify(saved);
   // Without Telegram in the plan nothing can be turned on; a stored "on" can still be turned off.
@@ -49,6 +52,7 @@ export default function GameDayUpdateSection({ organizationSlug, groupSlug, init
   async function save() {
     setBusy(true);
     setMsg(null);
+    setLimit(null);
     try {
       const res = await fetch(adminTenantApiPath({ organizationSlug, groupSlug, path: "/settings/game-day-update" }), {
         method: "PUT",
@@ -60,6 +64,8 @@ export default function GameDayUpdateSection({ organizationSlug, groupSlug, init
         setSaved(data.settings);
         setV(data.settings);
         setMsg({ tone: "ok", text: data.settings.enabled ? "Game Day Update settings saved." : "Saved. Game Day Updates are off." });
+      } else if (planLimitFrom(data)) {
+        setLimit(planLimitFrom(data));
       } else {
         setMsg({ tone: "error", text: data?.issues?.fieldErrors ? (Object.values(data.issues.fieldErrors).flat()[0] as string) : data?.error ?? "Could not save the settings." });
       }
@@ -76,11 +82,7 @@ export default function GameDayUpdateSection({ organizationSlug, groupSlug, init
       <p className="mt-1 text-sm text-muted-foreground">
         A reminder posted in the match&apos;s Telegram group, as a reply to its attendance poll, before attendance closes — with kickoff, venue, players confirmed, the time left and (optionally) the weather. It&apos;s sent at most once per match.
       </p>
-      {!available && (
-        <p role="note" className="mt-3 rounded-tbp border border-accent/40 bg-accent/10 px-3 py-2 text-sm">
-          {initial.planMessage}
-        </p>
-      )}
+      {!available && initial.planMessage && <PlanLimitNotice className="mt-3" message={initial.planMessage} />}
 
       <div className="mt-4 space-y-4">
         <div className="flex items-start justify-between gap-3">
@@ -140,6 +142,7 @@ export default function GameDayUpdateSection({ organizationSlug, groupSlug, init
           <Button type="button" onClick={save} disabled={busy || !dirty || (!available && v.enabled)}>
             {busy ? "Saving…" : "Save Game Day Update settings"}
           </Button>
+          {limit && <PlanLimitNotice className="w-full" message={limit.message} plan={limit.plan} />}
           {msg && (
             <p role={msg.tone === "error" ? "alert" : "status"} aria-live="polite" className={cn("text-sm", msg.tone === "error" ? "text-destructive" : "text-muted-foreground")}>
               {msg.text}
