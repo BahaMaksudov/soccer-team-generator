@@ -85,7 +85,7 @@ export default function BillingActions({
                 <label key={i} className={`flex min-h-12 cursor-pointer items-center justify-between gap-2 rounded-tbp-md border px-3 text-sm ${interval === i ? "border-primary bg-primary/5" : "border-input bg-card"}`}>
                   <span>
                     <span className="block font-semibold">{i === "month" ? "Monthly" : "Annual"}</span>
-                    <span className="text-xs text-muted-foreground">{i === "month" ? `${prices.month} per month` : `${prices.year} per year`} + tax</span>
+                    <span className="text-xs text-muted-foreground">{i === "month" ? `${prices.month} per month` : `${prices.year} per year`} + tax where applicable</span>
                   </span>
                   <input type="radio" name="interval" value={i} checked={interval === i} onChange={() => setInterval(i)} className="size-4 accent-[oklch(var(--tbp-primary))]" />
                 </label>
@@ -138,7 +138,7 @@ export default function BillingActions({
             </span>
           </label>
           <Button type="submit" size="lg" disabled={busy || !accepted || !complete}>
-            <CreditCard aria-hidden="true" /> Continue to payment — {interval === "month" ? `${prices.month}/month` : `${prices.year}/year`} + tax
+            <CreditCard aria-hidden="true" /> Continue to payment — {interval === "month" ? `${prices.month}/month` : `${prices.year}/year`} + tax where applicable
           </Button>
         </form>
       )}

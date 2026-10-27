@@ -43,7 +43,7 @@ const CHECKOUT_TTL_MS = 60 * 60_000; // Stripe allows 30 min – 24 h
 /** M11.2C — the recurring-charge disclosure at the decision point (our page and Stripe Checkout). */
 export function chargeNotice(interval: BillingInterval): string {
   const price = interval === "month" ? `${PRO_PRICES_USD.month} per month` : `${PRO_PRICES_USD.year} per year`;
-  return `You'll be charged ${price}, plus applicable sales tax, starting today. Your subscription renews automatically every ${interval === "month" ? "month" : "year"} at the then-current price until you cancel. Cancel any time in Manage billing; Pro stays until the end of the paid period. Payments are non-refundable except as described in our Terms. Any remaining free trial ends when you subscribe.`;
+  return `You'll be charged ${price}, plus any sales tax shown at checkout, starting today. Your subscription renews automatically every ${interval === "month" ? "month" : "year"} at the then-current price until you cancel. Cancel any time in Manage billing; Pro stays until the end of the paid period. Payments are non-refundable except as described in our Terms. Any remaining free trial ends when you subscribe.`;
 }
 export const TERMS_REQUIRED_MESSAGE = "Please confirm you agree to the Terms and the automatically renewing charge.";
 

@@ -118,13 +118,13 @@ export default function TermsPage() {
                 <strong>Pro subscriptions:</strong> Pro is a subscription for one organization. Only that organization&apos;s owner can subscribe or manage its billing, and Pro on one organization does not apply to any other organization.
               </li>
               <li>
-                <strong>Price:</strong> Pro costs {PRO_PRICES_USD.month} per month or {PRO_PRICES_USD.year} per year, in US dollars, billed in advance for the billing period you choose, plus applicable sales tax.
+                <strong>Price:</strong> Pro costs {PRO_PRICES_USD.month} per month or {PRO_PRICES_USD.year} per year, in US dollars, billed in advance for the billing period you choose, plus sales tax where we collect it.
               </li>
               <li>
                 <strong>United States only:</strong> paid subscriptions are currently available only with a billing address in the United States.
               </li>
               <li>
-                <strong>Automatic renewal:</strong> your subscription renews automatically at the end of each monthly or annual billing period, for the same period, and your payment method on file is charged the price in effect at that time, plus applicable sales tax, until you cancel. Changing between monthly and annual billing is not currently offered.
+                <strong>Automatic renewal:</strong> your subscription renews automatically at the end of each monthly or annual billing period, for the same period, and your payment method on file is charged the price in effect at that time, plus sales tax where we collect it, until you cancel. Changing between monthly and annual billing is not currently offered.
               </li>
               <li>
                 <strong>Cancelling:</strong> you may cancel at any time from your organization&apos;s Billing page (&quot;Manage billing&quot;). Cancellation takes effect at the end of the current paid billing period. Pro stays available until then and you won&apos;t be charged again. When the period ends, the organization moves to the Free plan; your data isn&apos;t deleted, but Free limits apply. You can resume the subscription before the period ends.
@@ -142,7 +142,7 @@ export default function TermsPage() {
                 <strong>Price changes:</strong> we may change Pro prices. We will email the organization&apos;s owner at least 30 days before a price increase applies to your subscription (or earlier where the law requires). The new price applies from your next renewal after that notice, and you can cancel before then.
               </li>
               <li>
-                <strong>Sales tax:</strong> prices do not include sales tax. Where we are required to collect it, sales tax is calculated by our payment processor from your billing address and added at checkout and on each renewal.
+                <strong>Sales tax:</strong> prices do not include sales tax. Our payment processor, Stripe, calculates sales tax from your billing address and adds it only in places where we have set up tax collection; elsewhere no sales tax is added, so the tax may be $0. Any tax is shown at checkout and on each invoice before you pay.
               </li>
               <li>
                 <strong>Payments:</strong> payments are processed by Stripe. We do not receive or store your full card number. Stripe may email you receipts.

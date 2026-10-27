@@ -2,19 +2,20 @@ import type { BillingConfig } from "@/lib/billing/config";
 import type { BillingStripe } from "@/lib/billing/stripe";
 
 /**
- * M11.2C — Stripe Tax readiness, verified before every Checkout (cached
- * briefly). Checkout always uses automatic tax; it is created only when
- *   - Stripe Tax is ACTIVE on the account (head office set), and
- *   - an ACTIVE US sales-tax registration exists for the business's home state
- *     (TAX_HOME_STATE — Massachusetts), and
+ * M11.2C / M11.2G — Stripe Tax readiness, verified before every Checkout
+ * (cached briefly). Every subscription Checkout uses automatic tax; it is
+ * created only when
+ *   - Stripe Tax is ACTIVE on the account (head office set) — Stripe needs this
+ *     for automatic tax, so we fail early with a clear log line, and
  *   - the default tax behavior makes our USD prices tax-EXCLUSIVE (tax added
  *     on top), unless each Price sets "exclusive" itself (checked in prices.ts).
- * So Checkout never silently collects zero tax because Stripe Tax or the home
- * registration is missing: it fails closed instead (503, operator log line).
- * Registrations in other states are the owner's to add when nexus requires;
- * Stripe Tax then collects there automatically.
+ * Any lookup failure fails closed (503, operator log line).
+ * Tax collection LOCATIONS (registrations) are the owner's Stripe Tax
+ * configuration, not an application requirement: Stripe adds tax only where a
+ * location is configured and calculates $0 elsewhere; adding a location later
+ * applies automatically (renewals keep automatic tax). The app never creates,
+ * simulates or assumes a registration.
  */
-export const TAX_HOME_STATE = "MA";
 const CACHE_MS = 10 * 60_000;
 let cache: { key: string; at: number; defaultTaxBehavior: string | null } | null = null;
 
@@ -26,8 +27,6 @@ export async function verifyTaxReadiness(config: Extract<BillingConfig, { enable
   try {
     const settings = await stripe.retrieveTaxSettings();
     if (settings.status !== "active") return { ok: false, problem: `Stripe Tax is not active (status ${settings.status})` };
-    const registrations = await stripe.listActiveTaxRegistrations();
-    if (!registrations.some((r) => r.country === "US" && r.state === TAX_HOME_STATE)) return { ok: false, problem: `no active Stripe Tax registration for US-${TAX_HOME_STATE}` };
     cache = { key, at: now, defaultTaxBehavior: settings.defaultTaxBehavior };
     return { ok: true, defaultTaxBehavior: settings.defaultTaxBehavior };
   } catch (e) {

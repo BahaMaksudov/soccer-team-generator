@@ -819,7 +819,7 @@ describe("M11.2C — Terms agreement, US-only address and tax readiness before C
     expect(JSON.stringify(op)).not.toMatch(/Main St|Boston|02108/); // no address in our database
   });
 
-  it("Stripe Tax not ready → no Checkout (never a silent zero-tax charge): inactive, no home-state registration, lookup outage, inclusive / unresolved tax behavior", async () => {
+  it("Stripe Tax not ready → no Checkout: inactive, lookup outage, inclusive / unresolved tax behavior", async () => {
     const refused = async (label: string, setup: () => void) => {
       stripe = createFakeStripe();
       setBillingStripeForTests(stripe.api);
@@ -832,8 +832,6 @@ describe("M11.2C — Terms agreement, US-only address and tax readiness before C
       expect(stripe.calls.createCheckoutSession ?? 0, label).toBe(0);
     };
     await refused("pending", () => (stripe.tax.settings = { status: "pending", defaultTaxBehavior: "exclusive" }));
-    await refused("no registrations", () => (stripe.tax.registrations = []));
-    await refused("other state only", () => (stripe.tax.registrations = [{ country: "US", state: "NY" }]));
     await refused("outage", () => (stripe.failNext.retrieveTaxSettings = "outage"));
     await refused("inclusive price", () => stripe.prices.set(PRICES.month, { tax_behavior: "inclusive" }));
     await refused("unspecified + inclusive default", () => {
@@ -849,6 +847,50 @@ describe("M11.2C — Terms agreement, US-only address and tax readiness before C
     stripe.prices.set(PRICES.month, { tax_behavior: "unspecified" });
     stripe.tax.settings = { status: "active", defaultTaxBehavior: "inferred_by_currency" };
     expect((await checkout("free")).status).toBe(200);
+  });
+
+  it("M11.2G: tax collection locations are not an app requirement — none, or another state only, both proceed with automatic tax; no registration lookup", async () => {
+    for (const live of [false, true]) {
+      for (const [label, registrations] of [
+        ["no collection locations", []],
+        ["another state only", [{ country: "US", state: "NY" }]],
+      ] as const) {
+        if (live) goLive(); // a fresh live fake each case
+        else {
+          stripe = createFakeStripe();
+          setBillingStripeForTests(stripe.api);
+          resetTaxCheckCacheForTests();
+          resetPriceCheckCacheForTests();
+        }
+        await prisma.billingCheckoutSession.deleteMany({});
+        stripe.tax.registrations = [...registrations];
+        const r = await checkout("free");
+        expect(r.status, `${label} live=${live} ${JSON.stringify(r.body)}`).toBe(200);
+        const s = [...stripe.sessions.values()][0];
+        expect(s.params.automatic_tax, label).toEqual({ enabled: true });
+        expect(s.params.customer_update, label).toEqual({ address: "never" });
+        expect(Object.keys(stripe.calls).some((k) => /regist/i.test(k)), label).toBe(false); // never looked up
+        expect(stripe.calls.retrieveTaxSettings, label).toBe(1); // Stripe Tax must still be active
+      }
+    }
+  });
+
+  it("every subscription Checkout (monthly and annual, test and live) uses automatic tax", async () => {
+    for (const live of [false, true]) {
+      if (live) goLive();
+      await prisma.billingCheckoutSession.deleteMany({});
+      for (const [org, interval] of [["free", "month"], ["trial", "year"]] as const) {
+        expect((await checkout(org, { interval })).status, `${org} ${interval} live=${live}`).toBe(200);
+      }
+      const sessions = [...stripe.sessions.values()];
+      expect(sessions).toHaveLength(2);
+      for (const s of sessions) {
+        expect(s.params.automatic_tax).toEqual({ enabled: true });
+        expect(s.params).not.toHaveProperty("subscription_data.default_tax_rates");
+        expect(s.params.line_items).toEqual([{ price: s.price, quantity: 1 }]);
+      }
+      expect(sessions.map((s) => s.price).sort()).toEqual(live ? [LIVE_PRICES.year, LIVE_PRICES.month].sort() : [PRICES.year, PRICES.month].sort());
+    }
   });
 
   it("an address Stripe Tax can't place → 400 with a clear message; the operation is closed; no session", async () => {
@@ -879,7 +921,7 @@ describe("M11.2C — Terms agreement, US-only address and tax readiness before C
     expect(r.status, JSON.stringify(r.body)).toBe(200);
     expect([...stripe.sessions.values()][0].params).toMatchObject({ automatic_tax: { enabled: true }, customer_update: { address: "never" } });
     goLive();
-    stripe.tax.registrations = [];
+    stripe.tax.settings = { status: "pending", defaultTaxBehavior: "exclusive" }; // Stripe Tax not active in Live
     expect((await checkout("other")).status).toBe(404); // not an owner of "other"
     await prisma.organizationMembership.create({ data: { userId: "u-owner", organizationId: "other", role: "OWNER" } });
     expect(await checkout("other")).toMatchObject({ status: 503, body: { code: "BILLING_UNAVAILABLE" } });

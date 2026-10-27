@@ -1,5 +1,5 @@
 import type Stripe from "stripe";
-import { verifyStripeSignature, type BillingAddress, type BillingStripe, type StripeCheckoutSessionLite, type StripePriceLite, type StripeSubscriptionLite, type StripeTaxRegistrationLite, type StripeTaxSettingsLite } from "@/lib/billing/stripe";
+import { verifyStripeSignature, type BillingAddress, type BillingStripe, type StripeCheckoutSessionLite, type StripePriceLite, type StripeSubscriptionLite, type StripeTaxSettingsLite } from "@/lib/billing/stripe";
 
 /**
  * M11.2A — in-memory Stripe for tests (no network). Mimics the parts the app
@@ -16,10 +16,13 @@ export function createFakeStripe(options: { livemode?: boolean } = {}) {
   const id = (prefix: string) => `${prefix}_fake${++seq}`;
   const idem = new Map<string, unknown>();
   const customers = new Map<string, { id: string; name: string; metadata: Record<string, string>; address?: BillingAddress }>();
-  /** M11.2C — Stripe Tax: active with a Massachusetts registration unless a test changes it. */
-  const tax: { settings: StripeTaxSettingsLite; registrations: StripeTaxRegistrationLite[]; invalidPostalCodes: Set<string> } = {
+  /**
+   * Stripe Tax: active unless a test changes it. `registrations` (tax collection locations) is
+   * informational only — the app must never read or require it (M11.2G); tests vary it to prove that.
+   */
+  const tax: { settings: StripeTaxSettingsLite; registrations: Array<{ country: string; state: string | null }>; invalidPostalCodes: Set<string> } = {
     settings: { status: "active", defaultTaxBehavior: "exclusive" },
-    registrations: [{ country: "US", state: "MA" }],
+    registrations: [],
     invalidPostalCodes: new Set(),
   };
   const sessions = new Map<string, StripeCheckoutSessionLite & { price: string; subscriptionMetadata: Record<string, string>; params: Stripe.Checkout.SessionCreateParams }>();
@@ -65,10 +68,6 @@ export function createFakeStripe(options: { livemode?: boolean } = {}) {
       count("retrieveTaxSettings");
       if (failure("retrieveTaxSettings") === "outage") throw stripeError("StripeConnectionError", "connection timeout");
       return { ...tax.settings };
-    },
-    async listActiveTaxRegistrations() {
-      count("listActiveTaxRegistrations");
-      return tax.registrations.map((r) => ({ ...r }));
     },
     async createCustomer(params, key) {
       count("createCustomer");

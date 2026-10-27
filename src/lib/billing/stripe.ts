@@ -53,7 +53,6 @@ export type StripeCustomerLite = { id: string; livemode: boolean; deleted: boole
 export type BillingAddress = { line1: string; line2: string | null; city: string; state: string; postal_code: string; country: "US" };
 /** M11.2C — Stripe Tax readiness, as read from the account (never written by the app). */
 export type StripeTaxSettingsLite = { status: string; defaultTaxBehavior: string | null };
-export type StripeTaxRegistrationLite = { country: string; state: string | null };
 
 export interface BillingStripe {
   retrievePrice(id: string): Promise<StripePriceLite>;
@@ -63,7 +62,6 @@ export interface BillingStripe {
   /** M11.2C — set the Customer's billing address; Stripe Tax validates it immediately (error code customer_tax_location_invalid). */
   updateCustomerAddress(id: string, address: BillingAddress): Promise<StripeCustomerLite>;
   retrieveTaxSettings(): Promise<StripeTaxSettingsLite>;
-  listActiveTaxRegistrations(): Promise<StripeTaxRegistrationLite[]>;
   createCheckoutSession(params: Stripe.Checkout.SessionCreateParams, idempotencyKey: string): Promise<StripeCheckoutSessionLite>;
   retrieveCheckoutSession(id: string): Promise<StripeCheckoutSessionLite>;
   expireCheckoutSession(id: string): Promise<StripeCheckoutSessionLite>;
@@ -151,11 +149,6 @@ function realStripe(secretKey: string): BillingStripe {
     async retrieveTaxSettings() {
       const s = await stripe.tax.settings.retrieve();
       return { status: s.status, defaultTaxBehavior: s.defaults?.tax_behavior ?? null };
-    },
-    async listActiveTaxRegistrations() {
-      const out: StripeTaxRegistrationLite[] = [];
-      for await (const r of stripe.tax.registrations.list({ status: "active", limit: 100 })) out.push({ country: r.country, state: r.country_options?.us?.state ?? null });
-      return out;
     },
     async createCheckoutSession(params, idempotencyKey) {
       return toSessionLite(await stripe.checkout.sessions.create(params, { idempotencyKey }));

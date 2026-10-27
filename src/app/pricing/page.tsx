@@ -51,7 +51,7 @@ export default function PricingPage() {
         <PlanComparison planned={!live} />
         <p className="text-center text-xs text-muted-foreground">
           {live
-            ? "Prices in USD, per organization, plus applicable sales tax. Pro renews automatically until canceled and can be canceled any time; it stays active until the end of the paid period. Payments are non-refundable except as described in our Terms. Paid plans are available with a US billing address. Reaching a Free limit never removes data."
+            ? "Prices in USD, per organization, plus sales tax where we collect it (shown at checkout). Pro renews automatically until canceled and can be canceled any time; it stays active until the end of the paid period. Payments are non-refundable except as described in our Terms. Paid plans are available with a US billing address. Reaching a Free limit never removes data."
             : BILLING_NOT_ACTIVE_NOTE}
         </p>
         <p className="text-center text-xs text-muted-foreground">

@@ -231,9 +231,8 @@ Each step marked **[APPROVAL]** changes Preview or Production.
   - Checkout always uses `automatic_tax`.
   - It is **refused** (503, log `[billing] checkout … refused: …`) unless all of these hold:
     - Stripe Tax is **active**;
-    - an **active US-MA registration** exists;
     - both Prices are tax-**exclusive** (or unspecified with an exclusive / USD-inferred default).
-  - So Checkout never silently charges zero tax because setup is missing.
+  - **M11.2G:** tax collection locations (registrations) are **not** an app requirement. Stripe adds tax only where a location is configured and calculates **$0** elsewhere. Adding a location later applies automatically, including to renewals. The customer-facing wording says tax "where we collect it", which may be $0.
   - An address Stripe Tax can't place → 400 with a clear message.
 - **Recurring-charge disclosure:**
   - shown next to the button and on Stripe Checkout: price + tax, automatic renewal, cancel any time with access until period end, the refund policy, and that the trial ends;
@@ -252,16 +251,15 @@ Each step marked **[APPROVAL]** changes Preview or Production.
 **Dashboard (owner, Live and Sandbox), required before activation:**
 1. **Stripe Tax:**
    - Settings → Tax: head office address (Massachusetts), status **active**;
-   - **Registrations → add Massachusetts** once the MA sales-tax registration is complete;
-   - default tax behavior **exclusive** (or set each Price to "exclusive").
-   - Add other states only when nexus requires it.
-2. **Restricted key: add read access to Stripe Tax *settings* and *registrations*** (in addition to the five permissions in §2.5). Without them the tax check fails and Checkout stays off.
+   - default tax behavior **exclusive** (or set each Price to "exclusive");
+   - collection locations (registrations) are the owner's decision: none are required by the app (M11.2G), and where none is set Stripe adds $0 tax.
+2. **Restricted key: add *Tax settings: Read*** (in addition to the five permissions in §2.5). Without it the tax check fails and Checkout stays off. *Tax registrations* access is no longer used (M11.2G).
 3. **Customer Portal (Live):**
    - turn **off** plan switching;
    - cancellation **at end of billing period only**;
    - recommended: turn off customer **address** editing, so the billing address stays the validated US one.
 4. **Optional:** a Radar rule blocking non-US cards. It isn't needed for tax; the address check is what enforces US-only.
 5. **Annual renewal reminder:** Settings → Billing → Subscriptions and emails → upcoming-renewal emails, if available on the account. The Terms deliberately **do not promise** a reminder until it's configured and verified.
-6. **Sandbox (Preview):** Stripe Tax active, a test MA registration and tax-exclusive test Prices, or Preview Checkout is refused by the same rule.
+6. **Sandbox (Preview):** Stripe Tax active and tax-exclusive test Prices, or Preview Checkout is refused by the same rule. Rehearse with the same collection locations as Live (none) to see the $0-tax outcome.
 
 **Migration** `20270110120000_m112c_launch_safeguards`: one nullable column (`BillingCheckoutSession.requestHash`) and two triggers. It's additive, with no backfill; the rollback is in the file.

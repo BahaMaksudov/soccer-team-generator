@@ -73,20 +73,25 @@ describe("tax-exclusive Prices", () => {
 describe("recurring-charge disclosure at the decision point", () => {
   it("states price, tax, automatic renewal, cancellation, refund policy and trial effect", () => {
     expect(chargeNotice("month")).toBe(
-      "You'll be charged $9.99 per month, plus applicable sales tax, starting today. Your subscription renews automatically every month at the then-current price until you cancel. Cancel any time in Manage billing; Pro stays until the end of the paid period. Payments are non-refundable except as described in our Terms. Any remaining free trial ends when you subscribe."
+      "You'll be charged $9.99 per month, plus any sales tax shown at checkout, starting today. Your subscription renews automatically every month at the then-current price until you cancel. Cancel any time in Manage billing; Pro stays until the end of the paid period. Payments are non-refundable except as described in our Terms. Any remaining free trial ends when you subscribe."
     );
-    expect(chargeNotice("year")).toContain("$99 per year, plus applicable sales tax");
+    expect(chargeNotice("year")).toContain("$99 per year, plus any sales tax shown at checkout");
     expect(chargeNotice("year")).toContain("renews automatically every year");
     expect(chargeNotice("month").length).toBeLessThan(1200); // Stripe custom_text limit
   });
-  it("the Billing page requires a Terms checkbox and US address before Checkout; prices show '+ tax'", () => {
+  it("the Billing page requires a Terms checkbox and US address before Checkout; prices show '+ tax where applicable'", () => {
     const ui = read("src/app/admin/o/[organizationSlug]/billing/BillingActions.tsx");
     expect(ui).toContain("disabled={busy || !accepted || !complete}");
     expect(ui).toContain("authorize this automatically renewing charge until I cancel");
     expect(ui).toContain("acceptTerms: accepted");
     expect(ui).toContain('country: "US"');
-    expect(ui).toContain("+ tax");
-    expect(read("src/app/pricing/page.tsx")).toContain("plus applicable sales tax");
+    expect(ui).toContain("+ tax where applicable");
+    expect(read("src/app/pricing/page.tsx")).toContain("plus sales tax where we collect it (shown at checkout)");
+    expect(read("src/app/admin/o/[organizationSlug]/billing/page.tsx")).toContain("plus sales tax where we collect it (shown at checkout)");
+    // M11.2G — tax may be $0 where collection isn't set up: no customer-facing text promises tax is always added.
+    for (const f of ["src/app/pricing/page.tsx", "src/app/admin/o/[organizationSlug]/billing/page.tsx", "src/app/admin/o/[organizationSlug]/billing/BillingActions.tsx", "src/lib/billing/checkout.ts", "src/app/terms/page.tsx"]) {
+      expect(read(f), f).not.toMatch(/plus applicable sales tax|in every state|all states/i);
+    }
   });
 });
 
@@ -102,7 +107,8 @@ describe("published billing terms (rendered once the gate is lifted)", () => {
     expect(billingTermsPublished()).toBe(true); // mocked
   });
   it("Terms §8: prices, US-only, renewal, cancellation at period end, no plan switching", () => {
-    expect(terms).toContain("Pro costs $9.99 per month or $99 per year, in US dollars, billed in advance for the billing period you choose, plus applicable sales tax.");
+    expect(terms).toContain("Pro costs $9.99 per month or $99 per year, in US dollars, billed in advance for the billing period you choose, plus sales tax where we collect it.");
+    expect(terms).toContain("charged the price in effect at that time, plus sales tax where we collect it, until you cancel");
     expect(terms).toContain("paid subscriptions are currently available only with a billing address in the United States");
     expect(terms).toContain("your subscription renews automatically at the end of each monthly or annual billing period");
     expect(terms).toContain("Cancellation takes effect at the end of the current paid billing period. Pro stays available until then and you won't be charged again.");
@@ -122,9 +128,10 @@ describe("published billing terms (rendered once the gate is lifted)", () => {
     ])
       expect(terms, s).toContain(s);
   });
-  it("Terms §8: 30-day price notice, sales tax from the billing address, discontinuation refund; no unconfigured reminder promise", () => {
+  it("Terms §8: 30-day price notice, sales tax only where collection is set up (may be $0, shown before paying), discontinuation refund; no unconfigured reminder promise", () => {
     expect(terms).toContain("at least 30 days before a price increase applies to your subscription (or earlier where the law requires)");
-    expect(terms).toContain("sales tax is calculated by our payment processor from your billing address and added at checkout and on each renewal");
+    expect(terms).toContain("prices do not include sales tax. Our payment processor, Stripe, calculates sales tax from your billing address and adds it only in places where we have set up tax collection; elsewhere no sales tax is added, so the tax may be $0. Any tax is shown at checkout and on each invoice before you pay.");
+    expect(terms).not.toMatch(/Where we are required to collect it|added at checkout and on each renewal/);
     expect(terms).toContain("refund the unused part of any prepaid billing period");
     expect(terms).not.toMatch(/renewal reminder|remind you before/i);
   });

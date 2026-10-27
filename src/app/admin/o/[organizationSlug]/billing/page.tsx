@@ -111,7 +111,7 @@ export default async function BillingPage({ params, searchParams }: { params: Pa
         <PlanComparison planned={!view.billingEnabled} />
         <p className="text-xs text-muted-foreground">
           {view.billingEnabled
-            ? "Prices in USD, plus applicable sales tax. Pro renews automatically until canceled; cancel any time in Manage billing (Pro stays until the end of the paid period). Payments are non-refundable except as described in our Terms. Available with a US billing address. Reaching a limit never removes data."
+            ? "Prices in USD, plus sales tax where we collect it (shown at checkout). Pro renews automatically until canceled; cancel any time in Manage billing (Pro stays until the end of the paid period). Payments are non-refundable except as described in our Terms. Available with a US billing address. Reaching a limit never removes data."
             : BILLING_NOT_ACTIVE_NOTE}
         </p>
       </section>
