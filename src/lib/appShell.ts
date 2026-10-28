@@ -16,13 +16,23 @@
 export type ShellRole = "OWNER" | "ADMIN" | "MEMBER";
 
 export type ShellGroup = { slug: string; name: string; sportLabel: string };
-export type ShellOrganization = { slug: string; name: string; role: ShellRole; groups: ShellGroup[] };
+/**
+ * The Organization's EFFECTIVE plan as the server computed it (entitlements.effectivePlan:
+ * a FREE Organization with a running trial is TRIAL), the trial days left (entitlements.trialDaysLeft)
+ * and, for paid Pro, the interval of its entitling Stripe subscription (null when unknown).
+ */
+export type ShellPlanKind = "FREE" | "TRIAL" | "PRO" | "COMP" | "LEGACY";
+export type ShellPlan = { kind: ShellPlanKind; trialDaysLeft: number | null; interval: "month" | "year" | null };
+/** `plan` is loaded for OWNER/ADMIN only (the roles that may see Billing & Plan); MEMBERs never receive it. */
+export type ShellOrganization = { slug: string; name: string; role: ShellRole; groups: ShellGroup[]; plan?: ShellPlan | null };
 
 export type ShellData = {
   user: { name: string | null; email: string };
   organizations: ShellOrganization[];
   /** The User has at least one claimed Player profile (Player.userId). */
   hasPlayerProfile: boolean;
+  /** Paid billing is switched on (billingConfig().enabled) — upgrade actions are shown only then. */
+  billingEnabled?: boolean;
 };
 
 export type ShellContext = { organization: ShellOrganization; group: ShellGroup | null } | null;
@@ -64,6 +74,35 @@ export type NavItem = {
   /** Shown in the mobile bottom bar (the rest go under "More"). */
   mobilePrimary: boolean;
 };
+
+/** The sidebar plan indicator: "Free Plan", "Pro Trial · 12 days left", "Pro · Monthly", "Early Access"… */
+export function planIndicatorLabel(plan: ShellPlan): string {
+  switch (plan.kind) {
+    case "FREE":
+      return "Free Plan";
+    case "TRIAL":
+      return plan.trialDaysLeft === null ? "Pro Trial" : `Pro Trial · ${plan.trialDaysLeft} day${plan.trialDaysLeft === 1 ? "" : "s"} left`;
+    case "PRO":
+      return plan.interval === "month" ? "Pro · Monthly" : plan.interval === "year" ? "Pro · Yearly" : "Pro Plan";
+    case "COMP":
+      return "Complimentary Pro";
+    case "LEGACY":
+      return "Early Access";
+  }
+}
+
+/**
+ * The OWNER's next billing step beside the indicator — a link to this Organization's Billing page
+ * (navigation only; Checkout starts only there). Free → "Upgrade to Pro"; trial → "Choose Pro Plan".
+ * Paid Pro, complimentary Pro and Early Access (not eligible for Checkout) get none; neither do
+ * ADMINs / MEMBERs, nor anyone while billing is off.
+ */
+export function planAction(org: ShellOrganization, billingEnabled: boolean | undefined): { label: string; href: string } | null {
+  if (!billingEnabled || org.role !== "OWNER" || !org.plan) return null;
+  if (org.plan.kind === "FREE") return { label: "Upgrade to Pro", href: billingHrefOf(org.slug) };
+  if (org.plan.kind === "TRIAL") return { label: "Choose Pro Plan", href: billingHrefOf(org.slug) };
+  return null;
+}
 
 /** Where Sign Out lands: a relative, same-origin path (never an absolute URL). */
 export const SIGN_OUT_DESTINATION = "/login";
@@ -141,7 +180,8 @@ export function accountSettingsHref(ctx: ShellContext): string {
  *                                  Members & Invitations (OWNER); Billing & Plan (OWNER/ADMIN);
  *                                  All Organizations
  *   C  Group selected              Overview, Players, Matches (any member); Group Settings
- *                                  (OWNER/ADMIN); All Groups — no Organization management links
+ *                                  (OWNER/ADMIN); Billing & Plan of THIS Organization (OWNER/ADMIN —
+ *                                  reachable from inside any group); All Groups
  *   always                         My Games (claimed Player), Account Settings (+ Sign Out in the shell)
  * Switching Groups happens only in the group switcher, within the selected Organization.
  */
@@ -165,6 +205,7 @@ export function buildShellNav(params: { data: ShellData; pathname: string; hash?
         { key: "matches", label: "Matches", href: `${base}/matches`, active: under(`${base}/matches`), section: "group", mobilePrimary: true }
       );
       if (manager) items.push({ key: "group-settings", label: "Group Settings", href: settings, active: under(settings), section: "group", mobilePrimary: false });
+      if (manager) items.push({ key: "billing", label: "Billing & Plan", href: billingHrefOf(org.slug), active: false, section: "organization", mobilePrimary: false });
       items.push({ key: "all-groups", label: "All Groups", href: groups, active: false, section: "navigate", mobilePrimary: false });
     } else {
       // State B — the selected Organization.

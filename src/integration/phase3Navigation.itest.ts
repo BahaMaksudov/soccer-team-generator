@@ -206,6 +206,9 @@ describe("Phase 3 — sidebar context from real memberships, direct URLs, and re
     const c = nav("/admin/o/alpha/g/tue");
     expect(c.find((i) => i.key === "all-groups")?.href).toBe("/admin/o/alpha/groups");
     expect(c.every((i) => !/\/admin\/o\/(beta|gamma)/.test(i.href))).toBe(true);
+    // Billing & Plan from inside a group: THIS organization's Billing page (OWNER/ADMIN only).
+    expect(c.find((i) => i.key === "billing")?.href).toBe("/admin/o/alpha/billing");
+    expect(nav("/admin/o/beta/g/wed").find((i) => i.key === "billing")?.href).toBe("/admin/o/beta/billing"); // ADMIN of beta
     // State B in beta (ADMIN): Billing & Plan, no Members (OWNER only).
     expect(nav("/admin/o/beta").map((i) => i.key)).toEqual(["groups", "organization", "billing", "organizations", "account"]);
     // A slug the User can't access is no context at all (State A).
@@ -245,7 +248,7 @@ describe("Phase 3.1 — Account Settings keeps the sidebar context (real members
 
   it("from a group / an organization / My Organizations; only Account Settings is active", async () => {
     const c = await at("multi", "/account/security?o=alpha&g=tue");
-    expect(c.map((i) => i.key)).toEqual(["overview", "players", "matches", "group-settings", "all-groups", "account"]);
+    expect(c.map((i) => i.key)).toEqual(["overview", "players", "matches", "group-settings", "billing", "all-groups", "account"]);
     expect(c.find((i) => i.key === "matches")?.href).toBe("/admin/o/alpha/g/tue/matches");
     expect(c.filter((i) => i.active).map((i) => i.key)).toEqual(["account"]);
     expect((await at("multi", "/account/security?o=beta")).map((i) => i.key)).toEqual(["groups", "organization", "billing", "organizations", "account"]); // ADMIN of beta

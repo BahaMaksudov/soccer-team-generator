@@ -32,6 +32,8 @@ import {
   NAV_SECTION_LABELS,
   NAV_SECTION_ORDER,
   organizationHref,
+  planAction,
+  planIndicatorLabel,
   ROLE_LABELS,
   shellContextFromLocation,
   SIGN_OUT_DESTINATION,
@@ -40,6 +42,7 @@ import {
   type NavKey,
   type NavSection,
   type ShellData,
+  type ShellOrganization,
 } from "@/lib/appShell";
 import { cn } from "@/lib/cn";
 
@@ -147,6 +150,39 @@ function useDisclosure() {
   const pathname = usePathname();
   useEffect(() => setOpen(false), [pathname]);
   return { open, setOpen, close, triggerRef, panelRef };
+}
+
+/**
+ * The selected Organization's plan (server-computed, OWNER/ADMIN only) and, for an OWNER on
+ * Free or the trial while billing is on, a link to THIS Organization's Billing page.
+ */
+export function PlanIndicator({ organization, billingEnabled, onDark = true, className }: { organization: ShellOrganization; billingEnabled?: boolean; onDark?: boolean; className?: string }) {
+  if (!organization.plan) return null;
+  const action = planAction(organization, billingEnabled);
+  return (
+    <div className={cn("flex flex-wrap items-center gap-x-2 gap-y-1", className)}>
+      <span
+        className={cn(
+          "inline-flex items-center rounded-full border px-2 py-0.5 text-[11px] font-semibold",
+          onDark ? "border-pitch-foreground/20 bg-pitch-foreground/10 text-pitch-foreground" : "border-primary/20 bg-primary/10 text-primary"
+        )}
+      >
+        <span className="sr-only">Plan: </span>
+        {planIndicatorLabel(organization.plan)}
+      </span>
+      {action && (
+        <Link
+          href={action.href}
+          className={cn(
+            "inline-flex min-h-6 items-center rounded-tbp-sm text-[11px] font-bold underline underline-offset-2",
+            onDark ? cn("text-accent hover:text-pitch-foreground", focusRing) : cn("text-primary", focusRingLight)
+          )}
+        >
+          {action.label}
+        </Link>
+      )}
+    </div>
+  );
 }
 
 // --- Sign Out (NextAuth signOut; always lands on a same-origin relative path)
@@ -271,6 +307,7 @@ export function SidebarContext({ data }: { data: ShellData }) {
           {badge}
           {names}
         </Link>
+        <PlanIndicator organization={ctx.organization} billingEnabled={data.billingEnabled} className="pl-[3.25rem] pr-2.5" />
       </div>
     );
   }
@@ -282,6 +319,7 @@ export function SidebarContext({ data }: { data: ShellData }) {
           {badge}
           {names}
         </div>
+        <PlanIndicator organization={ctx.organization} billingEnabled={data.billingEnabled} className="pl-[3.25rem] pr-2.5" />
       </div>
       <div>
         <p className={label}>Group</p>
@@ -298,7 +336,7 @@ export function MobileContext({ data }: { data: ShellData }) {
   if (ctx) {
     return (
       <p className="min-w-0 px-2">
-        <span className="block truncate text-xs opacity-70">Organization</span>
+        <span className="block truncate text-xs opacity-70">{ctx.organization.plan ? planIndicatorLabel(ctx.organization.plan) : "Organization"}</span>
         <span className="block truncate text-sm font-semibold">{ctx.organization.name}</span>
       </p>
     );
@@ -339,7 +377,12 @@ export function GroupSwitcher({ data, mobile = false, showOrganization = true }:
           </span>
         )}
         <span className="min-w-0 flex-1">
-          {showOrganization && <span className="block truncate text-xs opacity-70">{orgLabel}</span>}
+          {showOrganization && (
+            <span className="block truncate text-xs opacity-70">
+              {orgLabel}
+              {ctx.organization.plan ? ` · ${planIndicatorLabel(ctx.organization.plan)}` : ""}
+            </span>
+          )}
           <span className="block truncate text-sm font-semibold">{groupLabel}</span>
           {!showOrganization && ctx?.group && <span className="block truncate text-xs opacity-70">{ctx.group.sportLabel}</span>}
         </span>
@@ -456,6 +499,7 @@ export function AccountMenu({ data, mobile = false }: { data: ShellData; mobile?
 // --- mobile bottom navigation (+ "More" sheet)
 export function MobileBottomNav({ data }: { data: ShellData }) {
   const items = useNav(data);
+  const ctx = useShellContext(data);
   const primary = items.filter((i) => i.mobilePrimary).slice(0, 4);
   const rest = items.filter((i) => !primary.includes(i));
   const { open, setOpen, close, triggerRef, panelRef } = useDisclosure();
@@ -509,6 +553,13 @@ export function MobileBottomNav({ data }: { data: ShellData }) {
               </button>
             </div>
             <div className="max-h-[65vh] space-y-3 overflow-y-auto">
+              {ctx?.organization.plan && (
+                <div className="rounded-tbp border border-border px-3 py-2">
+                  <p className="truncate text-sm font-semibold">{ctx.organization.name}</p>
+                  <p className="truncate text-xs text-muted-foreground">{ROLE_LABELS[ctx.organization.role]}</p>
+                  <PlanIndicator organization={ctx.organization} billingEnabled={data.billingEnabled} onDark={false} className="mt-1.5" />
+                </div>
+              )}
               {sectionsOf(rest).map(({ section, items: list }) => (
                 <div key={section}>
                   <p id={`${sheetId}-${section}`} className="px-3 pb-1 text-[11px] font-bold uppercase tracking-widest text-muted-foreground">

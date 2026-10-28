@@ -6,6 +6,8 @@
 import { describe, it, expect, beforeAll, beforeEach, afterAll } from "vitest";
 import { prisma } from "@/lib/prisma";
 import { loadShellDataFor, type ShellDataSource } from "@/lib/appShellData";
+import { buildShellNav, planAction, planIndicatorLabel } from "@/lib/appShell";
+import { createOrganizationWorkspace } from "@/lib/workspaces";
 
 const VERIFIED = new Date("2026-10-01T00:00:00Z");
 const db = prisma as unknown as ShellDataSource;
@@ -90,5 +92,75 @@ describe("UI-3 shell data", () => {
     const before = await count();
     await loadShellDataFor({ email: "owner@example.test", id: "u-owner" }, db);
     expect(await count()).toBe(before);
+  });
+});
+
+describe("Sidebar plan indicator — server-authoritative, fresh on every load", () => {
+  const owner = () => loadShellDataFor({ email: "owner@example.test", id: "u-owner" }, db);
+  const planOf = async (slug: string) => (await owner())?.organizations.find((o) => o.slug === slug)?.plan;
+  const sub = (status: string, interval: string | null, id = "sub_1") =>
+    prisma.billingSubscription.upsert({
+      where: { stripeSubscriptionId: id },
+      update: { status, interval },
+      create: { organizationId: "org-a", stripeSubscriptionId: id, stripeCustomerId: "cus_1", status, interval, livemode: false, lastSyncedAt: new Date() },
+    });
+
+  it("OWNER/ADMIN organizations carry their effective plan; MEMBER organizations carry none", async () => {
+    const d = await owner();
+    expect(d?.organizations.find((o) => o.slug === "org-a")?.plan).toEqual({ kind: "LEGACY", trialDaysLeft: null, interval: null });
+    expect(d?.organizations.find((o) => o.slug === "org-b")).not.toHaveProperty("plan"); // MEMBER
+    await prisma.organizationMembership.update({ where: { userId_organizationId: { userId: "u-owner", organizationId: "org-b" } }, data: { role: "ADMIN" } });
+    expect(await planOf("org-b")).toEqual({ kind: "LEGACY", trialDaysLeft: null, interval: null });
+  });
+
+  it("Free → trial (days left) → paid Pro monthly → yearly → canceled → Free: each load reflects the stored state", async () => {
+    await prisma.organization.update({ where: { id: "org-a" }, data: { plan: "FREE" } });
+    expect(await planOf("org-a")).toEqual({ kind: "FREE", trialDaysLeft: null, interval: null });
+    await prisma.organization.update({ where: { id: "org-a" }, data: { trialEndsAt: new Date(Date.now() + 10 * 86_400_000 - 60_000) } });
+    expect(await planOf("org-a")).toEqual({ kind: "TRIAL", trialDaysLeft: 10, interval: null }); // not "Free"
+    await prisma.organization.update({ where: { id: "org-a" }, data: { trialEndsAt: new Date(Date.now() - 1000) } });
+    expect((await planOf("org-a"))?.kind).toBe("FREE"); // an ended trial is Free
+    await prisma.organization.update({ where: { id: "org-a" }, data: { plan: "PRO" } });
+    expect(await planOf("org-a")).toEqual({ kind: "PRO", trialDaysLeft: null, interval: null }); // no subscription row → "Pro Plan"
+    await sub("active", "month");
+    expect((await planOf("org-a"))?.interval).toBe("month");
+    await sub("past_due", "year");
+    expect((await planOf("org-a"))?.interval).toBe("year");
+    await sub("canceled", "year");
+    expect((await planOf("org-a"))?.interval).toBeNull(); // only an ENTITLING subscription names the interval
+    await prisma.organization.update({ where: { id: "org-a" }, data: { plan: "FREE" } });
+    expect((await planOf("org-a"))?.kind).toBe("FREE");
+    await prisma.organization.update({ where: { id: "org-a" }, data: { plan: "COMP" } });
+    expect((await planOf("org-a"))?.kind).toBe("COMP");
+  });
+
+  it("two organizations with different plans: each keeps its own (switching never mixes them)", async () => {
+    await prisma.organization.update({ where: { id: "org-a" }, data: { plan: "FREE" } });
+    await prisma.organization.update({ where: { id: "org-b" }, data: { plan: "PRO" } });
+    await prisma.organizationMembership.update({ where: { userId_organizationId: { userId: "u-owner", organizationId: "org-b" } }, data: { role: "OWNER" } });
+    await prisma.billingSubscription.create({ data: { organizationId: "org-b", stripeSubscriptionId: "sub_b", stripeCustomerId: "cus_b", status: "active", interval: "year", livemode: false, lastSyncedAt: new Date() } });
+    const d = await owner();
+    expect(Object.fromEntries(d!.organizations.map((o) => [o.slug, o.plan]))).toEqual({
+      "org-a": { kind: "FREE", trialDaysLeft: null, interval: null },
+      "org-b": { kind: "PRO", trialDaysLeft: null, interval: "year" },
+    });
+  });
+});
+
+describe("Onboarding → the first group workspace: plan and Billing & Plan without visiting Account Settings", () => {
+  it("a new owner's first organization + group: the group page's sidebar shows the trial and links to THIS organization's Billing", async () => {
+    await prisma.user.create({ data: { id: "u-new", email: "new@example.test", name: "New", passwordHash: null, emailVerifiedAt: VERIFIED } });
+    const ws = await createOrganizationWorkspace("u-new", { organizationName: "Riverside FC", groupName: "Tuesday Soccer", sportKey: "soccer", timezone: "America/New_York" });
+    // Onboarding leaves with a FULL page load to ws.href, so the shell is loaded fresh (no stale layout data).
+    const d = (await loadShellDataFor({ email: "new@example.test", id: "u-new" }, db))!;
+    const org = d.organizations.find((o) => o.slug === ws.organization.slug)!;
+    expect(org.groups.map((g) => g.slug)).toEqual([ws.group.slug]);
+    expect(org.plan).toEqual({ kind: "TRIAL", trialDaysLeft: 90, interval: null }); // the 90-day trial, not "Free"
+    expect(planIndicatorLabel(org.plan!)).toBe("Pro Trial · 90 days left");
+    const nav = buildShellNav({ data: d, pathname: ws.href });
+    expect(nav.map((i) => i.key)).toEqual(["overview", "players", "matches", "group-settings", "billing", "all-groups", "account"]);
+    expect(nav.find((i) => i.key === "billing")?.href).toBe(`/admin/o/${ws.organization.slug}/billing`);
+    expect(planAction(org, true)).toEqual({ label: "Choose Pro Plan", href: `/admin/o/${ws.organization.slug}/billing` });
+    expect(planAction(org, false)).toBeNull(); // billing off: no purchase step
   });
 });

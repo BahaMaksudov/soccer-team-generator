@@ -32,10 +32,13 @@ import {
   shellContextFromPath,
   SIGN_OUT_DESTINATION,
   switcherEntries,
+  planAction,
+  planIndicatorLabel,
   type ShellData,
   type ShellOrganization,
+  type ShellPlan,
 } from "@/lib/appShell";
-import { loadShellDataFor, type ShellDataSource } from "@/lib/appShellData";
+import { loadShellDataFor, shellPlanOf, type ShellDataSource } from "@/lib/appShellData";
 
 const root = process.cwd();
 const read = (f: string) => fs.readFileSync(path.join(root, f), "utf8");
@@ -105,16 +108,18 @@ describe("Phase 3 — context-sensitive navigation (presentation only)", () => {
     expect(item("/admin/o/eagles/groups/new", "groups")?.active).toBe(true);
   });
 
-  it("State C (Group selected): Overview, Players, Matches, Group Settings, All Groups — no Organization management links", () => {
+  it("State C (Group selected): Overview, Players, Matches, Group Settings, Billing & Plan (this Organization), All Groups — no other Organization management links", () => {
     expect(labels("/admin/o/eagles/g/indoor")).toEqual([
       ["Overview", "/admin/o/eagles/g/indoor"],
       ["Players", "/admin/o/eagles/g/indoor/players"],
       ["Matches", "/admin/o/eagles/g/indoor/matches"],
       ["Group Settings", "/admin/o/eagles/g/indoor/settings"],
+      ["Billing & Plan", "/admin/o/eagles/billing"], // reachable from inside any group (OWNER/ADMIN)
       ["All Groups", "/admin/o/eagles/groups"],
       ["Account Settings", "/account/security?o=eagles&g=indoor"], // Phase 3.1 — keeps the context
     ]);
-    for (const k of ["organization", "members", "billing", "groups", "organizations"]) expect(keys("/admin/o/eagles/g/indoor/matches/m1"), k).not.toContain(k);
+    expect(item("/admin/o/eagles/g/indoor", "billing")).toMatchObject({ section: "organization", mobilePrimary: false, active: false });
+    for (const k of ["organization", "members", "groups", "organizations"]) expect(keys("/admin/o/eagles/g/indoor/matches/m1"), k).not.toContain(k);
     // Recurring schedules stay inside Matches — no separate Schedules item.
     expect(keys("/admin/o/eagles/g/indoor").some((k) => /schedule/i.test(k))).toBe(false);
   });
@@ -205,6 +210,7 @@ describe("Phase 3.1 — Account Settings keeps the sidebar context (URL ?o=&g=, 
         ["players", `/admin/o/nee/g/${g}/players`],
         ["matches", `/admin/o/nee/g/${g}/matches`],
         ["group-settings", `/admin/o/nee/g/${g}/settings`],
+        ["billing", "/admin/o/nee/billing"],
         ["all-groups", "/admin/o/nee/groups"],
         ["account", `/account/security?o=nee&g=${g}`],
       ]);
@@ -288,12 +294,13 @@ describe("rendered shell", () => {
     expect(html).toContain("Owner · Eagles Club"); // real role of the current organization
     expect(html).not.toMatch(/SoccerTeam\.jpg/);
   });
-  it("State C: Organization shown as plain context (no management link), the Group with its switcher, All Groups; no Organization management", () => {
+  it("State C: Organization shown as plain context, the Group with its switcher, Billing & Plan and All Groups; no other Organization management", () => {
     const html = render("/admin/o/eagles/g/indoor");
     expect(html).toMatch(/>Organization<\/p>[\s\S]*?Eagles Club/);
     expect(html).toMatch(/>Group<\/p>[\s\S]*?Indoor Soccer/);
     expect(html).not.toContain('href="/admin/o/eagles"');
-    for (const h of ["/admin/o/eagles/members", "/admin/o/eagles/billing"]) expect(html).not.toContain(`href="${h}"`);
+    expect(html).not.toContain('href="/admin/o/eagles/members"');
+    expect(html).toMatch(/href="\/admin\/o\/eagles\/billing"[^>]*>[\s\S]*?Billing &amp; Plan/);
     expect(html).toContain('href="/admin/o/eagles/groups"'); // All Groups
     expect(html).toContain(">All Groups<");
   });
@@ -334,12 +341,13 @@ describe("rendered shell", () => {
 
 describe("shell data (server): identity + OWN memberships only", () => {
   const user = { id: "u1", email: "pat@example.com", name: "Pat", emailVerifiedAt: new Date() as Date | null };
-  const db = (u: typeof user | null, memberships: unknown[] = [], players = 0) =>
+  const db = (u: typeof user | null, memberships: unknown[] = [], players = 0, planRows: unknown[] = []) =>
     ({
       user: { findUnique: vi.fn(async () => u) },
       organizationMembership: { findMany: vi.fn(async () => memberships) },
       player: { count: vi.fn(async () => players) },
-    }) as unknown as ShellDataSource & { organizationMembership: { findMany: ReturnType<typeof vi.fn> } };
+      organization: { findMany: vi.fn(async () => planRows) },
+    }) as unknown as ShellDataSource & { organizationMembership: { findMany: ReturnType<typeof vi.fn> }; organization: { findMany: ReturnType<typeof vi.fn> } };
   const membership = (slug: string, role: string, groups: Array<{ slug: string; isActive: boolean }>) => ({
     role,
     organization: { id: slug, name: slug.toUpperCase(), slug, groups: groups.map((g) => ({ id: g.slug, name: g.slug, slug: g.slug, sportKey: "soccer", timezone: "UTC", isActive: g.isActive })) },
@@ -359,6 +367,7 @@ describe("shell data (server): identity + OWN memberships only", () => {
       user: { name: "Pat", email: "pat@example.com" },
       organizations: [{ slug: "eagles", name: "EAGLES", role: "ADMIN", groups: [{ slug: "a", name: "a", sportLabel: "Soccer" }] }],
       hasPlayerProfile: true,
+      billingEnabled: false,
     });
   });
   it("an unverified account gets identity only (no organizations, no player data)", async () => {
@@ -367,8 +376,10 @@ describe("shell data (server): identity + OWN memberships only", () => {
       user: { name: "Pat", email: "pat@example.com" },
       organizations: [],
       hasPlayerProfile: false,
+      billingEnabled: false,
     });
     expect(d.organizationMembership.findMany).not.toHaveBeenCalled();
+    expect(d.organization.findMany).not.toHaveBeenCalled();
   });
 });
 
@@ -419,5 +430,131 @@ describe("no Lovable mock data / preview infrastructure at runtime", () => {
     // One message for missing AND unauthorized (never reveals whether a tenant exists).
     expect(read("src/components/app-shell/ShellNotFound.tsx")).toContain("This page doesn&apos;t exist, or you don&apos;t have access to it.");
     expect(fs.existsSync(path.join(root, "src/app/claim/layout.tsx"))).toBe(false); // still legacy
+  });
+});
+
+describe("sidebar plan indicator + Billing & Plan from any group", () => {
+  const P = (kind: ShellPlan["kind"], extra: Partial<ShellPlan> = {}): ShellPlan => ({ kind, trialDaysLeft: null, interval: null, ...extra });
+  const org = (role: "OWNER" | "ADMIN" | "MEMBER", plan: ShellPlan | null = P("FREE"), slug = "eagles"): ShellOrganization => ({ ...ORGS[0], slug, role, ...(plan ? { plan } : {}) });
+  const render = (pathname: string, d: ShellData) => {
+    nav.pathname = pathname;
+    return renderToStaticMarkup(createElement(AppShell, { data: d } as { data: ShellData; children: ReactNode }, createElement("p", null, "PAGE")));
+  };
+  const sidebar = (html: string) => /<aside[\s\S]*?<\/aside>/.exec(html)![0];
+  const mobileHeader = (html: string) => /<header[\s\S]*?<\/header>/.exec(html)![0];
+
+  it("labels for every effective plan (an active trial is never 'Free'; unknown interval → 'Pro Plan')", () => {
+    expect(planIndicatorLabel(P("FREE"))).toBe("Free Plan");
+    expect(planIndicatorLabel(P("TRIAL", { trialDaysLeft: 12 }))).toBe("Pro Trial · 12 days left");
+    expect(planIndicatorLabel(P("TRIAL", { trialDaysLeft: 1 }))).toBe("Pro Trial · 1 day left");
+    expect(planIndicatorLabel(P("PRO", { interval: "month" }))).toBe("Pro · Monthly");
+    expect(planIndicatorLabel(P("PRO", { interval: "year" }))).toBe("Pro · Yearly");
+    expect(planIndicatorLabel(P("PRO"))).toBe("Pro Plan");
+    expect(planIndicatorLabel(P("LEGACY"))).toBe("Early Access");
+    expect(planIndicatorLabel(P("COMP"))).toBe("Complimentary Pro");
+  });
+
+  it("shellPlanOf follows the enforced rules (effectivePlan + trialDaysLeft; interval only for paid Pro)", () => {
+    const now = new Date("2026-10-28T12:00:00Z");
+    const row = (plan: "FREE" | "PRO" | "COMP" | "LEGACY", trialEndsAt: Date | null = null, interval: string | null = null) => ({ id: "o", plan, trialEndsAt, billingSubscriptions: interval === undefined ? [] : [{ interval }] });
+    expect(shellPlanOf(row("FREE"), now)).toEqual(P("FREE"));
+    expect(shellPlanOf(row("FREE", new Date("2026-11-07T11:00:00Z")), now)).toEqual(P("TRIAL", { trialDaysLeft: 10 }));
+    expect(shellPlanOf(row("FREE", new Date("2026-10-28T11:00:00Z")), now)).toEqual(P("FREE")); // ended trial
+    expect(shellPlanOf(row("PRO", null, "month"), now)).toEqual(P("PRO", { interval: "month" }));
+    expect(shellPlanOf(row("PRO", null, "year"), now)).toEqual(P("PRO", { interval: "year" }));
+    expect(shellPlanOf({ id: "o", plan: "PRO", trialEndsAt: null, billingSubscriptions: [] }, now)).toEqual(P("PRO"));
+    expect(shellPlanOf(row("PRO", null, "weekly"), now)).toEqual(P("PRO")); // never guessed
+    expect(shellPlanOf(row("LEGACY", null, "month"), now)).toEqual(P("LEGACY"));
+    expect(shellPlanOf(row("COMP"), now)).toEqual(P("COMP"));
+  });
+
+  it("owner actions: Free → Upgrade to Pro, trial → Choose Pro Plan (this organization's Billing); none for paid / comp / Early Access, non-owners or billing off", () => {
+    expect(planAction(org("OWNER", P("FREE")), true)).toEqual({ label: "Upgrade to Pro", href: "/admin/o/eagles/billing" });
+    expect(planAction(org("OWNER", P("TRIAL", { trialDaysLeft: 5 })), true)).toEqual({ label: "Choose Pro Plan", href: "/admin/o/eagles/billing" });
+    for (const k of ["PRO", "COMP", "LEGACY"] as const) expect(planAction(org("OWNER", P(k)), true), k).toBeNull();
+    for (const r of ["ADMIN", "MEMBER"] as const) expect(planAction(org(r, P("FREE")), true), r).toBeNull();
+    expect(planAction(org("OWNER", P("FREE")), false)).toBeNull();
+    expect(planAction(org("OWNER", null), true)).toBeNull();
+  });
+
+  it("OWNER on Free inside a group: plan under the name/role, Upgrade to Pro and Billing & Plan → this organization's Billing (desktop + mobile header)", () => {
+    const html = render("/admin/o/eagles/g/indoor", data({ organizations: [org("OWNER"), ORGS[1]], billingEnabled: true }));
+    const side = sidebar(html);
+    expect(side).toMatch(/Eagles Club[\s\S]*?Owner[\s\S]*?<span class="sr-only">Plan: <\/span>Free Plan/);
+    expect(side).toMatch(/<a href="\/admin\/o\/eagles\/billing"[^>]*>Upgrade to Pro<\/a>/);
+    expect(side).toMatch(/<a href="\/admin\/o\/eagles\/billing"[^>]*>[\s\S]*?Billing &amp; Plan<\/a>/);
+    expect(side).not.toMatch(/checkout/i);
+    expect(mobileHeader(html)).toContain("Eagles Club · Free Plan");
+  });
+
+  it("every organization page shows the same indicator (overview, groups, group pages, settings, billing)", () => {
+    const d = data({ organizations: [org("OWNER", P("TRIAL", { trialDaysLeft: 30 }))], billingEnabled: true });
+    for (const p of ["/admin/o/eagles", "/admin/o/eagles/groups", "/admin/o/eagles/billing", "/admin/o/eagles/g/indoor", "/admin/o/eagles/g/indoor/players", "/admin/o/eagles/g/indoor/matches/m1", "/admin/o/eagles/g/indoor/settings"]) {
+      const side = sidebar(render(p, d));
+      expect(side, p).toContain("Pro Trial · 30 days left");
+      expect(side, p).toMatch(/>Choose Pro Plan<\/a>/);
+      expect(side, p).toContain('href="/admin/o/eagles/billing"');
+    }
+    expect(mobileHeader(render("/admin/o/eagles", d))).toContain("Pro Trial · 30 days left"); // organization pages: under the name
+  });
+
+  it("ADMIN: the plan and the read-only Billing & Plan link, never a purchase action", () => {
+    const html = render("/admin/o/eagles/g/indoor", data({ organizations: [org("ADMIN", P("FREE"))], billingEnabled: true }));
+    expect(sidebar(html)).toContain("Free Plan");
+    expect(sidebar(html)).toContain(">Billing &amp; Plan<");
+    expect(html).not.toContain("Upgrade to Pro");
+    expect(html).not.toContain("Choose Pro Plan");
+  });
+
+  it("MEMBER: no plan, no Billing & Plan, no purchase action", () => {
+    const html = render("/admin/o/eagles/g/indoor", data({ organizations: [org("MEMBER", null)], billingEnabled: true }));
+    expect(html).not.toContain("Plan: ");
+    expect(html).not.toContain("/admin/o/eagles/billing");
+    expect(html).not.toContain("Upgrade to Pro");
+  });
+
+  it("paid Pro (monthly / yearly / unknown), Early Access and complimentary Pro: status only, no upgrade action", () => {
+    for (const [plan, label] of [[P("PRO", { interval: "month" }), "Pro · Monthly"], [P("PRO", { interval: "year" }), "Pro · Yearly"], [P("PRO"), "Pro Plan"], [P("LEGACY"), "Early Access"], [P("COMP"), "Complimentary Pro"]] as const) {
+      const html = render("/admin/o/eagles/g/indoor", data({ organizations: [org("OWNER", plan)], billingEnabled: true }));
+      expect(sidebar(html), label).toContain(label);
+      expect(html, label).not.toContain("Upgrade to Pro");
+      expect(html, label).not.toContain("Choose Pro Plan");
+      expect(sidebar(html), label).toContain(">Billing &amp; Plan<"); // still reachable
+    }
+  });
+
+  it("switching organizations: each shows its own plan and its own Billing URL — never the other's", () => {
+    const d = data({ organizations: [org("OWNER", P("FREE"), "eagles"), { slug: "hawks", name: "Hawks", role: "OWNER", groups: [{ slug: "sun", name: "Sunday", sportLabel: "Soccer" }], plan: P("PRO", { interval: "year" }) }], billingEnabled: true });
+    const a = sidebar(render("/admin/o/eagles/g/indoor", d));
+    const b = sidebar(render("/admin/o/hawks/g/sun", d));
+    expect(a).toContain("Free Plan");
+    expect(a).not.toContain("Pro · Yearly");
+    expect(a).not.toContain("/admin/o/hawks/billing");
+    expect(b).toContain("Pro · Yearly");
+    expect(b).not.toContain("Free Plan");
+    expect(b).toContain('href="/admin/o/hawks/billing"');
+    expect(b).not.toContain("/admin/o/eagles/billing");
+  });
+
+  it("billing off: the plan is shown, no purchase action", () => {
+    const html = render("/admin/o/eagles", data({ organizations: [org("OWNER", P("FREE"))], billingEnabled: false }));
+    expect(sidebar(html)).toContain("Free Plan");
+    expect(html).not.toContain("Upgrade to Pro");
+  });
+
+  it("shell data: plans are queried only for OWNER/ADMIN organizations; MEMBER organizations never get one", async () => {
+    const user = { id: "u1", email: "pat@example.com", name: "Pat", emailVerifiedAt: new Date() };
+    const m = (slug: string, role: string) => ({ role, organization: { id: slug, name: slug, slug, groups: [] } });
+    const findMany = vi.fn(async () => [{ id: "own", plan: "FREE", trialEndsAt: null, billingSubscriptions: [] }]);
+    const d = {
+      user: { findUnique: vi.fn(async () => user) },
+      organizationMembership: { findMany: vi.fn(async () => [m("own", "OWNER"), m("mem", "MEMBER")]) },
+      player: { count: vi.fn(async () => 0) },
+      organization: { findMany },
+    } as unknown as ShellDataSource;
+    const out = await loadShellDataFor({ email: "pat@example.com", id: "u1" }, d);
+    expect(findMany).toHaveBeenCalledWith(expect.objectContaining({ where: { id: { in: ["own"] } } }));
+    expect(out?.organizations.find((o) => o.slug === "own")?.plan).toEqual(P("FREE"));
+    expect(out?.organizations.find((o) => o.slug === "mem")).not.toHaveProperty("plan");
   });
 });
