@@ -477,25 +477,42 @@ describe("sidebar plan indicator + Billing & Plan from any group", () => {
     expect(planAction(org("OWNER", null), true)).toBeNull();
   });
 
-  it("OWNER on Free inside a group: plan under the name/role, Upgrade to Pro and Billing & Plan → this organization's Billing (desktop + mobile header)", () => {
+  const profile = (html: string) => /aria-label="Account menu"[\s\S]*?Sign out/.exec(sidebar(html))![0]; // bottom-left user profile
+  const orgHeader = (html: string) => sidebar(html).split('aria-label="Application"')[0]; // top organization section
+  const count = (html: string, t: string) => html.split(t).length - 1;
+
+  it("OWNER on Free inside a group: the bottom profile reads name → role · organization → plan → Upgrade to Pro (this organization's Billing); the top shows name + role only", () => {
     const html = render("/admin/o/eagles/g/indoor", data({ organizations: [org("OWNER"), ORGS[1]], billingEnabled: true }));
-    const side = sidebar(html);
-    expect(side).toMatch(/Eagles Club[\s\S]*?Owner[\s\S]*?<span class="sr-only">Plan: <\/span>Free Plan/);
-    expect(side).toMatch(/<a href="\/admin\/o\/eagles\/billing"[^>]*>Upgrade to Pro<\/a>/);
-    expect(side).toMatch(/<a href="\/admin\/o\/eagles\/billing"[^>]*>[\s\S]*?Billing &amp; Plan<\/a>/);
-    expect(side).not.toMatch(/checkout/i);
-    expect(mobileHeader(html)).toContain("Eagles Club · Free Plan");
+    expect(profile(html)).toMatch(/Pat Organizer[\s\S]*?Owner · Eagles Club[\s\S]*?<span class="sr-only">Plan: <\/span>Free Plan[\s\S]*?<a href="\/admin\/o\/eagles\/billing"[^>]*>Upgrade to Pro<\/a>[\s\S]*?Sign out/);
+    expect(orgHeader(html)).toContain("Eagles Club");
+    expect(orgHeader(html)).toContain(">Owner<");
+    expect(orgHeader(html)).not.toMatch(/Free Plan|Upgrade to Pro/);
+    expect(count(html, "Free Plan")).toBe(1); // one place only (desktop profile; the mobile one lives in the closed More sheet)
+    expect(count(html, "Upgrade to Pro")).toBe(1);
+    expect(mobileHeader(html)).not.toMatch(/Free Plan|Upgrade/);
+    expect(profile(html)).not.toMatch(/Account owner/);
+    expect(sidebar(html)).toMatch(/<a href="\/admin\/o\/eagles\/billing"[^>]*>[\s\S]*?Billing &amp; Plan<\/a>/);
+    expect(html).not.toMatch(/checkout/i);
   });
 
-  it("every organization page shows the same indicator (overview, groups, group pages, settings, billing)", () => {
+  it("every organization page shows the plan once, in the profile (overview, groups, group pages, settings, billing)", () => {
     const d = data({ organizations: [org("OWNER", P("TRIAL", { trialDaysLeft: 30 }))], billingEnabled: true });
     for (const p of ["/admin/o/eagles", "/admin/o/eagles/groups", "/admin/o/eagles/billing", "/admin/o/eagles/g/indoor", "/admin/o/eagles/g/indoor/players", "/admin/o/eagles/g/indoor/matches/m1", "/admin/o/eagles/g/indoor/settings"]) {
-      const side = sidebar(render(p, d));
-      expect(side, p).toContain("Pro Trial · 30 days left");
-      expect(side, p).toMatch(/>Choose Pro Plan<\/a>/);
-      expect(side, p).toContain('href="/admin/o/eagles/billing"');
+      const html = render(p, d);
+      expect(profile(html), p).toMatch(/Owner · Eagles Club[\s\S]*?Pro Trial · 30 days left[\s\S]*?<a href="\/admin\/o\/eagles\/billing"[^>]*>Choose Pro Plan<\/a>/);
+      expect(count(html, "Pro Trial · 30 days left"), p).toBe(1);
+      expect(orgHeader(html), p).not.toContain("Pro Trial");
+      expect(mobileHeader(html), p).not.toContain("Pro Trial");
     }
-    expect(mobileHeader(render("/admin/o/eagles", d))).toContain("Pro Trial · 30 days left"); // organization pages: under the name
+  });
+
+  it("no organization selected (/admin, /me, plain Account Settings): the profile shows name + email, never an organization's plan", () => {
+    const d = data({ organizations: [org("OWNER", P("TRIAL", { trialDaysLeft: 30 })), { ...ORGS[1], slug: "hawks", role: "OWNER", plan: P("LEGACY") }], billingEnabled: true });
+    for (const p of ["/admin", "/me", "/account/security"]) {
+      const html = render(p, d);
+      expect(profile(html), p).toMatch(/Pat Organizer[\s\S]*?pat@example\.com/);
+      expect(html, p).not.toMatch(/Pro Trial|Early Access|Choose Pro Plan|Upgrade to Pro|Plan: /);
+    }
   });
 
   it("ADMIN: the plan and the read-only Billing & Plan link, never a purchase action", () => {

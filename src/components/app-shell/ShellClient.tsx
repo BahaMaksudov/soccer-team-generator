@@ -153,28 +153,25 @@ function useDisclosure() {
 }
 
 /**
- * The selected Organization's plan (server-computed, OWNER/ADMIN only) and, for an OWNER on
- * Free or the trial while billing is on, a link to THIS Organization's Billing page.
+ * The selected Organization's plan in the user profile (server-computed; OWNER/ADMIN only —
+ * MEMBERs never receive it) and, for an OWNER on Free or the trial while billing is on, a link
+ * to THIS Organization's Billing page (navigation only — Checkout starts only there).
+ * Subscriptions are per Organization, so nothing is shown without a selected Organization.
  */
-export function PlanIndicator({ organization, billingEnabled, onDark = true, className }: { organization: ShellOrganization; billingEnabled?: boolean; onDark?: boolean; className?: string }) {
+export function ProfilePlan({ organization, billingEnabled, onDark = true, className }: { organization: ShellOrganization; billingEnabled?: boolean; onDark?: boolean; className?: string }) {
   if (!organization.plan) return null;
   const action = planAction(organization, billingEnabled);
   return (
-    <div className={cn("flex flex-wrap items-center gap-x-2 gap-y-1", className)}>
-      <span
-        className={cn(
-          "inline-flex items-center rounded-full border px-2 py-0.5 text-[11px] font-semibold",
-          onDark ? "border-pitch-foreground/20 bg-pitch-foreground/10 text-pitch-foreground" : "border-primary/20 bg-primary/10 text-primary"
-        )}
-      >
+    <div className={cn("min-w-0", className)}>
+      <p className={cn("truncate text-xs font-semibold", onDark ? "text-pitch-foreground" : "text-foreground")}>
         <span className="sr-only">Plan: </span>
         {planIndicatorLabel(organization.plan)}
-      </span>
+      </p>
       {action && (
         <Link
           href={action.href}
           className={cn(
-            "inline-flex min-h-6 items-center rounded-tbp-sm text-[11px] font-bold underline underline-offset-2",
+            "inline-flex min-h-6 items-center rounded-tbp-sm text-xs font-bold underline underline-offset-2",
             onDark ? cn("text-accent hover:text-pitch-foreground", focusRing) : cn("text-primary", focusRingLight)
           )}
         >
@@ -307,7 +304,6 @@ export function SidebarContext({ data }: { data: ShellData }) {
           {badge}
           {names}
         </Link>
-        <PlanIndicator organization={ctx.organization} billingEnabled={data.billingEnabled} className="pl-[3.25rem] pr-2.5" />
       </div>
     );
   }
@@ -319,7 +315,6 @@ export function SidebarContext({ data }: { data: ShellData }) {
           {badge}
           {names}
         </div>
-        <PlanIndicator organization={ctx.organization} billingEnabled={data.billingEnabled} className="pl-[3.25rem] pr-2.5" />
       </div>
       <div>
         <p className={label}>Group</p>
@@ -336,7 +331,7 @@ export function MobileContext({ data }: { data: ShellData }) {
   if (ctx) {
     return (
       <p className="min-w-0 px-2">
-        <span className="block truncate text-xs opacity-70">{ctx.organization.plan ? planIndicatorLabel(ctx.organization.plan) : "Organization"}</span>
+        <span className="block truncate text-xs opacity-70">Organization</span>
         <span className="block truncate text-sm font-semibold">{ctx.organization.name}</span>
       </p>
     );
@@ -377,12 +372,7 @@ export function GroupSwitcher({ data, mobile = false, showOrganization = true }:
           </span>
         )}
         <span className="min-w-0 flex-1">
-          {showOrganization && (
-            <span className="block truncate text-xs opacity-70">
-              {orgLabel}
-              {ctx.organization.plan ? ` · ${planIndicatorLabel(ctx.organization.plan)}` : ""}
-            </span>
-          )}
+          {showOrganization && <span className="block truncate text-xs opacity-70">{orgLabel}</span>}
           <span className="block truncate text-sm font-semibold">{groupLabel}</span>
           {!showOrganization && ctx?.group && <span className="block truncate text-xs opacity-70">{ctx.group.sportLabel}</span>}
         </span>
@@ -465,6 +455,7 @@ export function AccountMenu({ data, mobile = false }: { data: ShellData; mobile?
           </span>
         )}
       </button>
+      {!mobile && ctx && <ProfilePlan organization={ctx.organization} billingEnabled={data.billingEnabled} className="pl-[3.125rem] pr-1.5" />}
       {open && (
         <div
           ref={panelRef}
@@ -553,13 +544,16 @@ export function MobileBottomNav({ data }: { data: ShellData }) {
               </button>
             </div>
             <div className="max-h-[65vh] space-y-3 overflow-y-auto">
-              {ctx?.organization.plan && (
-                <div className="rounded-tbp border border-border px-3 py-2">
-                  <p className="truncate text-sm font-semibold">{ctx.organization.name}</p>
-                  <p className="truncate text-xs text-muted-foreground">{ROLE_LABELS[ctx.organization.role]}</p>
-                  <PlanIndicator organization={ctx.organization} billingEnabled={data.billingEnabled} onDark={false} className="mt-1.5" />
+              <div className="flex items-start gap-3 rounded-tbp border border-border px-3 py-2">
+                <span className="grid size-8 shrink-0 place-items-center rounded-full bg-muted text-xs font-bold" aria-hidden="true">
+                  {initialsOf(data.user.name, data.user.email)}
+                </span>
+                <div className="min-w-0 flex-1">
+                  <p className="truncate text-sm font-semibold">{data.user.name?.trim() || data.user.email}</p>
+                  <p className="truncate text-xs text-muted-foreground">{ctx ? `${ROLE_LABELS[ctx.organization.role]} · ${ctx.organization.name}` : data.user.email}</p>
+                  {ctx && <ProfilePlan organization={ctx.organization} billingEnabled={data.billingEnabled} onDark={false} className="mt-0.5" />}
                 </div>
-              )}
+              </div>
               {sectionsOf(rest).map(({ section, items: list }) => (
                 <div key={section}>
                   <p id={`${sheetId}-${section}`} className="px-3 pb-1 text-[11px] font-bold uppercase tracking-widest text-muted-foreground">

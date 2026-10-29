@@ -22,10 +22,11 @@ import { billingConfig } from "@/lib/billing/config";
  * alone and the page's own auth handling (redirect to /login etc.) applies.
  */
 type PlanRow = { id: string; plan: "FREE" | "PRO" | "COMP" | "LEGACY"; trialEndsAt: Date | null; billingSubscriptions: Array<{ interval: string | null }> };
-export type ShellDataSource = Pick<TenantDataSource, "user" | "organizationMembership"> & {
-  player: { count(args: { where: { userId: string; group: { isActive: true } } }): Promise<number> };
-  organization: { findMany(args: unknown): Promise<PlanRow[]> };
-};
+type PlanSource = { organization: { findMany(args: unknown): Promise<PlanRow[]> } };
+export type ShellDataSource = Pick<TenantDataSource, "user" | "organizationMembership"> &
+  PlanSource & {
+    player: { count(args: { where: { userId: string; group: { isActive: true } } }): Promise<number> };
+  };
 
 const intervalOf = (v: string | null | undefined): ShellPlan["interval"] => (v === "month" || v === "year" ? v : null);
 
@@ -42,6 +43,21 @@ export function shellPlanOf(row: PlanRow, now: Date = new Date()): ShellPlan {
   };
 }
 
+/**
+ * Each organization's plan — ONLY for the organizations the User manages (OWNER/ADMIN: the roles
+ * that may open Billing & Plan); MEMBER organizations are never looked up. Shared by the sidebar
+ * and the My Organizations cards so both show the same, server-computed plan.
+ */
+export async function managedOrganizationPlans(tenants: Array<{ id: string; role: string }>, db: PlanSource, now: Date = new Date()): Promise<Map<string, ShellPlan>> {
+  const managed = tenants.filter((t) => t.role === "OWNER" || t.role === "ADMIN").map((t) => t.id);
+  if (!managed.length) return new Map();
+  const rows = await db.organization.findMany({
+    where: { id: { in: managed } },
+    select: { id: true, plan: true, trialEndsAt: true, billingSubscriptions: { where: { status: { in: [...ENTITLING_STATUSES] } }, orderBy: { updatedAt: "desc" }, take: 1, select: { interval: true } } },
+  });
+  return new Map(rows.map((r) => [r.id, shellPlanOf(r, now)]));
+}
+
 export async function loadShellDataFor(
   session: { email?: string | null; id?: string | null } | null | undefined,
   db: ShellDataSource
@@ -55,16 +71,7 @@ export async function loadShellDataFor(
   }
 
   const tenants = account.emailVerified ? await listAccessibleTenantsForEmail(account.email, db, account.id) : [];
-  // Plans only for the Organizations this User manages (OWNER/ADMIN) — the roles that may open Billing & Plan.
-  const managed = tenants.filter((t) => t.role === "OWNER" || t.role === "ADMIN").map((t) => t.id);
-  const planRows = managed.length
-    ? await db.organization.findMany({
-        where: { id: { in: managed } },
-        select: { id: true, plan: true, trialEndsAt: true, billingSubscriptions: { where: { status: { in: [...ENTITLING_STATUSES] } }, orderBy: { updatedAt: "desc" }, take: 1, select: { interval: true } } },
-      })
-    : [];
-  const now = new Date();
-  const plans = new Map(planRows.map((r) => [r.id, shellPlanOf(r, now)]));
+  const plans = await managedOrganizationPlans(tenants, db);
   const organizations = tenants.map((t) => ({
     slug: t.slug,
     name: t.name,

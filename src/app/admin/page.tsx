@@ -3,7 +3,9 @@ import Link from "next/link";
 import { ChevronRight, Plus } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { ROLE_LABELS } from "@/lib/appShell";
+import { planIndicatorLabel, ROLE_LABELS, type ShellPlan } from "@/lib/appShell";
+import { managedOrganizationPlans, type ShellDataSource } from "@/lib/appShellData";
+import { prisma } from "@/lib/prisma";
 import { ownershipAllowance, ownershipCountLabel, ownershipLimitMessage, SECOND_ORGANIZATION_NOTE, type OwnershipAllowance } from "@/lib/entitlements";
 import { listAccessibleTenants, requireSessionUser, TenantContextError, type AccessibleOrganization } from "@/lib/tenantContext";
 
@@ -18,14 +20,19 @@ import { listAccessibleTenants, requireSessionUser, TenantContextError, type Acc
  * page still opens that page directly). A User without an Organization gets
  * a welcome and "Create your first organization" (Phase 1 ownership rules
  * decide whether creation is available — invited memberships never count).
+ * Each card shows its own organization's plan (OWNER/ADMIN; never for MEMBER
+ * organizations) — subscriptions are per organization, not per account.
  */
 export default async function AdminEntryPage() {
   let organizations: AccessibleOrganization[];
   let allowance: OwnershipAllowance;
+  let plans: Map<string, ShellPlan>;
   try {
     organizations = await listAccessibleTenants();
     // Phase 1 — display only; POST /api/admin/organizations enforces the allowance.
     allowance = await ownershipAllowance((await requireSessionUser()).id);
+    // Each card shows ITS organization's plan — only for organizations the User manages (OWNER/ADMIN).
+    plans = await managedOrganizationPlans(organizations, prisma as unknown as ShellDataSource);
   } catch (e) {
     // Middleware already requires a session to reach this page; a
     // session that no longer maps to a User (e.g. deleted, or bound to
@@ -93,6 +100,12 @@ export default async function AdminEntryPage() {
                   <Badge variant="secondary">{ROLE_LABELS[org.role]}</Badge>
                   {org.groups.length} {org.groups.length === 1 ? "group" : "groups"}
                 </span>
+                {plans.has(org.id) && (
+                  <span className="mt-1 block truncate text-sm font-semibold text-primary">
+                    <span className="sr-only">Plan: </span>
+                    {planIndicatorLabel(plans.get(org.id)!)}
+                  </span>
+                )}
               </span>
               <ChevronRight className="size-5 shrink-0 text-muted-foreground" aria-hidden="true" />
             </Link>

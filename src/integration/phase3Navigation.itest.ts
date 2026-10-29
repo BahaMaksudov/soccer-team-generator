@@ -145,6 +145,29 @@ describe("Phase 3 — My Organizations (/admin, where sign-in lands)", () => {
     expect(html).toContain('href="/onboarding"');
   });
 
+  it("each organization card shows ITS OWN plan (OWNER / ADMIN); a MEMBER card shows none", async () => {
+    // alpha: OWNER, Early Access · beta: ADMIN, Pro trial · gamma: MEMBER, paid Pro (never shown to a MEMBER).
+    await prisma.organization.update({ where: { id: "beta" }, data: { trialEndsAt: new Date(Date.now() + 12 * 86_400_000 - 60_000) } });
+    await prisma.organization.update({ where: { id: "gamma" }, data: { plan: "PRO" } });
+    await prisma.billingSubscription.create({ data: { organizationId: "gamma", stripeSubscriptionId: "sub_g", stripeCustomerId: "cus_g", status: "active", interval: "year", livemode: false, lastSyncedAt: new Date() } });
+    signIn("multi");
+    const html = await myOrgs();
+    const card = (o: string) => {
+      const at = html.indexOf(`href="/admin/o/${o}/groups"`);
+      expect(at, o).toBeGreaterThan(-1);
+      return html.slice(at, html.indexOf("</a>", at));
+    };
+    expect(card("alpha")).toMatch(/Org alpha[\s\S]*?Owner[\s\S]*?2 groups[\s\S]*?<span class="sr-only">Plan: <\/span>Early Access/);
+    expect(card("beta")).toMatch(/Admin[\s\S]*?Pro Trial · 12 days left/);
+    expect(card("gamma")).not.toMatch(/Plan: |Pro · Yearly|Pro Plan/);
+    expect(card("alpha")).not.toMatch(/Pro Trial/);
+    expect(card("beta")).not.toMatch(/Early Access/);
+    expect(html).not.toMatch(/Upgrade to Pro|Choose Pro Plan/); // cards are navigation only — no purchase links
+    // Another user's view of the same page never carries these plans.
+    signIn("member");
+    expect(await myOrgs()).not.toMatch(/Plan: |Early Access/);
+  });
+
   it("invited ADMIN / MEMBER see the organization they belong to", async () => {
     for (const who of ["admin", "member"]) {
       signIn(who);
