@@ -632,7 +632,7 @@ describe("M11.2B — Stripe Live mode in Production only", () => {
       goLive();
       stripe.prices.set(priceId, patch);
       const label = `${priceId} ${JSON.stringify(patch)}`;
-      expect(await checkout("free"), label).toMatchObject({ status: 503, body: { code: "BILLING_UNAVAILABLE" } });
+      expect(await checkout("free"), label).toMatchObject({ status: 503, body: { code: "CHECKOUT_UNAVAILABLE", error: expect.stringMatching(/^Checkout couldn't be started right now\. Nothing was charged/) } });
       expect(stripe.calls.createCustomer ?? 0, label).toBe(0);
       expect(stripe.calls.createCheckoutSession ?? 0, label).toBe(0);
     }
@@ -830,7 +830,7 @@ describe("M11.2C — Terms agreement, US-only address and tax readiness before C
       resetTaxCheckCacheForTests();
       resetPriceCheckCacheForTests();
       setup();
-      expect(await checkout("free"), label).toMatchObject({ status: 503, body: { code: "BILLING_UNAVAILABLE" } });
+      expect(await checkout("free"), label).toMatchObject({ status: 503, body: { code: "CHECKOUT_UNAVAILABLE", error: expect.stringMatching(/^Checkout couldn't be started right now\. Nothing was charged/) } });
       expect(stripe.calls.createCustomer ?? 0, label).toBe(0);
       expect(stripe.calls.updateCustomerAddress ?? 0, label).toBe(0);
       expect(stripe.calls.createCheckoutSession ?? 0, label).toBe(0);
@@ -928,7 +928,7 @@ describe("M11.2C — Terms agreement, US-only address and tax readiness before C
     stripe.tax.settings = { status: "pending", defaultTaxBehavior: "exclusive" }; // Stripe Tax not active in Live
     expect((await checkout("other")).status).toBe(404); // not an owner of "other"
     await prisma.organizationMembership.create({ data: { userId: "u-owner", organizationId: "other", role: "OWNER" } });
-    expect(await checkout("other")).toMatchObject({ status: 503, body: { code: "BILLING_UNAVAILABLE" } });
+    expect(await checkout("other")).toMatchObject({ status: 503, body: { code: "CHECKOUT_UNAVAILABLE" } });
   });
 
   it("only the OWNER can start Checkout, even with a valid address and agreement (ADMIN / MEMBER / other tenant → 404)", async () => {
@@ -1081,5 +1081,34 @@ describe("Fix A — at a Free limit the OWNER gets an Upgrade link to THEIR Bill
     expect(html).not.toContain("Upgrade to Pro");
     expect(html).not.toContain("Ask your organization owner");
     await nothingBilled();
+  });
+});
+
+// ============================================================ INCIDENT 2026-10-29 — readiness failure message
+describe("Checkout readiness failure (e.g. a Stripe key without Tax Settings permission) is not reported as 'coming soon'", () => {
+  it("StripePermissionError on the Stripe Tax lookup → 503 CHECKOUT_UNAVAILABLE: nothing created in Stripe, the trial unchanged, the operator reason logged", async () => {
+    goLive();
+    const trialEndsAt = (await prisma.organization.findUniqueOrThrow({ where: { id: "trial" } })).trialEndsAt;
+    stripe.api.retrieveTaxSettings = async () => {
+      throw Object.assign(new Error("The provided key does not have the required permissions"), { type: "StripePermissionError" });
+    };
+    const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const r = await checkout("trial");
+      expect(r).toMatchObject({ status: 503, body: { code: "CHECKOUT_UNAVAILABLE" } });
+      expect(r.body.error).toBe("Checkout couldn't be started right now. Nothing was charged and your plan hasn't changed. Please try again later. If this keeps happening, contact support.");
+      expect(String(r.body.error)).not.toMatch(/coming soon|isn.t available yet|Permission|Tax/i); // no operator detail to the browser
+      expect(logged.mock.calls.map((c) => String(c[0])).some((l) => /refused: Stripe Tax lookup failed \(StripePermissionError\)/.test(l))).toBe(true);
+    } finally {
+      logged.mockRestore();
+    }
+    expect(Object.keys(stripe.calls).filter((k) => k !== "retrieveTaxSettings")).toEqual([]); // no Customer, no Session
+    expect((await prisma.billingCheckoutSession.findMany({ where: { organizationId: "trial" } })).map((o) => o.status)).toEqual(["FAILED"]);
+    expect(await prisma.organization.findUniqueOrThrow({ where: { id: "trial" } })).toMatchObject({ plan: "FREE", trialEndsAt }); // trial untouched
+  });
+
+  it("billing switched off still says 'coming soon' (BILLING_UNAVAILABLE) — only the readiness failure changed", async () => {
+    vi.stubEnv("BILLING_ENABLED", "");
+    expect(await checkout("free")).toMatchObject({ status: 503, body: { code: "BILLING_UNAVAILABLE", error: "Billing isn't available yet. Pro plans and upgrades are coming soon." } });
   });
 });

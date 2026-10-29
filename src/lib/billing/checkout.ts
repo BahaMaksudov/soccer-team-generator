@@ -53,6 +53,16 @@ function unavailable(): NextResponse {
   return NextResponse.json({ error: BILLING_UNAVAILABLE_MESSAGE, code: "BILLING_UNAVAILABLE" }, { status: 503 });
 }
 
+/**
+ * Billing IS on, but a pre-Checkout readiness check failed (Stripe Tax or the configured Prices could not
+ * be verified — e.g. a Stripe permission or outage). Not "coming soon": the owner learns nothing was
+ * charged and nothing changed; the operator reason is in the server log line only (never sent here).
+ */
+export const CHECKOUT_NOT_READY_MESSAGE = "Checkout couldn't be started right now. Nothing was charged and your plan hasn't changed. Please try again later. If this keeps happening, contact support.";
+function checkoutNotReady(): NextResponse {
+  return NextResponse.json({ error: CHECKOUT_NOT_READY_MESSAGE, code: "CHECKOUT_UNAVAILABLE" }, { status: 503 });
+}
+
 async function lockBilling(tx: Prisma.TransactionClient, organizationId: string) {
   await tx.$queryRaw`SELECT 1 AS locked FROM pg_advisory_xact_lock(hashtext(${"billing:" + organizationId}))`;
 }
@@ -136,7 +146,7 @@ export async function startCheckout(context: OrganizationContext, body: unknown)
     // A NEW operation never reached Stripe, so it can be closed. A reused one stays CREATING: Stripe may
     // already hold its session (lost response), and only its own idempotency key may recover it.
     if (op.kind === "new") await prisma.billingCheckoutSession.updateMany({ where: { id: op.id, status: "CREATING" }, data: { status: "FAILED" } });
-    return unavailable();
+    return checkoutNotReady();
   }
 
   try {
