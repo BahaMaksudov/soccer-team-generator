@@ -86,6 +86,10 @@ describe("legal pages — no invented facts", () => {
     expect(privacy).toContain("What is sent: only a page view for each of those pages");
     expect(privacy).toContain("We do not send scrolling, clicks or other interactions");
     expect(privacy).not.toMatch(/such as scrolling and clicks on links/);
+    // Section 15: the shared effective date marks a formally issued version (it is also Checkout's accepted-terms version).
+    expect(privacy).toContain("We may update this Privacy Policy to reflect changes in our services, technology, legal requirements, or privacy practices. When we make changes, we will publish the revised Privacy Policy on this page. We may provide additional notice of material changes when appropriate or required by law. The effective date displayed above applies to the published Terms and Privacy Policy version and may be updated when a new version is formally issued.");
+    expect(privacy).not.toContain("change the effective date above");
+    expect(LEGAL_EFFECTIVE_DATE).toBe("2026-10-27");
     // The pages the policy names are the allowlist in code (src/lib/analytics/ga.ts).
     const ga = read("src/lib/analytics/ga.ts");
     for (const r of ['"/": "Home"', '"/pricing"', '"/terms"', '"/privacy"', '"/login"', '"/signup"', '"/forgot-password"', '"/verify-email"', '"/onboarding"']) expect(ga).toContain(r);

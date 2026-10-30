@@ -307,7 +307,7 @@ export default function PrivacyPage() {
 
       <LegalSection id="changes" title="15. Changes to this policy">
         <p>
-          We will update this page when our practices change and change the effective date above. See also our{" "}
+          We may update this Privacy Policy to reflect changes in our services, technology, legal requirements, or privacy practices. When we make changes, we will publish the revised Privacy Policy on this page. We may provide additional notice of material changes when appropriate or required by law. The effective date displayed above applies to the published Terms and Privacy Policy version and may be updated when a new version is formally issued. See also our{" "}
           <Link href={LEGAL_PATHS.terms} className="underline">
             Terms of Service
           </Link>
