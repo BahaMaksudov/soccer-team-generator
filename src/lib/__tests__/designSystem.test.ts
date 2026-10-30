@@ -146,6 +146,7 @@ describe("UI primitives are presentation-only", () => {
     expect(users.sort()).toEqual(
       [
         "src/app/page.tsx",
+        "src/components/analytics/GoogleAnalytics.tsx", // GA4 consent banner (opt-in analytics)
         "src/components/marketing/MarketingHeader.tsx",
         "src/components/marketing/parts.tsx",
         "src/app/signup/page.tsx",

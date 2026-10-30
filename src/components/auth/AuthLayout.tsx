@@ -1,4 +1,5 @@
 import Link from "next/link";
+import CookieSettingsLink from "@/components/analytics/CookieSettingsLink";
 import { ArrowLeft } from "lucide-react";
 import { BalanceBadge, Logo, TeamColumn, linkFocus } from "@/components/marketing/parts";
 import { cn } from "@/lib/cn";
@@ -70,6 +71,7 @@ export default function AuthLayout({ headline, body, children }: { headline: str
           <Link href="/terms" className={cn("inline-flex min-h-11 items-center hover:text-foreground hover:underline", linkFocus)}>
             Terms of Service
           </Link>
+          <CookieSettingsLink className={cn("inline-flex min-h-11 items-center hover:text-foreground hover:underline", linkFocus)} />
         </footer>
       </div>
     </div>

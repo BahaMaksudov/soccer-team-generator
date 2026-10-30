@@ -1,4 +1,5 @@
 import Link from "next/link";
+import CookieSettingsLink from "@/components/analytics/CookieSettingsLink";
 import MarketingHeader from "@/components/marketing/MarketingHeader";
 import { linkFocus } from "@/components/marketing/parts";
 import { cn } from "@/lib/cn";
@@ -70,6 +71,7 @@ export default function LegalPage({ title, intro, children }: { title: string; i
           <Link href="/" className={cn("hover:underline", linkFocus)}>
             Home
           </Link>
+          <CookieSettingsLink className={cn("hover:underline", linkFocus)} />
         </nav>
       </main>
     </div>

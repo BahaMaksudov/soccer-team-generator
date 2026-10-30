@@ -1,4 +1,5 @@
 import Link from "next/link";
+import CookieSettingsLink from "@/components/analytics/CookieSettingsLink";
 import MarketingHeader from "@/components/marketing/MarketingHeader";
 import PlanComparison from "@/components/billing/PlanComparison";
 import PricingPlans from "@/components/billing/PricingPlans";
@@ -52,6 +53,7 @@ export default function PricingPage() {
             <Link href="/privacy" className="underline-offset-2 hover:underline">
               Privacy Policy
             </Link>
+            <CookieSettingsLink className="ml-1 underline-offset-2 before:mr-1 before:content-['·'] hover:underline" />
           </p>
         </section>
       </main>

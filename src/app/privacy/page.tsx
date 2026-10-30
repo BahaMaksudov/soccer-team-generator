@@ -2,6 +2,7 @@ import Link from "next/link";
 import LegalPage, { ContactEmail, EffectiveDate, LegalSection } from "@/components/legal/LegalPage";
 import { ACCOUNT_MIN_AGE, HOSTING, LEGAL_PATHS, OPERATING_BRAND, PRODUCT_NAME, billingTermsPublished, legalCanonical, legalIsDraft } from "@/lib/legal";
 import { TRIAL_DAYS } from "@/lib/entitlements";
+import CookieSettingsLink from "@/components/analytics/CookieSettingsLink";
 
 /**
  * Public Privacy Policy. Every statement describes what the application does
@@ -204,6 +205,7 @@ export default function PrivacyPage() {
           <li><strong>OpenAI</strong> — AI-written match recaps, when an organizer requests one (section 6).</li>
           <li><strong>WeatherAPI.com</strong> — the weather forecast for a match, using the venue&apos;s map coordinates.</li>
           <li><strong>Geoapify</strong> — finding a venue&apos;s map location from the address an organizer types.</li>
+          <li><strong>Google Analytics</strong> — website usage statistics on our public pages, only if you accept analytics cookies (section 9).</li>
           {paid ? (
             <li><strong>Stripe</strong> — processes Pro subscription payments and calculates sales tax. Stripe collects payment details directly, may email receipts, and receives the subscribing owner&apos;s email address, the organization name and the billing address.</li>
           ) : (
@@ -213,13 +215,37 @@ export default function PrivacyPage() {
         <p>We may disclose information when required by law. Map links open Google Maps or OpenStreetMap only when you choose to follow them.</p>
       </LegalSection>
 
-      <LegalSection id="cookies" title="9. Cookies and browser storage">
+      <LegalSection id="cookies" title="9. Cookies, browser storage and analytics">
+        <p className="font-semibold">Cookies and storage the service needs</p>
         <ul>
           <li>Sign-in cookies set by our authentication system: a session cookie (keeps you signed in until you sign out; it expires after 30 days without use), a security (CSRF) cookie, and short-lived cookies used during Google Sign-In.</li>
           <li>A short-lived cookie (10 minutes) when you connect Google to your account.</li>
           <li>When you open a group invite link, your browser keeps the invitation for up to one hour so you can sign in and come back to it.</li>
+          <li>Your analytics choice (accepted or declined) and the date you made it, kept in your browser&apos;s storage so we don&apos;t ask again.</li>
         </ul>
-        <p>We do not use analytics, advertising or tracking cookies, and we do not load third-party trackers.</p>
+        <p className="font-semibold">Optional analytics cookies (Google Analytics)</p>
+        <p>
+          Only if you accept analytics cookies, we use Google Analytics 4, a service provided by Google, to understand how visitors find and use our public website — which pages are visited, how visitors arrived (for example from a search engine or a campaign link), and general device, browser and approximate location (country or region) information. We use this only to improve our website and how we describe {PRODUCT_NAME}.
+        </p>
+        <ul>
+          <li>Where: only on our public pages — the home page, Pricing, the Terms of Service, this Privacy Policy, and the sign-in, sign-up, password-reset request, email-verification and create-organization pages. Never on player pages (match links, attendance links, group pages, invitations) and never in the signed-in organizer area.</li>
+          <li>What is sent: only a page view for each of those pages — the page&apos;s address without query details (such as email addresses or private link codes; only campaign tags such as <code>utm_source</code> and the chosen plan are kept), a fixed page title, and the page of ours or the website you came from (another website&apos;s address without its path). Like any web request, it also carries technical information such as your device and browser type, language and screen size, which Google uses to estimate your approximate location. We do not send scrolling, clicks or other interactions, and we do not send Google your name, email address, or any account, organization or player information.</li>
+          <li>Cookies: Google Analytics sets first-party cookies named <code>_ga</code> and <code>_ga_</code> followed by an identifier, lasting up to 13 months.</li>
+          <li>Google receives your IP address in order to provide the service; Google Analytics 4 does not store IP addresses. Google processes this information as described in the{" "}
+            <a href="https://policies.google.com/privacy" className="underline" rel="noopener noreferrer" target="_blank">
+              Google Privacy Policy
+            </a>
+            .
+          </li>
+          <li>Retention: Google Analytics keeps this event-level data for the retention period set in our Google Analytics account (2 months); summary reports may be kept longer.</li>
+          <li>We do not use Google Analytics for advertising: Google signals and ad personalization are turned off, and we do not sell personal information or share it for cross-context behavioral advertising.</li>
+        </ul>
+        <p className="font-semibold">Your choice</p>
+        <p>
+          Analytics cookies stay off until you choose Accept. You can change your choice at any time with the &quot;Cookie settings&quot; link at the bottom of our public pages
+          <CookieSettingsLink className="ml-1 underline before:mr-1 before:content-['—']" />. If you withdraw your consent we stop collecting analytics and delete the Google Analytics cookies for this site. You can also block cookies in your browser settings.
+        </p>
+        <p>We do not use advertising or cross-site tracking cookies.</p>
       </LegalSection>
 
       <LegalSection id="security" title="10. Security">

@@ -73,10 +73,28 @@ describe("legal pages — no invented facts", () => {
     expect(read("src/components/legal/LegalPage.tsx")).toContain("Draft for owner review — not yet a final policy.");
     for (const s of [privacy, terms]) expect(s).toContain("...(legalIsDraft() ? { robots: { index: false, follow: true } } : {})");
   });
-  it("no claims about analytics/trackers the app does not have", () => {
+  it("analytics: the policy describes exactly what the app does (opt-in GA4 on the allowlisted public pages; no other trackers)", () => {
     const pkg = read("package.json");
-    for (const t of ["@vercel/analytics", "posthog", "gtag", "@sentry"]) expect(pkg).not.toContain(t);
-    expect(privacy).toContain("We do not use analytics, advertising or tracking cookies");
+    for (const t of ["@vercel/analytics", "posthog", "gtag", "@sentry", "@next/third-parties"]) expect(pkg).not.toContain(t);
+    expect(privacy).toContain("Optional analytics cookies (Google Analytics)");
+    expect(privacy).toContain("Analytics cookies stay off until you choose Accept.");
+    expect(privacy).toContain("Never on player pages (match links, attendance links, group pages, invitations) and never in the signed-in organizer area.");
+    expect(privacy).toContain("Google signals and ad personalization are turned off");
+    expect(privacy).toContain("<strong>Google Analytics</strong> — website usage statistics on our public pages, only if you accept analytics cookies");
+    expect(privacy).not.toContain("we do not load third-party trackers");
+    // Strict collection sends page views only — the policy must not claim more (or less).
+    expect(privacy).toContain("What is sent: only a page view for each of those pages");
+    expect(privacy).toContain("We do not send scrolling, clicks or other interactions");
+    expect(privacy).not.toMatch(/such as scrolling and clicks on links/);
+    // The pages the policy names are the allowlist in code (src/lib/analytics/ga.ts).
+    const ga = read("src/lib/analytics/ga.ts");
+    for (const r of ['"/": "Home"', '"/pricing"', '"/terms"', '"/privacy"', '"/login"', '"/signup"', '"/forgot-password"', '"/verify-email"', '"/onboarding"']) expect(ga).toContain(r);
+    expect(ga).not.toMatch(/"\/admin|"\/attend|"\/share|"\/g\/|"\/join|"\/invite/);
+    // Advertising stays off in code too.
+    const tag = read("src/components/analytics/GoogleAnalytics.tsx");
+    expect(tag).toContain("allow_google_signals: false");
+    expect(tag).toContain("allow_ad_personalization_signals: false");
+    expect(tag).toContain('ad_storage: "denied", ad_user_data: "denied", ad_personalization: "denied"');
   });
   it("trial length and Pro prices come from the enforced catalog (not hard-coded text)", () => {
     expect(terms).toContain("{TRIAL_DAYS}-day Pro trial");

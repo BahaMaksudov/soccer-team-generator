@@ -74,6 +74,7 @@ import { headers } from "next/headers";
 import LegacyChrome from "@/components/LegacyChrome";
 import ChromeBoundaryGuard from "@/components/ChromeBoundaryGuard";
 import { CHROME_HEADER, chromeModeFromHeader } from "@/lib/chrome";
+import GoogleAnalytics from "@/components/analytics/GoogleAnalytics";
 import { getTeamName } from "@/lib/settings";
 
 // UI-0 — design-system fonts (Archivo display / Manrope body), self-hosted from
@@ -112,6 +113,8 @@ export default async function RootLayout({ children }: { children: React.ReactNo
         {/* UI-1/UI-2 — old global chrome for every route except the redesigned homepage and auth screens. */}
         <ChromeBoundaryGuard mode={mode} />
         {mode === "redesign" ? children : <LegacyChrome teamName={teamName}>{children}</LegacyChrome>}
+        {/* GA4 — opt-in, Production hostname + allowlisted pages only (src/lib/analytics/ga.ts). */}
+        <GoogleAnalytics />
       </body>
     </html>
   );

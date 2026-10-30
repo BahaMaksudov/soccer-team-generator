@@ -1,4 +1,5 @@
 import Link from "next/link";
+import CookieSettingsLink from "@/components/analytics/CookieSettingsLink";
 import Image from "next/image";
 import {
   Activity,
@@ -480,6 +481,7 @@ function Footer() {
           <Link href="/terms" className={cn("opacity-85 hover:opacity-100", linkFocus)}>
             Terms of Service
           </Link>
+          <CookieSettingsLink className={cn("opacity-85 hover:opacity-100", linkFocus)} />
         </nav>
         <div className="space-y-1 text-sm">
           {/* M12-A — support contact only when SUPPORT_EMAIL is configured (never invented). */}
