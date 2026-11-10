@@ -4,6 +4,7 @@ import { roleLabel } from "@/lib/sports";
 import { formatLongDateOnly } from "@/lib/dateOnly";
 import { loadPublicGroupPrintData } from "./data";
 import PrintButton from "./PrintButton";
+import ShirtColorBadge from "@/components/teams/ShirtColorBadge";
 
 /**
  * Phase 2D.5E — canonical, tenant-safe public Print page.
@@ -71,7 +72,10 @@ export default async function PublicGroupPrint({ params }: { params: Params }) {
           <tbody>
             {gen.teams.map((t) => (
               <tr key={t.teamNumber} className="border-t">
-                <td className="p-3 font-semibold">#{t.teamNumber}</td>
+                <td className="p-3 align-top font-semibold">
+                  #{t.teamNumber}
+                  <ShirtColorBadge color={t.shirtColor} className="mt-1 flex text-xs font-medium" />
+                </td>
                 <td className="p-3">
                   <ul className="list-disc pl-5 space-y-1">
                     {t.players.map((p, i) => (

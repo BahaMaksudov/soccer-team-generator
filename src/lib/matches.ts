@@ -36,6 +36,7 @@ import {
   lockMatchAttendance,
   writeAttendanceDeadline,
 } from "@/lib/attendanceDeadline";
+import { isShirtColorId, type ShirtColorId } from "@/lib/shirtColors";
 
 /**
  * M9-A — Match domain services (canonical, URL-bound callers pass an
@@ -144,7 +145,7 @@ async function resolveMatchCommunity(groupId: string, communityId: string | unde
 }
 
 /** Published snapshot → organizer-facing teams (only id, names and role key). */
-export function publishedTeamsOf(teamsJson: string): Array<{ teamNumber: number; players: Array<{ id: string; firstName: string; lastName: string; position: string }> }> {
+export function publishedTeamsOf(teamsJson: string): Array<{ teamNumber: number; shirtColor?: ShirtColorId; players: Array<{ id: string; firstName: string; lastName: string; position: string }> }> {
   let parsed: unknown;
   try {
     parsed = JSON.parse(teamsJson);
@@ -154,13 +155,13 @@ export function publishedTeamsOf(teamsJson: string): Array<{ teamNumber: number;
   if (!Array.isArray(parsed)) return [];
   const str = (v: unknown) => (typeof v === "string" ? v : "");
   return parsed.flatMap((t: unknown) => {
-    const team = t as { teamNumber?: unknown; players?: unknown };
+    const team = t as { teamNumber?: unknown; players?: unknown; shirtColor?: unknown };
     if (!team || typeof team.teamNumber !== "number") return [];
     const players = (Array.isArray(team.players) ? team.players : []).flatMap((p: unknown) => {
       const pl = p as Record<string, unknown>;
       return pl && typeof pl.id === "string" ? [{ id: pl.id, firstName: str(pl.firstName), lastName: str(pl.lastName), position: str(pl.position) }] : [];
     });
-    return [{ teamNumber: team.teamNumber, players }];
+    return [{ teamNumber: team.teamNumber, ...(isShirtColorId(team.shirtColor) ? { shirtColor: team.shirtColor } : {}), players }];
   });
 }
 

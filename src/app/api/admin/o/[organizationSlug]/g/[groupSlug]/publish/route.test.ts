@@ -491,8 +491,12 @@ describe("POST canonical publish — submitted players must belong to the active
     ];
     const res = await POST(publishReq({ date: "2026-10-05T00:00:00.000Z", teams }), ctx("org-b", "group-b"));
     expect(res.status).toBe(200);
-    // Unchanged when the client sent the true values.
-    expect(JSON.parse(mockLegacySave.mock.calls[0][0].data.teamsJson)).toEqual(teams);
+    // Unchanged when the client sent the true values; a payload without shirt colors (older client)
+    // gets the default order — Team 1 Yellow, Team 2 Blue — and the players are untouched.
+    expect(JSON.parse(mockLegacySave.mock.calls[0][0].data.teamsJson)).toEqual([
+      { ...teams[0], shirtColor: "yellow" },
+      { ...teams[1], shirtColor: "blue" },
+    ]);
   });
 });
 
@@ -554,7 +558,7 @@ describe("POST canonical publish — server-authoritative snapshot (Phase 2D.6E.
       },
     ]);
     const t = stored()[0];
-    expect(Object.keys(t).sort()).toEqual(["players", "teamNumber"]);
+    expect(Object.keys(t).sort()).toEqual(["players", "shirtColor", "teamNumber"]);
     expect(Object.keys(t.players[0]).sort()).toEqual(["firstName", "id", "lastName", "position", "rating", "stamina"]);
     expect(mockLegacySave.mock.calls[0][0].data.teamsJson).not.toMatch(/someInjectedKey|teamInjected|group-a|telegramUserId|isActive|bad/);
   });
@@ -565,10 +569,48 @@ describe("POST canonical publish — server-authoritative snapshot (Phase 2D.6E.
       { teamNumber: 2, players: [{ id: "pb4" }, { id: "pb2" }] },
     ]);
     expect(stored()).toEqual([
-      { teamNumber: 1, players: [canonical("pb3"), canonical("pb1")] },
-      { teamNumber: 2, players: [canonical("pb4"), canonical("pb2")] },
+      { teamNumber: 1, shirtColor: "yellow", players: [canonical("pb3"), canonical("pb1")] },
+      { teamNumber: 2, shirtColor: "blue", players: [canonical("pb4"), canonical("pb2")] },
     ]);
     expect(mockLegacySave.mock.calls[0][0].op).toBe("create");
+  });
+
+  it("shirt colors: the owner's choice is stored; nothing else about the teams changes", async () => {
+    await publish([
+      { teamNumber: 1, shirtColor: "purple", players: [{ id: "pb3" }, { id: "pb1" }] },
+      { teamNumber: 2, shirtColor: "white", players: [{ id: "pb4" }, { id: "pb2" }] },
+    ]);
+    expect(stored()).toEqual([
+      { teamNumber: 1, shirtColor: "purple", players: [canonical("pb3"), canonical("pb1")] },
+      { teamNumber: 2, shirtColor: "white", players: [canonical("pb4"), canonical("pb2")] },
+    ]);
+  });
+
+  it("shirt colors: the same color on two teams → 400, nothing saved", async () => {
+    const res = await publish([
+      { teamNumber: 1, shirtColor: "red", players: [{ id: "pb1" }] },
+      { teamNumber: 2, shirtColor: "red", players: [{ id: "pb2" }] },
+    ]);
+    expect(res.status).toBe(400);
+    expect(await res.json()).toMatchObject({ code: "DUPLICATE_SHIRT_COLOR" });
+    expect(mockLegacySave).not.toHaveBeenCalled();
+  });
+
+  it("shirt colors: anything outside the catalog (CSS, hex, unknown names) → 400, nothing saved", async () => {
+    for (const shirtColor of ["#ff0000", "rgb(0,0,0)", "pink", "Yellow", "", 3, { id: "red" }]) {
+      mockLegacySave.mockClear();
+      const res = await publish([{ teamNumber: 1, shirtColor, players: [{ id: "pb1" }] }]);
+      expect(res.status, JSON.stringify(shirtColor)).toBe(400);
+      expect(mockLegacySave, JSON.stringify(shirtColor)).not.toHaveBeenCalled();
+    }
+  });
+
+  it("shirt colors: null (a team beyond the 8 colors) is stored as no color", async () => {
+    await publish([
+      { teamNumber: 1, shirtColor: "yellow", players: [{ id: "pb1" }] },
+      { teamNumber: 2, shirtColor: null, players: [{ id: "pb2" }] },
+    ]);
+    expect(stored().map((t: { shirtColor: unknown }) => t.shirtColor)).toEqual(["yellow", null]);
   });
 
   it("foreign player (even with forged fields) → 400 generic, no upsert", async () => {

@@ -8,13 +8,15 @@
  * snapshot fields can never leak by accident.
  *
  * Allowed: first/last name (display name), position label key, team
- * number, game date. Position is already shown on public pages (GK
+ * number, the team's shirt color (catalog id only), game date. Position is already shown on public pages (GK
  * visibility). Never: rating, stamina, Telegram ids/usernames, emails,
  * account/membership data, settings, token material.
  */
 
+import { isShirtColorId, type ShirtColorId } from "@/lib/shirtColors";
+
 export type PlayerFacingPlayer = { firstName: string; lastName: string; position: string | null };
-export type PlayerFacingTeam = { teamNumber: number; players: PlayerFacingPlayer[] };
+export type PlayerFacingTeam = { teamNumber: number; shirtColor?: ShirtColorId; players: PlayerFacingPlayer[] };
 
 const str = (v: unknown) => (typeof v === "string" ? v : "");
 
@@ -29,12 +31,14 @@ export function toPlayerFacingTeams(teamsJson: string): PlayerFacingTeam[] {
   if (!Array.isArray(parsed)) return [];
   return parsed.flatMap((t: unknown) => {
     if (!t || typeof t !== "object") return [];
-    const team = t as { teamNumber?: unknown; players?: unknown };
+    const team = t as { teamNumber?: unknown; players?: unknown; shirtColor?: unknown };
     if (typeof team.teamNumber !== "number" || !Number.isFinite(team.teamNumber)) return [];
     const players = Array.isArray(team.players) ? team.players : [];
     return [
       {
         teamNumber: team.teamNumber,
+        // Only a catalog id, and only when one was published (legacy snapshots: no key at all).
+        ...(isShirtColorId(team.shirtColor) ? { shirtColor: team.shirtColor } : {}),
         players: players.flatMap((p: unknown) => {
           if (!p || typeof p !== "object") return [];
           const pl = p as { firstName?: unknown; lastName?: unknown; position?: unknown };

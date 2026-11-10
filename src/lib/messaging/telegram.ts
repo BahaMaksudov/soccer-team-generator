@@ -22,6 +22,7 @@ export function renderTelegramHtml(content: TextContent): string {
     lines.push("");
   }
   let text = lines.join("\n").trim();
+  if (content.note) text += `\n\n${escapeHtml(content.note)}`;
   // M9.2 — 📍 Venue, then "Location: <maps link>" only when there is an address (never a broken link).
   if (content.location) {
     text += `\n\n📍 ${escapeHtml(content.location.name)}`;

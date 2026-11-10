@@ -16,6 +16,8 @@
 
 export type TeamsForMessage = Array<{
   teamNumber: number;
+  /** Published shirt color id (src/lib/shirtColors.ts); absent/null on legacy snapshots. */
+  shirtColor?: string | null;
   players: Array<{ firstName?: string | null; lastName?: string | null }>;
 }>;
 

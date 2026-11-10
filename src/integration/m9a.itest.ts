@@ -64,6 +64,7 @@ import { generateRecapDraft, syncedRecapText, AI_DRAFT_READY_MESSAGE, summaryRea
 import { legacyResultHash } from "@/lib/messaging/postGameMessages";
 import { getMatchSummaryReadiness, runPostGameAction } from "@/lib/postGame";
 import { requireTenantContextForSlugs } from "@/lib/tenantContext";
+import { assignShirtColors } from "@/lib/shirtColors";
 
 const A = { organizationSlug: "org-a", groupSlug: "group-a" };
 const B = { organizationSlug: "org-b", groupSlug: "group-b" };
@@ -663,7 +664,11 @@ describe("published teams vs working preview (manual-smoke regression)", () => {
     const deliveriesBefore = await prisma.messageDelivery.count();
     const sendsBefore = sends("sendMessage").length;
     const ids = ["ga-p1", "ga-p2", "ga-p3", "ga-p4", "ga-p5", "ga-p6"];
-    const gen = async () => (await generateRoute.POST(json("POST", { teamCount: 2, date: "2026-10-12", selectedIds: ids }), g(A))).json();
+    // Like the UI: shirt colors are attached to the generated preview before it is published.
+    const gen = async () => {
+      const r = await (await generateRoute.POST(json("POST", { teamCount: 2, date: "2026-10-12", selectedIds: ids }), g(A))).json();
+      return { ...r, teams: assignShirtColors(r.teams) };
+    };
 
     const a = await gen();
     expect((await publishRoute.POST(json("POST", { date: a.date, teams: a.teams, matchId: id }), g(A))).status).toBe(200);
@@ -734,7 +739,8 @@ const scopeAdd = (ref: number, playerId: string, grp = A, fromSuggestion?: boole
   chatScopeRoute.POST(json("POST", { playerId, ...(fromSuggestion ? { fromSuggestion } : {}) }), gr(grp, ref));
 const scopeRemove = (ref: number, playerId: string, grp = A) => chatScopeRoute.DELETE(json("DELETE", { playerId }), gr(grp, ref));
 const selectChat = (matchId: string, ref: number | null, grp = A) => matchChatRoute.POST(json("POST", { chatRef: ref }), gm(grp, matchId));
-const teamsOf = (ids: string[][]) => ids.map((players, i) => ({ teamNumber: i + 1, players: players.map((id) => ({ id })) }));
+// Like the UI: published teams carry shirt colors (default order).
+const teamsOf = (ids: string[][]) => assignShirtColors(ids.map((players, i) => ({ teamNumber: i + 1, players: players.map((id) => ({ id })) })));
 const team1Block = (teamsJson: string) => {
   const html = formatTeamsHtml("x", JSON.parse(teamsJson));
   return html.slice(html.indexOf("Team #1"), html.indexOf("Team #2"));
@@ -1078,8 +1084,8 @@ describe("M9-C — PUBLIC Match page", () => {
       venue: null, // M9.2 — public venue data (none set here)
       teamsPublished: true,
       teams: [
-        { teamNumber: 1, players: [{ name: "A1 Player", role: "Goalkeeper" }, { name: "A2 Player", role: "Forward" }] },
-        { teamNumber: 2, players: [{ name: "A3 Player", role: "Forward" }, { name: "A4 Player", role: "Forward" }] },
+        { teamNumber: 1, shirtColor: "yellow", players: [{ name: "A1 Player", role: "Goalkeeper" }, { name: "A2 Player", role: "Forward" }] },
+        { teamNumber: 2, shirtColor: "blue", players: [{ name: "A3 Player", role: "Forward" }, { name: "A4 Player", role: "Forward" }] },
       ],
       // M9-D — nothing post-game is published yet.
       result: null,
@@ -2171,5 +2177,82 @@ describe("M9 post-game streamlining — published change → stale summary; agen
     expect((await runPostGameAction(memberCtx, id, { action: "post_message", kind: "summary", intent: "post" })).status).toBe(404);
     expect((await getMatchSummaryReadiness(memberCtx, id))!.canPost).toBe(false);
     expect(tgCalls).toHaveLength(0);
+  });
+});
+
+// ============================================================ TEAM SHIRT COLORS
+describe("Team shirt colors — real DB: persistence, players, Telegram, overwrite, legacy, tenants", () => {
+  const colored = (c1: string, c2: string) => [
+    { teamNumber: 1, shirtColor: c1, players: [{ id: "ga-p1" }, { id: "ga-p2" }] },
+    { teamNumber: 2, shirtColor: c2, players: [{ id: "ga-p3" }, { id: "ga-p4" }] },
+  ];
+
+  it("owner-chosen colors survive reload, reach the player page and Telegram; republish replaces them in place", async () => {
+    await signInAs("owner@example.test");
+    const id = (await createMatch({ date: "2026-10-12", startTime: "20:00" })).data.match.id;
+    expect((await publishRoute.POST(json("POST", { date: "2026-10-12", teams: colored("purple", "white"), matchId: id }), g(A))).status).toBe(200);
+    expect(sends("sendMessage")).toEqual([]); // Publish never sends
+
+    // Reload (organizer) and the player-facing page carry the saved colors.
+    expect((await view(id)).generation.teams.map((t: { shirtColor?: string }) => t.shirtColor)).toEqual(["purple", "white"]);
+    const ownerSession = session;
+    session = null;
+    expect((await pageView(id))!.teams.map((t) => t.shirtColor)).toEqual(["purple", "white"]);
+    session = ownerSession;
+
+    // The same color twice is refused and changes nothing.
+    const row = await prisma.teamGeneration.findUniqueOrThrow({ where: { matchId: id } });
+    const dup = await publishRoute.POST(json("POST", { date: "2026-10-12", teams: colored("red", "red"), matchId: id }), g(A));
+    expect(dup.status).toBe(400);
+    expect((await prisma.teamGeneration.findUniqueOrThrow({ where: { matchId: id } })).teamsJson).toBe(row.teamsJson);
+
+    // Telegram: the SAVED colors (not defaults), existing structure and names kept, reminder added.
+    await postPoll(id);
+    const pollId = (await prisma.telegramPoll.findFirstOrThrow({ where: { matchId: id } })).pollId;
+    expect((await closePostRoute.POST(json("POST", { pollId, teamGenerationId: row.id }), g(A))).status).toBe(200);
+    const text = lastReply();
+    expect(text).toContain("<b>\u{1F7E3} Team #1 — PURPLE SHIRTS</b>\n• A1 Player\n• A2 Player");
+    expect(text).toContain("<b>⚪ Team #2 — WHITE SHIRTS</b>\n• A3 Player\n• A4 Player");
+    expect(text).toContain("Please wear your assigned team color or bring matching pinnies.");
+    expect(text).not.toMatch(/YELLOW|BLUE/);
+
+    // Overwrite (same Match, new colors): same row, colors replaced, players unchanged.
+    expect((await publishRoute.POST(json("POST", { date: "2026-10-12", teams: colored("green", "black"), matchId: id }), g(A))).status).toBe(200);
+    const after = await prisma.teamGeneration.findUniqueOrThrow({ where: { matchId: id } });
+    expect(after.id).toBe(row.id);
+    expect(JSON.parse(after.teamsJson).map((t: { shirtColor: string; players: Array<{ id: string }> }) => [t.shirtColor, t.players.map((p) => p.id)])).toEqual([
+      ["green", ["ga-p1", "ga-p2"]],
+      ["black", ["ga-p3", "ga-p4"]],
+    ]);
+    expect(await prisma.teamGeneration.count({ where: { matchId: id } })).toBe(1);
+  });
+
+  it("legacy by-date overwrite saves the new colors; a legacy row WITHOUT colors stays readable and posts its old message", async () => {
+    await signInAs("owner@example.test");
+    // A pre-feature row (no shirtColor anywhere) — written directly, exactly like existing Production data.
+    await prisma.teamGeneration.create({
+      data: { groupId: "ga", date: new Date("2026-09-01T00:00:00Z"), teamsJson: JSON.stringify([{ teamNumber: 1, players: [{ id: "ga-p1", firstName: "A1", lastName: "Player", position: "GOALKEEPER", rating: "GOOD", stamina: 3 }] }]) },
+    });
+    const home = JSON.stringify(await loadPublicGroupHomeData(A));
+    expect(home).toContain("A1"); // the legacy teams are listed in the public history…
+    expect(home).not.toContain("shirtColor"); // …and no color is invented for old games
+
+    // Legacy by-date publish → colors stored; republish the same date → colors replaced (one row).
+    expect((await publishRoute.POST(json("POST", { date: "2026-10-20", teams: colored("yellow", "blue") }), g(A))).status).toBe(200);
+    expect((await publishRoute.POST(json("POST", { date: "2026-10-20", teams: colored("orange", "red") }), g(A))).status).toBe(200);
+    const rows = await prisma.teamGeneration.findMany({ where: { groupId: "ga", matchId: null, date: new Date("2026-10-20T00:00:00Z") } });
+    expect(rows).toHaveLength(1);
+    expect(JSON.parse(rows[0].teamsJson).map((t: { shirtColor: string }) => t.shirtColor)).toEqual(["orange", "red"]);
+  });
+
+  it("tenant isolation: another organization's URL can't publish colors into this Group, and sees none of its colors", async () => {
+    await signInAs("owner@example.test");
+    const id = (await createMatch({ date: "2026-10-12", startTime: "20:00" })).data.match.id;
+    expect((await publishRoute.POST(json("POST", { date: "2026-10-12", teams: colored("purple", "white"), matchId: id }), g(A))).status).toBe(200);
+    // Group A's owner using Group B's URL: refused before anything is stored.
+    const foreign = await publishRoute.POST(json("POST", { date: "2026-10-12", teams: colored("red", "green"), matchId: id }), g(B));
+    expect(foreign.status).toBe(404);
+    expect(await prisma.teamGeneration.count({ where: { group: { slug: "group-b" } } })).toBe(0);
+    expect(JSON.parse((await prisma.teamGeneration.findUniqueOrThrow({ where: { matchId: id } })).teamsJson).map((t: { shirtColor: string }) => t.shirtColor)).toEqual(["purple", "white"]);
   });
 });

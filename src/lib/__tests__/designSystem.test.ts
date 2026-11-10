@@ -147,6 +147,7 @@ describe("UI primitives are presentation-only", () => {
       [
         "src/app/page.tsx",
         "src/components/analytics/GoogleAnalytics.tsx", // GA4 consent banner (opt-in analytics)
+        "src/components/teams/ShirtColorBadge.tsx", // team shirt colors (swatch + name)
         "src/components/marketing/MarketingHeader.tsx",
         "src/components/marketing/parts.tsx",
         "src/app/signup/page.tsx",

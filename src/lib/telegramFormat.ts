@@ -12,6 +12,7 @@ export { escapeHtml };
 
 export type TeamForMessage = {
   teamNumber: number;
+  shirtColor?: string | null;
   players: Array<{ firstName?: string | null; lastName?: string | null }>;
 };
 

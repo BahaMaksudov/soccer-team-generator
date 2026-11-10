@@ -1,4 +1,5 @@
 import { formatLongDateOnly } from "@/lib/dateOnly";
+import ShirtColorBadge from "@/components/teams/ShirtColorBadge";
 import { formatStartTime } from "@/lib/messaging/content";
 import type { PlayerMatchView } from "@/lib/matchPage";
 
@@ -72,7 +73,10 @@ export default function PlayerMatchCard({ view, signInHref }: { view: PlayerMatc
             <tbody>
               {view.teams.map((t) => (
                 <tr key={t.teamNumber} className="border-t first:border-t-0">
-                  <td className="p-3 font-semibold align-top w-24">Team #{t.teamNumber}</td>
+                  <td className="p-3 font-semibold align-top w-28">
+                    Team #{t.teamNumber}
+                    <ShirtColorBadge color={t.shirtColor} className="mt-1 flex text-xs font-medium" />
+                  </td>
                   <td className="p-3">
                     <ul className="space-y-1">
                       {t.players.map((p, i) => (

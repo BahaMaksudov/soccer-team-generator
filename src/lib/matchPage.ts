@@ -31,6 +31,7 @@ import { mapsUrl } from "@/lib/venues";
  * (matchId) — never a preview, never "latest" or by date.
  */
 
+import type { ShirtColorId } from "@/lib/shirtColors";
 export type PlayerMatchView = {
   group: { name: string; teamName: string; organizationName: string; sportLabel: string };
   match: { date: string; startTime: string | null; locationName: string | null; status: "SCHEDULED" | "COMPLETED" | "CANCELED" };
@@ -38,7 +39,7 @@ export type PlayerMatchView = {
   venue: { name: string; address: string | null; mapsUrl: string | null } | null;
   teamsPublished: boolean;
   /** Display-only: no Player ids, ratings, stamina, metrics or identities. */
-  teams: Array<{ teamNumber: number; players: Array<{ name: string; role: string }> }>;
+  teams: Array<{ teamNumber: number; shirtColor?: ShirtColorId; players: Array<{ name: string; role: string }> }>;
   /** M9-D — PUBLISHED post-game data only (drafts, votes, voters and AI metadata never appear). */
   /** M8.1 — PUBLISHED fixtures (every pair of teams once), or labeled pre-M8.1 per-team standings. */
   result: ResultView | null;
@@ -72,6 +73,7 @@ export async function buildPlayerMatchView(
   const teams = generation
     ? toPlayerFacingTeams(generation.teamsJson).map((t) => ({
         teamNumber: t.teamNumber,
+        ...(t.shirtColor ? { shirtColor: t.shirtColor } : {}),
         players: t.players.map((p) => ({ name: playerDisplayName(p), role: p.position ? roleLabel(group.sportKey, p.position) : "" })),
       }))
     : [];

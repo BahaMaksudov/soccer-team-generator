@@ -1,3 +1,4 @@
+import type { ShirtColorId } from "@/lib/shirtColors";
 /**
  * Shared Admin-page types, extracted during the Phase 1.5 structural
  * refactor. Moved here only because more than one component needs
@@ -36,6 +37,8 @@ export type TgPollItem = {
  * and as stored/rendered by the preview + publish flow. */
 export type GeneratedTeam = {
   teamNumber: number;
+  /** Shirt / pinnies color (src/lib/shirtColors.ts); null = none (more teams than colors); absent on legacy teams. */
+  shirtColor?: ShirtColorId | null;
   players: Array<{
     id: string;
     firstName: string;

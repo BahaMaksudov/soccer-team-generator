@@ -3,6 +3,7 @@ import { notFound } from "next/navigation";
 import { findSport, roleLabel } from "@/lib/sports";
 import { loadPublicGroupHomeData } from "./data";
 import { buildCanonicalPrintHref } from "./printHref";
+import ShirtColorBadge from "@/components/teams/ShirtColorBadge";
 
 /**
  * Phase 2D.5B — canonical public Group home/history page.
@@ -101,7 +102,10 @@ export default async function PublicGroupHome({
                   <tbody>
                     {gen.teams.map((t) => (
                       <tr key={t.teamNumber} className="border-t">
-                        <td className="p-3 font-semibold">#{t.teamNumber}</td>
+                        <td className="p-3 align-top font-semibold">
+                          #{t.teamNumber}
+                          <ShirtColorBadge color={t.shirtColor} className="mt-1 flex text-xs font-medium" />
+                        </td>
                         <td className="p-3">
                           <ul className="list-disc pl-5 space-y-1">
                             {t.players.map((p, i) => (

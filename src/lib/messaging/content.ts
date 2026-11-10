@@ -1,5 +1,6 @@
 import type { MessagingEvent } from "./events";
 import { playerDisplayName } from "@/lib/playerFacing";
+import { SHIRT_COLOR_REMINDER, shirtColorOf } from "@/lib/shirtColors";
 
 /**
  * Channel-neutral content. Renderers turn this into a specific channel's
@@ -39,6 +40,8 @@ export type TextContent = {
   /** M9-D — optional plain-text paragraph(s) after the title (absent for teams: their rendering is unchanged). */
   body?: string;
   sections: Array<{ heading: string; items: string[] }>;
+  /** Plain-text line after the sections (teams with shirt colors: the pinnies reminder). Absent → rendering unchanged. */
+  note?: string;
   /** M9.2 — venue line(s) after the sections ("📍 Name" + a maps link for the address). */
   location?: { name: string; address: string | null; mapsUrl: string | null } | null;
   link: { label: string; url: string } | null;
@@ -65,13 +68,20 @@ export function pollContent(event: Extract<MessagingEvent, { type: "POLL_CREATED
  * Group's SportDefinition via messagingVocabulary() by M9 events.
  */
 export function teamsContent(event: Extract<MessagingEvent, { type: "TEAMS_PUBLISHED" }>): TextContent {
+  // Shirt colors: only teams that HAVE a published color get "🟡 Team #1 — YELLOW SHIRTS" and the
+  // reminder; a legacy snapshot (no colors) renders byte-identically to before (same content hash).
+  const anyColor = event.teams.some((t) => shirtColorOf(t.shirtColor) !== null);
   return {
     kind: "text",
     title: `\u{1F3DF}\u{FE0F} Generated Teams — ${event.displayDate}`,
-    sections: event.teams.map((t) => ({
-      heading: `Team #${t.teamNumber}`,
-      items: (Array.isArray(t.players) ? t.players : []).map((p) => playerDisplayName(p ?? {})),
-    })),
+    sections: event.teams.map((t) => {
+      const color = shirtColorOf(t.shirtColor);
+      return {
+        heading: color ? `${color.emoji} Team #${t.teamNumber} — ${color.label.toUpperCase()} SHIRTS` : `Team #${t.teamNumber}`,
+        items: (Array.isArray(t.players) ? t.players : []).map((p) => playerDisplayName(p ?? {})),
+      };
+    }),
+    ...(anyColor ? { note: SHIRT_COLOR_REMINDER } : {}),
     location: event.location ?? null,
     // Without a website link the message is byte-identical to before (the single "View teams online" link).
     link: !event.websiteUrl && event.viewUrl ? { label: "View teams online", url: event.viewUrl } : null,

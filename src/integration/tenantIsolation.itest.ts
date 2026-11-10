@@ -261,6 +261,7 @@ describe("real-DB tenant isolation: Group B URL vs Group A resources", () => {
     expect(snapshot).toEqual([
       {
         teamNumber: 1,
+        shirtColor: "yellow", // no color submitted → the default for Team 1; injected team keys are still dropped
         players: [
           { id: "b2", firstName: "b2", lastName: "X", position: "DEFENDER", rating: "GOOD", stamina: 3 },
           { id: "b1", firstName: "b1", lastName: "X", position: "DEFENDER", rating: "GOOD", stamina: 3 },

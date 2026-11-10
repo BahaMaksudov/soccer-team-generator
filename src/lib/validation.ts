@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { SHIRT_COLOR_IDS } from "@/lib/shirtColors";
 import { Rating } from "@prisma/client";
 
 /**
@@ -74,6 +75,9 @@ const publishTeamSchema = z
   .object({
     teamNumber: z.number(),
     players: z.array(publishPlayerSchema),
+    // Team shirt / pinnies color: only catalog ids (src/lib/shirtColors.ts); null = no color
+    // (more teams than colors). Absent on legacy snapshots and from older clients.
+    shirtColor: z.enum(SHIRT_COLOR_IDS).nullable().optional(),
   })
   .passthrough();
 

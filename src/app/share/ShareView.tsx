@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { formatLongDateOnly } from "@/lib/dateOnly";
 import { roleLabel } from "@/lib/sports";
+import ShirtColorBadge from "@/components/teams/ShirtColorBadge";
 
 type View = {
   groupName: string;
@@ -10,7 +11,7 @@ type View = {
   teamName: string;
   generations: Array<{
     date: string;
-    teams: Array<{ teamNumber: number; players: Array<{ firstName: string; lastName: string; position: string | null }> }>;
+    teams: Array<{ teamNumber: number; shirtColor?: string; players: Array<{ firstName: string; lastName: string; position: string | null }> }>;
   }>;
 };
 
@@ -66,7 +67,10 @@ export default function ShareView() {
             <div className="grid gap-3 sm:grid-cols-2">
               {g.teams.map((t) => (
                 <div key={t.teamNumber} className="border rounded-xl p-3">
-                  <div className="font-semibold mb-1">Team #{t.teamNumber}</div>
+                  <div className="mb-1 flex flex-wrap items-center gap-x-2 font-semibold">
+                    Team #{t.teamNumber}
+                    <ShirtColorBadge color={t.shirtColor} />
+                  </div>
                   <ul className="list-disc pl-5 text-sm space-y-0.5">
                     {t.players.map((p, i) => (
                       <li key={i}>

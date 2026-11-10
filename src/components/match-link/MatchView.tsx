@@ -4,6 +4,7 @@ import { FixtureResults, focusRing } from "@/components/game-day/parts";
 import { formatStartTime } from "@/lib/messaging/content";
 import { cn } from "@/lib/cn";
 import type { PlayerMatchView } from "@/lib/matchPage";
+import ShirtColorBadge from "@/components/teams/ShirtColorBadge";
 
 /**
  * The redesigned player-facing Match view (M9.3), shared by the Match Link page
@@ -115,6 +116,7 @@ export function MatchView({ view, title, subtitle, attendance }: { view: PlayerM
             {view.teams.map((t) => (
               <div key={t.teamNumber} className="rounded-tbp-xl border border-border p-3">
                 <h3 className="font-display font-extrabold">Team {t.teamNumber}</h3>
+                <ShirtColorBadge color={t.shirtColor} className="mt-0.5" />
                 <ul className="mt-2 space-y-1 text-sm">
                   {t.players.map((p, i) => (
                     <li key={i} className="flex flex-wrap justify-between gap-x-2">

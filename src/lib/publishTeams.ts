@@ -10,6 +10,7 @@ import { findSport, type SportDefinition } from "@/lib/sports";
 import { loadStoredBalanceWeights } from "@/lib/groupSettings";
 import { managersOnlyResponse } from "@/lib/tenantRoute";
 import { idsOutsideCommunity, OUTSIDE_COMMUNITY_MESSAGE } from "@/lib/communities";
+import { assignShirtColors, duplicateShirtColors, isShirtColorId, type ShirtColorId } from "@/lib/shirtColors";
 
 /**
  * Phase 2D.6D.3 — shared Publish core, originally extracted from the
@@ -31,6 +32,7 @@ import { idsOutsideCommunity, OUTSIDE_COMMUNITY_MESSAGE } from "@/lib/communitie
  * player id must belong to the active Group before anything is saved.
  */
 const INVALID_PLAYERS_MESSAGE = "One or more players are invalid or unavailable.";
+export const DUPLICATE_SHIRT_COLOR_MESSAGE = "Two teams can't wear the same shirt color. Choose a different color for each team.";
 
 /**
  * Phase 2D.6E.6C — returns the player ids in a submitted Publish payload,
@@ -86,12 +88,16 @@ type SnapshotPlayer = {
  * Callers must have already verified every id is in `ownedPlayers`.
  */
 export function buildPublishSnapshot(
-  teams: Array<{ teamNumber: number; players: Array<Record<string, unknown>> }>,
+  teams: Array<{ teamNumber: number; shirtColor?: unknown; players: Array<Record<string, unknown>> }>,
   ownedPlayers: SnapshotPlayer[]
-): Array<{ teamNumber: number; players: SnapshotPlayer[] }> {
+): Array<{ teamNumber: number; shirtColor: ShirtColorId | null; players: SnapshotPlayer[] }> {
   const byId = new Map(ownedPlayers.map((p) => [p.id, p]));
-  return teams.map((team) => ({
+  // Shirt colors: the submitted (validated) choice; a client that sends none (older UI) gets the
+  // default order, so every new publication carries colors. Never affects who is on which team.
+  const colored = teams.some((t) => "shirtColor" in t) ? teams : assignShirtColors(teams);
+  return colored.map((team) => ({
     teamNumber: team.teamNumber,
+    shirtColor: isShirtColorId(team.shirtColor) ? team.shirtColor : null,
     players: team.players.map((submitted) => {
       const p = byId.get(submitted.id as string);
       if (!p) throw new Error("buildPublishSnapshot: unverified player id");
@@ -158,6 +164,10 @@ export async function publishTeamsForContext(context: TenantContext, req: Reques
   // Players, checked BEFORE the upsert. Otherwise a caller could store
   // (and later post) another Group's players in its own generation. The
   // client error is generic and never says which id failed or why.
+  if (duplicateShirtColors(teams).length > 0) {
+    return NextResponse.json({ error: DUPLICATE_SHIRT_COLOR_MESSAGE, code: "DUPLICATE_SHIRT_COLOR" }, { status: 400 });
+  }
+
   const playerIds = collectSubmittedPlayerIds(teams);
   if (!playerIds) {
     return NextResponse.json({ error: INVALID_PLAYERS_MESSAGE }, { status: 400 });

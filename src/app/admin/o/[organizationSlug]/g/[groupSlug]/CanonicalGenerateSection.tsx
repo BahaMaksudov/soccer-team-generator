@@ -22,6 +22,7 @@ import type { BalanceAnalysis } from "@/lib/balanceAnalysis";
 import type { BalanceMetrics } from "@/lib/balanceEngine";
 import { applySwapBody } from "@/lib/balanceAnalysisUi";
 import { assignmentKey, teamsPanelState, type TeamsPanelMode } from "@/lib/teamAssignment";
+import { assignShirtColors, type ShirtColorId } from "@/lib/shirtColors";
 
 /**
  * Phase 2D.6D.2 — canonical tenant-bound Generate preview.
@@ -146,12 +147,22 @@ export default function CanonicalGenerateSection({
       onMessage(data?.error ?? "Failed to generate");
       return;
     }
-    setPreviewTeams(data.teams);
+    // Shirt colors are attached AFTER balancing (they never change who is on a team); a color the
+    // owner already chose for the same team number (current preview, else the published teams) is kept.
+    setPreviewTeams(assignShirtColors(data.teams as GeneratedTeam[], previewTeams ?? publishedTeams));
     setPreviewDate(data.date);
     setPreviewWarnings(Array.isArray(data.warnings) ? data.warnings : []);
     setPreviewAnalysis(data.analysis ?? null);
     setPreviewMetrics(data.metrics ?? null);
     onMessage(published ? "New preview generated. Players still see the published teams until you publish." : "Preview generated. If it looks good, click Publish.");
+  }
+
+  /** Preview only: the owner picks a team's shirt color; players and balance are untouched. */
+  function setShirtColor(teamNumber: number, color: ShirtColorId) {
+    setPreviewTeams((teams) => {
+      if (!teams || teams.some((t) => t.teamNumber !== teamNumber && t.shirtColor === color)) return teams; // never two teams in one color
+      return teams.map((t) => (t.teamNumber === teamNumber ? { ...t, shirtColor: color } : t));
+    });
   }
 
   function clearPreview() {
@@ -184,7 +195,7 @@ export default function CanonicalGenerateSection({
         onMessage(data?.error ?? "Could not apply the swap.");
         return;
       }
-      setPreviewTeams(data.teams);
+      setPreviewTeams(assignShirtColors(data.teams as GeneratedTeam[], previewTeams));
       setPreviewAnalysis(data.analysis ?? null);
       setPreviewMetrics(data.metrics ?? null);
       onMessage("Swap applied to the preview. Publish when you're happy with the teams.");
@@ -360,6 +371,7 @@ export default function CanonicalGenerateSection({
           previewTeams={previewTeams}
           previewDate={previewDate}
           sportKey={sport.key}
+          onShirtColorChange={setShirtColor}
         />
       )}
       {/* M9-A — one full table at a time: while a different preview is open, the

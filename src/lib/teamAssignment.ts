@@ -7,14 +7,18 @@
  * not matter; a player moving to another team, or a membership change, does.
  */
 
-type TeamLike = { teamNumber: number; players: Array<{ id: string }> };
+type TeamLike = { teamNumber: number; shirtColor?: string | null; players: Array<{ id: string }> };
 
-/** Deterministic canonical key: teams by number, player ids sorted. */
+/**
+ * Deterministic canonical key: teams by number, player ids sorted, and the team's shirt color —
+ * so changing only a color makes the preview publishable (it differs from the published teams).
+ * A team without a color (legacy) keys exactly as before.
+ */
 export function assignmentKey(teams: readonly TeamLike[]): string {
   return JSON.stringify(
     [...teams]
       .sort((a, b) => a.teamNumber - b.teamNumber)
-      .map((t) => [t.teamNumber, t.players.map((p) => p.id).sort()])
+      .map((t) => (t.shirtColor ? [t.teamNumber, t.players.map((p) => p.id).sort(), t.shirtColor] : [t.teamNumber, t.players.map((p) => p.id).sort()]))
   );
 }
 
