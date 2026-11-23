@@ -170,3 +170,28 @@ export function intentForAction(action: DeliveryAction): "post" | "post_updated"
   if (action === "retry_uncertain") return "retry_uncertain";
   return null;
 }
+
+/**
+ * The Match Workspace's one-line Telegram status for the PUBLISHED teams, from server state only:
+ * this Match's own attendance poll (open / closed / none) and the teams' delivery state. A poll
+ * of ANOTHER Match never counts here — teams are only ever posted under this Match's own poll.
+ */
+export type TeamsTelegramStatus = { key: "no_poll" | "ready" | "poll_closed" | "posted" | "updated" | "sending" | "failed" | "uncertain"; label: string };
+
+export function teamsTelegramStatus(poll: { closed: boolean } | null | undefined, delivery: TeamsDeliveryState | null): TeamsTelegramStatus {
+  if (!poll) return { key: "no_poll", label: "Poll not posted" };
+  switch (delivery) {
+    case "posted":
+      return { key: "posted", label: "Teams posted" };
+    case "updated_available":
+      return { key: "updated", label: "Teams changed — post updated teams" };
+    case "sending":
+      return { key: "sending", label: "Posting teams…" };
+    case "failed":
+      return { key: "failed", label: "Last post failed — nothing was posted" };
+    case "uncertain":
+      return { key: "uncertain", label: "Not confirmed — check Telegram" };
+    default:
+      return poll.closed ? { key: "poll_closed", label: "Poll closed — teams not posted yet" } : { key: "ready", label: "Poll open — ready to close and post teams" };
+  }
+}

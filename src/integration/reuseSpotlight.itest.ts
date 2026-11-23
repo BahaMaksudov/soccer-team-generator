@@ -20,6 +20,7 @@ import * as swapRoute from "@/app/api/admin/o/[organizationSlug]/g/[groupSlug]/g
 import * as pollRoute from "@/app/api/admin/o/[organizationSlug]/g/[groupSlug]/matches/[matchId]/poll/route";
 import * as closePostRoute from "@/app/api/admin/o/[organizationSlug]/g/[groupSlug]/telegram/close-and-post/route";
 import * as deliveryRoute from "@/app/api/admin/o/[organizationSlug]/g/[groupSlug]/telegram/delivery/route";
+import * as pollCloseRoute from "@/app/api/admin/o/[organizationSlug]/g/[groupSlug]/matches/[matchId]/poll/close/route";
 import { selectSpotlight } from "@/lib/spotlight";
 import { confirmedAttendeeIds } from "@/lib/attendanceSnapshot";
 
@@ -518,6 +519,135 @@ describe("Community scope — Random Player Spotlight", () => {
     const [r1, r2] = await Promise.all([selectSpotlight("ga", f2, null), selectSpotlight("ga", c2, null)]);
     expect(r1.ok && r2.ok).toBe(true); // at most one of p3/p4 had a FunnyStuff turn; UCCNE - FC is independent
     expect(await prisma.spotlightPick.findMany({ where: { matchId: { in: [f2, c2] } }, orderBy: { communityId: "asc" }, select: { communityId: true } })).toEqual([{ communityId: "c-fc" }, { communityId: "c-fun" }]);
+  });
+});
+
+// ============================================================================ Telegram teams post — community match
+// The owner's Production sequence: a FunnyStuff match gets a Telegram poll, is canceled and re-created;
+// the new match has published teams + a Spotlight but NO poll of its own.
+describe("Telegram teams post — a re-created FunnyStuff match", () => {
+  let funChat: number, fcChat: number;
+  const view = (matchId: string, grp = A) => call(matchRoute.GET(json("GET"), gm(grp, matchId)));
+  const postPoll = (matchId: string, chatRef: number) => call(pollRoute.POST(json("POST", { chatRef }), gm(A, matchId)));
+  const closeAndPost = (pollId: string, teamGenerationId: string, intent?: string, grp = A) =>
+    call(closePostRoute.POST(json("POST", { pollId, teamGenerationId, ...(intent ? { intent } : {}) }), g(grp)));
+  const deliveryState = async (pollId: string, genId: string) => (await (await deliveryRoute.GET(new Request(`http://itest.local/?pollId=${pollId}&teamGenerationId=${genId}`), g(A))).json()).state;
+  const sends = () => tgCalls.filter((c) => c.method === "sendMessage");
+  async function withChat(communityId: string, chatRef: number) {
+    const id = await cmatch(communityId);
+    await prisma.match.update({ where: { id }, data: { telegramChatId: chatRef } });
+    return id;
+  }
+  beforeEach(async () => {
+    await communities();
+    funChat = (await prisma.telegramChat.update({ where: { chatId_groupId: { chatId: -1001n, groupId: "ga" } }, data: { title: "FunnyStuff", communityId: "c-fun" } })).id;
+    fcChat = (await prisma.telegramChat.create({ data: { chatId: -1002n, title: "UCCNE - FC", groupId: "ga", communityId: "c-fc" } })).id;
+  });
+
+  it("no poll of its own: the view says so, reports the canceled match's open poll, and that poll can never post these teams", async () => {
+    const old = await withChat("c-fun", funChat);
+    await attend(old, FUN);
+    expect((await postPoll(old, funChat)).status).toBe(201);
+    const oldPoll = await prisma.telegramPoll.findFirstOrThrow({ where: { matchId: old } });
+    await prisma.match.update({ where: { id: old }, data: { status: "CANCELED" } });
+
+    const cur = await withChat("c-fun", funChat);
+    await attend(cur, FUN);
+    expect((await publishFor(cur, two(FUN))).status).toBe(200);
+    expect((await spot(cur, "select")).status).toBe(200);
+    const gen = await prisma.teamGeneration.findUniqueOrThrow({ where: { matchId: cur } });
+
+    const v = await view(cur);
+    expect(v.body.telegram.poll).toBeNull();
+    expect(v.body.telegram.otherOpenPoll).toMatchObject({ matchId: old, status: "CANCELED", startTime: "19:00" });
+    // The canceled match's poll can't be used for this match's teams — nothing is sent.
+    const sendsBefore = sends().length;
+    const misuse = await closeAndPost(oldPoll.pollId, gen.id);
+    expect(misuse.status).toBeGreaterThanOrEqual(400);
+    expect(sends().length).toBe(sendsBefore);
+    expect(tgCalls.filter((c) => c.method === "stopPoll")).toHaveLength(0);
+    // MEMBER never sees it (organizer-only state).
+    await signInAs("member@example.test");
+    expect((await view(cur)).body.telegram?.otherOpenPoll ?? null).toBeNull();
+    await signInAs("owner@example.test");
+
+    // The canceled match's own page closes its poll (explicit organizer action): the poll is stopped and
+    // the existing one-time "Poll is closed" notice is posted — once; repeating sends nothing more.
+    const closed = await call(pollCloseRoute.POST(json("POST"), gm(A, old)));
+    expect(closed.status).toBe(200);
+    expect(tgCalls.filter((c) => c.method === "stopPoll")).toHaveLength(1);
+    expect(sends().slice(sendsBefore).map((c) => String(c.body.text))).toEqual([expect.stringMatching(/^✅ Poll is closed for /)]);
+    expect((await call(pollCloseRoute.POST(json("POST"), gm(A, old)))).status).toBe(200);
+    expect(sends().length).toBe(sendsBefore + 1);
+    expect((await view(cur)).body.telegram.otherOpenPoll).toBeNull();
+    expect(otherNetwork).toBe(0);
+  });
+
+  it("with its own poll: closes it and posts the teams (colors + saved Spotlight + text) to FunnyStuff's chat once; updated teams post again with the same player", async () => {
+    const cur = await withChat("c-fun", funChat);
+    await attend(cur, FUN);
+    expect((await publishFor(cur, two(FUN))).status).toBe(200);
+    const picked = (await spot(cur, "select")).body.pick as { playerId: string; playerName: string };
+    await spotNote(cur, "Bring the <ball> & pump");
+    expect((await postPoll(cur, funChat)).status).toBe(201);
+    const poll = await prisma.telegramPoll.findFirstOrThrow({ where: { matchId: cur } });
+    const gen = await prisma.teamGeneration.findUniqueOrThrow({ where: { matchId: cur } });
+    expect((await view(cur)).body.telegram.poll).toMatchObject({ closed: false });
+    expect(await deliveryState(poll.pollId, gen.id)).toBe("not_posted");
+
+    const r = await closeAndPost(poll.pollId, gen.id);
+    expect(r.status).toBe(200);
+    const msg = sends().at(-1)!;
+    expect(String(msg.body.chat_id)).toBe("-1001"); // FunnyStuff's chat, not UCCNE - FC's
+    const text = String(msg.body.text);
+    expect(text).toContain("<b>\u{1F7E1} Team #1 — YELLOW SHIRTS</b>");
+    expect(text).toContain("<b>\u{1F535} Team #2 — BLUE SHIRTS</b>");
+    expect(text.endsWith(`\n\n<b>\u{1F3B2} Random Player Spotlight</b>\nSelected: ${picked.playerName}\nBring the &lt;ball&gt; &amp; pump`)).toBe(true);
+    expect(tgCalls.filter((c) => c.method === "stopPoll" && String(c.body.chat_id) === "-1001")).toHaveLength(1);
+    expect(await deliveryState(poll.pollId, gen.id)).toBe("posted");
+    expect((await view(cur)).body.telegram.poll.closed).toBe(true);
+
+    const count = sends().length;
+    expect((await closeAndPost(poll.pollId, gen.id)).body.status).toBe("already_posted"); // retry: nothing sent
+    expect(sends().length).toBe(count);
+
+    // Teams change → "post updated teams" → one new message, same saved Spotlight (never redrawn).
+    expect((await publishFor(cur, two(["p2", "p1", "p4", "p3"]))).status).toBe(200);
+    expect(await deliveryState(poll.pollId, gen.id)).toBe("updated_available");
+    expect((await closeAndPost(poll.pollId, gen.id, "post_updated")).status).toBe(200);
+    expect(sends().length).toBe(count + 1);
+    expect(String(sends().at(-1)!.body.text)).toContain(`Selected: ${picked.playerName}`);
+    expect(await prisma.spotlightPick.count({ where: { matchId: cur } })).toBe(1);
+    expect(otherNetwork).toBe(0);
+  });
+
+  it("no Spotlight → no Spotlight section; a UCCNE - FC match posts to its own chat", async () => {
+    const fc = await withChat("c-fc", fcChat);
+    await attend(fc, FC);
+    expect((await publishFor(fc, two(FC))).status).toBe(200);
+    expect((await postPoll(fc, fcChat)).status).toBe(201);
+    const poll = await prisma.telegramPoll.findFirstOrThrow({ where: { matchId: fc } });
+    const gen = await prisma.teamGeneration.findUniqueOrThrow({ where: { matchId: fc } });
+    expect((await closeAndPost(poll.pollId, gen.id)).status).toBe(200);
+    const msg = sends().at(-1)!;
+    expect(String(msg.body.chat_id)).toBe("-1002");
+    expect(String(msg.body.text)).not.toContain("Spotlight");
+  });
+
+  it("isolation: another organization can't post this group's teams or close its poll", async () => {
+    const cur = await withChat("c-fun", funChat);
+    await attend(cur, FUN);
+    await publishFor(cur, two(FUN));
+    await postPoll(cur, funChat);
+    const poll = await prisma.telegramPoll.findFirstOrThrow({ where: { matchId: cur } });
+    const gen = await prisma.teamGeneration.findUniqueOrThrow({ where: { matchId: cur } });
+    await signInAs("owner-b@example.test");
+    const sendsBefore = sends().length;
+    expect((await closeAndPost(poll.pollId, gen.id, undefined, B)).status).toBe(404);
+    expect((await call(pollCloseRoute.POST(json("POST"), gm(A, cur)))).status).toBe(404);
+    expect((await view(cur)).status).toBe(404);
+    expect(sends().length).toBe(sendsBefore);
+    expect(tgCalls.filter((c) => c.method === "stopPoll")).toHaveLength(0);
   });
 });
 

@@ -65,7 +65,7 @@ describe("UI contracts (the server validates and authorizes everything)", () => 
   });
   it("Telegram consistency: no new poll while closed; the open-poll warning + per-match close action once attendance is closed", () => {
     expect(W).toContain('disabled={busy || !pb.enabled || chatRef === null || m.status === "CANCELED" || m.attendanceClosed}');
-    expect(W).toContain("(view.telegram.closure?.teamsPosted || m.attendanceClosed)");
+    expect(W).toContain("(view.telegram.closure?.teamsPosted || m.attendanceClosed || m.status === \"CANCELED\")"); // + a canceled match whose poll is still open
     expect(W).toContain("Answers given there now are not counted.");
   });
   it("schedules: changing the game day warns that it creates matches on the new day", () => {

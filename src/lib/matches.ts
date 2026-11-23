@@ -475,6 +475,10 @@ export async function getMatchView(context: TenantContext, matchId: string): Pro
       // Telegram publishing — the PERSISTED poll-posting state of the SELECTED chat (+ other chats that
       // already have this match's poll), and the closure / closure-notice state of the match's current poll.
       pollPost: manager && selectedChat && selectedChat.disconnectedAt === null ? await attendancePollPostView(groupId, match, selectedChat) : null,
+      // An attendance poll that is still OPEN in the selected chat but belongs to ANOTHER Match of this
+      // Group (e.g. one canceled and re-created). Shown so the organizer isn't told "no poll" while one
+      // is visible in Telegram; it is never used for this Match (its votes and teams belong to its own).
+      otherOpenPoll: manager && selectedChat ? await otherOpenPollInChat(groupId, matchId, selectedChat.chatId) : null,
       closure:
         manager && poll
           ? { closed: poll.isClosed, teamsPosted: await teamsPostedToPoll(groupId, poll.pollId), notice: await pollClosedNoticeState(groupId, poll.pollId) }
@@ -552,6 +556,17 @@ export async function setAttendanceOverride(context: TenantContext, matchId: str
  * UI-4B: while closed, attendance is read-only on every path; reopening
  * restores normal changes. No automatic cutoff.
  */
+/** The newest OPEN attendance poll in a chat that belongs to another Match of this Group (read-only). */
+async function otherOpenPollInChat(groupId: string, matchId: string, chatId: bigint) {
+  const p = await prisma.telegramPoll.findFirst({
+    where: { groupId, chatId, kind: "ATTENDANCE", isClosed: false, matchId: { not: null }, NOT: { matchId } },
+    orderBy: { createdAt: "desc" },
+    select: { createdAt: true, match: { select: { id: true, date: true, startTime: true, status: true } } },
+  });
+  if (!p?.match) return null;
+  return { matchId: p.match.id, date: formatYMDFromDate(p.match.date), startTime: p.match.startTime, status: p.match.status, postedAt: p.createdAt.toISOString() };
+}
+
 export async function setAttendanceClosed(context: TenantContext, matchId: string, req: Request): Promise<NextResponse> {
   // UI-4A — organizer mutation: OWNER/ADMIN only (MEMBER gets the generic 404).
   const denied = managersOnlyResponse(context);

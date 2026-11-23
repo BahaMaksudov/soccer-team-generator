@@ -5,7 +5,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { adminTenantApiPath } from "@/lib/adminTenantApi";
 import { formatLongDateOnly } from "@/lib/dateOnly";
 import { formatStartTime } from "@/lib/messaging/content";
-import type { PublishedGeneration, TeamsDeliveryState } from "@/lib/closeAndPostUi";
+import { teamsTelegramStatus, type PublishedGeneration, type TeamsDeliveryState } from "@/lib/closeAndPostUi";
 import TeamsTelegramPost, { type TeamsPostIntent } from "./TeamsTelegramPost";
 import ShareMatchCard from "./ShareMatchCard";
 import PersonalLinksCard from "./PersonalLinksCard";
@@ -13,7 +13,7 @@ import RsvpPreviewCard from "./RsvpPreviewCard";
 import type { SportClientView } from "@/lib/sports";
 import { unpublishedPreviewOnScreen, type TeamsPanelMode } from "@/lib/teamAssignment";
 import { visibleRosterIds } from "@/lib/matchRosterScope";
-import { adminGroupSettingsPath } from "@/lib/matchPaths";
+import { adminGroupSettingsPath, canonicalAdminMatchPath } from "@/lib/matchPaths";
 import PostGameSection, { type PostGameView } from "./PostGameSection";
 import GameDayUpdateDialog from "./GameDayUpdateDialog";
 import { MATCH_TELEGRAM_GROUP_SELECTOR_ID } from "@/lib/postGameUi";
@@ -113,6 +113,8 @@ type MatchView = {
     pollPost?: PollPostView | null;
     /** The match's current poll: closed?, teams posted to it?, and its one-time closure notice. */
     closure?: { closed: boolean; teamsPosted: boolean; notice: { state: "none" | "sending" | "sent" | "failed" | "uncertain"; deliveryId: string | null } } | null;
+    /** An attendance poll still OPEN in the selected chat that belongs to ANOTHER match (never used for this one). */
+    otherOpenPoll?: { matchId: string; date: string; startTime: string | null; status: "SCHEDULED" | "COMPLETED" | "CANCELED"; postedAt: string } | null;
   };
 };
 
@@ -900,12 +902,14 @@ export default function MatchWorkspace({
         {/* Telegram publishing — "Post teams to Telegram" closes the poll it posts to. If that close failed or wasn't
             confirmed (or attendance closed while the poll still shows as open), close it here — safe to repeat;
             M12B: it also sends the one-time closure notice if that poll was never announced (once per poll, ever). */}
-        {view.canManage && view.telegram.poll && !view.telegram.poll.closed && (view.telegram.closure?.teamsPosted || m.attendanceClosed) && (
+        {view.canManage && view.telegram.poll && !view.telegram.poll.closed && (view.telegram.closure?.teamsPosted || m.attendanceClosed || m.status === "CANCELED") && (
           <div className="mt-2 flex flex-wrap items-center gap-2 text-xs" role="status">
             <span className="font-semibold text-destructive">
               {view.telegram.closure?.teamsPosted
                 ? "Teams were posted, but the Telegram attendance poll is still open (or closing it wasn't confirmed)."
-                : "Attendance is closed, but the Telegram poll still shows as open in the chat. Answers given there now are not counted."}
+                : m.status === "CANCELED"
+                  ? "This match is canceled, but its Telegram attendance poll is still open in the chat. Closing it stops the poll and posts the one-time “Poll is closed” notice."
+                  : "Attendance is closed, but the Telegram poll still shows as open in the chat. Answers given there now are not counted."}
             </span>
             <Button type="button" variant="outline" size="sm" disabled={busy} onClick={closePollAgain}>
               Close Telegram poll
@@ -1118,9 +1122,48 @@ export default function MatchWorkspace({
                 />
               </>
             )}
+            {view.canManage && view.telegram.connected && (() => {
+              const tg = teamsTelegramStatus(view.telegram.poll, teamsDelivery);
+              return (
+                <p className="flex flex-wrap items-center gap-2 text-xs" data-testid="teams-telegram-status">
+                  <span className="font-semibold">Telegram:</span>
+                  <StateChip tone={tg.key === "posted" ? "done" : tg.key === "failed" || tg.key === "uncertain" ? "warn" : tg.key === "no_poll" ? "neutral" : "pending"}>{tg.label}</StateChip>
+                </p>
+              );
+            })()}
             {view.canManage &&
               (view.telegram.poll?.pollId ? (
                 <TeamsTelegramPost state={teamsDelivery} deliveryId={teamsDeliveryId} busy={busy} onPost={postTeams} onMarkSent={markTeamsSent} />
+              ) : view.telegram.connected ? (
+                <div className="space-y-2" data-testid="teams-telegram-no-poll">
+                  <p className="text-muted-foreground">
+                    This match has no Telegram attendance poll yet. Teams are posted to Telegram together with closing <b>this match&apos;s own</b> poll, so post its poll first
+                    {view.telegram.selectedChat ? <> to <b>{view.telegram.selectedChat.title}</b></> : null}. Players can already see the teams on the match link (Share Match).
+                  </p>
+                  {view.telegram.otherOpenPoll && (
+                    <p role="note" className="rounded-tbp-sm border border-accent/40 bg-accent/10 px-3 py-2 text-xs">
+                      {view.telegram.selectedChat?.title ?? "This Telegram group"} still has an open attendance poll from{" "}
+                      {view.telegram.otherOpenPoll.status === "CANCELED" ? "the canceled match" : "another match"} on {formatLongDateOnly(view.telegram.otherOpenPoll.date)}
+                      {view.telegram.otherOpenPoll.startTime ? ` · ${formatStartTime(view.telegram.otherOpenPoll.startTime)}` : ""}. That poll belongs to that match, so it can&apos;t post these teams.{" "}
+                      <Link className="font-semibold text-primary underline" href={canonicalAdminMatchPath(organizationSlug, groupSlug, view.telegram.otherOpenPoll.matchId)}>
+                        Open that match
+                      </Link>{" "}
+                      to close it.
+                    </p>
+                  )}
+                  {m.status !== "CANCELED" && (
+                    <a
+                      href={`#${MATCH_TELEGRAM_GROUP_SELECTOR_ID}`}
+                      className={cn("inline-flex min-h-9 items-center gap-1.5 rounded-full border border-input bg-card px-3 text-xs font-semibold hover:bg-muted", focusRing)}
+                      onClick={(e) => {
+                        e.preventDefault();
+                        document.getElementById(MATCH_TELEGRAM_GROUP_SELECTOR_ID)?.scrollIntoView({ behavior: "smooth", block: "center" });
+                      }}
+                    >
+                      <Send className="size-3.5" aria-hidden="true" /> Go to “Post poll to Telegram”
+                    </a>
+                  )}
+                </div>
               ) : (
                 <p className="text-muted-foreground">Players see the published teams on the match link (Share Match). Telegram (optional): post this match&apos;s attendance poll there first to also post the teams.</p>
               ))}
