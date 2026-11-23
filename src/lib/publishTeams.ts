@@ -10,6 +10,7 @@ import { findSport, type SportDefinition } from "@/lib/sports";
 import { loadStoredBalanceWeights } from "@/lib/groupSettings";
 import { managersOnlyResponse } from "@/lib/tenantRoute";
 import { idsOutsideCommunity, OUTSIDE_COMMUNITY_MESSAGE } from "@/lib/communities";
+import { reuseScopeForMatch, SOURCE_NOT_IN_SCOPE } from "@/lib/reuseTeams";
 import { assignShirtColors, duplicateShirtColors, isShirtColorId, type ShirtColorId } from "@/lib/shirtColors";
 
 /**
@@ -191,12 +192,18 @@ export async function publishTeamsForContext(context: TenantContext, req: Reques
   if (!sport) {
     return NextResponse.json({ error: "This group's sport is not supported." }, { status: 400 });
   }
-  // Reuse previous teams — provenance only when it names an earlier generation of THIS Group (never
-  // trusted blindly; the source row is never touched). Any other publish clears it.
-  const reusedFrom =
-    reusedFromGenerationId && (await prisma.teamGeneration.findFirst({ where: { id: reusedFromGenerationId, groupId: activeGroupId }, select: { id: true } }))
-      ? reusedFromGenerationId
-      : null;
+  // Reuse previous teams — provenance is accepted only when it names a publication this Match may
+  // reuse (same Group AND same Community scope — reuseTeams.reuseScopeWhere); anything else is
+  // REJECTED before any write, never stored or silently dropped. The source row is never touched.
+  // Reuse exists only for Matches, so a by-date publish never records provenance; any other
+  // publish clears it.
+  let reusedFrom: string | null = null;
+  if (reusedFromGenerationId && matchId) {
+    const scope = await reuseScopeForMatch(activeGroupId, matchId);
+    const source = scope ? await prisma.teamGeneration.findFirst({ where: { AND: [scope, { id: reusedFromGenerationId }] }, select: { id: true } }) : null;
+    if (!source) return NextResponse.json({ error: SOURCE_NOT_IN_SCOPE, code: "REUSE_SOURCE_NOT_IN_SCOPE" }, { status: 400 });
+    reusedFrom = source.id;
+  }
   const metadata = { ...buildGenerationMetadata(sport, await loadStoredBalanceWeights(activeGroupId), snapshotTeams), reusedFromGenerationId: reusedFrom };
 
   const normalizedDate = toDateOnlyUTC(dateStr);

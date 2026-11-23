@@ -384,6 +384,8 @@ export default function MatchWorkspace({
 
   const players = useMemo(() => (view?.roster ?? []).map(({ attendance: _a, ...p }) => p as Player), [view]);
   const defaultIds = useMemo(() => view?.defaultSelection ?? [], [view]);
+  // The server's confirmed attendees (effective PLAYING) — the Spotlight card re-reads its state whenever this changes.
+  const attendanceKey = useMemo(() => [...defaultIds].sort().join(","), [defaultIds]);
   const selectedIds = useMemo(() => computeSelection(defaultIds, adjustments), [defaultIds, adjustments]);
   const selectedSet = useMemo(() => new Set(selectedIds), [selectedIds]);
   // M9-B — default roster = selected chat's scope + anyone with Match state + players added here.
@@ -1086,7 +1088,7 @@ export default function MatchWorkspace({
           onPanelModeChange={setPanelMode}
         />
         {/* Random Player Spotlight — saved per Match; part of the Telegram teams post (so a change refreshes its posted state). */}
-        <SpotlightCard organizationSlug={organizationSlug} groupSlug={groupSlug} matchId={m.id} onChanged={loadTeamsDelivery} />
+        <SpotlightCard organizationSlug={organizationSlug} groupSlug={groupSlug} matchId={m.id} attendanceKey={attendanceKey} onChanged={loadTeamsDelivery} />
         </>
         )}
         {published && !unpublishedPreviewOnScreen(panelMode) && (

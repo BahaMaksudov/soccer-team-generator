@@ -46,6 +46,8 @@ export default function ReuseTeamsPanel({
 }) {
   const api = useMemo(() => adminTenantApiPath({ organizationSlug, groupSlug, path: `/matches/${encodeURIComponent(matchId)}/reuse-teams` }), [organizationSlug, groupSlug, matchId]);
   const [sources, setSources] = useState<Source[] | null>(null);
+  // The Match's Community (null = a whole-Group match) — the server only lists that scope's publications.
+  const [communityName, setCommunityName] = useState<string | null>(null);
   const [sourceId, setSourceId] = useState("");
   const [plan, setPlan] = useState<Plan | null>(null);
   const [placements, setPlacements] = useState<Record<string, number>>({});
@@ -56,7 +58,12 @@ export default function ReuseTeamsPanel({
     let live = true;
     fetch(api, { cache: "no-store" })
       .then((r) => r.json().then((d) => ({ ok: r.ok, d })))
-      .then(({ ok, d }) => live && (ok ? setSources(d.sources ?? []) : setError(d?.error ?? "Could not load previous teams.")))
+      .then(({ ok, d }) => {
+        if (!live) return;
+        if (!ok) return setError(d?.error ?? "Could not load previous teams.");
+        setSources(d.sources ?? []);
+        setCommunityName(typeof d.communityName === "string" ? d.communityName : null);
+      })
       .catch(() => live && setError("Could not load previous teams."));
     return () => {
       live = false;
@@ -114,8 +121,21 @@ export default function ReuseTeamsPanel({
         </p>
       )}
       {sources === null && !error && <p className="text-sm text-muted-foreground">Loading previous teams…</p>}
+      {sources !== null && (
+        <p className="text-xs text-muted-foreground" data-testid="reuse-scope">
+          {communityName ? (
+            <>
+              Only teams published for <b>{communityName}</b> matches are listed.
+            </>
+          ) : (
+            "Only teams published for whole-group matches (no community) are listed."
+          )}
+        </p>
+      )}
       {sources?.length === 0 && (
-        <p className="text-sm text-muted-foreground">This group has no earlier published teams yet. Generate new balanced teams instead — once teams are published, you can reuse them for a later match.</p>
+        <p className="text-sm text-muted-foreground">
+          {communityName ? `${communityName} has` : "This group has"} no earlier published teams yet. Generate new balanced teams instead — once teams are published, you can reuse them for a later match.
+        </p>
       )}
       {sources && sources.length > 0 && (
         <div className="flex flex-col gap-1">

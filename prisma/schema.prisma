@@ -659,41 +659,42 @@ model Group {
 
   organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
 
-  players                 Player[]
-  teamGenerations         TeamGeneration[]
-  settings                GroupSetting[]
-  telegramChats           TelegramChat[]
-  telegramPolls           TelegramPoll[]
-  telegramLinks           TelegramUserLink[]
-  shareLinks              GroupShareLink[]
-  deliveries              MessageDelivery[]
-  playerClaims            PlayerClaim[]
-  telegramConnectCodes    TelegramConnectCode[]
+  players                     Player[]
+  teamGenerations             TeamGeneration[]
+  settings                    GroupSetting[]
+  telegramChats               TelegramChat[]
+  telegramPolls               TelegramPoll[]
+  telegramLinks               TelegramUserLink[]
+  shareLinks                  GroupShareLink[]
+  deliveries                  MessageDelivery[]
+  playerClaims                PlayerClaim[]
+  telegramConnectCodes        TelegramConnectCode[]
   // M9-A
-  matches                 Match[]
-  attendanceResponses     AttendanceResponse[]
-  personalAttendanceLinks PersonalAttendanceLink[]
-  rsvpSends               RsvpSend[]
-  rsvpInvitations         RsvpInvitation[]
-  telegramChatBindCodes   TelegramChatBindCode[]
+  matches                     Match[]
+  attendanceResponses         AttendanceResponse[]
+  personalAttendanceLinks     PersonalAttendanceLink[]
+  rsvpSends                   RsvpSend[]
+  rsvpInvitations             RsvpInvitation[]
+  telegramChatBindCodes       TelegramChatBindCode[]
   // M9-B
-  telegramChatPlayers     TelegramChatPlayer[]
+  telegramChatPlayers         TelegramChatPlayer[]
   // M9-D
-  matchResults            MatchResult[]
-  matchMvps               MatchMvp[]
-  matchMvpVotes           MatchMvpVote[]
-  matchRecaps             MatchRecap[]
-  communities             Community[]
-  communityPlayers        CommunityPlayer[]
-  spotlightRotation       SpotlightRotation?
-  spotlightPicks          SpotlightPick[]
-  matchSchedules          MatchSchedule[]
-  matchAutomations        MatchAutomation[]
+  matchResults                MatchResult[]
+  matchMvps                   MatchMvp[]
+  matchMvpVotes               MatchMvpVote[]
+  matchRecaps                 MatchRecap[]
+  communities                 Community[]
+  communityPlayers            CommunityPlayer[]
+  spotlightRotation           SpotlightRotation?
+  spotlightCommunityRotations SpotlightCommunityRotation[]
+  spotlightPicks              SpotlightPick[]
+  matchSchedules              MatchSchedule[]
+  matchAutomations            MatchAutomation[]
   // Phase 2
-  matchScheduleSkips      MatchScheduleSkip[]
+  matchScheduleSkips          MatchScheduleSkip[]
   // M13A
-  joinLinks               GroupJoinLink[]
-  joinRequests            GroupJoinRequest[]
+  joinLinks                   GroupJoinLink[]
+  joinRequests                GroupJoinRequest[]
 
   @@unique([organizationId, slug])
 }
@@ -1113,11 +1114,14 @@ model Community {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  group         Group             @relation(fields: [groupId], references: [id], onDelete: Restrict)
-  players       CommunityPlayer[]
-  telegramChats TelegramChat[]
-  matches       Match[]
-  schedules     MatchSchedule[]
+  group              Group                        @relation(fields: [groupId], references: [id], onDelete: Restrict)
+  players            CommunityPlayer[]
+  telegramChats      TelegramChat[]
+  matches            Match[]
+  schedules          MatchSchedule[]
+  // Random Player Spotlight — this Community's own rotation (cycle) and its picks.
+  spotlightRotations SpotlightCommunityRotation[] // at most one (communityId is its primary key)
+  spotlightPicks     SpotlightPick[]
 
   @@unique([id, groupId])
   @@index([groupId])
@@ -1863,6 +1867,8 @@ model RsvpInvitation {
 //   "SpotlightPick_cycle_player_active_key" ON ("groupId","cycle","playerId") WHERE status <> 'RELEASED'
 // Keep them when regenerating migrations.
 // ---------------------------------------------------------------------------
+// The WHOLE-GROUP Spotlight rotation (Matches without a Community, and every pick made before
+// per-Community rotations existed). A Community Match uses SpotlightCommunityRotation instead.
 model SpotlightRotation {
   groupId   String   @id
   cycle     Int      @default(1)
@@ -1870,6 +1876,21 @@ model SpotlightRotation {
   updatedAt DateTime @updatedAt
 
   group Group @relation(fields: [groupId], references: [id], onDelete: Cascade)
+}
+
+// One Community's own Spotlight rotation (its current cycle). Same Group enforced by the
+// composite key.
+model SpotlightCommunityRotation {
+  communityId String   @id
+  groupId     String
+  cycle       Int      @default(1)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  group     Group     @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  community Community @relation(fields: [communityId, groupId], references: [id, groupId], onDelete: Cascade)
+
+  @@index([groupId])
 }
 
 enum SpotlightPickStatus {
@@ -1882,6 +1903,11 @@ model SpotlightPick {
   id              String              @id @default(cuid())
   groupId         String
   matchId         String
+  // Rotation scope this pick was drawn in: the Match's Community, or NULL = the whole-Group
+  // rotation (also every pick made before per-Community rotations). Recorded at selection, never
+  // re-derived. Fairness index (raw SQL): "SpotlightPick_scope_cycle_player_active_key" ON
+  // ("groupId", COALESCE("communityId", ''), "cycle", "playerId") WHERE "status" <> 'RELEASED'.
+  communityId     String?
   cycle           Int
   playerId        String
   // Display name at selection time (what the organizer saw; what Telegram shows).
@@ -1894,11 +1920,13 @@ model SpotlightPick {
   createdAt       DateTime            @default(now())
   updatedAt       DateTime            @updatedAt
 
-  group     Group  @relation(fields: [groupId], references: [id], onDelete: Cascade)
-  match     Match  @relation(fields: [matchId], references: [id], onDelete: Cascade)
-  player    Player @relation(fields: [playerId], references: [id], onDelete: Cascade)
-  createdBy User?  @relation("SpotlightPickCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
+  group     Group      @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  match     Match      @relation(fields: [matchId], references: [id], onDelete: Cascade)
+  player    Player     @relation(fields: [playerId], references: [id], onDelete: Cascade)
+  community Community? @relation(fields: [communityId, groupId], references: [id, groupId], onDelete: Cascade)
+  createdBy User?      @relation("SpotlightPickCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
 
   @@index([groupId, cycle])
+  @@index([groupId, communityId, cycle])
   @@index([matchId])
 }

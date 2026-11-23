@@ -1,7 +1,8 @@
 import { NextResponse } from "next/server";
+import type { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import type { TenantContext } from "@/lib/tenantContext";
-import { confirmedAttendeeIds } from "@/lib/attendanceSnapshot";
+import { confirmedAttendeeIds, resolveCommunity } from "@/lib/attendanceSnapshot";
 import { formatYMDFromDate } from "@/lib/telegramFormat";
 import { playerDisplayName } from "@/lib/playerFacing";
 import { evaluateTeams, resolveBalanceConfig } from "@/lib/balanceEngine";
@@ -14,7 +15,14 @@ import { assignShirtColors, isShirtColorId, type ShirtColorId } from "@/lib/shir
  * Reuse previous teams for a Match.
  *
  * Source: an earlier PUBLISHED TeamGeneration of the SAME Group (never another Group's or
- * Organization's; never this Match's own). The source row is only read — never modified.
+ * Organization's; never this Match's own) AND the same COMMUNITY SCOPE (reuseScopeWhere):
+ *   - a Match of a Community (Match.communityId — the authoritative association; never a Telegram
+ *     chat, a title or a roster overlap) reuses only publications of that Community's Matches;
+ *   - a whole-Group Match (no Community) reuses only publications that belong to no Community:
+ *     whole-Group Matches and legacy by-date publications (made before Matches/Communities, so
+ *     they have no Community identity and are never offered to a Community Match).
+ * The same rule filters the list, the comparison, the build and Publish's provenance check, so a
+ * forged source id of another Community is "not found". The source row is only read — never modified.
  *
  * Reconciliation is by stable Player id only (never by name) against this Match's CONFIRMED
  * attendees (attendanceSnapshot.confirmedAttendeeIds — the authoritative Generate-from-Match rule):
@@ -98,16 +106,39 @@ function parseTeams(teamsJson: string): SourceTeam[] {
   }
 }
 
+export const SOURCE_NOT_IN_SCOPE = "Those previous teams were not found for this match's community.";
+
 async function loadMatch(context: TenantContext, matchId: string) {
   return prisma.match.findFirst({ where: { id: matchId, groupId: context.activeGroup.id }, select: { id: true, date: true } });
 }
 
-/** The Group's earlier publications (newest first), excluding this Match's own teams. */
+/**
+ * The publications a Match may reuse (see the header): same Group, never the Match's own, and the
+ * same Community scope. `communityId` must already be resolved (resolveCommunity) — null = whole Group.
+ */
+export function reuseScopeWhere(groupId: string, matchId: string, communityId: string | null): Prisma.TeamGenerationWhereInput {
+  if (communityId) return { groupId, match: { is: { groupId, communityId, id: { not: matchId } } } };
+  return { groupId, OR: [{ matchId: null }, { match: { is: { groupId, communityId: null, id: { not: matchId } } } }] };
+}
+
+/** The scope filter for one Match of this Group (null = no such Match). */
+export async function reuseScopeForMatch(groupId: string, matchId: string): Promise<Prisma.TeamGenerationWhereInput | null> {
+  return (await matchReuseScope(groupId, matchId))?.where ?? null;
+}
+
+async function matchReuseScope(groupId: string, matchId: string): Promise<{ where: Prisma.TeamGenerationWhereInput; communityName: string | null } | null> {
+  const match = await prisma.match.findFirst({ where: { id: matchId, groupId }, select: { communityId: true } });
+  if (!match) return null;
+  const community = await resolveCommunity(groupId, match.communityId);
+  return { where: reuseScopeWhere(groupId, matchId, community?.id ?? null), communityName: community?.name ?? null };
+}
+
+/** This Match's community's earlier publications (newest first), excluding this Match's own teams. */
 export async function reuseSources(context: TenantContext, matchId: string): Promise<NextResponse> {
-  const match = await loadMatch(context, matchId);
-  if (!match) return notFound();
+  const scope = await matchReuseScope(context.activeGroup.id, matchId);
+  if (!scope) return notFound();
   const rows = await prisma.teamGeneration.findMany({
-    where: { groupId: context.activeGroup.id, NOT: { matchId } },
+    where: scope.where,
     orderBy: [{ date: "desc" }, { updatedAt: "desc" }],
     take: 30,
     select: { id: true, date: true, teamsJson: true, match: { select: { startTime: true, locationName: true } } },
@@ -126,15 +157,16 @@ export async function reuseSources(context: TenantContext, matchId: string): Pro
       };
     })
     .filter((s) => s.teamCount > 0);
-  return NextResponse.json({ sources }, { headers: { "Cache-Control": "no-store" } });
+  return NextResponse.json({ sources, communityName: scope.communityName }, { headers: { "Cache-Control": "no-store" } });
 }
 
 async function loadSourceAndConfirmed(context: TenantContext, matchId: string, sourceId: string) {
   const groupId = context.activeGroup.id;
-  const match = await loadMatch(context, matchId);
-  if (!match) return { error: notFound() } as const;
-  const source = await prisma.teamGeneration.findFirst({ where: { id: sourceId, groupId, NOT: { matchId } }, select: { id: true, date: true, teamsJson: true } });
-  if (!source) return { error: NextResponse.json({ error: "Those previous teams were not found for this group." }, { status: 404 }) } as const;
+  const scope = await reuseScopeForMatch(groupId, matchId);
+  if (!scope) return { error: notFound() } as const;
+  // Scope-checked on the server: a source of another Community (or Group) is simply not found.
+  const source = await prisma.teamGeneration.findFirst({ where: { AND: [scope, { id: sourceId }] }, select: { id: true, date: true, teamsJson: true } });
+  if (!source) return { error: NextResponse.json({ error: SOURCE_NOT_IN_SCOPE }, { status: 404 }) } as const;
   const sourceTeams = parseTeams(source.teamsJson);
   if (sourceTeams.length === 0) return { error: NextResponse.json({ error: "Those previous teams can't be read." }, { status: 422 }) } as const;
   const confirmed = (await confirmedAttendeeIds(groupId, matchId)) ?? [];

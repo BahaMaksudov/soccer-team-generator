@@ -20,8 +20,17 @@ export type AttendanceSnapshot = { counts: AttendanceCounts; rosterSize: number;
 /** Any Prisma client — the global one, or an interactive transaction's (so a caller inside a transaction never needs a second pooled connection). */
 type Db = Pick<typeof prisma, "match" | "community" | "communityPlayer" | "player">;
 
+/**
+ * THE Community a Match belongs to, for every per-Community rule (attendance roster, Spotlight
+ * rotation, Reuse previous teams): Match.communityId when that Community exists in this Group,
+ * else null = the whole Group. Never derived from Telegram chats, titles or player names.
+ */
+export async function resolveCommunity(groupId: string, communityId: string | null, db: Db = prisma): Promise<{ id: string; name: string } | null> {
+  return communityId ? db.community.findFirst({ where: { id: communityId, groupId }, select: { id: true, name: true } }) : null;
+}
+
 export async function eligibleRosterIds(groupId: string, communityId: string | null, db: Db = prisma): Promise<{ ids: string[]; communityName: string | null }> {
-  const community = communityId ? await db.community.findFirst({ where: { id: communityId, groupId }, select: { id: true, name: true } }) : null;
+  const community = await resolveCommunity(groupId, communityId, db);
   if (community) {
     const rows = await db.communityPlayer.findMany({ where: { groupId, communityId: community.id, player: { isActive: true, groupId } }, select: { playerId: true } });
     return { ids: rows.map((r) => r.playerId), communityName: community.name };

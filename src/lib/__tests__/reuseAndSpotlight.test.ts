@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import fs from "node:fs";
-import { applyPlacements, reconcileReuse } from "@/lib/reuseTeams";
+import { applyPlacements, reconcileReuse, reuseScopeWhere } from "@/lib/reuseTeams";
+import { selectUnavailableReason } from "@/lib/spotlightAvailability";
 import { cycleState, drawFromPool, normalizeSpotlightNote, SPOTLIGHT_NOTE_MAX } from "@/lib/spotlight";
 import { formatTeamsHtml } from "@/lib/telegramFormat";
 import { renderTelegramHtml } from "@/lib/messaging/telegram";
@@ -155,9 +156,58 @@ describe("Spotlight transaction uses only its own connection (pool-deadlock regr
     expect(body).toContain("prisma.$transaction(async (tx) =>");
     expect(body.replace("prisma.$transaction", "")).not.toMatch(/\bprisma\./); // a second pooled connection would deadlock (or always, with a pool of one)
     expect(body).toContain("confirmedAttendeeIds(groupId, matchId, tx)");
-    for (const helper of ["async function drawLocked(", "async function buildView(", "async function rotationCycle(", "async function selectedIn(", "async function activeRosterIds("]) {
+    const helpers = ["async function drawLocked(", "async function buildView(", "async function matchScope(", "async function rotationCycle(", "async function readCycle(", "async function setCycle(", "async function selectedIn(", "async function rosterIds("];
+    for (const helper of helpers) {
       const at = src.indexOf(helper);
+      expect(at, helper).toBeGreaterThan(-1); // a renamed helper must be added here, not silently skipped
       expect(src.slice(at, src.indexOf("\n}\n", at)), helper).not.toMatch(/\bprisma\./);
     }
+    // Shared readers get the transaction client passed explicitly.
+    expect(src).toContain("resolveCommunity(groupId, match.communityId, tx)");
+    expect(src).toContain("eligibleRosterIds(scope.groupId, scope.communityId, tx)");
+    // The read-only view is one transaction too (one connection).
+    const view = src.slice(src.indexOf("export async function spotlightView("), src.indexOf("\n}\n", src.indexOf("export async function spotlightView(")));
+    expect(view).toContain("prisma.$transaction(async (tx) =>");
+    expect(view.replace("prisma.$transaction", "")).not.toMatch(/\bprisma\./);
+  });
+});
+
+describe("Community scope — Reuse source filter", () => {
+  it("a community match: only publications of that community's matches (never by group alone, never legacy)", () => {
+    expect(reuseScopeWhere("g", "m", "c-fun")).toEqual({ groupId: "g", match: { is: { groupId: "g", communityId: "c-fun", id: { not: "m" } } } });
+  });
+  it("a whole-group match: whole-group matches and legacy by-date publications only (no community's)", () => {
+    expect(reuseScopeWhere("g", "m", null)).toEqual({ groupId: "g", OR: [{ matchId: null }, { match: { is: { groupId: "g", communityId: null, id: { not: "m" } } } }] });
+  });
+});
+
+describe("Spotlight button availability (same rule on desktop and mobile)", () => {
+  it("enabled only when there is someone to draw; otherwise a visible reason", () => {
+    expect(selectUnavailableReason({ confirmedCount: 4, poolSize: 4 }, false)).toBeNull();
+    expect(selectUnavailableReason({ confirmedCount: 4, poolSize: 1 }, false)).toBeNull();
+    expect(selectUnavailableReason({ confirmedCount: 0, poolSize: 0 }, false)).toMatch(/confirmed as playing/);
+    expect(selectUnavailableReason({ confirmedCount: 2, poolSize: 0 }, false)).toMatch(/already had a turn this cycle/);
+    expect(selectUnavailableReason(null, false)).toBe("Loading…");
+    expect(selectUnavailableReason(null, true)).toMatch(/couldn't be loaded/);
+  });
+});
+
+describe("Spotlight card refreshes from the server (stale-state regression — iPhone disabled button)", () => {
+  const card = fs.readFileSync("src/app/admin/o/[organizationSlug]/g/[groupSlug]/matches/[matchId]/SpotlightCard.tsx", "utf8");
+  const workspace = fs.readFileSync("src/app/admin/o/[organizationSlug]/g/[groupSlug]/matches/[matchId]/MatchWorkspace.tsx", "utf8");
+  it("re-reads when the workspace's confirmed attendance changes", () => {
+    expect(workspace).toContain("const attendanceKey = useMemo(() => [...defaultIds].sort().join(\",\"), [defaultIds]);");
+    expect(workspace).toMatch(/<SpotlightCard [^>]*attendanceKey=\{attendanceKey\}/);
+    expect(card).toContain("}, [reload, attendanceKey]);");
+  });
+  it("re-reads when the page becomes visible again or is restored from the back/forward cache (iOS Safari)", () => {
+    expect(card).toContain('document.addEventListener("visibilitychange", onVisible);');
+    expect(card).toContain('window.addEventListener("pageshow", onShow);');
+  });
+  it("the button's disabled state comes from the server view + a shown reason; double taps are ignored", () => {
+    expect(card).toContain("disabled={busy || unavailable !== null}");
+    expect(card).toContain('data-testid="spotlight-availability"');
+    expect(card).toContain("if (inFlight.current) return null;");
+    expect(card).not.toMatch(/innerWidth|matchMedia|navigator\.userAgent/); // no device-specific logic
   });
 });

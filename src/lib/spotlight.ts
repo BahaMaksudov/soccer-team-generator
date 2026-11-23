@@ -1,18 +1,28 @@
 import { randomInt } from "node:crypto";
 import type { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
-import { confirmedAttendeeIds } from "@/lib/attendanceSnapshot";
+import { confirmedAttendeeIds, eligibleRosterIds, resolveCommunity } from "@/lib/attendanceSnapshot";
 import { playerDisplayName } from "@/lib/playerFacing";
 
 /**
  * Random Player Spotlight — one confirmed attendee per Match, chosen fairly at random, never the
  * same person twice in a rotation cycle.
  *
- * CYCLE MEMBERSHIP POLICY (per Group):
- *   - The rotation roster is the Group's ACTIVE players, evaluated at selection time.
- *   - A player is "selected in cycle N" when they have an ACTIVE pick in cycle N.
- *   - Cycle N is complete when every currently ACTIVE player has been selected in it. Newly added
- *     players join the current cycle (unselected); deactivated players stop counting toward
+ * ROTATION SCOPE: a Match that belongs to a Community (Match.communityId — the authoritative
+ * association, never a Telegram chat or a name) uses THAT Community's own rotation; a Match
+ * without one uses the whole-Group rotation. Every pick records the scope it was drawn in
+ * (SpotlightPick.communityId; NULL = whole Group — which is also where every pick made before
+ * per-Community rotations lives). Scopes are fully independent: a player who belongs to two
+ * Communities has a turn in each, and one scope's picks never count in another.
+ *
+ * CYCLE MEMBERSHIP POLICY (per scope):
+ *   - The rotation roster is the scope's eligible roster at selection time — the same one the
+ *     attendance counts use (attendanceSnapshot.eligibleRosterIds): the Community's ACTIVE
+ *     members, or the Group's ACTIVE players for a whole-Group Match.
+ *   - A player is "selected in cycle N" of a scope when they have an ACTIVE or REPLACED pick of
+ *     that scope in cycle N.
+ *   - Cycle N is complete when everyone on the roster has been selected in it. New members join
+ *     the current cycle (unselected); deactivated or removed members stop counting toward
  *     completion (so the cycle can always finish) and, if reactivated, keep whatever status they
  *     had in the cycle; deleted players disappear with their picks.
  *   - The next cycle starts only at the first selection after the current one is complete — never
@@ -21,32 +31,49 @@ import { playerDisplayName } from "@/lib/playerFacing";
  *     are still waiting (but aren't attending), nothing is selected and nothing restarts: the
  *     organizer is told, and the Spotlight is simply left out of this Match.
  *
- * SELECTION: explicit organizer action only. Inside ONE transaction holding a per-Group advisory
- * lock: an existing ACTIVE pick for the Match is returned unchanged (idempotent: repeats, double
- * clicks, retries); otherwise the pool = confirmed attendees not yet selected this cycle, sorted by
- * id, and one is chosen with crypto.randomInt (uniform, cryptographically secure). Two partial
- * unique indexes enforce "one ACTIVE pick per Match" and "one ACTIVE pick per player per cycle"
- * in the database itself. Generate, Publish, page loads and Telegram (re)sends only READ the pick.
+ * SELECTION: explicit organizer action only. Inside ONE transaction holding the per-Group
+ * advisory lock (one lock for all of a Group's scopes — a replacement may touch two): an existing
+ * ACTIVE pick for the Match is returned unchanged (idempotent: repeats, double clicks, retries);
+ * otherwise the pool = confirmed attendees not yet selected this cycle, sorted by id, and one is
+ * chosen with crypto.randomInt (uniform, cryptographically secure). Two partial unique indexes
+ * enforce "one ACTIVE pick per Match" and "one counted pick per player per cycle of a scope" in
+ * the database itself. Generate, Publish, page loads and Telegram (re)sends only READ the pick.
  *
  * REPLACEMENT (no reroll): allowed only when the selected player is no longer a confirmed attendee,
  * and all-or-nothing (if nobody can be drawn, nothing changes and the original pick stays).
- *   - pick from the CURRENT cycle → RELEASED: the player gets their turn back in that same cycle,
- *     so one Match never consumes two slots of a cycle;
+ *   - pick from its scope's CURRENT cycle → RELEASED: the player gets their turn back in that same
+ *     cycle, so one Match never consumes two slots of a cycle;
  *   - pick from an already-CLOSED cycle → REPLACED: it stops being the Match's Spotlight but still
  *     counts as that player's turn in its own cycle — a closed cycle's history is never rewritten.
- * The new player is drawn from the CURRENT cycle by the same rule; the organizer's text is kept.
- * "Selected in cycle N" = ACTIVE or REPLACED picks of cycle N (the partial unique index enforces
- * at most one per player per cycle).
+ * (The pick's OWN recorded scope decides — e.g. a whole-Group pick made before this Match's
+ * Community had its own rotation.) The new player is drawn from the Match's CURRENT scope and
+ * cycle by the same rule; the organizer's text is kept.
+ * "Selected in cycle N" = ACTIVE or REPLACED picks of cycle N in the scope (the partial unique
+ * index enforces at most one per player per cycle per scope).
  */
 
 export const SPOTLIGHT_NOTE_MAX = 200;
 export { SPOTLIGHT_TITLE } from "@/lib/messaging/content";
 
 type Tx = Prisma.TransactionClient;
+/** Rotation scope: a Community of the Group, or communityId null = the whole Group. */
+type Scope = { groupId: string; communityId: string | null };
 
 export type SpotlightProgress = { cycle: number; selected: number; roster: number; complete: boolean };
 export type SpotlightView = {
-  pick: { playerId: string; playerName: string; note: string | null; cycle: number; selectedAt: string } | null;
+  /** The rotation this Match uses: its Community's own (name), or the whole Group (null). */
+  rotation: { communityName: string | null };
+  pick: {
+    playerId: string;
+    playerName: string;
+    note: string | null;
+    cycle: number;
+    selectedAt: string;
+    /** Drawn in another scope (e.g. the whole-Group rotation, before this Community had its own). */
+    otherRotation: boolean;
+    /** The scope it was drawn in: a Community's name, or null = the whole-Group rotation. */
+    rotationName: string | null;
+  } | null;
   /** The selected player is still a confirmed attendee of this Match. */
   stillAttending: boolean;
   confirmedCount: number;
@@ -93,29 +120,59 @@ async function lockGroup(tx: Tx, groupId: string) {
   await tx.$queryRaw`SELECT 1 AS locked FROM pg_advisory_xact_lock(hashtext(${"spotlight:" + groupId}))`;
 }
 
-async function rotationCycle(tx: Tx, groupId: string): Promise<number> {
-  const row = await tx.spotlightRotation.upsert({ where: { groupId }, update: {}, create: { groupId }, select: { cycle: true } });
+/** The Match's rotation scope, from the authoritative Match → Community association. null = no such Match. */
+async function matchScope(tx: Tx, groupId: string, matchId: string): Promise<(Scope & { communityName: string | null }) | null> {
+  const match = await tx.match.findFirst({ where: { id: matchId, groupId }, select: { communityId: true } });
+  if (!match) return null;
+  const community = await resolveCommunity(groupId, match.communityId, tx);
+  return { groupId, communityId: community?.id ?? null, communityName: community?.name ?? null };
+}
+
+/** The scope's current cycle, creating its rotation row at cycle 1 on first use. */
+async function rotationCycle(tx: Tx, scope: Scope): Promise<number> {
+  if (scope.communityId) {
+    const row = await tx.spotlightCommunityRotation.upsert({ where: { communityId: scope.communityId }, update: {}, create: { communityId: scope.communityId, groupId: scope.groupId }, select: { cycle: true } });
+    return row.cycle;
+  }
+  const row = await tx.spotlightRotation.upsert({ where: { groupId: scope.groupId }, update: {}, create: { groupId: scope.groupId }, select: { cycle: true } });
   return row.cycle;
 }
 
-async function selectedIn(tx: Tx, groupId: string, cycle: number): Promise<Set<string>> {
-  const picks = await tx.spotlightPick.findMany({ where: { groupId, cycle, status: { in: ["ACTIVE", "REPLACED"] } }, select: { playerId: true } });
+/** The scope's current cycle without writing anything (1 before its first pick). */
+async function readCycle(tx: Tx, scope: Scope): Promise<number> {
+  const row = scope.communityId
+    ? await tx.spotlightCommunityRotation.findFirst({ where: { communityId: scope.communityId, groupId: scope.groupId }, select: { cycle: true } })
+    : await tx.spotlightRotation.findUnique({ where: { groupId: scope.groupId }, select: { cycle: true } });
+  return row?.cycle ?? 1;
+}
+
+async function setCycle(tx: Tx, scope: Scope, cycle: number) {
+  if (scope.communityId) await tx.spotlightCommunityRotation.update({ where: { communityId: scope.communityId }, data: { cycle } });
+  else await tx.spotlightRotation.update({ where: { groupId: scope.groupId }, data: { cycle } });
+}
+
+async function selectedIn(tx: Tx, scope: Scope, cycle: number): Promise<Set<string>> {
+  const picks = await tx.spotlightPick.findMany({ where: { groupId: scope.groupId, communityId: scope.communityId, cycle, status: { in: ["ACTIVE", "REPLACED"] } }, select: { playerId: true } });
   return new Set(picks.map((p) => p.playerId));
 }
 
-async function activeRosterIds(tx: Tx, groupId: string): Promise<string[]> {
-  return (await tx.player.findMany({ where: { groupId, isActive: true }, select: { id: true } })).map((p) => p.id);
+/** The scope's rotation roster — the same eligible roster the attendance counts use. */
+async function rosterIds(tx: Tx, scope: Scope): Promise<string[]> {
+  return (await eligibleRosterIds(scope.groupId, scope.communityId, tx)).ids;
 }
 
-async function buildView(tx: Tx, groupId: string, matchId: string, confirmed: string[]): Promise<SpotlightView> {
-  const cycle = (await tx.spotlightRotation.findUnique({ where: { groupId }, select: { cycle: true } }))?.cycle ?? 1;
-  const selected = await selectedIn(tx, groupId, cycle);
-  const state = cycleState(await activeRosterIds(tx, groupId), selected);
-  const pick = await tx.spotlightPick.findFirst({ where: { matchId, groupId, status: "ACTIVE" }, select: { playerId: true, playerName: true, note: true, cycle: true, createdAt: true } });
+async function buildView(tx: Tx, scope: Scope & { communityName: string | null }, matchId: string, confirmed: string[]): Promise<SpotlightView> {
+  const cycle = await readCycle(tx, scope);
+  const selected = await selectedIn(tx, scope, cycle);
+  const state = cycleState(await rosterIds(tx, scope), selected);
+  const pick = await tx.spotlightPick.findFirst({ where: { matchId, groupId: scope.groupId, status: "ACTIVE" }, select: { playerId: true, playerName: true, note: true, cycle: true, createdAt: true, communityId: true, community: { select: { name: true } } } });
   // When the cycle is complete, the next draw starts a fresh cycle — so everyone attending is eligible.
   const poolSize = state.complete ? confirmed.length : confirmed.filter((id) => !selected.has(id)).length;
   return {
-    pick: pick ? { playerId: pick.playerId, playerName: pick.playerName, note: pick.note, cycle: pick.cycle, selectedAt: pick.createdAt.toISOString() } : null,
+    rotation: { communityName: scope.communityName },
+    pick: pick
+      ? { playerId: pick.playerId, playerName: pick.playerName, note: pick.note, cycle: pick.cycle, selectedAt: pick.createdAt.toISOString(), otherRotation: pick.communityId !== scope.communityId, rotationName: pick.community?.name ?? null }
+      : null,
     stillAttending: pick ? confirmed.includes(pick.playerId) : false,
     confirmedCount: confirmed.length,
     poolSize,
@@ -123,28 +180,31 @@ async function buildView(tx: Tx, groupId: string, matchId: string, confirmed: st
   };
 }
 
-/** Read-only state for the workspace (never selects). */
+/** Read-only state for the workspace (never selects). One read-only transaction = one connection. */
 export async function spotlightView(groupId: string, matchId: string): Promise<SpotlightView | null> {
-  const confirmed = await confirmedAttendeeIds(groupId, matchId);
-  if (!confirmed) return null;
-  return buildView(prisma, groupId, matchId, confirmed);
+  return prisma.$transaction(async (tx) => {
+    const scope = await matchScope(tx, groupId, matchId);
+    if (!scope) return null;
+    const confirmed = (await confirmedAttendeeIds(groupId, matchId, tx)) ?? [];
+    return buildView(tx, scope, matchId, confirmed);
+  });
 }
 
 /** Draw inside the locked transaction: returns the new pick's player id, or the reason nothing could be drawn. */
-async function drawLocked(tx: Tx, groupId: string, matchId: string, confirmed: string[], userId: string | null, note: string | null, rand?: (max: number) => number): Promise<{ ok: true } | { ok: false; code: "NO_CONFIRMED" | "ALL_ATTENDEES_SELECTED" }> {
+async function drawLocked(tx: Tx, scope: Scope, matchId: string, confirmed: string[], userId: string | null, note: string | null, rand?: (max: number) => number): Promise<{ ok: true } | { ok: false; code: "NO_CONFIRMED" | "ALL_ATTENDEES_SELECTED" }> {
   if (confirmed.length === 0) return { ok: false, code: "NO_CONFIRMED" };
-  let cycle = await rotationCycle(tx, groupId);
-  let selected = await selectedIn(tx, groupId, cycle);
-  if (cycleState(await activeRosterIds(tx, groupId), selected).complete) {
-    // Everyone active has had a turn: start the next cycle (only now, never early).
+  let cycle = await rotationCycle(tx, scope);
+  let selected = await selectedIn(tx, scope, cycle);
+  if (cycleState(await rosterIds(tx, scope), selected).complete) {
+    // Everyone on this scope's roster has had a turn: start its next cycle (only now, never early).
     cycle += 1;
-    await tx.spotlightRotation.update({ where: { groupId }, data: { cycle } });
+    await setCycle(tx, scope, cycle);
     selected = new Set();
   }
   const playerId = drawFromPool(confirmed.filter((id) => !selected.has(id)), rand);
   if (!playerId) return { ok: false, code: "ALL_ATTENDEES_SELECTED" };
-  const player = await tx.player.findFirstOrThrow({ where: { id: playerId, groupId }, select: { firstName: true, lastName: true } });
-  await tx.spotlightPick.create({ data: { groupId, matchId, cycle, playerId, playerName: playerDisplayName(player), note, createdByUserId: userId } });
+  const player = await tx.player.findFirstOrThrow({ where: { id: playerId, groupId: scope.groupId }, select: { firstName: true, lastName: true } });
+  await tx.spotlightPick.create({ data: { groupId: scope.groupId, communityId: scope.communityId, matchId, cycle, playerId, playerName: playerDisplayName(player), note, createdByUserId: userId } });
   return { ok: true };
 }
 
@@ -182,30 +242,31 @@ export async function selectSpotlight(groupId: string, matchId: string, userId: 
 async function selectLocked(groupId: string, matchId: string, userId: string | null, opts: { replace?: boolean; rand?: (max: number) => number }): Promise<SpotlightOutcome> {
   return prisma.$transaction(async (tx) => {
     await lockGroup(tx, groupId);
-    const match = await tx.match.findFirst({ where: { id: matchId, groupId }, select: { id: true } });
-    if (!match) return { ok: false, code: "NOT_FOUND", message: MESSAGES.NOT_FOUND };
+    const scope = await matchScope(tx, groupId, matchId);
+    if (!scope) return { ok: false, code: "NOT_FOUND", message: MESSAGES.NOT_FOUND };
     // Attendance is read inside the lock, on THIS transaction's connection (a second pooled connection
     // here would deadlock under concurrency, or always with a pool of one).
     const confirmed = (await confirmedAttendeeIds(groupId, matchId, tx)) ?? [];
-    const existing = await tx.spotlightPick.findFirst({ where: { matchId, groupId, status: "ACTIVE" }, select: { id: true, playerId: true, note: true, cycle: true } });
+    const existing = await tx.spotlightPick.findFirst({ where: { matchId, groupId, status: "ACTIVE" }, select: { id: true, playerId: true, note: true, cycle: true, communityId: true } });
 
     if (!opts.replace) {
-      if (existing) return { ok: true, created: false, view: await buildView(tx, groupId, matchId, confirmed) };
-      const drawn = await drawLocked(tx, groupId, matchId, confirmed, userId, null, opts.rand);
-      if (!drawn.ok) return { ok: false, code: drawn.code, message: MESSAGES[drawn.code], view: await buildView(tx, groupId, matchId, confirmed) };
-      return { ok: true, created: true, view: await buildView(tx, groupId, matchId, confirmed) };
+      if (existing) return { ok: true, created: false, view: await buildView(tx, scope, matchId, confirmed) };
+      const drawn = await drawLocked(tx, scope, matchId, confirmed, userId, null, opts.rand);
+      if (!drawn.ok) return { ok: false, code: drawn.code, message: MESSAGES[drawn.code], view: await buildView(tx, scope, matchId, confirmed) };
+      return { ok: true, created: true, view: await buildView(tx, scope, matchId, confirmed) };
     }
 
     // Replacement: only for a selection whose player is no longer confirmed.
     if (!existing) return { ok: false, code: "NO_PICK", message: MESSAGES.NO_PICK };
-    if (confirmed.includes(existing.playerId)) return { ok: false, code: "STILL_ATTENDING", message: MESSAGES.STILL_ATTENDING, view: await buildView(tx, groupId, matchId, confirmed) };
-    // Same (current) cycle → give the absent player their turn back; an older, closed cycle keeps
-    // its history (REPLACED still counts there). Either way the Match's slot is freed first.
-    const current = await rotationCycle(tx, groupId);
+    if (confirmed.includes(existing.playerId)) return { ok: false, code: "STILL_ATTENDING", message: MESSAGES.STILL_ATTENDING, view: await buildView(tx, scope, matchId, confirmed) };
+    // Same (current) cycle OF THE PICK'S OWN SCOPE → give the absent player their turn back; an
+    // older, closed cycle keeps its history (REPLACED still counts there). Either way the Match's
+    // slot is freed first.
+    const current = await readCycle(tx, { groupId, communityId: existing.communityId });
     await tx.spotlightPick.update({ where: { id: existing.id }, data: { status: existing.cycle === current ? "RELEASED" : "REPLACED", releasedAt: new Date() } });
-    const drawn = await drawLocked(tx, groupId, matchId, confirmed, userId, existing.note, opts.rand);
+    const drawn = await drawLocked(tx, scope, matchId, confirmed, userId, existing.note, opts.rand);
     if (!drawn.ok) throw new ReplacementAborted(drawn.code); // all-or-nothing: roll back, keep the original pick
-    return { ok: true, created: true, view: await buildView(tx, groupId, matchId, confirmed) };
+    return { ok: true, created: true, view: await buildView(tx, scope, matchId, confirmed) };
   });
 }
 

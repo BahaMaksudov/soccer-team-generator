@@ -69,7 +69,7 @@ const PLAYERS: Array<[string, string, string, string]> = [
 ];
 async function seed() {
   await prisma.$executeRawUnsafe(
-    `TRUNCATE "SpotlightPick","SpotlightRotation","AttendanceResponse","MessageDelivery","TelegramPollAnswer","TelegramPoll","TelegramChat","Match","TeamGeneration","GroupSetting","Player","Group","OrganizationMembership","Organization","User" RESTART IDENTITY CASCADE`
+    `TRUNCATE "SpotlightPick","SpotlightRotation","SpotlightCommunityRotation","CommunityPlayer","Community","AttendanceResponse","MessageDelivery","TelegramPollAnswer","TelegramPoll","TelegramChat","Match","TeamGeneration","GroupSetting","Player","Group","OrganizationMembership","Organization","User" RESTART IDENTITY CASCADE`
   );
   const verified = new Date("2026-10-01T00:00:00Z");
   for (const email of ["owner@example.test", "admin@example.test", "member@example.test", "owner-b@example.test"]) {
@@ -280,11 +280,244 @@ describe("Reuse previous teams", () => {
     const foreignGen = await prisma.teamGeneration.findUniqueOrThrow({ where: { matchId: otherGroupMatch } });
     expect((await reusePlan(id, foreignGen.id)).status).toBe(404); // a source of another group is "not found"
     expect((await reuseBuild(id, { sourceId: foreignGen.id, placements: {} })).status).toBe(404);
-    // Provenance pointing at another group's row is never stored.
+    // Provenance pointing at another group's row is REJECTED before any write (never stored).
     await attend(id, ["p1", "p2", "p3", "p4", "p5"]);
     const built = await reuseBuild(id, { sourceId: prev.gen.id, placements: {} });
-    await publishFor(id, built.body.teams, "2026-11-20", A, { reusedFromGenerationId: foreignGen.id });
-    expect((await prisma.teamGeneration.findUniqueOrThrow({ where: { matchId: id } })).reusedFromGenerationId).toBeNull();
+    const forged = await publishFor(id, built.body.teams, "2026-11-20", A, { reusedFromGenerationId: foreignGen.id });
+    expect(forged.status).toBe(400);
+    expect(await prisma.teamGeneration.findUnique({ where: { matchId: id } })).toBeNull();
+  });
+});
+
+// ============================================================================ Community scope
+// Two Communities of ONE Group (the owner's FunnyStuff vs UCCNE - FC case). p3 and p4 belong to both.
+const FUN = ["p1", "p2", "p3", "p4"];
+const FC = ["p3", "p4", "p5", "p6"];
+async function communities() {
+  await prisma.community.create({ data: { id: "c-fun", groupId: "ga", name: "FunnyStuff" } });
+  await prisma.community.create({ data: { id: "c-fc", groupId: "ga", name: "UCCNE - FC" } });
+  for (const playerId of FUN) await prisma.communityPlayer.create({ data: { groupId: "ga", communityId: "c-fun", playerId } });
+  for (const playerId of FC) await prisma.communityPlayer.create({ data: { groupId: "ga", communityId: "c-fc", playerId } });
+}
+async function cmatch(communityId: string | null, date = "2026-11-20") {
+  const id = await match("ga", date);
+  if (communityId) await prisma.match.update({ where: { id }, data: { communityId } });
+  return id;
+}
+const two = (a: string[], colors = ["yellow", "blue"]) => [
+  { teamNumber: 1, shirtColor: colors[0], players: a.slice(0, 2).map((id) => ({ id })) },
+  { teamNumber: 2, shirtColor: colors[1], players: a.slice(2, 4).map((id) => ({ id })) },
+];
+async function published(communityId: string | null, date: string, ids: string[]) {
+  const id = await cmatch(communityId, date);
+  await attend(id, ids);
+  expect((await publishFor(id, two(ids), date)).status).toBe(200);
+  return (await prisma.teamGeneration.findUniqueOrThrow({ where: { matchId: id } })).id;
+}
+const first = () => 0; // deterministic draw: the first id of the sorted pool
+
+describe("Community scope — Reuse previous teams", () => {
+  let funGen: string, fcGen: string, wgGen: string, legacyGen: string;
+  beforeEach(async () => {
+    await communities();
+    funGen = await published("c-fun", "2026-11-10", FUN);
+    fcGen = await published("c-fc", "2026-11-11", FC);
+    wgGen = await published(null, "2026-11-12", ["p1", "p5", "p2", "p6"]);
+    // A legacy by-date publication (no Match, so no Community identity).
+    expect((await call(publishRoute.POST(json("POST", { date: "2026-11-01", teams: two(["p1", "p3", "p5", "p6"]) }), g(A)))).status).toBe(200);
+    legacyGen = (await prisma.teamGeneration.findFirstOrThrow({ where: { groupId: "ga", matchId: null } })).id;
+  });
+
+  it("a FunnyStuff match lists only FunnyStuff publications; UCCNE - FC only its own; whole-group only community-less ones", async () => {
+    const funNow = await cmatch("c-fun");
+    const fun = await reuseList(funNow);
+    expect(fun.status).toBe(200);
+    expect(fun.body.sources.map((x: { id: string }) => x.id)).toEqual([funGen]);
+    expect(fun.body.communityName).toBe("FunnyStuff");
+    expect(fun.body.sources[0]).toMatchObject({ date: "2026-11-10", startTime: "19:00", teamCount: 2, playerCount: 4, hasShirtColors: true });
+
+    const fc = await reuseList(await cmatch("c-fc"));
+    expect(fc.body.sources.map((x: { id: string }) => x.id)).toEqual([fcGen]);
+    expect(fc.body.communityName).toBe("UCCNE - FC");
+
+    const wg = await reuseList(await cmatch(null));
+    expect(wg.body.sources.map((x: { id: string }) => x.id)).toEqual([wgGen, legacyGen]); // newest first
+    expect(wg.body.communityName).toBeNull();
+  });
+
+  it("forged source ids of another community, a whole-group match or a legacy publication are rejected by the server", async () => {
+    const funNow = await cmatch("c-fun");
+    await attend(funNow, FUN);
+    for (const forged of [fcGen, wgGen, legacyGen]) {
+      expect((await reusePlan(funNow, forged)).status).toBe(404);
+      expect((await reuseBuild(funNow, { sourceId: forged, placements: {} })).status).toBe(404);
+    }
+    const ok = await reuseBuild(funNow, { sourceId: funGen, placements: {} });
+    expect(ok.status).toBe(200);
+    expect(ok.body.teams.map((t: { shirtColor: string }) => t.shirtColor)).toEqual(["yellow", "blue"]); // colors carried over
+
+    // Publish re-checks the provenance: another community's id is refused before any write.
+    const forged = await publishFor(funNow, ok.body.teams, "2026-11-20", A, { reusedFromGenerationId: fcGen });
+    expect(forged.status).toBe(400);
+    expect(forged.body.code).toBe("REUSE_SOURCE_NOT_IN_SCOPE");
+    expect(await prisma.teamGeneration.findUnique({ where: { matchId: funNow } })).toBeNull();
+    expect((await publishFor(funNow, ok.body.teams, "2026-11-20", A, { reusedFromGenerationId: funGen })).status).toBe(200);
+    expect((await prisma.teamGeneration.findUniqueOrThrow({ where: { matchId: funNow } })).reusedFromGenerationId).toBe(funGen);
+
+    // A whole-group match can't reuse a community's publication either.
+    const wgNow = await cmatch(null);
+    await attend(wgNow, FUN);
+    expect((await reusePlan(wgNow, funGen)).status).toBe(404);
+    expect((await reusePlan(wgNow, legacyGen)).status).toBe(200);
+  });
+
+  it("reconciliation still works inside the community: absent left out, a new member must be placed", async () => {
+    await prisma.communityPlayer.create({ data: { groupId: "ga", communityId: "c-fun", playerId: "p5" } });
+    const funNow = await cmatch("c-fun");
+    await attend(funNow, ["p1", "p2", "p3", "p5"]); // p4 absent, p5 new
+    const plan = await reusePlan(funNow, funGen);
+    expect(plan.status).toBe(200);
+    expect(plan.body.absent.map((x: { id: string }) => x.id)).toEqual(["p4"]);
+    expect(plan.body.unassigned.map((x: { id: string }) => x.id)).toEqual(["p5"]);
+    expect((await reuseBuild(funNow, { sourceId: funGen, placements: {} })).status).toBe(400); // must place p5
+    const built = await reuseBuild(funNow, { sourceId: funGen, placements: { p5: 2 } });
+    expect(built.status).toBe(200);
+    expect(built.body.teams[1].players.map((x: { id: string }) => x.id)).toEqual(["p3", "p5"]);
+  });
+});
+
+describe("Community scope — Random Player Spotlight", () => {
+  beforeEach(communities);
+  const progress = async (matchId: string) => (await spotView(matchId)).body.progress;
+
+  it("cycle counts use the community's own active members (4), not the whole group's", async () => {
+    const fun = await cmatch("c-fun");
+    const v = await spotView(fun);
+    expect(v.status).toBe(200);
+    expect(v.body.rotation).toEqual({ communityName: "FunnyStuff" });
+    expect(v.body.progress).toEqual({ cycle: 1, selected: 0, roster: 4, complete: false });
+    expect((await spotView(await cmatch("c-fc"))).body.progress.roster).toBe(4);
+    const wg = await spotView(await cmatch(null));
+    expect(wg.body.rotation).toEqual({ communityName: null });
+    expect(wg.body.progress.roster).toBe(6);
+  });
+
+  it("independent rotations: a FunnyStuff cycle never touches UCCNE - FC or the whole group; a shared player has a turn in each", async () => {
+    const picked: string[] = [];
+    for (let i = 0; i < FUN.length; i++) {
+      const id = await cmatch("c-fun");
+      await attend(id, FUN);
+      const r = await spot(id, "select");
+      expect(r.status).toBe(200);
+      expect(r.body.pick.cycle).toBe(1);
+      picked.push(r.body.pick.playerId);
+    }
+    expect([...picked].sort()).toEqual(FUN); // each FunnyStuff member once
+    expect(await prisma.spotlightPick.count({ where: { communityId: "c-fun" } })).toBe(4);
+    expect(await prisma.spotlightRotation.count()).toBe(0); // the whole-group rotation was never used
+
+    const fc = await cmatch("c-fc");
+    expect(await progress(fc)).toEqual({ cycle: 1, selected: 0, roster: 4, complete: false });
+    await attend(fc, ["p3", "p4"]); // both already had their FunnyStuff turn
+    const shared = await selectSpotlight("ga", fc, null, { rand: first });
+    expect(shared.ok && shared.view.pick).toMatchObject({ playerId: "p3", cycle: 1 });
+    expect(await prisma.spotlightPick.findFirstOrThrow({ where: { matchId: fc } })).toMatchObject({ communityId: "c-fc", cycle: 1 });
+
+    const wg = await cmatch(null);
+    expect(await progress(wg)).toEqual({ cycle: 1, selected: 0, roster: 6, complete: false });
+
+    // The next FunnyStuff pick opens FunnyStuff's cycle 2; UCCNE - FC stays in cycle 1.
+    const fun5 = await cmatch("c-fun");
+    await attend(fun5, FUN);
+    expect((await spot(fun5, "select")).body.pick.cycle).toBe(2);
+    expect(await prisma.spotlightCommunityRotation.findMany({ orderBy: { communityId: "asc" }, select: { communityId: true, groupId: true, cycle: true } })).toEqual([
+      { communityId: "c-fc", groupId: "ga", cycle: 1 },
+      { communityId: "c-fun", groupId: "ga", cycle: 2 },
+    ]);
+  });
+
+  it("absentees keep their turn; no repeats in a community cycle; non-members are never eligible", async () => {
+    const seen: string[] = [];
+    for (let i = 0; i < 2; i++) {
+      const id = await cmatch("c-fun");
+      await attend(id, ["p1", "p2", "p6"]); // p6 is not a FunnyStuff member → never confirmed here
+      const r = await spot(id, "select");
+      expect(r.status).toBe(200);
+      seen.push(r.body.pick.playerId);
+    }
+    expect(seen.sort()).toEqual(["p1", "p2"]);
+    const third = await cmatch("c-fun");
+    await attend(third, ["p1", "p2", "p6"]);
+    const r = await spot(third, "select");
+    expect(r.status).toBe(409);
+    expect(r.body.code).toBe("ALL_ATTENDEES_SELECTED");
+    expect(r.body.view.progress).toEqual({ cycle: 1, selected: 2, roster: 4, complete: false }); // p3, p4 keep their turn
+    expect(r.body.view.confirmedCount).toBe(2);
+  });
+
+  it("membership changes: a new member joins the right rotation; removed or deactivated members stop counting", async () => {
+    const fun = await cmatch("c-fun");
+    await prisma.communityPlayer.create({ data: { groupId: "ga", communityId: "c-fun", playerId: "p5" } });
+    expect((await progress(fun)).roster).toBe(5);
+    expect((await progress(await cmatch("c-fc"))).roster).toBe(4); // UCCNE - FC unchanged
+    await prisma.communityPlayer.delete({ where: { communityId_playerId: { communityId: "c-fun", playerId: "p4" } } });
+    await prisma.player.update({ where: { id: "p1" }, data: { isActive: false } });
+    expect((await progress(fun)).roster).toBe(3);
+    expect((await progress(await cmatch("c-fc"))).roster).toBe(4); // p4 still a UCCNE - FC member
+  });
+
+  it("a pick made before per-community rotations (whole-group scope) is kept as it is — shown, idempotent, counted only in the whole group", async () => {
+    const fun = await cmatch("c-fun");
+    await attend(fun, FUN);
+    // What the migration leaves in place: communityId NULL = drawn in the whole-group rotation.
+    await prisma.spotlightRotation.create({ data: { groupId: "ga" } });
+    await prisma.spotlightPick.create({ data: { groupId: "ga", matchId: fun, cycle: 1, playerId: "p2", playerName: "Ben Two", note: "Bring cones" } });
+
+    const v = await spotView(fun);
+    expect(v.body.pick).toMatchObject({ playerId: "p2", otherRotation: true, rotationName: null });
+    expect(v.body.progress).toEqual({ cycle: 1, selected: 0, roster: 4, complete: false }); // not silently moved into FunnyStuff
+    expect((await progress(await cmatch(null))).selected).toBe(1); // still counts where it was drawn
+    const again = await spot(fun, "select");
+    expect(again.status).toBe(200);
+    expect(again.body.created).toBe(false); // the existing selection is returned, never redrawn
+    expect(await prisma.spotlightPick.count()).toBe(1);
+
+    // Replacement (p2 no longer playing): the old pick is released in ITS OWN rotation, the new one is FunnyStuff's.
+    await attend(fun, ["p2"], "ga", "NOT_PLAYING");
+    const rep = await selectSpotlight("ga", fun, null, { replace: true, rand: first });
+    expect(rep.ok).toBe(true);
+    const rows = await prisma.spotlightPick.findMany({ where: { matchId: fun }, orderBy: { createdAt: "asc" }, select: { playerId: true, status: true, communityId: true, note: true } });
+    expect(rows).toEqual([
+      { playerId: "p2", status: "RELEASED", communityId: null, note: "Bring cones" },
+      { playerId: "p1", status: "ACTIVE", communityId: "c-fun", note: "Bring cones" },
+    ]);
+  });
+
+  it("the database allows the same player once per cycle PER SCOPE — and refuses a second counted pick in the same scope", async () => {
+    const [a, b, c, d] = [await cmatch("c-fun"), await cmatch("c-fc"), await cmatch(null), await cmatch("c-fun")];
+    const pick = (matchId: string, communityId: string | null) => prisma.spotlightPick.create({ data: { groupId: "ga", matchId, communityId, cycle: 1, playerId: "p3", playerName: "Cai Three" } });
+    await pick(a, "c-fun");
+    await pick(b, "c-fc");
+    await pick(c, null);
+    await expect(pick(d, "c-fun")).rejects.toThrow();
+    // A pick can't claim a community of another group.
+    await prisma.community.create({ data: { id: "c-other", groupId: "ga2", name: "Other" } });
+    await expect(prisma.spotlightPick.create({ data: { groupId: "ga", matchId: d, communityId: "c-other", cycle: 1, playerId: "p4", playerName: "x" } })).rejects.toThrow();
+  });
+
+  it("concurrent requests: one selection per match; FunnyStuff and UCCNE - FC selections run side by side", async () => {
+    const fun = await cmatch("c-fun");
+    await attend(fun, FUN);
+    const results = await Promise.all(Array.from({ length: 6 }, () => selectSpotlight("ga", fun, null)));
+    expect(new Set(results.map((r) => (r.ok ? r.view.pick?.playerId : null))).size).toBe(1);
+    expect(await prisma.spotlightPick.count({ where: { matchId: fun } })).toBe(1);
+
+    const [f2, c2] = [await cmatch("c-fun"), await cmatch("c-fc")];
+    await attend(f2, ["p3", "p4"]);
+    await attend(c2, ["p3", "p4"]);
+    const [r1, r2] = await Promise.all([selectSpotlight("ga", f2, null), selectSpotlight("ga", c2, null)]);
+    expect(r1.ok && r2.ok).toBe(true); // at most one of p3/p4 had a FunnyStuff turn; UCCNE - FC is independent
+    expect(await prisma.spotlightPick.findMany({ where: { matchId: { in: [f2, c2] } }, orderBy: { communityId: "asc" }, select: { communityId: true } })).toEqual([{ communityId: "c-fc" }, { communityId: "c-fun" }]);
   });
 });
 

@@ -4,10 +4,12 @@ import { buildReusedTeams, reusePlan, reuseSources } from "@/lib/reuseTeams";
 
 /**
  * Reuse previous teams for this Match (OWNER/ADMIN; MEMBER / other tenants → 404).
- *   GET               this Group's earlier publications (newest first)
+ *   GET               earlier publications of this Match's Community (or, for a whole-Group
+ *                     Match, community-less ones), newest first
  *   GET ?source=<id>  the roster comparison against this Match's confirmed attendees
  *   POST { sourceId, placements }  the reused teams as a PREVIEW (nothing saved or sent)
- * The Group comes from the URL only; a source of another Group is "not found".
+ * The Group comes from the URL only; a source of another Group or another Community is "not
+ * found" (reuseTeams.reuseScopeWhere — checked on the server for every request).
  */
 type Params = Promise<{ organizationSlug: string; groupSlug: string; matchId: string }>;
 
