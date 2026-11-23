@@ -1854,11 +1854,13 @@ model RsvpInvitation {
 //
 // SpotlightRotation: one row per Group — the current cycle number.
 // SpotlightPick: one row per selection. ACTIVE = the Match's current Spotlight
-// and counts as "selected" in its cycle; RELEASED = given back (the player
-// stopped attending before the teams went out), so it never consumes a slot.
+// and counts as "selected" in its cycle; RELEASED = given back within its own
+// (still current) cycle — the player stopped attending, so it consumes no slot;
+// REPLACED = no longer the Match's Spotlight, but its cycle had already closed,
+// so it stays counted there (a closed cycle's history is never rewritten).
 // Partial unique indexes (raw SQL in the migration; Prisma can't express them):
 //   "SpotlightPick_match_active_key"        ON ("matchId")                    WHERE status = 'ACTIVE'
-//   "SpotlightPick_cycle_player_active_key" ON ("groupId","cycle","playerId") WHERE status = 'ACTIVE'
+//   "SpotlightPick_cycle_player_active_key" ON ("groupId","cycle","playerId") WHERE status <> 'RELEASED'
 // Keep them when regenerating migrations.
 // ---------------------------------------------------------------------------
 model SpotlightRotation {
@@ -1873,6 +1875,7 @@ model SpotlightRotation {
 enum SpotlightPickStatus {
   ACTIVE
   RELEASED
+  REPLACED
 }
 
 model SpotlightPick {

@@ -21,6 +21,7 @@ import * as pollRoute from "@/app/api/admin/o/[organizationSlug]/g/[groupSlug]/m
 import * as closePostRoute from "@/app/api/admin/o/[organizationSlug]/g/[groupSlug]/telegram/close-and-post/route";
 import * as deliveryRoute from "@/app/api/admin/o/[organizationSlug]/g/[groupSlug]/telegram/delivery/route";
 import { selectSpotlight } from "@/lib/spotlight";
+import { confirmedAttendeeIds } from "@/lib/attendanceSnapshot";
 
 const A = { organizationSlug: "org-a", groupSlug: "group-a" };
 const B = { organizationSlug: "org-b", groupSlug: "group-b" };
@@ -414,6 +415,80 @@ describe("Random Player Spotlight", () => {
     expect((await spot(later, "select")).body.pick.playerId).toBe(first); // got their turn back
   });
 
+  // Cycle-transition regression: a pick from an already-closed cycle is replaced without
+  // rewriting that cycle, the replacement is drawn in the current cycle, nobody repeats in any cycle.
+  describe("replacement across a cycle boundary", () => {
+    const first = () => 0; // deterministic draw: the first id of the sorted pool
+    const second = (max: number) => Math.min(1, max - 1);
+    async function twoPlayerGroup() {
+      await prisma.player.updateMany({ where: { groupId: "ga", id: { notIn: ["p1", "p2"] } }, data: { isActive: false } });
+    }
+    const counted = async (cycle: number) =>
+      (await prisma.spotlightPick.findMany({ where: { groupId: "ga", cycle, status: { in: ["ACTIVE", "REPLACED"] } }, select: { playerId: true } })).map((p) => p.playerId).sort();
+    const noRepeats = async () => {
+      const rows = await prisma.$queryRawUnsafe<Array<{ n: number }>>(
+        `SELECT count(*)::int AS n FROM (SELECT "cycle","playerId" FROM "SpotlightPick" WHERE "groupId"='ga' AND status <> 'RELEASED' GROUP BY 1,2 HAVING count(*) > 1) d`
+      );
+      expect(rows[0].n).toBe(0);
+    };
+
+    it("a closed cycle's history is never rewritten: old pick → REPLACED (still counted), new pick in the current cycle", async () => {
+      await twoPlayerGroup();
+      const [m1, m2, m3] = [await match(), await match(), await match()];
+      for (const m of [m1, m2, m3]) await attend(m, ["p1", "p2"]);
+      await selectSpotlight("ga", m1, null, { rand: first }); // p1, cycle 1
+      await selectSpotlight("ga", m2, null, { rand: first }); // p2, cycle 1 → complete
+      await selectSpotlight("ga", m3, null, { rand: first }); // cycle 2 starts: p1
+      expect(await counted(1)).toEqual(["p1", "p2"]);
+      expect(await counted(2)).toEqual(["p1"]);
+
+      await attend(m1, ["p1"], "ga", "NOT_PLAYING"); // Match 1's (cycle-1) pick stops playing
+      const r = await selectSpotlight("ga", m1, null, { replace: true, rand: first });
+      expect(r.ok).toBe(true);
+      expect(await prisma.spotlightPick.findMany({ where: { matchId: m1 }, select: { playerId: true, cycle: true, status: true }, orderBy: { createdAt: "asc" } })).toEqual([
+        { playerId: "p1", cycle: 1, status: "REPLACED" }, // cycle 1 untouched
+        { playerId: "p2", cycle: 2, status: "ACTIVE" }, // drawn in the current cycle
+      ]);
+      expect(await counted(1)).toEqual(["p1", "p2"]); // closed cycle history identical
+      expect(await counted(2)).toEqual(["p1", "p2"]); // cycle 2 now complete — p2 once, p1 once
+      await noRepeats();
+      // The next selection correctly starts cycle 3.
+      const m4 = await match();
+      await attend(m4, ["p1", "p2"]);
+      expect((await selectSpotlight("ga", m4, null, { rand: first })).ok).toBe(true);
+      expect((await prisma.spotlightPick.findFirstOrThrow({ where: { matchId: m4, status: "ACTIVE" } })).cycle).toBe(3);
+      await noRepeats();
+    });
+
+    it("all-or-nothing: if nobody can be drawn, the original pick stays and no cycle changes", async () => {
+      await twoPlayerGroup();
+      const [m1, m2, m3] = [await match(), await match(), await match()];
+      for (const m of [m1, m2, m3]) await attend(m, ["p1", "p2"]);
+      await selectSpotlight("ga", m1, null, { rand: first }); // p1 c1
+      await selectSpotlight("ga", m2, null, { rand: first }); // p2 c1
+      await selectSpotlight("ga", m3, null, { rand: second }); // c2: p2
+      await attend(m1, ["p1"], "ga", "NOT_PLAYING"); // only p2 confirmed, and p2 already had cycle 2's turn
+      const before = await prisma.spotlightPick.findMany({ orderBy: { createdAt: "asc" }, select: { id: true, status: true, cycle: true, playerId: true } });
+      const r = await spot(m1, "replace");
+      expect(r).toMatchObject({ status: 409, body: { code: "ALL_ATTENDEES_SELECTED" } });
+      expect(await prisma.spotlightPick.findMany({ orderBy: { createdAt: "asc" }, select: { id: true, status: true, cycle: true, playerId: true } })).toEqual(before); // rolled back
+      expect((await spotView(m1)).body).toMatchObject({ pick: { playerId: "p1" }, stillAttending: false }); // warning stays; nothing lost
+      expect((await prisma.spotlightRotation.findUniqueOrThrow({ where: { groupId: "ga" } })).cycle).toBe(2);
+    });
+
+    it("the database refuses a second counted pick of the same player in a cycle, REPLACED included", async () => {
+      await twoPlayerGroup();
+      const m1 = await match();
+      await attend(m1, ["p1"]);
+      await selectSpotlight("ga", m1, null);
+      await prisma.spotlightPick.updateMany({ where: { matchId: m1 }, data: { status: "REPLACED" } });
+      const m2 = await match();
+      await expect(prisma.spotlightPick.create({ data: { groupId: "ga", matchId: m2, cycle: 1, playerId: "p1", playerName: "Ana One" } })).rejects.toThrow(/Unique constraint/);
+      await prisma.spotlightPick.updateMany({ where: { matchId: m1 }, data: { status: "RELEASED" } }); // a RELEASED turn frees the slot
+      await expect(prisma.spotlightPick.create({ data: { groupId: "ga", matchId: m2, cycle: 1, playerId: "p1", playerName: "Ana One" } })).resolves.toBeTruthy();
+    });
+  });
+
   it("organizer text: saved, Unicode kept, length-limited, plain text only", async () => {
     const id = await match();
     await attend(id, ["p1"]);
@@ -472,5 +547,47 @@ describe("Random Player Spotlight", () => {
     const r = await spot(a2, "select", A2);
     expect(r.body.progress).toMatchObject({ cycle: 1, selected: 1, roster: 2 }); // its own cycle, untouched by group A
     expect(["a2p1", "a2p2"]).toContain(r.body.pick.playerId);
+  });
+});
+
+// ============================================================================ consistency
+describe("Attendance consistency: Generate, Reuse and Spotlight use ONE confirmed-attendance rule", () => {
+  it("PLAYING counts; MAYBE / NOT_PLAYING / overridden-out / inactive never do; an override-in does", async () => {
+    const id = await match();
+    await attend(id, ["p1"]); // PLAYING
+    await attend(id, ["p2"], "ga", "MAYBE");
+    await attend(id, ["p3"], "ga", "NOT_PLAYING");
+    await attend(id, ["p4"]); // answered PLAYING …
+    await prisma.attendanceResponse.update({ where: { matchId_playerId: { matchId: id, playerId: "p4" } }, data: { overrideStatus: "NOT_PLAYING", overrideAt: new Date() } }); // … organizer: out
+    await attend(id, ["p5"], "ga", "NOT_PLAYING"); // answered NOT_PLAYING …
+    await prisma.attendanceResponse.update({ where: { matchId_playerId: { matchId: id, playerId: "p5" } }, data: { overrideStatus: "PLAYING", overrideAt: new Date() } }); // … organizer: in
+    await attend(id, ["p6"]);
+    await prisma.player.update({ where: { id: "p6" }, data: { isActive: false } }); // inactive
+
+    const confirmed = (await confirmedAttendeeIds("ga", id))!.sort();
+    expect(confirmed).toEqual(["p1", "p5"]);
+    // 1. Normal generation's default selection (the Match workspace) is the same set.
+    const v = await (await matchRoute.GET(json("GET"), gm(A, id))).json();
+    expect([...v.defaultSelection].sort()).toEqual(confirmed);
+
+    // 2. Reuse: from a publication containing everyone, only the confirmed are returning.
+    const prev = await match("ga", "2026-11-13");
+    await publishFor(prev, [{ teamNumber: 1, players: [{ id: "p1" }, { id: "p2" }, { id: "p3" }] }, { teamNumber: 2, players: [{ id: "p4" }, { id: "p5" }, { id: "p6" }] }], "2026-11-13");
+    const gen = await prisma.teamGeneration.findUniqueOrThrow({ where: { matchId: prev } });
+    const plan = await reusePlan(id, gen.id);
+    expect(plan.body.teams.flatMap((t: { players: Array<{ id: string }> }) => t.players.map((p) => p.id)).sort()).toEqual(confirmed);
+    expect(plan.body.unassigned).toEqual([]);
+    expect(plan.body.absent.map((p: { id: string }) => p.id).sort()).toEqual(["p2", "p3", "p4", "p6"]);
+
+    // 3. Spotlight: over many fresh draws, only confirmed attendees are ever selected.
+    const seen = new Set<string>();
+    for (let i = 0; i < 25; i++) {
+      await prisma.spotlightPick.deleteMany({ where: { groupId: "ga" } });
+      const r = await selectSpotlight("ga", id, null);
+      expect(r.ok).toBe(true);
+      seen.add((await prisma.spotlightPick.findFirstOrThrow({ where: { matchId: id, status: "ACTIVE" } })).playerId);
+    }
+    expect([...seen].every((p) => confirmed.includes(p))).toBe(true);
+    expect(seen.size).toBe(2);
   });
 });

@@ -28,9 +28,15 @@ import { playerDisplayName } from "@/lib/playerFacing";
  * unique indexes enforce "one ACTIVE pick per Match" and "one ACTIVE pick per player per cycle"
  * in the database itself. Generate, Publish, page loads and Telegram (re)sends only READ the pick.
  *
- * REPLACEMENT (no reroll): allowed only when the selected player is no longer a confirmed attendee.
- * Their pick is RELEASED — they get their turn back, so one Match never consumes two slots — and
- * a new player is drawn by the same rule. The organizer's text is kept.
+ * REPLACEMENT (no reroll): allowed only when the selected player is no longer a confirmed attendee,
+ * and all-or-nothing (if nobody can be drawn, nothing changes and the original pick stays).
+ *   - pick from the CURRENT cycle → RELEASED: the player gets their turn back in that same cycle,
+ *     so one Match never consumes two slots of a cycle;
+ *   - pick from an already-CLOSED cycle → REPLACED: it stops being the Match's Spotlight but still
+ *     counts as that player's turn in its own cycle — a closed cycle's history is never rewritten.
+ * The new player is drawn from the CURRENT cycle by the same rule; the organizer's text is kept.
+ * "Selected in cycle N" = ACTIVE or REPLACED picks of cycle N (the partial unique index enforces
+ * at most one per player per cycle).
  */
 
 export const SPOTLIGHT_NOTE_MAX = 200;
@@ -93,7 +99,7 @@ async function rotationCycle(tx: Tx, groupId: string): Promise<number> {
 }
 
 async function selectedIn(tx: Tx, groupId: string, cycle: number): Promise<Set<string>> {
-  const picks = await tx.spotlightPick.findMany({ where: { groupId, cycle, status: "ACTIVE" }, select: { playerId: true } });
+  const picks = await tx.spotlightPick.findMany({ where: { groupId, cycle, status: { in: ["ACTIVE", "REPLACED"] } }, select: { playerId: true } });
   return new Set(picks.map((p) => p.playerId));
 }
 
@@ -155,14 +161,33 @@ const MESSAGES = {
  * Select (or, with replace, swap out an absent selection). Idempotent and serialized per Group.
  * `rand` is for tests only.
  */
+/** Thrown inside the transaction to roll a replacement back when nobody can be drawn. */
+class ReplacementAborted extends Error {
+  constructor(readonly code: "NO_CONFIRMED" | "ALL_ATTENDEES_SELECTED") {
+    super(code);
+  }
+}
+
 export async function selectSpotlight(groupId: string, matchId: string, userId: string | null, opts: { replace?: boolean; rand?: (max: number) => number } = {}): Promise<SpotlightOutcome> {
+  try {
+    return await selectLocked(groupId, matchId, userId, opts);
+  } catch (e) {
+    if (!(e instanceof ReplacementAborted)) throw e;
+    // Rolled back: the original pick is untouched.
+    const view = await spotlightView(groupId, matchId);
+    return { ok: false, code: e.code, message: MESSAGES[e.code], ...(view ? { view } : {}) };
+  }
+}
+
+async function selectLocked(groupId: string, matchId: string, userId: string | null, opts: { replace?: boolean; rand?: (max: number) => number }): Promise<SpotlightOutcome> {
   return prisma.$transaction(async (tx) => {
     await lockGroup(tx, groupId);
     const match = await tx.match.findFirst({ where: { id: matchId, groupId }, select: { id: true } });
     if (!match) return { ok: false, code: "NOT_FOUND", message: MESSAGES.NOT_FOUND };
-    // Attendance is read inside the lock, so a concurrent request sees the same state.
-    const confirmed = (await confirmedAttendeeIds(groupId, matchId)) ?? [];
-    const existing = await tx.spotlightPick.findFirst({ where: { matchId, groupId, status: "ACTIVE" }, select: { id: true, playerId: true, note: true } });
+    // Attendance is read inside the lock, on THIS transaction's connection (a second pooled connection
+    // here would deadlock under concurrency, or always with a pool of one).
+    const confirmed = (await confirmedAttendeeIds(groupId, matchId, tx)) ?? [];
+    const existing = await tx.spotlightPick.findFirst({ where: { matchId, groupId, status: "ACTIVE" }, select: { id: true, playerId: true, note: true, cycle: true } });
 
     if (!opts.replace) {
       if (existing) return { ok: true, created: false, view: await buildView(tx, groupId, matchId, confirmed) };
@@ -174,10 +199,12 @@ export async function selectSpotlight(groupId: string, matchId: string, userId: 
     // Replacement: only for a selection whose player is no longer confirmed.
     if (!existing) return { ok: false, code: "NO_PICK", message: MESSAGES.NO_PICK };
     if (confirmed.includes(existing.playerId)) return { ok: false, code: "STILL_ATTENDING", message: MESSAGES.STILL_ATTENDING, view: await buildView(tx, groupId, matchId, confirmed) };
-    // Give the absent player their turn back first (one Match never consumes two slots).
-    await tx.spotlightPick.update({ where: { id: existing.id }, data: { status: "RELEASED", releasedAt: new Date() } });
+    // Same (current) cycle → give the absent player their turn back; an older, closed cycle keeps
+    // its history (REPLACED still counts there). Either way the Match's slot is freed first.
+    const current = await rotationCycle(tx, groupId);
+    await tx.spotlightPick.update({ where: { id: existing.id }, data: { status: existing.cycle === current ? "RELEASED" : "REPLACED", releasedAt: new Date() } });
     const drawn = await drawLocked(tx, groupId, matchId, confirmed, userId, existing.note, opts.rand);
-    if (!drawn.ok) return { ok: false, code: drawn.code, message: MESSAGES[drawn.code], view: await buildView(tx, groupId, matchId, confirmed) };
+    if (!drawn.ok) throw new ReplacementAborted(drawn.code); // all-or-nothing: roll back, keep the original pick
     return { ok: true, created: true, view: await buildView(tx, groupId, matchId, confirmed) };
   });
 }

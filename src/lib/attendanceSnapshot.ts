@@ -17,13 +17,16 @@ import { effectiveClosedAt } from "@/lib/attendanceDeadline";
  */
 export type AttendanceSnapshot = { counts: AttendanceCounts; rosterSize: number; eligibleIds: string[]; communityName: string | null; date: Date };
 
-export async function eligibleRosterIds(groupId: string, communityId: string | null): Promise<{ ids: string[]; communityName: string | null }> {
-  const community = communityId ? await prisma.community.findFirst({ where: { id: communityId, groupId }, select: { id: true, name: true } }) : null;
+/** Any Prisma client — the global one, or an interactive transaction's (so a caller inside a transaction never needs a second pooled connection). */
+type Db = Pick<typeof prisma, "match" | "community" | "communityPlayer" | "player">;
+
+export async function eligibleRosterIds(groupId: string, communityId: string | null, db: Db = prisma): Promise<{ ids: string[]; communityName: string | null }> {
+  const community = communityId ? await db.community.findFirst({ where: { id: communityId, groupId }, select: { id: true, name: true } }) : null;
   if (community) {
-    const rows = await prisma.communityPlayer.findMany({ where: { groupId, communityId: community.id, player: { isActive: true, groupId } }, select: { playerId: true } });
+    const rows = await db.communityPlayer.findMany({ where: { groupId, communityId: community.id, player: { isActive: true, groupId } }, select: { playerId: true } });
     return { ids: rows.map((r) => r.playerId), communityName: community.name };
   }
-  const players = await prisma.player.findMany({ where: { groupId, isActive: true }, select: { id: true } });
+  const players = await db.player.findMany({ where: { groupId, isActive: true }, select: { id: true } });
   return { ids: players.map((p) => p.id), communityName: null };
 }
 
@@ -52,8 +55,8 @@ export async function matchAttendanceSnapshot(groupId: string, matchId: string):
  * the roster are never confirmed. Each player once (stable Player ids). null = no such Match here.
  * Used by Reuse previous teams and the Random Player Spotlight.
  */
-export async function confirmedAttendeeIds(groupId: string, matchId: string): Promise<string[] | null> {
-  const m = await prisma.match.findFirst({
+export async function confirmedAttendeeIds(groupId: string, matchId: string, db: Db = prisma): Promise<string[] | null> {
+  const m = await db.match.findFirst({
     where: { id: matchId, groupId },
     select: {
       communityId: true,
@@ -63,7 +66,7 @@ export async function confirmedAttendeeIds(groupId: string, matchId: string): Pr
     },
   });
   if (!m) return null;
-  const { ids } = await eligibleRosterIds(groupId, m.communityId);
+  const { ids } = await eligibleRosterIds(groupId, m.communityId, db);
   const eligible = [...new Set(ids)].map((id) => ({ id, isActive: true }));
   return defaultSelection(eligible, m.attendance as AttendanceRow[], effectiveClosedAt(m));
 }

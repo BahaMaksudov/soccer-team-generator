@@ -117,7 +117,9 @@ export default function SpotlightCard({ organizationSlug, groupSlug, matchId, on
               >
                 Replace with another playing member
               </button>
-              <p className="text-xs text-muted-foreground">{pick.playerName} keeps their turn for a later match.</p>
+              <p className="text-xs text-muted-foreground">
+                Replacing never uses up a second turn: if {pick.playerName} was picked in the current cycle, they get their turn back.
+              </p>
             </div>
           )}
           <div className="space-y-1">

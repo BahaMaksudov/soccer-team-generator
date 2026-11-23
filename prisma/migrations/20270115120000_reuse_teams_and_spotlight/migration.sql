@@ -7,18 +7,24 @@
 --    source row is never modified and may later be overwritten or deleted independently.
 --
 -- 2. SpotlightRotation (one row per Group: the current cycle) and SpotlightPick (one row per
---    selection; ACTIVE = the Match's current Spotlight, RELEASED = given back). Two PARTIAL
---    unique indexes make the fairness rules hold in the database itself, whatever runs the
---    statement:
+--    selection). Status: ACTIVE = the Match's current Spotlight (counts in its cycle);
+--    RELEASED = given back within its own, still-current cycle (counts nowhere);
+--    REPLACED = no longer the Match's Spotlight, but its cycle had already closed, so it still
+--    counts there (closed cycles are never rewritten). Two PARTIAL unique indexes make the
+--    fairness rules hold in the database itself, whatever runs the statement:
 --      - at most one ACTIVE pick per Match (repeat / concurrent requests can't pick twice);
---      - a player can be ACTIVE at most once per Group cycle (never picked twice in a cycle).
+--      - at most one counted pick (ACTIVE or REPLACED) per player per Group cycle — never twice.
 --
--- Rollback (safe at any time; nothing else references these objects):
---   DROP TABLE "SpotlightPick"; DROP TABLE "SpotlightRotation"; DROP TYPE "SpotlightPickStatus";
---   ALTER TABLE "TeamGeneration" DROP COLUMN "reusedFromGenerationId";
+-- Rollback:
+--   * Application rollback needs NO database change: the previous release never reads these
+--     tables or the new column, so they can stay (Spotlight history is preserved for a later
+--     re-deploy).
+--   * Only to remove the feature permanently (deletes Spotlight history — export first):
+--     DROP TABLE "SpotlightPick"; DROP TABLE "SpotlightRotation"; DROP TYPE "SpotlightPickStatus";
+--     ALTER TABLE "TeamGeneration" DROP COLUMN "reusedFromGenerationId";
 
 -- CreateEnum
-CREATE TYPE "SpotlightPickStatus" AS ENUM ('ACTIVE', 'RELEASED');
+CREATE TYPE "SpotlightPickStatus" AS ENUM ('ACTIVE', 'RELEASED', 'REPLACED');
 
 -- AlterTable
 ALTER TABLE "TeamGeneration" ADD COLUMN     "reusedFromGenerationId" TEXT;
@@ -75,4 +81,4 @@ ALTER TABLE "SpotlightPick" ADD CONSTRAINT "SpotlightPick_createdByUserId_fkey" 
 
 -- Fairness invariants (partial unique indexes; Prisma cannot express these — keep them).
 CREATE UNIQUE INDEX "SpotlightPick_match_active_key" ON "SpotlightPick"("matchId") WHERE "status" = 'ACTIVE';
-CREATE UNIQUE INDEX "SpotlightPick_cycle_player_active_key" ON "SpotlightPick"("groupId", "cycle", "playerId") WHERE "status" = 'ACTIVE';
+CREATE UNIQUE INDEX "SpotlightPick_cycle_player_active_key" ON "SpotlightPick"("groupId", "cycle", "playerId") WHERE "status" <> 'RELEASED';

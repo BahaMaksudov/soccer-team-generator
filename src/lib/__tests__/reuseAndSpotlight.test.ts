@@ -1,4 +1,5 @@
 import { describe, it, expect } from "vitest";
+import fs from "node:fs";
 import { applyPlacements, reconcileReuse } from "@/lib/reuseTeams";
 import { cycleState, drawFromPool, normalizeSpotlightNote, SPOTLIGHT_NOTE_MAX } from "@/lib/spotlight";
 import { formatTeamsHtml } from "@/lib/telegramFormat";
@@ -143,5 +144,20 @@ describe("Telegram — Spotlight section", () => {
     expect(formatTeamsHtml("1/1/27", teams, { name: "Dee P", note: null }).endsWith("<b>\u{1F3B2} Random Player Spotlight</b>\nSelected: Dee P")).toBe(true);
     expect(formatTeamsHtml("1/1/27", teams, null)).toBe(formatTeamsHtml("1/1/27", teams));
     expect(formatTeamsHtml("1/1/27", teams)).not.toContain("Spotlight");
+  });
+});
+
+describe("Spotlight transaction uses only its own connection (pool-deadlock regression)", () => {
+  it("inside the locked transaction every query goes through `tx` — never the global client", () => {
+    const src = fs.readFileSync("src/lib/spotlight.ts", "utf8");
+    const start = src.indexOf("async function selectLocked(");
+    const body = src.slice(start, src.indexOf("\n}\n", start));
+    expect(body).toContain("prisma.$transaction(async (tx) =>");
+    expect(body.replace("prisma.$transaction", "")).not.toMatch(/\bprisma\./); // a second pooled connection would deadlock (or always, with a pool of one)
+    expect(body).toContain("confirmedAttendeeIds(groupId, matchId, tx)");
+    for (const helper of ["async function drawLocked(", "async function buildView(", "async function rotationCycle(", "async function selectedIn(", "async function activeRosterIds("]) {
+      const at = src.indexOf(helper);
+      expect(src.slice(at, src.indexOf("\n}\n", at)), helper).not.toMatch(/\bprisma\./);
+    }
   });
 });
