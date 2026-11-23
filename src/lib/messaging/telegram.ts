@@ -36,6 +36,10 @@ export function renderTelegramHtml(content: TextContent): string {
   if (content.footerLinks?.length) {
     text += `\n\n${content.footerLinks.map((l) => `<a href="${escapeAttr(l.url)}">${escapeHtml(l.label)}</a>`).join(" · ")}`;
   }
+  if (content.trailer) {
+    text += `\n\n<b>${escapeHtml(content.trailer.title)}</b>`;
+    for (const line of content.trailer.lines) text += `\n${escapeHtml(line)}`;
+  }
   return text;
 }
 

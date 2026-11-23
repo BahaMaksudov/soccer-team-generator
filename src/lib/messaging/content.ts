@@ -2,6 +2,8 @@ import type { MessagingEvent } from "./events";
 import { playerDisplayName } from "@/lib/playerFacing";
 import { SHIRT_COLOR_REMINDER, shirtColorOf } from "@/lib/shirtColors";
 
+export const SPOTLIGHT_TITLE = "\u{1F3B2} Random Player Spotlight";
+
 /**
  * Channel-neutral content. Renderers turn this into a specific channel's
  * payload; business wording lives only here, so a new channel never
@@ -47,6 +49,8 @@ export type TextContent = {
   link: { label: string; url: string } | null;
   /** Footer links on ONE line ("🔗 View teams online · 🌐 TeamBalance Pro"); used instead of `link`. */
   footerLinks?: Array<{ label: string; url: string }>;
+  /** A final block at the very bottom (Random Player Spotlight): bold title + plain lines. Absent → rendering unchanged. */
+  trailer?: { title: string; lines: string[] };
 };
 
 /** YYYY-MM-DD → M/D/YY (no leading zeros), the poll question's date style. */
@@ -67,6 +71,11 @@ export function pollContent(event: Extract<MessagingEvent, { type: "POLL_CREATED
  * sport-aware wording (emoji, game noun, result label) is read from the
  * Group's SportDefinition via messagingVocabulary() by M9 events.
  */
+/** "🎲 Random Player Spotlight / Selected: NAME / [organizer text]" — plain text; escaped by the renderer. */
+export function spotlightTrailer(s: { name: string; note: string | null }): { title: string; lines: string[] } {
+  return { title: SPOTLIGHT_TITLE, lines: [`Selected: ${s.name}`, ...(s.note ? [s.note] : [])] };
+}
+
 export function teamsContent(event: Extract<MessagingEvent, { type: "TEAMS_PUBLISHED" }>): TextContent {
   // Shirt colors: only teams that HAVE a published color get "🟡 Team #1 — YELLOW SHIRTS" and the
   // reminder; a legacy snapshot (no colors) renders byte-identically to before (same content hash).
@@ -82,6 +91,7 @@ export function teamsContent(event: Extract<MessagingEvent, { type: "TEAMS_PUBLI
       };
     }),
     ...(anyColor ? { note: SHIRT_COLOR_REMINDER } : {}),
+    ...(event.spotlight?.name ? { trailer: spotlightTrailer(event.spotlight) } : {}),
     location: event.location ?? null,
     // Without a website link the message is byte-identical to before (the single "View teams online" link).
     link: !event.websiteUrl && event.viewUrl ? { label: "View teams online", url: event.viewUrl } : null,

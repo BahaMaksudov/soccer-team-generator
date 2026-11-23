@@ -40,6 +40,8 @@ export type MessagingEvent =
       websiteUrl?: string | null;
       /** M9.2 — the Match's venue (never part of the delivery content hash). */
       location?: { name: string; address: string | null; mapsUrl: string | null } | null;
+      /** Random Player Spotlight — the SAVED pick (never drawn while rendering); absent → no section. Part of the content hash. */
+      spotlight?: { name: string; note: string | null } | null;
     };
 
 export type MessagingEventType = MessagingEvent["type"];

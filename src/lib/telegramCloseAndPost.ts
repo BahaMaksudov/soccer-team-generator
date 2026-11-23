@@ -28,6 +28,7 @@ import { hashToken, isWellFormedToken } from "@/lib/secureToken";
 import { mapsUrl } from "@/lib/venues";
 import { stopAttendancePoll, type NoticeResult, type StopOutcome } from "@/lib/pollClosure";
 import { closeMatchAttendance, closePollOnce } from "@/lib/attendanceClosure";
+import { spotlightForMessage } from "@/lib/spotlight";
 
 /**
  * Canonical Close Poll + Post Teams (Phase 2D.6D.5D), on durable
@@ -179,7 +180,9 @@ type Validated = {
   body: string;
   current: CurrentContent;
   displayDate: string;
-  teams: Array<{ teamNumber: number; players: Array<{ firstName?: string | null; lastName?: string | null }> }>;
+  teams: Array<{ teamNumber: number; shirtColor?: string | null; players: Array<{ firstName?: string | null; lastName?: string | null }> }>;
+  /** The Match's saved Random Player Spotlight (null → no section). */
+  spotlight: { name: string; note: string | null } | null;
 };
 
 /** Shared, side-effect-free validation for posting and status. */
@@ -229,7 +232,10 @@ async function validatePostTarget(
   }
 
   const displayDate = resolvePollDisplayDate(poll, null);
-  const body = formatTeamsHtml(displayDate, teams);
+  // Random Player Spotlight: the SAVED pick for this generation's Match (read only — never drawn
+  // here). It is part of the content hash, so a later selection / text edit reads as "changed".
+  const spotlight = await spotlightForMessage(activeGroupId, generation.matchId);
+  const body = formatTeamsHtml(displayDate, teams, spotlight);
   return {
     ok: true,
     value: {
@@ -238,6 +244,7 @@ async function validatePostTarget(
       body,
       displayDate,
       teams,
+      spotlight,
       current: { contentHash: contentHashOf(body), teamGenerationId: generation.id, generationUpdatedAt: generation.updatedAt },
     },
   };
@@ -330,7 +337,7 @@ export async function closePollAndPostTeamsForContext(context: TenantContext, re
 
   const validated = await validatePostTarget(context, pollId, teamGenerationId);
   if (!validated.ok) return validated.response;
-  const { poll, current, body, displayDate, teams, generation } = validated.value;
+  const { poll, current, body, displayDate, teams, generation, spotlight } = validated.value;
 
   // M9-C — Match teams link to that Match's page; the content hash stays the
   // body WITHOUT the link (contentHashOf(body)), so the URL form (Group page →
@@ -432,7 +439,7 @@ export async function closePollAndPostTeamsForContext(context: TenantContext, re
   const location = venue ? { name: venue.name, address: venue.address, mapsUrl: mapsUrl(venue.address) } : null;
   // Footer: "🔗 View teams online · 🌐 TeamBalance Pro" (the website = APP_BASE_URL; omitted if not configured).
   const websiteUrl = teamBalanceProWebsiteUrl();
-  const html = view.url || location || websiteUrl ? renderTelegramHtml(teamsContent({ type: "TEAMS_PUBLISHED", displayDate, teams, viewUrl: view.url, location, websiteUrl })) : body;
+  const html = view.url || location || websiteUrl ? renderTelegramHtml(teamsContent({ type: "TEAMS_PUBLISHED", displayDate, teams, viewUrl: view.url, location, websiteUrl, spotlight })) : body;
   const reservedId = decision.deliveryId;
 
   let sent: { message_id?: unknown } | null;

@@ -195,6 +195,8 @@ export const publishTeamsSchema = z.object({
   pollId: z.string().trim().optional().default(""),
   // M9-A — publish for this Match (validated server-side: same Group and date).
   matchId: z.string().trim().min(1).optional(),
+  // Reuse previous teams — provenance (validated server-side: a generation of the same Group).
+  reusedFromGenerationId: z.string().trim().min(1).max(64).optional(),
   closePoll: z.boolean().optional(),
   postToTelegram: z.boolean().optional(),
 });

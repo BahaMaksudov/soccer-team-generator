@@ -237,6 +237,7 @@ model User {
   mvpsOpened                 MatchMvp[]             @relation("MvpOpenedBy")
   mvpsPublished              MatchMvp[]             @relation("MvpPublishedBy")
   mvpsSelected               MatchMvp[]             @relation("MvpSelectedBy")
+  spotlightPicksCreated      SpotlightPick[]        @relation("SpotlightPickCreatedBy")
   recapsGenerated            MatchRecap[]           @relation("RecapGeneratedBy")
   recapsPublished            MatchRecap[]           @relation("RecapPublishedBy")
   recapsUpdated              MatchRecap[]           @relation("RecapUpdatedBy")
@@ -684,6 +685,8 @@ model Group {
   matchRecaps             MatchRecap[]
   communities             Community[]
   communityPlayers        CommunityPlayer[]
+  spotlightRotation       SpotlightRotation?
+  spotlightPicks          SpotlightPick[]
   matchSchedules          MatchSchedule[]
   matchAutomations        MatchAutomation[]
   // Phase 2
@@ -890,6 +893,7 @@ model Player {
   communityPlayers        CommunityPlayer[]
   mvpVotesCast            MatchMvpVote[]           @relation("MvpVoter")
   mvpVotesReceived        MatchMvpVote[]           @relation("MvpCandidate")
+  spotlightPicks          SpotlightPick[]
 
   @@unique([groupId, userId])
   // Composite target for TelegramChatPlayer's (playerId, groupId) FK.
@@ -914,6 +918,11 @@ model TeamGeneration {
   sportKey      String?
   engineVersion String?
   metricsJson   String?
+
+  // Reuse previous teams — the TeamGeneration these teams were reused from (provenance only;
+  // NULL for generated teams and every row published before this feature). No FK: the source
+  // may later be deleted or overwritten without affecting this row, and is never modified.
+  reusedFromGenerationId String?
 
   // Phase 2D.7 — required (NOT NULL): every row belongs to exactly one
   // Group. onDelete: Restrict — a Group cannot be deleted while it still
@@ -1192,6 +1201,7 @@ model Match {
   result                  MatchResult?
   mvp                     MatchMvp?
   mvpVotes                MatchMvpVote[]
+  spotlightPicks          SpotlightPick[]
   recap                   MatchRecap?
 
   @@unique([scheduleId, date])
@@ -1836,4 +1846,56 @@ model RsvpInvitation {
   @@index([status, claimedAt])
   @@index([identifiersRemovedAt, matchId])
   @@index([sendId])
+}
+
+// ---------------------------------------------------------------------------
+// Random Player Spotlight — a fair, non-repeating random pick of one confirmed
+// attendee per Match (src/lib/spotlight.ts).
+//
+// SpotlightRotation: one row per Group — the current cycle number.
+// SpotlightPick: one row per selection. ACTIVE = the Match's current Spotlight
+// and counts as "selected" in its cycle; RELEASED = given back (the player
+// stopped attending before the teams went out), so it never consumes a slot.
+// Partial unique indexes (raw SQL in the migration; Prisma can't express them):
+//   "SpotlightPick_match_active_key"        ON ("matchId")                    WHERE status = 'ACTIVE'
+//   "SpotlightPick_cycle_player_active_key" ON ("groupId","cycle","playerId") WHERE status = 'ACTIVE'
+// Keep them when regenerating migrations.
+// ---------------------------------------------------------------------------
+model SpotlightRotation {
+  groupId   String   @id
+  cycle     Int      @default(1)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  group Group @relation(fields: [groupId], references: [id], onDelete: Cascade)
+}
+
+enum SpotlightPickStatus {
+  ACTIVE
+  RELEASED
+}
+
+model SpotlightPick {
+  id              String              @id @default(cuid())
+  groupId         String
+  matchId         String
+  cycle           Int
+  playerId        String
+  // Display name at selection time (what the organizer saw; what Telegram shows).
+  playerName      String
+  // Optional organizer text under the name (plain text, max 200 chars; escaped when rendered).
+  note            String?
+  status          SpotlightPickStatus @default(ACTIVE)
+  releasedAt      DateTime?
+  createdByUserId String?
+  createdAt       DateTime            @default(now())
+  updatedAt       DateTime            @updatedAt
+
+  group     Group  @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  match     Match  @relation(fields: [matchId], references: [id], onDelete: Cascade)
+  player    Player @relation(fields: [playerId], references: [id], onDelete: Cascade)
+  createdBy User?  @relation("SpotlightPickCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
+
+  @@index([groupId, cycle])
+  @@index([matchId])
 }

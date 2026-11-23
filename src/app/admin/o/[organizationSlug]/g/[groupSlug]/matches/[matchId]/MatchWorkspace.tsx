@@ -18,6 +18,7 @@ import PostGameSection, { type PostGameView } from "./PostGameSection";
 import GameDayUpdateDialog from "./GameDayUpdateDialog";
 import { MATCH_TELEGRAM_GROUP_SELECTOR_ID } from "@/lib/postGameUi";
 import CanonicalGenerateSection from "../../CanonicalGenerateSection";
+import SpotlightCard from "./SpotlightCard";
 import { PublishedTeams } from "@/components/game-day/PublishedTeams";
 import { AttendanceStatusButtons } from "@/components/game-day/AttendanceStatusButtons";
 import { ArrowDown, CalendarClock, CircleCheck, Send, Shuffle, Users } from "lucide-react";
@@ -1084,6 +1085,8 @@ export default function MatchWorkspace({
           initialPublishedTeams={view.generation?.teams ?? null}
           onPanelModeChange={setPanelMode}
         />
+        {/* Random Player Spotlight — saved per Match; part of the Telegram teams post (so a change refreshes its posted state). */}
+        <SpotlightCard organizationSlug={organizationSlug} groupSlug={groupSlug} matchId={m.id} onChanged={loadTeamsDelivery} />
         </>
         )}
         {published && !unpublishedPreviewOnScreen(panelMode) && (

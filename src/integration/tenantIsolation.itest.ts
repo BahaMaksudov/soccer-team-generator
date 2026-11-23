@@ -378,6 +378,9 @@ describe("Phase 2D.7 — PostgreSQL enforces groupId NOT NULL on every tenant-ow
       MessageDelivery_groupId_fkey: "r/c",
       PersonalAttendanceLink_groupId_fkey: "c/c", // M12B — a link is meaningless without its Group
       GroupJoinLink_groupId_fkey: "c/c", // M13A — an invite is meaningless without its Group
+      // Random Player Spotlight — rotation state and picks are meaningless without their Group.
+      SpotlightPick_groupId_fkey: "c/c",
+      SpotlightRotation_groupId_fkey: "c/c",
       GroupJoinRequest_groupId_fkey: "c/c", // M13A — so is a join request
       // M6-C: claim links / connect codes are access artifacts that go with their Group.
       PlayerClaim_groupId_fkey: "c/c",

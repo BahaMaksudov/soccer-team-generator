@@ -119,6 +119,8 @@ describe("flat operational Admin APIs are deleted", () => {
         canonical("players/[id]/contact"), // M13B P1 — organizer-only player contact email
         canonical("matches/[matchId]/rsvp-preview"), // M13B P2 — read-only RSVP recipient preview
         canonical("matches/[matchId]/rsvp-send"), // M13B P5 — RSVP email send (test outbox only) + delivery dashboard
+        canonical("matches/[matchId]/reuse-teams"), // Reuse previous teams (organizer; preview only)
+        canonical("matches/[matchId]/spotlight"), // Random Player Spotlight (organizer)
         canonical("players/[id]/telegram"), // M6.1
         canonical("publish"),
         canonical("settings/balance-weights"),

@@ -146,7 +146,7 @@ export async function publishTeamsForContext(context: TenantContext, req: Reques
     return NextResponse.json(zodErrorResponse(parsed.error), { status: 400 });
   }
 
-  const { date: dateStr, teams, pollId, matchId } = parsed.data;
+  const { date: dateStr, teams, pollId, matchId, reusedFromGenerationId } = parsed.data;
 
   // Reject BEFORE any TeamGeneration write: Publish never performs
   // Telegram poll actions, and silently ignoring a caller that asks for
@@ -191,7 +191,13 @@ export async function publishTeamsForContext(context: TenantContext, req: Reques
   if (!sport) {
     return NextResponse.json({ error: "This group's sport is not supported." }, { status: 400 });
   }
-  const metadata = buildGenerationMetadata(sport, await loadStoredBalanceWeights(activeGroupId), snapshotTeams);
+  // Reuse previous teams — provenance only when it names an earlier generation of THIS Group (never
+  // trusted blindly; the source row is never touched). Any other publish clears it.
+  const reusedFrom =
+    reusedFromGenerationId && (await prisma.teamGeneration.findFirst({ where: { id: reusedFromGenerationId, groupId: activeGroupId }, select: { id: true } }))
+      ? reusedFromGenerationId
+      : null;
+  const metadata = { ...buildGenerationMetadata(sport, await loadStoredBalanceWeights(activeGroupId), snapshotTeams), reusedFromGenerationId: reusedFrom };
 
   const normalizedDate = toDateOnlyUTC(dateStr);
 

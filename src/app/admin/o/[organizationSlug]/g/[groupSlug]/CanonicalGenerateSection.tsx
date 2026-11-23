@@ -23,6 +23,8 @@ import type { BalanceMetrics } from "@/lib/balanceEngine";
 import { applySwapBody } from "@/lib/balanceAnalysisUi";
 import { assignmentKey, teamsPanelState, type TeamsPanelMode } from "@/lib/teamAssignment";
 import { assignShirtColors, type ShirtColorId } from "@/lib/shirtColors";
+import ReuseTeamsPanel, { type ReuseResult } from "./ReuseTeamsPanel";
+import { formatLongDateOnly } from "@/lib/dateOnly";
 
 /**
  * Phase 2D.6D.2 — canonical tenant-bound Generate preview.
@@ -98,6 +100,9 @@ export default function CanonicalGenerateSection({
   onPublishedGenerationChange: (generation: PublishedGeneration | null) => void;
 }) {
   const [teamCount, setTeamCount] = useState(2);
+  // Reuse previous teams (Match workspace only): how the preview is made, and where it came from.
+  const [mode, setMode] = useState<"generate" | "reuse">("generate");
+  const [previewSource, setPreviewSource] = useState<{ generationId: string; date: string } | null>(null);
 
   const [previewTeams, setPreviewTeams] = useState<GeneratedTeam[] | null>(null);
   const [previewDate, setPreviewDate] = useState<string | null>(null);
@@ -150,6 +155,7 @@ export default function CanonicalGenerateSection({
     // Shirt colors are attached AFTER balancing (they never change who is on a team); a color the
     // owner already chose for the same team number (current preview, else the published teams) is kept.
     setPreviewTeams(assignShirtColors(data.teams as GeneratedTeam[], previewTeams ?? publishedTeams));
+    setPreviewSource(null);
     setPreviewDate(data.date);
     setPreviewWarnings(Array.isArray(data.warnings) ? data.warnings : []);
     setPreviewAnalysis(data.analysis ?? null);
@@ -165,7 +171,23 @@ export default function CanonicalGenerateSection({
     });
   }
 
+  /** Reused teams go into the SAME preview as generated ones (shirt colors, Apply Swap, Publish). */
+  function applyReusedTeams(r: ReuseResult) {
+    setPreviewTeams(r.teams);
+    setPreviewDate(r.date);
+    setPreviewWarnings([]);
+    setPreviewAnalysis(r.analysis);
+    setPreviewMetrics(r.metrics);
+    setPreviewSource({ generationId: r.reusedFromGenerationId, date: r.sourceDate });
+    onMessage(
+      r.analysis?.quality === "UNEVEN"
+        ? "Reused teams loaded into the preview. They are now uneven — review the balance note below; nothing was rebalanced automatically."
+        : "Reused teams loaded into the preview. Review them, then click Publish."
+    );
+  }
+
   function clearPreview() {
+    setPreviewSource(null);
     setPreviewTeams(null);
     setPreviewDate(null);
     setPreviewWarnings([]);
@@ -214,7 +236,11 @@ export default function CanonicalGenerateSection({
     const res = await fetch(adminTenantApiPath({ organizationSlug, groupSlug, path: "/publish" }), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(matchId ? { date: previewDate, teams: previewTeams, matchId } : { date: previewDate, teams: previewTeams }),
+      body: JSON.stringify(
+        matchId
+          ? { date: previewDate, teams: previewTeams, matchId, ...(previewSource ? { reusedFromGenerationId: previewSource.generationId } : {}) }
+          : { date: previewDate, teams: previewTeams }
+      ),
     });
     const data = await res.json().catch(() => ({}));
     setPublishing(false);
@@ -275,6 +301,30 @@ export default function CanonicalGenerateSection({
         Select players above, generate a preview, then publish it for this Group.
       </p>
 
+      {matchId && (
+        <fieldset className="flex flex-wrap gap-2" aria-label="How to make the teams">
+          <legend className="sr-only">How to make the teams</legend>
+          {(
+            [
+              ["generate", "Generate new balanced teams"],
+              ["reuse", "Reuse teams from a previous match"],
+            ] as const
+          ).map(([value, text]) => (
+            <label
+              key={value}
+              className={`flex min-h-10 cursor-pointer items-center gap-2 rounded-full border px-3 text-sm font-semibold ${mode === value ? "border-primary bg-primary/5 text-primary" : "border-input"}`}
+            >
+              <input type="radio" name={`team-mode-${matchId}`} value={value} checked={mode === value} onChange={() => setMode(value)} className="size-4 accent-primary" />
+              {text}
+            </label>
+          ))}
+        </fieldset>
+      )}
+
+      {matchId && mode === "reuse" && (
+        <ReuseTeamsPanel organizationSlug={organizationSlug} groupSlug={groupSlug} matchId={matchId} sportKey={sport.key} onUse={applyReusedTeams} />
+      )}
+
       <div className="flex flex-wrap items-end gap-3">
         {!matchId && (
           <div>
@@ -288,6 +338,8 @@ export default function CanonicalGenerateSection({
             />
           </div>
         )}
+        {mode === "generate" && (
+        <>
         <div>
           <label className="block text-xs font-semibold" htmlFor={matchId ? "generate-team-count-match" : "generate-team-count"}>Number of teams</label>
           <input
@@ -307,6 +359,8 @@ export default function CanonicalGenerateSection({
         >
           {panel.generateLabel} (Selected: {selectedIds.length})
         </button>
+        </>
+        )}
         <button
           type="button"
           className="inline-flex min-h-10 items-center rounded-full bg-accent px-4 text-sm font-semibold text-accent-foreground hover:brightness-105 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
@@ -363,6 +417,23 @@ export default function CanonicalGenerateSection({
           applying={applyingSwap}
           onApplySwap={applySuggestedSwap}
         />
+      )}
+
+      {previewTeams && previewSource && (
+        <div role="note" className="space-y-1 rounded-tbp-sm border border-border bg-muted px-3 py-2 text-sm">
+          <p>
+            Reused from the teams of <b>{formatLongDateOnly(previewSource.date)}</b>, matched by player to this match&apos;s confirmed attendance. Balance is
+            not changed automatically.
+          </p>
+          {previewMetrics && (
+            <p className="text-xs text-muted-foreground">
+              {previewMetrics.teams.map((t) => `Team #${t.teamNumber}: ${t.size} players · strength ${Math.round(t.impactTotal * 10) / 10}`).join("  ·  ")}
+            </p>
+          )}
+          {previewAnalysis?.quality === "UNEVEN" && (
+            <p className="font-semibold text-accent-foreground">These reused teams are now uneven. Apply the suggested swap below, adjust shirt colors, or switch to generating new balanced teams.</p>
+          )}
+        </div>
       )}
 
       {previewTeams && previewDate && (

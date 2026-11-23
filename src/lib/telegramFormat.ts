@@ -17,8 +17,8 @@ export type TeamForMessage = {
 };
 
 /** Byte-identical to the pre-M6 formatter (asserted in tests); no link. */
-export function formatTeamsHtml(displayDate: string, teams: TeamForMessage[]): string {
-  return renderTelegramHtml(teamsContent({ type: "TEAMS_PUBLISHED", displayDate, teams, viewUrl: null }));
+export function formatTeamsHtml(displayDate: string, teams: TeamForMessage[], spotlight: { name: string; note: string | null } | null = null): string {
+  return renderTelegramHtml(teamsContent({ type: "TEAMS_PUBLISHED", displayDate, teams, viewUrl: null, spotlight }));
 }
 
 /** Telegram's message length cap is 4096 chars; split on line boundaries. */

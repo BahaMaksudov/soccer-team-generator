@@ -1,5 +1,5 @@
 import { prisma } from "@/lib/prisma";
-import { countAttendance, type AttendanceCounts, type AttendanceRow } from "@/lib/attendance";
+import { countAttendance, defaultSelection, type AttendanceCounts, type AttendanceRow } from "@/lib/attendance";
 import { effectiveClosedAt } from "@/lib/attendanceDeadline";
 
 /**
@@ -42,4 +42,28 @@ export async function matchAttendanceSnapshot(groupId: string, matchId: string):
   const { ids, communityName } = await eligibleRosterIds(groupId, m.communityId);
   const unique = [...new Set(ids)];
   return { counts: countAttendance(unique, m.attendance as AttendanceRow[], effectiveClosedAt(m)), rosterSize: unique.length, eligibleIds: unique, communityName, date: m.date };
+}
+
+/**
+ * The Match's CONFIRMED attendees — the authoritative rule behind Generate-from-Match's default
+ * selection (attendance.defaultSelection): ACTIVE members of the Match's eligible roster whose
+ * EFFECTIVE status is PLAYING (organizer override ?? their own latest answer — web, personal link
+ * or a linked Telegram vote). MAYBE, NOT_PLAYING, no answer, inactive players and players outside
+ * the roster are never confirmed. Each player once (stable Player ids). null = no such Match here.
+ * Used by Reuse previous teams and the Random Player Spotlight.
+ */
+export async function confirmedAttendeeIds(groupId: string, matchId: string): Promise<string[] | null> {
+  const m = await prisma.match.findFirst({
+    where: { id: matchId, groupId },
+    select: {
+      communityId: true,
+      attendanceClosedAt: true,
+      attendanceDeadlineAt: true,
+      attendance: { select: { playerId: true, participantStatus: true, participantSource: true, participantRespondedAt: true, overrideStatus: true, overrideAt: true } },
+    },
+  });
+  if (!m) return null;
+  const { ids } = await eligibleRosterIds(groupId, m.communityId);
+  const eligible = [...new Set(ids)].map((id) => ({ id, isActive: true }));
+  return defaultSelection(eligible, m.attendance as AttendanceRow[], effectiveClosedAt(m));
 }
