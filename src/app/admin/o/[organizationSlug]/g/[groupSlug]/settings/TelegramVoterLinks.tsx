@@ -80,7 +80,7 @@ export default function TelegramVoterLinks({ organizationSlug, groupSlug }: { or
     <div className="mt-4 space-y-2 rounded-xl border p-4">
       <div className="flex items-center justify-between gap-3">
         <h3 className="text-sm font-semibold">Link Telegram users → players</h3>
-        <button type="button" className="text-xs underline" onClick={loadUsers}>
+        <button type="button" className="inline-flex min-h-9 items-center px-2 text-xs underline" onClick={loadUsers}>
           Refresh
         </button>
       </div>

@@ -71,7 +71,7 @@ export default function AppShell({ data, children }: { data: ShellData; children
           <AccountMenu data={data} mobile />
         </header>
 
-        <main id="main" tabIndex={-1} className="flex-1 px-4 pb-28 pt-6 focus:outline-none sm:px-6 lg:px-8 lg:pb-10">
+        <main id="main" tabIndex={-1} className="flex-1 px-4 pb-[calc(7rem+env(safe-area-inset-bottom))] pt-6 focus:outline-none sm:px-6 lg:px-8 lg:pb-10">
           <div className="mx-auto w-full max-w-6xl">{children}</div>
         </main>
       </div>

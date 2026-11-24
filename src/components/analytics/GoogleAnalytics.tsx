@@ -183,7 +183,7 @@ function ConsentBanner({ current, onDecide, onClose }: { current: AnalyticsConse
     <section
       role="region"
       aria-labelledby="tbp-consent-title"
-      className="fixed inset-x-3 bottom-3 z-[70] mx-auto max-w-xl rounded-tbp-2xl border border-border bg-card p-4 font-body text-card-foreground shadow-lift sm:inset-x-6 sm:p-5"
+      className="fixed inset-x-3 bottom-[calc(0.75rem+env(safe-area-inset-bottom))] z-[70] mx-auto max-w-xl rounded-tbp-2xl border border-border bg-card p-4 font-body text-card-foreground shadow-lift sm:inset-x-6 sm:p-5"
     >
       <h2 id="tbp-consent-title" className="font-display text-base font-extrabold">
         Analytics cookies

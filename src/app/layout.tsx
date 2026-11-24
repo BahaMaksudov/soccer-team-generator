@@ -69,7 +69,9 @@
 
 
 import "./globals.css";
+import type { Metadata, Viewport } from "next";
 import { fontVariableClasses } from "./fonts";
+import { PWA_THEME_COLOR } from "@/lib/pwa";
 import { headers } from "next/headers";
 import LegacyChrome from "@/components/LegacyChrome";
 import ChromeBoundaryGuard from "@/components/ChromeBoundaryGuard";
@@ -86,10 +88,16 @@ export const revalidate = 0;
 
 
 // M7 — product branding is sport-neutral (Group pages carry their own sport wording).
-export const metadata = {
+export const metadata: Metadata = {
   title: "TeamBalance Pro",
   description: "Balanced teams for pickup sports",
-  // Brand icons — generated from public/branding/teambalancefavicon.png (scaled, never cropped).
+  // Installable app (src/app/manifest.ts): name under the home-screen icon / in the app switcher.
+  applicationName: "TeamBalance Pro",
+  appleWebApp: { capable: true, title: "TeamBalance", statusBarStyle: "default" },
+  // iOS must not turn scores, dates or times into phone-number links.
+  formatDetection: { telephone: false },
+  // Brand icons — generated from public/branding/teambalancefavicon.png (scaled, never cropped);
+  // the Apple icon is the same mark on a full-bleed tile (scripts/generate-pwa-icons.mjs).
   icons: {
     icon: [
       { url: "/favicon.ico", sizes: "48x48" },
@@ -102,6 +110,15 @@ export const metadata = {
   },
 };
 
+// viewport-fit=cover makes env(safe-area-inset-*) real on notched iPhones (the mobile bottom
+// navigation already pads with it); zooming stays allowed (accessibility).
+export const viewport: Viewport = {
+  width: "device-width",
+  initialScale: 1,
+  viewportFit: "cover",
+  themeColor: PWA_THEME_COLOR,
+};
+
 export default async function RootLayout({ children }: { children: React.ReactNode }) {
   // UI-1 — server-side chrome decision from the middleware tag (src/lib/chrome.ts).
   const mode = chromeModeFromHeader((await headers()).get(CHROME_HEADER));
@@ -109,7 +126,8 @@ export default async function RootLayout({ children }: { children: React.ReactNo
 
   return (
     <html lang="en" className={fontVariableClasses}>
-      <body className="min-h-screen text-slate-900 relative overflow-x-hidden">
+      {/* Side safe areas: viewport-fit=cover lets landscape content reach under an iPhone notch (0 elsewhere). */}
+      <body className="min-h-screen text-slate-900 relative overflow-x-hidden pl-[env(safe-area-inset-left)] pr-[env(safe-area-inset-right)]">
         {/* UI-1/UI-2 — old global chrome for every route except the redesigned homepage and auth screens. */}
         <ChromeBoundaryGuard mode={mode} />
         {mode === "redesign" ? children : <LegacyChrome teamName={teamName}>{children}</LegacyChrome>}

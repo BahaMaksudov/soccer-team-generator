@@ -60,7 +60,7 @@ export default function Dialog({
         aria-labelledby={`${id}-title`}
         aria-describedby={description ? `${id}-desc` : undefined}
         tabIndex={-1}
-        className="relative max-h-[90dvh] w-full overflow-y-auto rounded-t-tbp-2xl bg-card p-5 text-card-foreground shadow-lift focus:outline-none sm:max-w-lg sm:rounded-tbp-2xl"
+        className="relative max-h-[90dvh] w-full overflow-y-auto rounded-t-tbp-2xl bg-card p-5 pb-[calc(1.25rem+env(safe-area-inset-bottom))] text-card-foreground sm:pb-5 shadow-lift focus:outline-none sm:max-w-lg sm:rounded-tbp-2xl"
       >
         <div className="mb-4 flex items-start justify-between gap-3">
           <div className="min-w-0">

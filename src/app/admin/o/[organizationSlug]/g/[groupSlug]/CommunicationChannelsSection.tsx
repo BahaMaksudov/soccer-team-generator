@@ -81,18 +81,18 @@ export default function CommunicationChannelsSection({ organizationSlug, groupSl
                 {confirmRef === c.ref ? (
                   <span>
                     Disconnect this Telegram group? Polls can&apos;t be posted there until it is connected again.{" "}
-                    <button type="button" className="underline text-red-600" disabled={busy} onClick={() => disconnect(c.ref)}>Disconnect</button>{" "}
-                    <button type="button" className="underline" onClick={() => setConfirmRef(null)}>Cancel</button>
+                    <button type="button" className="inline-flex min-h-9 items-center px-1 text-red-600 underline" disabled={busy} onClick={() => disconnect(c.ref)}>Disconnect</button>{" "}
+                    <button type="button" className="inline-flex min-h-9 items-center px-1 underline" onClick={() => setConfirmRef(null)}>Cancel</button>
                   </span>
                 ) : (
-                  <button type="button" className="underline" onClick={() => setConfirmRef(c.ref)}>Disconnect</button>
+                  <button type="button" className="inline-flex min-h-9 items-center px-1 underline" onClick={() => setConfirmRef(c.ref)}>Disconnect</button>
                 )}
               </li>
             ))}
           </ul>
         )}
 
-        <button type="button" disabled={busy} className="border rounded px-3 py-1 disabled:opacity-60" onClick={connect}>
+        <button type="button" disabled={busy} className="inline-flex min-h-10 items-center rounded border px-3 py-1 disabled:opacity-60" onClick={connect}>
           Connect Telegram Group
         </button>
 

@@ -145,7 +145,7 @@ describe("brand assets", () => {
     for (const { url } of [...icons.icon, ...icons.apple]) expect(fs.existsSync(path.join(root, "public", url)), url).toBe(true);
     expect(icons.apple).toEqual([{ url: "/icons/apple-touch-icon.png", sizes: "180x180", type: "image/png" }]);
     const m = manifest();
-    expect(m.icons?.map((i) => i.src)).toEqual(["/icons/icon-192.png", "/icons/icon-512.png"]);
+    expect(m.icons?.map((i) => i.src)).toEqual(["/icons/icon-192.png", "/icons/icon-512.png", "/icons/maskable-192.png", "/icons/maskable-512.png"]);
     for (const i of m.icons ?? []) expect(fs.existsSync(path.join(root, "public", i.src))).toBe(true);
   });
   it("the shared logo replaces the old marks in every header (no duplicated product-name text next to it)", () => {

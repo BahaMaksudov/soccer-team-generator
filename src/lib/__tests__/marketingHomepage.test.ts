@@ -158,7 +158,7 @@ describe("chrome isolation: decided on the server; every other route keeps the o
 
   it("the marketing tag (set by middleware for / only) renders the page without the old background, header or footer", async () => {
     const html = await renderLayout(REDESIGN_CHROME);
-    expect(html).toMatch(/<body class="min-h-screen text-slate-900 relative overflow-x-hidden"><p>PAGE<\/p><\/body>/);
+    expect(html).toMatch(/<body class="min-h-screen text-slate-900 relative overflow-x-hidden pl-\[env\(safe-area-inset-left\)\] pr-\[env\(safe-area-inset-right\)\]"><p>PAGE<\/p><\/body>/); // + side safe areas (PWA)
     expect(html).not.toMatch(/SoccerTeam|<header|<footer/);
     expect(settings.getTeamName).not.toHaveBeenCalled();
   });

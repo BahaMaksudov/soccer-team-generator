@@ -46,7 +46,7 @@ export default async function PublicGroupPrint({ params }: { params: Params }) {
 
       <div className="no-print flex items-center gap-3">
         <PrintButton />
-        <Link className="text-sm underline" href={`/g/${organizationSlug}/${groupSlug}`}>
+        <Link className="inline-flex min-h-10 items-center text-sm underline" href={`/g/${organizationSlug}/${groupSlug}`}>
           Back to Home
         </Link>
       </div>

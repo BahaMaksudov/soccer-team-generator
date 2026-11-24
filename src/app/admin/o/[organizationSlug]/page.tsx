@@ -73,7 +73,7 @@ export default async function OrganizationPage({ params }: { params: Params }) {
               ))}
             </ul>
           )}
-          <Link href={`${base}/groups`} className={cn("mt-4 inline-flex items-center gap-1 text-sm font-semibold text-primary hover:underline", focusRing)}>
+          <Link href={`${base}/groups`} className={cn("mt-4 inline-flex min-h-10 items-center gap-1 text-sm font-semibold text-primary hover:underline", focusRing)}>
             All groups <ArrowRight className="size-4" aria-hidden="true" />
           </Link>
         </section>

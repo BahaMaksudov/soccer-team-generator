@@ -496,7 +496,7 @@ export function MobileBottomNav({ data }: { data: ShellData }) {
   const { open, setOpen, close, triggerRef, panelRef } = useDisclosure();
   const sheetId = useId();
   return (
-    <nav aria-label="Application (mobile)" className="fixed inset-x-0 bottom-0 z-40 border-t border-border bg-card/95 pb-[env(safe-area-inset-bottom)] backdrop-blur lg:hidden">
+    <nav aria-label="Application (mobile)" className="fixed inset-x-0 bottom-0 z-40 border-t border-border bg-card/95 pb-[env(safe-area-inset-bottom)] pl-[env(safe-area-inset-left)] pr-[env(safe-area-inset-right)] backdrop-blur lg:hidden">
       <ul className="flex">
         {primary.map((i) => {
           const Icon = ICONS[i.key];

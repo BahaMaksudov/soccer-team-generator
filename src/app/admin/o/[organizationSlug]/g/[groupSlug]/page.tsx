@@ -71,7 +71,7 @@ export default async function CanonicalAdminHome({ params }: { params: Params })
             <SectionCard
               title="Recent matches"
               action={
-                <Link href={matchesHref} className={cn("text-sm font-semibold text-primary hover:underline", focusRing)}>
+                <Link href={matchesHref} className={cn("inline-flex min-h-10 items-center text-sm font-semibold text-primary hover:underline", focusRing)}>
                   View all matches
                 </Link>
               }

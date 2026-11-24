@@ -2,9 +2,16 @@ import { NextResponse, type NextRequest } from "next/server";
 import { getToken } from "next-auth/jwt";
 import { authGateDecision } from "@/lib/authGate";
 import { CHROME_HEADER, REDESIGN_CHROME, isAppShellPath, isPublicRedesignedPath } from "@/lib/chrome";
+import { pwaLaunchRedirect } from "@/lib/pwa";
 
 // M5 — session gate for protected pages/APIs; see src/lib/authGate.ts.
 export async function middleware(req: NextRequest) {
+  // Installed app — the home-screen launch ("/?source=pwa", src/app/manifest.ts): signed in → the
+  // app, otherwise the normal homepage. Browser visits to "/" never carry the tag (unchanged).
+  if (req.nextUrl.pathname === "/" && req.nextUrl.searchParams.has("source")) {
+    const to = pwaLaunchRedirect(req.nextUrl.pathname, req.nextUrl.search, !!(await getToken({ req }))?.email);
+    if (to) return NextResponse.redirect(new URL(to, req.url));
+  }
   // UI-1/UI-2 — the public marketing homepage and auth screens are never
   // auth-gated; only tag the request so RootLayout skips the old chrome
   // (see src/lib/chrome.ts).
